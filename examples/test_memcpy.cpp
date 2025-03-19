@@ -23,7 +23,7 @@ int main() {
     sycl_points::shared_allocator<float> shared_alloc(queue);
     const auto dt_make_allocate = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
 
-    // copy to host container
+    // copy from cpu to host container
     s = std::chrono::high_resolution_clock::now();
     sycl_points::PointContainerHost<float> host_points(source_points.size(), host_alloc);
     for (size_t i = 0; i < source_points.size(); ++i) {
@@ -31,13 +31,35 @@ int main() {
     }
     const auto dt_copy_to_host = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
 
-    // copy to shared container
+    // copy from cpu to shared container
     s = std::chrono::high_resolution_clock::now();
     sycl_points::PointContainerShared<float> shared_points(source_points.size(), shared_alloc);
     for (size_t i = 0; i < source_points.size(); ++i) {
       shared_points[i] = source_points.points[i];
     }
     const auto dt_copy_to_shared = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
+
+    // copy from cpu to device ptr
+    sycl_points::PointType<float>* device_ptr;
+    s = std::chrono::high_resolution_clock::now();
+    device_ptr = sycl::malloc_device<sycl_points::PointType<float>>(source_points.size(), queue);
+    queue.memcpy(device_ptr, source_points.points.data(), source_points.size() * sizeof(sycl_points::PointType<float>)).wait();
+    const auto dt_copy_to_device = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
+    sycl::free(device_ptr, queue);
+
+    // copy from host container to device ptr
+    s = std::chrono::high_resolution_clock::now();
+    device_ptr = sycl::malloc_device<sycl_points::PointType<float>>(host_points.size(), queue);
+    queue.memcpy(device_ptr, host_points.data(), host_points.size() * sizeof(sycl_points::PointType<float>)).wait();
+    const auto dt_copy_from_host_to_device = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
+    sycl::free(device_ptr, queue);
+
+    // copy from host container to device ptr
+    s = std::chrono::high_resolution_clock::now();
+    device_ptr = sycl::malloc_device<sycl_points::PointType<float>>(shared_points.size(), queue);
+    queue.memcpy(device_ptr, shared_points.data(), shared_points.size() * sizeof(sycl_points::PointType<float>)).wait();
+    const auto dt_copy_from_shared_to_device = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
+    sycl::free(device_ptr, queue);
 
     // Transform
     Eigen::Matrix4f trans = Eigen::Matrix4f::Identity();
@@ -92,7 +114,7 @@ int main() {
 
     // transform on device (shared to shared)
     double dt_transform_on_device_shared_to_shared = 0.0;
-    sycl_points::PointContainerShared<float> shared_results(0, shared_alloc);;
+    sycl_points::PointContainerShared<float> shared_results(0, shared_alloc);
     for (size_t _ = 0; _ < 11; ++_) {
       shared_results.clear();
       s = std::chrono::high_resolution_clock::now();
@@ -133,8 +155,11 @@ int main() {
     // }
 
     std::cout << "make allocator: " << dt_make_allocate << " us" << std::endl;
-    std::cout << "copy to host container: " << dt_copy_to_host << " us" << std::endl;
-    std::cout << "copy to shared container: " << dt_copy_to_shared << " us" << std::endl;
+    std::cout << "copy from cpu to host container: " << dt_copy_to_host << " us" << std::endl;
+    std::cout << "copy from cpu to shared container: " << dt_copy_to_shared << " us" << std::endl;
+    std::cout << "copy from cpu to device ptr: " << dt_copy_to_device << " us" << std::endl;
+    std::cout << "copy from host container to device ptr: " << dt_copy_from_host_to_device << " us" << std::endl;
+    std::cout << "copy from shared container to device ptr: " << dt_copy_from_shared_to_device << " us" << std::endl;
     std::cout << "transform on cpu: " << dt_transform_cpu << " us" << std::endl;
     std::cout << "transform on device(host_ptr): " << dt_transform_on_device_host_to_host << " us" << std::endl;
     std::cout << "transform on device(shared_ptr): " << dt_transform_on_device_shared_to_shared << " us" << std::endl;

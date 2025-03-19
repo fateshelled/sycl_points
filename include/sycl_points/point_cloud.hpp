@@ -40,7 +40,7 @@ template <typename T = baseT>
 using PointContainerHost = std::vector<PointType<T>, host_allocator<PointType<T>>>;
 
 template <typename T = baseT>
-using PointContainerShared = std::vector<PointType<T>, shared_allocator<T>>;
+using PointContainerShared = std::vector<PointType<T>, shared_allocator<PointType<T>>>;
 
 template <typename allocator, typename T = baseT>
 using CovarianceContainer = std::vector<Covariance<T>, allocator>;
