@@ -26,31 +26,35 @@ if(OpenMP_FOUND)
 endif()
 
 # test_memcpy
-set(EXEC_NAME test_memcpy)
-add_executable(${EXEC_NAME}
-  examples/${EXEC_NAME}.cpp
-)
-target_include_directories(${EXEC_NAME} PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_link_libraries(${EXEC_NAME} PRIVATE
-  sycl
-  Eigen3::Eigen
-)
-target_compile_options(${EXEC_NAME} PRIVATE
-  -fsycl
-  -fsycl-targets=spir64,nvptx64-nvidia-cuda
-)
-
-if(BUILD_WITH_MARCH_NATIVE)
-  target_compile_options(${EXEC_NAME} PRIVATE
-    -march=native
+function(add_test_exec EXEC_NAME)
+  add_executable(${EXEC_NAME}
+    examples/${EXEC_NAME}.cpp
   )
-endif()
+  target_include_directories(${EXEC_NAME} PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  target_link_libraries(${EXEC_NAME} PRIVATE
+    sycl
+    Eigen3::Eigen
+  )
+  target_compile_options(${EXEC_NAME} PRIVATE
+    -fsycl
+    -fsycl-targets=spir64,nvptx64-nvidia-cuda
+  )
 
-target_link_options(${EXEC_NAME} PRIVATE
-  -fsycl
-  -fsycl-targets=spir64,nvptx64-nvidia-cuda
-)
+  if(BUILD_WITH_MARCH_NATIVE)
+    target_compile_options(${EXEC_NAME} PRIVATE
+      -march=native
+    )
+  endif()
+
+  target_link_options(${EXEC_NAME} PRIVATE
+    -fsycl
+    -fsycl-targets=spir64,nvptx64-nvidia-cuda
+  )
+endfunction()
+
+add_test_exec(test_memcpy)
+add_test_exec(test_point_cloud)
 
 # end test_memcpy

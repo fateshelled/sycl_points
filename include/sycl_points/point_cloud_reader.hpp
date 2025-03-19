@@ -11,11 +11,11 @@
 
 namespace sycl_points {
 
-template <typename T = float>
 class PointCloudReader {
 private:
+  using T = float;
   // PLYファイルを読み込む
-  static void readPLY(std::ifstream& file, PointCloudCPU<T>& points) {
+  static void readPLY(std::ifstream& file, PointCloudCPU& points) {
     std::string line;
 
     // ヘッダー解析
@@ -229,7 +229,7 @@ private:
   }
 
   // PCDファイルを読み込む
-  static void readPCD(std::ifstream& file, PointCloudCPU<T>& points) {
+  static void readPCD(std::ifstream& file, PointCloudCPU& points) {
     std::string line;
 
     // ヘッダー解析
@@ -409,12 +409,12 @@ private:
 
 public:
 
-  static PointCloudCPU<T> readFile(const std::string& filename) {
+  static PointCloudCPU readFile(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
       throw std::runtime_error("Failed to open PLY file: " + filename);
     }
-    PointCloudCPU<T> cloud;
+    PointCloudCPU cloud;
     std::string format;
     std::getline(file, format);
     if (format == "ply") {

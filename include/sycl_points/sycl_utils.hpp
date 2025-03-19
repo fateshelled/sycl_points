@@ -9,6 +9,13 @@
 #endif
 
 namespace sycl_points {
+
+template <typename T>
+using host_allocator = sycl::usm_allocator<T, sycl::usm::alloc::host>;
+
+template <typename T>
+using shared_allocator = sycl::usm_allocator<T, sycl::usm::alloc::shared>;
+
 namespace sycl_utils {
 
 void print_device_info(const sycl::device& device) {

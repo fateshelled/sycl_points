@@ -21,24 +21,23 @@ struct VoxelConstants {
 
 namespace sycl_points {
 
-template <typename T = float>
-inline PointContainerCPU<T> voxel_downsampling_sycl(sycl::queue& queue, const PointContainerCPU<T>& points, const T voxel_size) {
+inline PointContainerCPU voxel_downsampling_sycl(sycl::queue& queue, const PointContainerCPU& points, const float voxel_size) {
   // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
   // function: voxelgrid_sampling
   // MIT License
 
   const size_t N = points.size();
-  if (N == 0) return PointContainerCPU<T>{};
+  if (N == 0) return PointContainerCPU{};
 
-  const T inv_voxel_size = (T)1.0 / voxel_size;
+  const float inv_voxel_size = 1.0f / voxel_size;
 
   // compute bit on device
   std::vector<uint64_t> bits(N);
   {
     // allocate device memory
-    auto* dev_points = sycl::malloc_device<PointType<T>>(N, queue);
+    auto* dev_points = sycl::malloc_device<PointType>(N, queue);
     auto* dev_bits = sycl::malloc_device<uint64_t>(N, queue);
-    queue.memcpy(dev_points, points[0].data(), N * sizeof(PointType<T>));
+    queue.memcpy(dev_points, points[0].data(), N * sizeof(PointType));
     queue.fill(dev_bits, VoxelConstants::invalid_coord, N);
     queue.wait();
 
@@ -72,7 +71,7 @@ inline PointContainerCPU<T> voxel_downsampling_sycl(sycl::queue& queue, const Po
     sycl::free(dev_points, queue);
   }
 
-  PointContainerCPU<T> result;
+  PointContainerCPU result;
   result.reserve(N);
   {
     // prepare indices
@@ -110,9 +109,9 @@ inline PointContainerCPU<T> voxel_downsampling_sycl(sycl::queue& queue, const Po
 }
 
 template <typename T = float>
-inline PointCloudCPU<T> voxel_downsampling_sycl(sycl::queue& queue, const PointCloudCPU<T>& points, const T voxel_size) {
-  PointCloudCPU<T> ret;
-  ret.points = voxel_downsampling_sycl<T>(queue, points.points, voxel_size);
+inline PointCloudCPU voxel_downsampling_sycl(sycl::queue& queue, const PointCloudCPU& points, const T voxel_size) {
+  PointCloudCPU ret;
+  ret.points = voxel_downsampling_sycl(queue, points.points, voxel_size);
   return ret;
 }
 

@@ -18,29 +18,27 @@
 
 namespace sycl_points {
 // Structure to store K nearest neighbors and their distances
-template <typename T = float>
 struct KNNResult {
   std::vector<std::vector<int>> indices;  // Indices of K nearest points for each query point
-  std::vector<std::vector<T>> distances;  // Squared distances to K nearest points for each query point
+  std::vector<std::vector<float>> distances;  // Squared distances to K nearest points for each query point
 };
 
 // Node structure for KD-Tree (ignoring w component)
-template <typename T = float>
 struct FlatKDNode {
-  PointType<T> point;  // Point coordinates (w is assumed to be 1.0)
+  PointType point;  // Point coordinates (w is assumed to be 1.0)
   int idx;             // Index of the point in the original dataset
   int axis;            // Split axis (0=x, 1=y, 2=z)
   int left;            // Index of left child node (-1 if none)
   int right;           // Index of right child node (-1 if none)
 };
 
-template <typename T = float>
+
 class KNNSearch {
 private:
-  std::vector<FlatKDNode<T>> tree_;
-  FlatKDNode<T>* tree_device_ptr_;
-  size_t tree_device_size_ = 0;
+  std::vector<FlatKDNode> tree_;
+  FlatKDNode* tree_device_ptr_;
   sycl::queue queue_;
+  size_t tree_device_size_ = 0;
 
 public:
   ~KNNSearch() {
@@ -49,13 +47,13 @@ public:
       sycl::free(tree_device_ptr_, queue_);
     }
   }
-  static KNNSearch<T> buildKDTree(sycl::queue& queue, const PointContainerCPU<T>& points) {
+  static KNNSearch buildKDTree(sycl::queue& queue, const PointContainerCPU& points) {
 
     const size_t n = points.size();
 
     // Estimate tree size with some margin
     const int estimatedSize = n * 2;
-    KNNSearch<T> flatTree;
+    KNNSearch flatTree;
     flatTree.tree_.resize(estimatedSize);
 
     // Main index array
@@ -63,7 +61,7 @@ public:
     std::iota(indices.begin(), indices.end(), 0);
 
     // Reusable temporary array for sorting
-    std::vector<std::pair<T, int>> sortedValues(n);
+    std::vector<std::pair<float, int>> sortedValues(n);
 
     // Data structure for non-recursive KD-tree construction
     struct BuildTask {
@@ -147,17 +145,17 @@ public:
     flatTree.tree_.resize(nextNodeIdx);
 
     flatTree.queue_ = queue;
-    flatTree.tree_device_ptr_ = sycl::malloc_device<FlatKDNode<T>>(nextNodeIdx, flatTree.queue_);
-    flatTree.queue_.memcpy(flatTree.tree_device_ptr_, flatTree.tree_.data(), nextNodeIdx * sizeof(FlatKDNode<T>));
+    flatTree.tree_device_ptr_ = sycl::malloc_device<FlatKDNode>(nextNodeIdx, flatTree.queue_);
+    flatTree.queue_.memcpy(flatTree.tree_device_ptr_, flatTree.tree_.data(), nextNodeIdx * sizeof(FlatKDNode));
 
     return flatTree;
   }
 
-  static KNNSearch<T> buildKDTree(sycl::queue& queue, const PointCloudCPU<T>& points) {
+  static KNNSearch buildKDTree(sycl::queue& queue, const PointCloudCPU& points) {
     return buildKDTree(queue, points.points);
   }
 
-  static KNNResult<T> searchBruteForce(const PointCloudCPU<T>& queries, const PointCloudCPU<T>& targets, const size_t k, const size_t num_threads = 8) {
+  static KNNResult searchBruteForce(const PointCloudCPU& queries, const PointCloudCPU& targets, const size_t k, const size_t num_threads = 8) {
     const size_t n = targets.points.size();  // Number of dataset points
     const size_t q = queries.points.size();  // Number of query points
 
@@ -168,7 +166,7 @@ public:
 
     for (size_t i = 0; i < q; ++i) {
       result.indices[i].resize(k, -1);
-      result.distances[i].resize(k, std::numeric_limits<T>::max());
+      result.distances[i].resize(k, std::numeric_limits<float>::max());
     }
 
 // For each query point, find K nearest neighbors
@@ -177,15 +175,15 @@ public:
       const auto& query = queries.points[i];
 
       // Vector to store distances and indices of all points
-      std::vector<std::pair<T, int>> distances(n);
+      std::vector<std::pair<float, int>> distances(n);
 
       // Calculate distances to all dataset points
       for (size_t j = 0; j < n; ++j) {
         const auto& target = targets.points[j];
-        const T dx = query.x() - target.x();
-        const T dy = query.y() - target.y();
-        const T dz = query.z() - target.z();
-        const T dist = dx * dx + dy * dy + dz * dz;
+        const float dx = query.x() - target.x();
+        const float dy = query.y() - target.y();
+        const float dz = query.z() - target.z();
+        const float dist = dx * dx + dy * dy + dz * dz;
         distances[j] = {dist, j};
       }
 
@@ -202,14 +200,14 @@ public:
     return result;
   }
 
-  static KNNResult<T> searchBruteForce_sycl(sycl::queue& queue, const PointCloudCPU<T>& queries, const PointCloudCPU<T>& targets, const size_t k) {
+  static KNNResult searchBruteForce_sycl(sycl::queue& queue, const PointCloudCPU& queries, const PointCloudCPU& targets, const size_t k) {
     constexpr size_t MAX_K = 50;
 
     const size_t n = targets.points.size();  // Number of dataset points
     const size_t q = queries.points.size();  // Number of query points
 
     // Initialize result structure
-    KNNResult<T> result;
+    KNNResult result;
     result.indices.resize(q);
     result.distances.resize(q);
 
@@ -220,17 +218,17 @@ public:
 
     try {
       // Allocate device memory using USM
-      PointType<T>* d_targets = sycl::malloc_device<PointType<T>>(n, queue);
-      PointType<T>* d_queries = sycl::malloc_device<PointType<T>>(q, queue);
-      T* d_distances = sycl::malloc_device<T>(q * k, queue);
+      PointType* d_targets = sycl::malloc_device<PointType>(n, queue);
+      PointType* d_queries = sycl::malloc_device<PointType>(q, queue);
+      float* d_distances = sycl::malloc_device<float>(q * k, queue);
       int* d_neighbors = sycl::malloc_device<int>(q * k, queue);
 
       // Copy to device memory
-      queue.memcpy(d_targets, targets.points[0].data(), n * sizeof(PointType<T>));
-      queue.memcpy(d_queries, queries.points[0].data(), q * sizeof(PointType<T>));
+      queue.memcpy(d_targets, targets.points[0].data(), n * sizeof(PointType));
+      queue.memcpy(d_queries, queries.points[0].data(), q * sizeof(PointType));
 
       // Initialize distances and neighbor lists
-      queue.fill(d_distances, std::numeric_limits<T>::max(), q * k);
+      queue.fill(d_distances, std::numeric_limits<float>::max(), q * k);
       queue.fill(d_neighbors, -1, q * k);
       queue.wait();  // Wait for copy and initialization to complete
 
@@ -242,22 +240,22 @@ public:
             const auto query = d_queries[queryIdx];
 
             // Arrays to store K nearest points
-            T kDistances[MAX_K];
+            float kDistances[MAX_K];
             int kIndices[MAX_K];
 
             // Initialize
             for (int i = 0; i < k; i++) {
-              kDistances[i] = std::numeric_limits<T>::max();
+              kDistances[i] = std::numeric_limits<float>::max();
               kIndices[i] = -1;
             }
 
             // Calculate distances to all dataset points
             for (size_t j = 0; j < n; j++) {
               // Calculate 3D distance
-              const T dx = query.x() - d_targets[j].x();
-              const T dy = query.y() - d_targets[j].y();
-              const T dz = query.z() - d_targets[j].z();
-              const T dist = dx * dx + dy * dy + dz * dz;
+              const float dx = query.x() - d_targets[j].x();
+              const float dy = query.y() - d_targets[j].y();
+              const float dz = query.z() - d_targets[j].z();
+              const float dist = dx * dx + dy * dy + dz * dz;
 
               // Check if this point should be included in K nearest
               if (dist < kDistances[k - 1]) {
@@ -285,10 +283,10 @@ public:
         .wait_and_throw();
 
       // Copy results back to host memory
-      T* h_distances = sycl::malloc_host<T>(q * k, queue);
+      float* h_distances = sycl::malloc_host<float>(q * k, queue);
       int* h_neighbors = sycl::malloc_host<int>(q * k, queue);
 
-      queue.memcpy(h_distances, d_distances, q * k * sizeof(T));
+      queue.memcpy(h_distances, d_distances, q * k * sizeof(float));
       queue.memcpy(h_neighbors, d_neighbors, q * k * sizeof(int));
       queue.wait();
 
@@ -314,8 +312,8 @@ public:
     return result;
   }
 
-  KNNResult<T> searchKDTree_sycl(
-    const PointContainerCPU<T>& queries,  // Query points
+  KNNResult searchKDTree_sycl(
+    const PointContainerCPU& queries,  // Query points
     const size_t k) {        // Number of neighbors to find
 
     constexpr size_t MAX_K = 50;
@@ -335,16 +333,16 @@ public:
 
     try {
       // Allocate device memory using USM
-      PointType<T>* d_queries = sycl::malloc_device<PointType<T>>(q, this->queue_);
-      T* s_distances = sycl::malloc_shared<T>(q * k, this->queue_);
+      PointType* d_queries = sycl::malloc_device<PointType>(q, this->queue_);
+      float* s_distances = sycl::malloc_shared<float>(q * k, this->queue_);
       int* s_neighbors = sycl::malloc_shared<int>(q * k, this->queue_);
-      FlatKDNode<T>* d_tree = tree_device_ptr_;
+      FlatKDNode* d_tree = tree_device_ptr_;
 
       // Copy to device memory
-      this->queue_.memcpy(d_queries, queries[0].data(), q * sizeof(PointType<T>));
+      this->queue_.memcpy(d_queries, queries[0].data(), q * sizeof(PointType));
 
       // Initialize distances and neighbor lists
-      this->queue_.fill(s_distances, std::numeric_limits<T>::max(), q * k);
+      this->queue_.fill(s_distances, std::numeric_limits<float>::max(), q * k);
       this->queue_.fill(s_neighbors, -1, q * k);
       this->queue_.wait();  // Wait for copy and initialization to complete
 
@@ -357,12 +355,12 @@ public:
             const auto& query = d_queries[queryIdx];
 
             // Arrays to store K nearest points
-            T bestDists[MAX_K];
+            float bestDists[MAX_K];
             int bestIdxs[MAX_K];
 
             // Initialize
             for (int i = 0; i < k; i++) {
-              bestDists[i] = std::numeric_limits<T>::max();
+              bestDists[i] = std::numeric_limits<float>::max();
               bestIdxs[i] = -1;
             }
 
@@ -383,10 +381,10 @@ public:
               const auto& node = d_tree[nodeIdx];
 
               // Calculate distance to current node (3D space)
-              const T dx = query.x() - node.point.x();
-              const T dy = query.y() - node.point.y();
-              const T dz = query.z() - node.point.z();
-              const T dist = dx * dx + dy * dy + dz * dz;
+              const float dx = query.x() - node.point.x();
+              const float dy = query.y() - node.point.y();
+              const float dz = query.z() - node.point.z();
+              const float dist = dx * dx + dy * dy + dz * dz;
 
               // Check if this node should be included in K nearest
               if (dist < bestDists[k - 1]) {
@@ -404,7 +402,7 @@ public:
               }
 
               // Distance along split axis
-              const T axisDistance(node.axis == 0 ? dx : (node.axis == 1 ? dy : dz));
+              const float axisDistance(node.axis == 0 ? dx : (node.axis == 1 ? dy : dz));
 
               // Determine nearer and further subtrees
               const int nearerNode = (axisDistance <= 0) ? node.left : node.right;
@@ -453,8 +451,8 @@ public:
     return result;
   }
 
-  KNNResult<T> searchKDTree_sycl(
-    const PointCloudCPU<T>& queries,  // Query points
+  KNNResult searchKDTree_sycl(
+    const PointCloudCPU& queries,  // Query points
     const size_t k) {        // Number of neighbors to find
       return searchKDTree_sycl(queries.points, k);
   }

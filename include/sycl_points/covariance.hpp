@@ -6,9 +6,9 @@
 namespace sycl_points {
 
 template <typename T = float>
-inline CovarianceContainerCPU<T> computeCovariances(
-  KNNSearch<T>& kdtree,             // KDTree
-  const PointContainerCPU<T>& points,  // Point Cloud
+inline CovarianceContainerCPU computeCovariances(
+  KNNSearch& kdtree,             // KDTree
+  const PointContainerCPU& points,  // Point Cloud
   const size_t k_correspondences,   // Number of neighbor points
   const size_t num_threads = 1) {
 
@@ -19,8 +19,8 @@ inline CovarianceContainerCPU<T> computeCovariances(
 
 #pragma omp parallel for num_threads(num_threads)
   for (size_t i = 0; i < N; ++i) {
-    PointType<T> sum_points = PointType<T>::Zero();
-    Covariance<T> sum_cross = Covariance<T>::Zero();
+    PointType sum_points = PointType::Zero();
+    Covariance sum_cross = Covariance::Zero();
 
     const auto& indices = neightbors.indices[i];
     for (size_t j = 0; j < k_correspondences; ++j) {
@@ -28,7 +28,7 @@ inline CovarianceContainerCPU<T> computeCovariances(
       sum_points += pt;
       sum_cross += pt * pt.transpose();
     }
-    const PointType<T> mean = sum_points / k_correspondences;
+    const PointType mean = sum_points / k_correspondences;
     covs[i] = (sum_cross - mean * sum_points.transpose()) / k_correspondences;
   }
 
@@ -36,28 +36,28 @@ inline CovarianceContainerCPU<T> computeCovariances(
 }
 
 template <typename T = float>
-inline CovarianceContainerCPU<T> computeCovariances(
+inline CovarianceContainerCPU computeCovariances(
   sycl::queue& queue,               // SYCL execution queue
-  const PointContainerCPU<T>& points,  // Point Cloud
+  const PointContainerCPU& points,  // Point Cloud
   const size_t k_correspondences,   // Number of neighbor points
   const size_t num_threads = 1) {
-  auto kdtree = KNNSearch<T>::buildKDTree(queue, points);
-  return computeCovariances<T>(kdtree, points, k_correspondences, num_threads);
+  auto kdtree = KNNSearch::buildKDTree(queue, points);
+  return computeCovariances(kdtree, points, k_correspondences, num_threads);
 }
 
 template <typename T = float>
 inline void computeCovariances(
-  KNNSearch<T>& kdtree,            // KDTree
-  PointCloudCPU<T>& points,     // Point Cloud
+  KNNSearch& kdtree,            // KDTree
+  PointCloudCPU& points,     // Point Cloud
   const size_t k_correspondences,  // Number of neighbor points
   const size_t num_threads = 1) {
-  points.covs = computeCovariances<T>(kdtree, points.points, k_correspondences, num_threads);
+  points.covs = computeCovariances(kdtree, points.points, k_correspondences, num_threads);
 }
 
 template <typename T = float>
 inline void computeCovariances(
   sycl::queue& queue,              // SYCL execution queue
-  PointCloudCPU<T>& points,     // Point Cloud
+  PointCloudCPU& points,     // Point Cloud
   const size_t k_correspondences,  // Number of neighbor points
   const size_t num_threads = 1) {
   points.covs = computeCovariances(queue, points.points, k_correspondences, num_threads);
