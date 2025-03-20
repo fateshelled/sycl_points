@@ -21,57 +21,48 @@ struct VoxelConstants {
 
 namespace sycl_points {
 
-inline PointContainerCPU voxel_downsampling_sycl(sycl::queue& queue, const PointContainerCPU& points, const float voxel_size) {
+inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const PointContainerShared& points, const float voxel_size) {
   // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
   // function: voxelgrid_sampling
   // MIT License
 
   const size_t N = points.size();
-  if (N == 0) return PointContainerCPU{};
+  const shared_allocator<PointType> alloc(queue);
+  if (N == 0) return PointContainerShared(0, alloc);
 
   const float inv_voxel_size = 1.0f / voxel_size;
 
   // compute bit on device
-  std::vector<uint64_t> bits(N);
+  shared_vector<uint64_t> bits(N, VoxelConstants::invalid_coord, alloc);
   {
-    // allocate device memory
-    auto* dev_points = sycl::malloc_device<PointType>(N, queue);
-    auto* dev_bits = sycl::malloc_device<uint64_t>(N, queue);
-    queue.memcpy(dev_points, points[0].data(), N * sizeof(PointType));
-    queue.fill(dev_bits, VoxelConstants::invalid_coord, N);
-    queue.wait();
+    // allocate memory
+    auto point_ptr = points.data();
+    auto bit_ptr = bits.data();
 
     queue
       .submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> i) {
-          if (!sycl::isfinite(dev_points[i].x()) || !sycl::isfinite(dev_points[i].y()) || !sycl::isfinite(dev_points[i].z())) {
+          if (!sycl::isfinite(point_ptr[i].x()) || !sycl::isfinite(point_ptr[i].y()) || !sycl::isfinite(point_ptr[i].z())) {
             return;
           }
-          const auto coord0 = static_cast<int64_t>(sycl::floor(dev_points[i].x() * inv_voxel_size)) + VoxelConstants::coord_offset;
-          const auto coord1 = static_cast<int64_t>(sycl::floor(dev_points[i].y() * inv_voxel_size)) + VoxelConstants::coord_offset;
-          const auto coord2 = static_cast<int64_t>(sycl::floor(dev_points[i].z() * inv_voxel_size)) + VoxelConstants::coord_offset;
+          const auto coord0 = static_cast<int64_t>(sycl::floor(point_ptr[i].x() * inv_voxel_size)) + VoxelConstants::coord_offset;
+          const auto coord1 = static_cast<int64_t>(sycl::floor(point_ptr[i].y() * inv_voxel_size)) + VoxelConstants::coord_offset;
+          const auto coord2 = static_cast<int64_t>(sycl::floor(point_ptr[i].z() * inv_voxel_size)) + VoxelConstants::coord_offset;
           if (coord0 < 0 || VoxelConstants::coord_bit_mask < coord0 ||
               coord1 < 0 || VoxelConstants::coord_bit_mask < coord1 ||
               coord2 < 0 || VoxelConstants::coord_bit_mask < coord2) {
             return;
           }
           // Compute voxel coord bits (0|1bit, z|21bit, y|21bit, x|21bit)
-          dev_bits[i] = (static_cast<uint64_t>(coord0 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 0)) |
-                        (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 1)) |
-                        (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 2));
+          bit_ptr[i] = (static_cast<uint64_t>(coord0 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 0)) |
+                       (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 1)) |
+                       (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 2));
         });
       })
       .wait_and_throw();
-
-    // copy results from device to host
-    queue.memcpy(bits.data(), dev_bits, N * sizeof(int64_t)).wait();
-
-    // free device memory
-    sycl::free(dev_bits, queue);
-    sycl::free(dev_points, queue);
   }
 
-  PointContainerCPU result;
+  PointContainerShared result(alloc);
   result.reserve(N);
   {
     // prepare indices
@@ -108,10 +99,9 @@ inline PointContainerCPU voxel_downsampling_sycl(sycl::queue& queue, const Point
   return result;
 }
 
-template <typename T = float>
-inline PointCloudCPU voxel_downsampling_sycl(sycl::queue& queue, const PointCloudCPU& points, const T voxel_size) {
-  PointCloudCPU ret;
-  ret.points = voxel_downsampling_sycl(queue, points.points, voxel_size);
+inline PointCloudShared voxel_downsampling_sycl(sycl::queue& queue, const PointCloudShared& points, const float voxel_size) {
+  PointCloudShared ret(queue);
+  *ret.points = voxel_downsampling_sycl(queue, *points.points, voxel_size);
   return ret;
 }
 

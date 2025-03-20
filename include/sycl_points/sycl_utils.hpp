@@ -16,6 +16,12 @@ using host_allocator = sycl::usm_allocator<T, sycl::usm::alloc::host>;
 template <typename T>
 using shared_allocator = sycl::usm_allocator<T, sycl::usm::alloc::shared>;
 
+template <typename T>
+using host_vector = std::vector<T, host_allocator<T>>;
+
+template <typename T>
+using shared_vector = std::vector<T, shared_allocator<T>>;
+
 namespace sycl_utils {
 
 void print_device_info(const sycl::device& device) {
