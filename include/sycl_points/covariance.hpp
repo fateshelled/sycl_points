@@ -60,7 +60,7 @@ namespace sycl_points {
 
 
 inline CovarianceContainerShared compute_covariances_sycl(
-  KNNSearchSYCL& kdtree,             // KDTree
+  const KNNSearchSYCL& kdtree,             // KDTree
   const PointContainerShared& points,  // Point Cloud
   const size_t k_correspondences,   // Number of neighbor points
   const size_t num_threads = 1) {
@@ -99,8 +99,8 @@ inline CovarianceContainerShared compute_covariances_sycl(
 }
 
 inline void compute_covariances_sycl(
-  KNNSearchSYCL& kdtree,            // KDTree
-  PointCloudShared& points,     // Point Cloud
+  const KNNSearchSYCL& kdtree,            // KDTree
+  const PointCloudShared& points,     // Point Cloud
   const size_t k_correspondences,  // Number of neighbor points
   const size_t num_threads = 1) {
   *points.covs = compute_covariances_sycl(kdtree, *points.points, k_correspondences, num_threads);
@@ -108,7 +108,7 @@ inline void compute_covariances_sycl(
 
 inline void compute_covariances_sycl(
   sycl::queue& queue,
-  PointCloudShared& points,     // Point Cloud
+  const PointCloudShared& points,     // Point Cloud
   const size_t k_correspondences,  // Number of neighbor points
   const size_t num_threads = 1) {
   *points.covs = compute_covariances_sycl(queue, *points.points, k_correspondences, num_threads);

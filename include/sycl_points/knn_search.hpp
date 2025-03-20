@@ -23,6 +23,14 @@ struct KNNResult {
   std::vector<std::vector<float>> distances;  // Squared distances to K nearest points for each query point
 };
 
+// WIP
+struct KNNResultSYCL {
+  std::shared_ptr<shared_vector<float>> distances;
+  std::shared_ptr<shared_vector<int>> neighbors;
+  size_t query_size;
+  size_t k;
+};
+
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode {
   PointType point;  // Point coordinates (w is assumed to be 1.0)
@@ -403,7 +411,7 @@ public:
 
   KNNResult searchKDTree_sycl(
     const PointContainerShared& queries,  // Query points
-    const size_t k) {                     // Number of neighbors to find
+    const size_t k) const {                     // Number of neighbors to find
 
     constexpr size_t MAX_K = 50;
 
@@ -532,7 +540,7 @@ public:
 
   KNNResult searchKDTree_sycl(
     const PointCloudShared& queries,  // Query points
-    const size_t k) {                 // Number of neighbors to find
+    const size_t k) const {                 // Number of neighbors to find
     return searchKDTree_sycl(*queries.points, k);
   }
 };

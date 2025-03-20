@@ -189,7 +189,7 @@ struct PointCloudShared {
     }
   }
 
-  PointCloudShared transform_cpu_copy(const TransformMatrix& trans) {
+  PointCloudShared transform_cpu_copy(const TransformMatrix& trans) const {
     PointCloudShared ret(*this);  // copy
     ret.transform_cpu(trans);
     return ret;
@@ -234,7 +234,7 @@ struct PointCloudShared {
   }
 
   // transform on device (too slow)
-  PointCloudShared transform_sycl_copy(const TransformMatrix& trans) {
+  PointCloudShared transform_sycl_copy(const TransformMatrix& trans) const {
     PointCloudShared ret(*this);  // copy
     ret.transform_sycl(trans);
     return ret;
