@@ -69,7 +69,7 @@ inline CovarianceContainerShared compute_covariances_sycl(
 
   const size_t N = points.size();
   shared_allocator<Covariance> alloc(*kdtree.queue_);
-  CovarianceContainerShared covs(N, alloc);
+  CovarianceContainerShared covs(N, Covariance::Zero(), alloc);
 
 #pragma omp parallel for num_threads(num_threads)
   for (size_t i = 0; i < N; ++i) {
@@ -83,7 +83,7 @@ inline CovarianceContainerShared compute_covariances_sycl(
       sum_cross += pt * pt.transpose();
     }
     const PointType mean = sum_points / k_correspondences;
-    covs[i] = (sum_cross - mean * sum_points.transpose()) / k_correspondences;
+    covs[i].block<3, 3>(0, 0) = (sum_cross - mean * sum_points.transpose()).block<3, 3>(0, 0) / k_correspondences;
   }
 
   return covs;
@@ -112,5 +112,15 @@ inline void compute_covariances_sycl(
   const size_t k_correspondences,  // Number of neighbor points
   const size_t num_threads = 1) {
   *points.covs = compute_covariances_sycl(queue, *points.points, k_correspondences, num_threads);
+}
+
+inline void covariance_update_plane(const PointCloudShared& points) {
+  const Eigen::Vector3f values = {1e-3f, 1.0f, 1.0f};
+
+  for (auto& cov: *points.covs) {
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> eig;
+    eig.computeDirect(cov.block<3, 3>(0, 0));
+    cov.block<3, 3>(0, 0) = eig.eigenvectors() * values.asDiagonal() * eig.eigenvectors().transpose();
+  }
 }
 }  // namespace sycl_points

@@ -65,15 +65,25 @@ int main() {
   dt_voxel_downsampling /= 10;
 
   // Transform
-  double dt_transform_cpu = 0.0;
+  double dt_transform_cpu_copy = 0.0;
+  for (size_t i = 0; i < 11; ++i) {
+    s = std::chrono::high_resolution_clock::now();
+    auto tmp = shared_points.transform_cpu_copy(Eigen::Matrix4f::Identity());
+    if (i > 0) {
+      dt_transform_cpu_copy += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
+    }
+  }
+  dt_transform_cpu_copy /= 10;
+
+  double dt_transform_cpu_zerocopy = 0.0;
   for (size_t i = 0; i < 11; ++i) {
     s = std::chrono::high_resolution_clock::now();
     shared_points.transform_cpu(Eigen::Matrix4f::Identity());
     if (i > 0) {
-      dt_transform_cpu += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
+      dt_transform_cpu_zerocopy += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
     }
   }
-  dt_transform_cpu /= 10;
+  dt_transform_cpu_zerocopy /= 10;
 
   double dt_transform_copy = 0.0;
   for (size_t i = 0; i < 11; ++i) {
@@ -125,7 +135,8 @@ int main() {
     std::cout << "Build KDTree (shared_ptr): " << dt_build_kdtree_sycl << " us" << std::endl;
     std::cout << "Compute covariances on device (shared_ptr): " << dt_covariances_sycl << " us" << std::endl;
     std::cout << "Voxel downsampling (shared_ptr): " << dt_voxel_downsampling << " us" << std::endl;
-    std::cout << "transform on cpu (shared_ptr, zero copy): " << dt_transform_cpu << " us" << std::endl;
+    std::cout << "transform on cpu (shared_ptr, copy): " << dt_transform_cpu_copy << " us" << std::endl;
+    std::cout << "transform on cpu (shared_ptr, zero copy): " << dt_transform_cpu_zerocopy << " us" << std::endl;
     std::cout << "transform on device (shared_ptr, copy): " << dt_transform_copy << " us" << std::endl;
     std::cout << "transform on device (shared_ptr, zero copy): " << dt_transform_zerocopy << " us" << std::endl;
   }
