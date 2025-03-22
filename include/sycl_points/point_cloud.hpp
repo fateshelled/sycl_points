@@ -64,9 +64,9 @@ struct PointCloudCPU {
 
 SYCL_EXTERNAL inline void transform_covs(const Covariance& cov, Covariance& result, const TransformMatrix& trans) {
   Covariance tmp;
-  const TransformMatrix trans_T = eigen_utils::matrixTranspose<4, 4>(trans);
-  // eigen_utils::matrixMultiply<4, 4>(trans, cov, tmp);
-  // eigen_utils::matrixMultiply<4, 4>(tmp, trans_T, result);
+  const TransformMatrix trans_T = eigen_utils::transpose<4, 4>(trans);
+  // eigen_utils::multiply<4, 4>(trans, cov, tmp);
+  // eigen_utils::multiply<4, 4>(tmp, trans_T, result);
 
   tmp(0, 0) = trans(0, 0) * cov(0, 0) + trans(0, 1) * cov(1, 0) + trans(0, 2) * cov(2, 0) + trans(0, 3) * cov(3, 0);
   tmp(0, 1) = trans(0, 0) * cov(0, 1) + trans(0, 1) * cov(1, 1) + trans(0, 2) * cov(2, 1) + trans(0, 3) * cov(3, 1);
@@ -111,7 +111,7 @@ SYCL_EXTERNAL inline void transform_covs(const Covariance& cov, Covariance& resu
 };
 
 SYCL_EXTERNAL inline void transform_point(const PointType& point, PointType& result, const TransformMatrix& trans) {
-  // eigen_utils::matrixVectorMultiply<float, 4, 4>(trans, point, result); // to slow
+  // eigen_utils::multiply<float, 4, 4>(trans, point, result); // to slow
   result[0] = trans(0, 0) * point[0] + trans(0, 1) * point[1] + trans(0, 2) * point[2] + trans(0, 3);
   result[1] = trans(1, 0) * point[0] + trans(1, 1) * point[1] + trans(1, 2) * point[2] + trans(1, 3);
   result[2] = trans(2, 0) * point[0] + trans(2, 1) * point[1] + trans(2, 2) * point[2] + trans(2, 3);

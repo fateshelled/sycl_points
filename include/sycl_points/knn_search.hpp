@@ -23,10 +23,9 @@ struct KNNResult {
   std::vector<std::vector<float>> distances;  // Squared distances to K nearest points for each query point
 };
 
-// WIP
 struct KNNResultSYCL {
+  std::shared_ptr<shared_vector<int>> indices;
   std::shared_ptr<shared_vector<float>> distances;
-  std::shared_ptr<shared_vector<int>> neighbors;
   size_t query_size;
   size_t k;
 };
@@ -44,9 +43,7 @@ class KNNSearch {
 public:
   std::shared_ptr<std::vector<FlatKDNode>> tree_;
 
-  KNNSearch() {
-    tree_ = std::make_shared<std::vector<FlatKDNode>>();
-  }
+  KNNSearch() { tree_ = std::make_shared<std::vector<FlatKDNode>>(); }
 
   ~KNNSearch() {}
 
@@ -195,7 +192,6 @@ public:
 
     return result;
   }
-
 };
 
 class KNNSearchSYCL {
@@ -203,9 +199,7 @@ public:
   std::shared_ptr<shared_vector<FlatKDNode>> tree_;
   std::shared_ptr<sycl::queue> queue_ = nullptr;
 
-  KNNSearchSYCL(sycl::queue& queue) : queue_(std::make_shared<sycl::queue>(queue)) {
-    tree_ = std::make_shared<shared_vector<FlatKDNode>>(0, *this->queue_);
-  }
+  KNNSearchSYCL(sycl::queue& queue) : queue_(std::make_shared<sycl::queue>(queue)) { tree_ = std::make_shared<shared_vector<FlatKDNode>>(0, *this->queue_); }
 
   KNNSearchSYCL(sycl::queue& queue, const KNNSearch& kdtree) : queue_(std::make_shared<sycl::queue>(queue)) {
     tree_ = std::make_shared<shared_vector<FlatKDNode>>(kdtree.tree_->size(), *this->queue_);
@@ -315,37 +309,30 @@ public:
     return flatTree;
   }
 
-  static KNNSearchSYCL buildKDTree(sycl::queue& queue, const PointCloudShared& cloud) {
-    return KNNSearchSYCL::buildKDTree(queue, *cloud.points);
-  }
+  static KNNSearchSYCL buildKDTree(sycl::queue& queue, const PointCloudShared& cloud) { return KNNSearchSYCL::buildKDTree(queue, *cloud.points); }
 
-  static KNNResult searchBruteForce_sycl(sycl::queue& queue, const PointCloudShared& queries, const PointCloudShared& targets, const size_t k) {
+  static KNNResultSYCL searchBruteForce_sycl(sycl::queue& queue, const PointCloudShared& queries, const PointCloudShared& targets, const size_t k) {
     constexpr size_t MAX_K = 50;
 
     const size_t n = targets.points->size();  // Number of dataset points
     const size_t q = queries.points->size();  // Number of query points
 
     // Initialize result structure
-    KNNResult result;
-    result.indices.resize(q);
-    result.distances.resize(q);
-
-    for (size_t i = 0; i < q; ++i) {
-      result.indices[i].resize(k, -1);
-      result.distances[i].resize(k, std::numeric_limits<float>::max());
-    }
+    KNNResultSYCL result;
+    result.indices = std::make_shared<shared_vector<int>>(q * k, -1, shared_allocator<int>(queue));
+    result.distances = std::make_shared<shared_vector<float>>(q * k, std::numeric_limits<float>::max(), shared_allocator<float>(queue));
+    result.k = k;
+    result.query_size = q;
 
     try {
-      // Allocate device memory using USM
+      // memory ptr
       auto targets_ptr = (*targets.points).data();
       auto queries_ptr = (*queries.points).data();
 
-      auto distances = shared_vector<float>(q * k, std::numeric_limits<float>::max(), queue);
-      auto neighbors = shared_vector<int>(q * k, -1, queue);
-      float* distance_ptr = distances.data();
-      int* neighbor_ptr = neighbors.data();
+      float* distance_ptr = result.distances->data();
+      int* index_ptr = result.indices->data();
 
-      // KNN search kernel
+      // KNN search kernel BruteForce
       queue
         .submit([&](sycl::handler& h) {
           h.parallel_for(sycl::range<1>(q), [=](sycl::id<1> idx) {
@@ -389,19 +376,12 @@ public:
             // Write results to global memory
             for (int i = 0; i < k; i++) {
               distance_ptr[queryIdx * k + i] = kDistances[i];
-              neighbor_ptr[queryIdx * k + i] = kIndices[i];
+              index_ptr[queryIdx * k + i] = kIndices[i];
             }
           });
         })
         .wait_and_throw();
 
-      // Copy to output structure
-      for (size_t i = 0; i < q; i++) {
-        for (int j = 0; j < k; j++) {
-          result.indices[i][j] = neighbors[i * k + j];
-          result.distances[i][j] = distances[i * k + j];
-        }
-      }
     } catch (const sycl::exception& e) {
       std::cerr << "SYCL exception caught: " << e.what() << std::endl;
     }
@@ -409,9 +389,9 @@ public:
     return result;
   }
 
-  KNNResult searchKDTree_sycl(
+  KNNResultSYCL searchKDTree_sycl(
     const PointContainerShared& queries,  // Query points
-    const size_t k) const {                     // Number of neighbors to find
+    const size_t k) const {               // Number of neighbors to find
 
     constexpr size_t MAX_K = 50;
 
@@ -419,24 +399,18 @@ public:
     const size_t treeSize = this->tree_->size();
 
     // Initialize result structure
-    KNNResult result;
-    result.indices.resize(q);
-    result.distances.resize(q);
-
-    for (size_t i = 0; i < q; ++i) {
-      result.indices[i].resize(k, -1);
-      result.distances[i].resize(k, std::numeric_limits<float>::max());
-    }
+    KNNResultSYCL result;
+    result.indices = std::make_shared<shared_vector<int>>(q * k, -1, shared_allocator<int>(*this->queue_));
+    result.distances = std::make_shared<shared_vector<float>>(q * k, std::numeric_limits<float>::max(), shared_allocator<float>(*this->queue_));
+    result.k = k;
+    result.query_size = q;
 
     try {
-      // Allocate device memory
-      shared_vector<float> distances(q * k, std::numeric_limits<float>::max(), *this->queue_);
-      shared_vector<int> neighbors(q * k, -1, *this->queue_);
-
-      auto query_ptr = queries.data();
-      auto distance_ptr = distances.data();
-      auto neighbor_ptr = neighbors.data();
-      auto tree_ptr = (*this->tree_).data();
+      // memory ptr
+      const auto query_ptr = queries.data();
+      const auto distance_ptr = result.distances->data();
+      const auto index_ptr = result.indices->data();
+      const auto tree_ptr = (*this->tree_).data();
 
       // SYCL KD-Tree KNN search kernel
       this->queue_
@@ -518,19 +492,12 @@ public:
             // Write results to global memory
             for (int i = 0; i < k; i++) {
               distance_ptr[queryIdx * k + i] = bestDists[i];
-              neighbor_ptr[queryIdx * k + i] = bestIdxs[i];
+              index_ptr[queryIdx * k + i] = bestIdxs[i];
             }
           });
         })
         .wait_and_throw();
 
-      // Copy to output structure
-      for (size_t i = 0; i < q; i++) {
-        for (int j = 0; j < k; j++) {
-          result.indices[i][j] = neighbors[i * k + j];
-          result.distances[i][j] = distances[i * k + j];
-        }
-      }
     } catch (const sycl::exception& e) {
       std::cerr << "SYCL exception caught: " << e.what() << std::endl;
     }
@@ -538,9 +505,9 @@ public:
     return result;
   }
 
-  KNNResult searchKDTree_sycl(
+  KNNResultSYCL searchKDTree_sycl(
     const PointCloudShared& queries,  // Query points
-    const size_t k) const {                 // Number of neighbors to find
+    const size_t k) const {           // Number of neighbors to find
     return searchKDTree_sycl(*queries.points, k);
   }
 };

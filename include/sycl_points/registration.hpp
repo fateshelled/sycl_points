@@ -13,11 +13,11 @@ struct RegistrationParams {
   //   size_t max_inner_iterations = 10; // LM method
   float lambda = 1e-6f;
   //   float lambda_factor = 10.0f; // LM method
-  bool lm_method = false;
+  // bool optimize_lm = false;
   float max_correspondence_distance = 1.0f;
   float translation_eps = 1e-3f;
   float rotation_eps = 1e-3f;
-  bool verbose = true;
+  bool verbose = false;
 };
 
 struct LinearlizedResult {
@@ -48,7 +48,7 @@ linearlize_gicp(const TransformMatrix& T, const PointType& source, const PointTy
 
   Covariance mahalanobis = Covariance::Zero();
   {
-    const Eigen::Matrix3f RCR = eigen_utils::matrixAdd<3, 3>(eigen_utils::block3x3(source_cov), eigen_utils::block3x3(target_cov));
+    const Eigen::Matrix3f RCR = eigen_utils::add<3, 3>(eigen_utils::block3x3(source_cov), eigen_utils::block3x3(target_cov));
     const Eigen::Matrix3f RCR_inv = eigen_utils::inverse(RCR);
 
     mahalanobis(0, 0) = RCR_inv(0, 0);
@@ -68,7 +68,7 @@ linearlize_gicp(const TransformMatrix& T, const PointType& source, const PointTy
   {
     const Eigen::Matrix3f skewed = eigen_utils::skew(source);
     const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(T);
-    Eigen::Matrix3f T_skewed = eigen_utils::matrixMultiply<3, 3, 3>(T_3x3, skewed);
+    Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
     J(0, 0) = T_skewed(0, 0);
     J(0, 1) = T_skewed(0, 1);
     J(0, 2) = T_skewed(0, 2);
@@ -90,14 +90,14 @@ linearlize_gicp(const TransformMatrix& T, const PointType& source, const PointTy
     J(2, 5) = -T(2, 2);
   }
 
-  Eigen::Matrix<float, 6, 4> J_T_mah = eigen_utils::matrixMultiply<6, 4, 4>(eigen_utils::matrixTranspose<4, 6>(J), mahalanobis);
+  Eigen::Matrix<float, 6, 4> J_T_mah = eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
 
   // J.transpose() * mahalanobis * J;
-  ret.H = eigen_utils::matrixMultiply<6, 4, 6>(J_T_mah, J);
+  ret.H = eigen_utils::multiply<6, 4, 6>(J_T_mah, J);
   // J.transpose() * mahalanobis * residual;
-  ret.b = eigen_utils::matrixVectorMultiply<6, 4>(J_T_mah, residual);
+  ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
   // 0.5 * residual.transpose() * mahalanobis * residual;
-  ret.error = 0.5f * (eigen_utils::vectorDot<4>(residual, eigen_utils::matrixVectorMultiply<4, 4>(mahalanobis, residual)));
+  ret.error = 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
   return ret;
 }
 
@@ -140,18 +140,12 @@ public:
       linearlized.b = Eigen::Matrix<float, 6, 1>::Zero();
       linearlized.error = 0.0;
       {
-        shared_vector<int> target_indices(N, shared_allocator<int>(queue, {}));
-        shared_vector<float> target_distances(N, shared_allocator<int>(queue, {}));
         shared_vector<TransformMatrix> cur_T(1, result.T.matrix(), shared_allocator<TransformMatrix>(queue, {}));
         shared_vector<LinearlizedResult> linearlized_results(N, LinearlizedResult(), shared_allocator<LinearlizedResult>(queue, {}));
         shared_vector<float> max_distance(1, max_dist_2, shared_allocator<float>(queue, {}));
 
-        for (size_t j = 0; j < N; ++j) {
-          target_indices[j] = neighbors.indices[j][0];
-          target_distances[j] = neighbors.distances[j][0];
-        }
-        auto indices_ptr = target_indices.data();
-        auto distances_ptr = target_distances.data();
+        auto index_ptr = neighbors.indices->data();
+        auto distances_ptr = neighbors.distances->data();
         auto max_dist_ptr = max_distance.data();
         auto cur_T_ptr = cur_T.data();
 
@@ -167,8 +161,8 @@ public:
             if (distances_ptr[i] > max_dist_ptr[0]) {
               return;
             }
-            linearlized_ptr[i] = factor::linearlize_gicp(cur_T_ptr[0], source_ptr[i], target_ptr[indices_ptr[i]], source_cov_ptr[i], target_cov_ptr[indices_ptr[i]]);
-            // linearlized_ptr[i] = factor::linearlize_point_to_point(cur_T_ptr[0], source_ptr[i], target_ptr[indices_ptr[i]], source_cov_ptr[i], target_cov_ptr[indices_ptr[i]]);
+            linearlized_ptr[i] = factor::linearlize_gicp(cur_T_ptr[0], source_ptr[i], target_ptr[index_ptr[i]], source_cov_ptr[i], target_cov_ptr[index_ptr[i]]);
+            // linearlized_ptr[i] = factor::linearlize_point_to_point(cur_T_ptr[0], source_ptr[i], target_ptr[index_ptr[i]], source_cov_ptr[i], target_cov_ptr[index_ptr[i]]);
 
             // reduction here ?
           });
@@ -183,8 +177,10 @@ public:
         }
       }
 
-      if (this->params_.lm_method) {
-      } else {
+      // if (this->params_.optimize_lm) {
+      // }
+      // else
+      {
         const Eigen::Matrix<float, 6, 1> delta = (linearlized.H + lambda * Eigen::Matrix<float, 6, 6>::Identity()).ldlt().solve(-linearlized.b);
         result.converged = this->is_converged(delta);
         result.T = result.T * eigen_utils::se3_exp(delta);

@@ -64,6 +64,7 @@ protected:
 
     vec3 << 1.0f, 2.0f, 3.0f;
     vec4 << 1.0f, 2.0f, 3.0f, 4.0f;
+    vec4_2 << 5.0f, 6.0f, 7.0f, 8.0f;
 
     A6x4 << 1.0f, 2.0f, 3.0f, 4.0f,
             5.0f, 6.0f, 7.0f, 8.0f,
@@ -84,19 +85,20 @@ protected:
   Eigen::Matrix4f B4x4;
   Eigen::Vector3f vec3;
   Eigen::Vector4f vec4;
+  Eigen::Vector4f vec4_2;
   Eigen::Matrix<float, 6, 4> A6x4;
   Eigen::Matrix<float, 4, 6> B4x6;
 };
 
-// matrixAdd テスト
-TEST_F(EigenUtilsTest, MatrixAdd) {
+// add テスト
+TEST_F(EigenUtilsTest, add) {
   // 3x3
   Eigen::Matrix3f expected3x3;
   expected3x3 << 10.0f, 10.0f, 10.0f,
                  10.0f, 10.0f, 10.0f,
                  10.0f, 10.0f, 10.0f;
 
-  Eigen::Matrix3f result3x3 = matrixAdd<3, 3>(A3x3, B3x3);
+  Eigen::Matrix3f result3x3 = add<3, 3>(A3x3, B3x3);
   expectMatrixNear(expected3x3, result3x3);
 
   // 4x4
@@ -106,112 +108,142 @@ TEST_F(EigenUtilsTest, MatrixAdd) {
                  17.0f, 17.0f, 17.0f, 17.0f,
                  17.0f, 17.0f, 17.0f, 17.0f;
 
-  Eigen::Matrix4f result4x4 = matrixAdd<4, 4>(A4x4, B4x4);
+  Eigen::Matrix4f result4x4 = add<4, 4>(A4x4, B4x4);
   expectMatrixNear(expected4x4, result4x4);
+
+  // vector4
+  Eigen::Vector4f expected4;
+  expected4 << 6.0f, 8.0f, 10.0f, 12.0f;
+
+  Eigen::Vector4f result4 = add<4, 1>(vec4, vec4_2);
+  expectVectorNear(expected4, result4);
 }
 
-// matrixSubtract テスト
-TEST_F(EigenUtilsTest, MatrixSubtract) {
+// add zerocopy テスト
+TEST_F(EigenUtilsTest, add_zerocopy) {
+  // 3x3
+  Eigen::Matrix3f expected3x3;
+  expected3x3 << 10.0f, 10.0f, 10.0f,
+                 10.0f, 10.0f, 10.0f,
+                 10.0f, 10.0f, 10.0f;
+
+  Eigen::Matrix3f result3x3 = A3x3;
+  add_zerocopy<3, 3>(result3x3, B3x3);
+  expectMatrixNear(expected3x3, result3x3);
+}
+
+// subtract テスト
+TEST_F(EigenUtilsTest, subtract) {
   Eigen::Matrix3f expected;
   expected << -8.0f, -6.0f, -4.0f,
                -2.0f,  0.0f,  2.0f,
                 4.0f,  6.0f,  8.0f;
 
-  Eigen::Matrix3f result = matrixSubtract<3, 3>(A3x3, B3x3);
+  Eigen::Matrix3f result = subtract<3, 3>(A3x3, B3x3);
   expectMatrixNear(expected, result);
 }
 
-// matrixMultiply テスト
-TEST_F(EigenUtilsTest, MatrixMultiply) {
+// multiply (matrix x matrix) テスト
+TEST_F(EigenUtilsTest, multiply) {
   // 3x3 * 3x3
   Eigen::Matrix3f C3x3 = A3x3 * B3x3;  // Eigenの組み込み乗算
-  Eigen::Matrix3f result3x3 = matrixMultiply<3, 3, 3>(A3x3, B3x3);
+  Eigen::Matrix3f result3x3 = multiply<3, 3, 3>(A3x3, B3x3);
   expectMatrixNear(C3x3, result3x3);
 
   // 4x4 * 4x4
   Eigen::Matrix4f C4x4 = A4x4 * B4x4;  // Eigenの組み込み乗算
-  Eigen::Matrix4f result4x4 = matrixMultiply<4, 4, 4>(A4x4, B4x4);
+  Eigen::Matrix4f result4x4 = multiply<4, 4, 4>(A4x4, B4x4);
   expectMatrixNear(C4x4, result4x4);
 
   // 6x4 * 4x6
   Eigen::Matrix<float, 6, 6> C6x6 = A6x4 * B4x6;  // Eigenの組み込み乗算
-  Eigen::Matrix<float, 6, 6> result6x6 = matrixMultiply<6, 4, 6>(A6x4, B4x6);
+  Eigen::Matrix<float, 6, 6> result6x6 = multiply<6, 4, 6>(A6x4, B4x6);
   expectMatrixNear(C6x6, result6x6);
 
   // 6x4 * 4x4
   Eigen::Matrix<float, 6, 4> C6x4 = A6x4 * B4x4.block<4, 4>(0, 0);  // Eigenの組み込み乗算
-  Eigen::Matrix<float, 6, 4> result6x4 = matrixMultiply<6, 4, 4>(A6x4, B4x4);
+  Eigen::Matrix<float, 6, 4> result6x4 = multiply<6, 4, 4>(A6x4, B4x4);
   expectMatrixNear(C6x4, result6x4);
 }
 
-// matrixVectorMultiply テスト
+// multiply (matrix x vector) テスト
 TEST_F(EigenUtilsTest, MatrixVectorMultiply) {
   // 4x4 * 4x1
   Eigen::Vector4f expected4 = A4x4 * vec4;  // Eigenの組み込み乗算
-  Eigen::Vector4f result4 = matrixVectorMultiply<4, 4>(A4x4, vec4);
+  Eigen::Vector4f result4 = multiply<4, 4>(A4x4, vec4);
   expectVectorNear(expected4, result4);
 
   // 3x3 * 3x1
   Eigen::Vector3f expected3 = A3x3 * vec3;  // Eigenの組み込み乗算
-  Eigen::Vector3f result3 = matrixVectorMultiply<3, 3>(A3x3, vec3);
+  Eigen::Vector3f result3 = multiply<3, 3>(A3x3, vec3);
   expectVectorNear(expected3, result3);
 }
 
-// matrixScalarMultiply テスト
+// multiply (matrix x scalar) テスト
 TEST_F(EigenUtilsTest, MatrixScalarMultiply) {
   float scalar = 2.5f;
   Eigen::Matrix3f expected = A3x3 * scalar;  // Eigenの組み込み乗算
-  Eigen::Matrix3f result = matrixScalarMultiply<3, 3>(A3x3, scalar);
+  Eigen::Matrix3f result = multiply<3, 3>(A3x3, scalar);
   expectMatrixNear(expected, result);
 }
 
-// vectorScalarMultiply テスト
+// multiply (vector x scalar) テスト
 TEST_F(EigenUtilsTest, VectorScalarMultiply) {
   float scalar = 3.0f;
   Eigen::Vector3f expected = vec3 * scalar;  // Eigenの組み込み乗算
-  Eigen::Vector3f result = vectorScalarMultiply<3>(vec3, scalar);
+  Eigen::Vector3f result = multiply<3>(vec3, scalar);
   expectVectorNear(expected, result);
 }
 
-// matrixTranspose テスト
-TEST_F(EigenUtilsTest, MatrixTranspose) {
+// transpose テスト
+TEST_F(EigenUtilsTest, transpose) {
   // 3x3
   Eigen::Matrix3f expected3 = A3x3.transpose();  // Eigenの組み込み関数
-  Eigen::Matrix3f result3 = matrixTranspose<3, 3>(A3x3);
+  Eigen::Matrix3f result3 = transpose<3, 3>(A3x3);
   expectMatrixNear(expected3, result3);
 
   // 4x4
   Eigen::Matrix4f expected4 = A4x4.transpose();  // Eigenの組み込み関数
-  Eigen::Matrix4f result4 = matrixTranspose<4, 4>(A4x4);
+  Eigen::Matrix4f result4 = transpose<4, 4>(A4x4);
   expectMatrixNear(expected4, result4);
 
   // 4x6
   Eigen::Matrix<float, 6, 4> expected6x4 = B4x6.transpose();  // Eigenの組み込み関数
-  Eigen::Matrix<float, 6, 4> result6x4 = matrixTranspose<4, 6>(B4x6);
+  Eigen::Matrix<float, 6, 4> result6x4 = transpose<4, 6>(B4x6);
   expectMatrixNear(expected6x4, result6x4);
 }
 
-// vectorDot テスト
-TEST_F(EigenUtilsTest, VectorDot) {
+// dot テスト
+TEST_F(EigenUtilsTest, dot) {
   // 3次元ベクトル
   float expected3 = vec3.dot(vec3);  // Eigenの組み込み関数
-  float result3 = vectorDot<3>(vec3, vec3);
+  float result3 = dot<3>(vec3, vec3);
   EXPECT_NEAR(expected3, result3, EPSILON);
 
   // 4次元ベクトル
   float expected4 = vec4.dot(vec4);  // Eigenの組み込み関数
-  float result4 = vectorDot<4>(vec4, vec4);
+  float result4 = dot<4>(vec4, vec4);
   EXPECT_NEAR(expected4, result4, EPSILON);
 }
 
-// vector3Cross テスト
-TEST_F(EigenUtilsTest, Vector3Cross) {
+// cross テスト
+TEST_F(EigenUtilsTest, cross) {
   Eigen::Vector3f v1(1.0f, 2.0f, 3.0f);
   Eigen::Vector3f v2(4.0f, 5.0f, 6.0f);
 
   Eigen::Vector3f expected = v1.cross(v2);  // Eigenの組み込み関数
-  Eigen::Vector3f result = vector3Cross(v1, v2);
+  Eigen::Vector3f result = cross(v1, v2);
   expectVectorNear(expected, result);
+}
+
+// outer テスト
+TEST_F(EigenUtilsTest, outer) {
+  Eigen::Vector4f v1(1.0f, 2.0f, 3.0f, 4.0f);
+  Eigen::Vector4f v2(5.0f, 6.0f, 7.0f, 8.0f);
+
+  Eigen::Matrix4f expected = v1 * v2.transpose();
+  Eigen::Matrix4f result = outer(v1, v2);
+  expectMatrixNear(expected, result);
 }
 
 // block3x3 テスト
