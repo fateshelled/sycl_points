@@ -55,9 +55,9 @@ function(add_example_exec EXEC_NAME)
   )
 endfunction()
 
-add_example_exec(test_memcpy)
-add_example_exec(test_point_cloud)
-add_example_exec(test_registration)
+add_example_exec(example_memcpy)
+add_example_exec(example_point_cloud)
+add_example_exec(example_registration)
 
 
 # add test
