@@ -27,35 +27,8 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> add(const Eigen::Matrix<float, M
   return ret;
 }
 
-template <>
-SYCL_EXTERNAL inline Eigen::Matrix3f add<3, 3>(const Eigen::Matrix3f& A, const Eigen::Matrix3f& B) {
-  Eigen::Matrix3f ret;
-  ret << A(0, 0) + B(0, 0), A(0, 1) + B(0, 1), A(0, 2) + B(0, 2),  // nolint
-    A(1, 0) + B(1, 0), A(1, 1) + B(1, 1), A(1, 2) + B(1, 2),       // nolint
-    A(2, 0) + B(2, 0), A(2, 1) + B(2, 1), A(2, 2) + B(2, 2);
-  return ret;
-}
-
-template <>
-SYCL_EXTERNAL inline Eigen::Matrix4f add<4, 4>(const Eigen::Matrix4f& A, const Eigen::Matrix4f& B) {
-  Eigen::Matrix4f ret;
-  ret << A(0, 0) + B(0, 0), A(0, 1) + B(0, 1), A(0, 2) + B(0, 2), A(0, 3) + B(0, 3),  // nolint
-    A(1, 0) + B(1, 0), A(1, 1) + B(1, 1), A(1, 2) + B(1, 2), A(1, 3) + B(1, 3),       // nolint
-    A(2, 0) + B(2, 0), A(2, 1) + B(2, 1), A(2, 2) + B(2, 2), A(2, 3) + B(2, 3),       // nolint
-    A(3, 0) + B(3, 0), A(3, 1) + B(3, 1), A(3, 2) + B(3, 2), A(3, 3) + B(3, 3);
-  return ret;
-}
-
-template <>
-SYCL_EXTERNAL inline Eigen::Vector4f add<4, 1>(const Eigen::Vector4f& A, const Eigen::Vector4f& B) {
-  Eigen::Vector4f ret;
-  ret << A.x() + B.x(), A.y() + B.y(), A.z() + B.z(), A.w() + B.w();
-  return ret;
-}
-
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline void add_zerocopy(Eigen::Matrix<float, M, N>& A, const Eigen::Matrix<float, M, N>& B) {
-  Eigen::Matrix<float, M, N> ret;
 #pragma unroll
   for (size_t i = 0; i < M; ++i) {
 #pragma unroll
@@ -63,22 +36,6 @@ SYCL_EXTERNAL inline void add_zerocopy(Eigen::Matrix<float, M, N>& A, const Eige
       A(i, j) += B(i, j);
     }
   }
-  return ret;
-}
-
-template <>
-SYCL_EXTERNAL inline void add_zerocopy<3, 3>(Eigen::Matrix3f& A, const Eigen::Matrix3f& B) {
-  A(0, 0) += B(0, 0);
-  A(0, 1) += B(0, 1);
-  A(0, 2) += B(0, 2);
-
-  A(1, 0) += B(1, 0);
-  A(1, 1) += B(1, 1);
-  A(1, 2) += B(1, 2);
-
-  A(2, 0) += B(2, 0);
-  A(2, 1) += B(2, 1);
-  A(2, 2) += B(2, 2);
 }
 
 // A - B = C
@@ -114,92 +71,6 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<flo
   return ret;
 }
 
-template <>
-SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 6> multiply<6, 4, 6>(const Eigen::Matrix<float, 6, 4>& A, const Eigen::Matrix<float, 4, 6>& B) {
-  Eigen::Matrix<float, 6, 6> result;
-
-  result(0, 0) = A(0, 0) * B(0, 0) + A(0, 1) * B(1, 0) + A(0, 2) * B(2, 0) + A(0, 3) * B(3, 0);
-  result(0, 1) = A(0, 0) * B(0, 1) + A(0, 1) * B(1, 1) + A(0, 2) * B(2, 1) + A(0, 3) * B(3, 1);
-  result(0, 2) = A(0, 0) * B(0, 2) + A(0, 1) * B(1, 2) + A(0, 2) * B(2, 2) + A(0, 3) * B(3, 2);
-  result(0, 3) = A(0, 0) * B(0, 3) + A(0, 1) * B(1, 3) + A(0, 2) * B(2, 3) + A(0, 3) * B(3, 3);
-  result(0, 4) = A(0, 0) * B(0, 4) + A(0, 1) * B(1, 4) + A(0, 2) * B(2, 4) + A(0, 3) * B(3, 4);
-  result(0, 5) = A(0, 0) * B(0, 5) + A(0, 1) * B(1, 5) + A(0, 2) * B(2, 5) + A(0, 3) * B(3, 5);
-
-  result(1, 0) = A(1, 0) * B(0, 0) + A(1, 1) * B(1, 0) + A(1, 2) * B(2, 0) + A(1, 3) * B(3, 0);
-  result(1, 1) = A(1, 0) * B(0, 1) + A(1, 1) * B(1, 1) + A(1, 2) * B(2, 1) + A(1, 3) * B(3, 1);
-  result(1, 2) = A(1, 0) * B(0, 2) + A(1, 1) * B(1, 2) + A(1, 2) * B(2, 2) + A(1, 3) * B(3, 2);
-  result(1, 3) = A(1, 0) * B(0, 3) + A(1, 1) * B(1, 3) + A(1, 2) * B(2, 3) + A(1, 3) * B(3, 3);
-  result(1, 4) = A(1, 0) * B(0, 4) + A(1, 1) * B(1, 4) + A(1, 2) * B(2, 4) + A(1, 3) * B(3, 4);
-  result(1, 5) = A(1, 0) * B(0, 5) + A(1, 1) * B(1, 5) + A(1, 2) * B(2, 5) + A(1, 3) * B(3, 5);
-
-  result(2, 0) = A(2, 0) * B(0, 0) + A(2, 1) * B(1, 0) + A(2, 2) * B(2, 0) + A(2, 3) * B(3, 0);
-  result(2, 1) = A(2, 0) * B(0, 1) + A(2, 1) * B(1, 1) + A(2, 2) * B(2, 1) + A(2, 3) * B(3, 1);
-  result(2, 2) = A(2, 0) * B(0, 2) + A(2, 1) * B(1, 2) + A(2, 2) * B(2, 2) + A(2, 3) * B(3, 2);
-  result(2, 3) = A(2, 0) * B(0, 3) + A(2, 1) * B(1, 3) + A(2, 2) * B(2, 3) + A(2, 3) * B(3, 3);
-  result(2, 4) = A(2, 0) * B(0, 4) + A(2, 1) * B(1, 4) + A(2, 2) * B(2, 4) + A(2, 3) * B(3, 4);
-  result(2, 5) = A(2, 0) * B(0, 5) + A(2, 1) * B(1, 5) + A(2, 2) * B(2, 5) + A(2, 3) * B(3, 5);
-
-  result(3, 0) = A(3, 0) * B(0, 0) + A(3, 1) * B(1, 0) + A(3, 2) * B(2, 0) + A(3, 3) * B(3, 0);
-  result(3, 1) = A(3, 0) * B(0, 1) + A(3, 1) * B(1, 1) + A(3, 2) * B(2, 1) + A(3, 3) * B(3, 1);
-  result(3, 2) = A(3, 0) * B(0, 2) + A(3, 1) * B(1, 2) + A(3, 2) * B(2, 2) + A(3, 3) * B(3, 2);
-  result(3, 3) = A(3, 0) * B(0, 3) + A(3, 1) * B(1, 3) + A(3, 2) * B(2, 3) + A(3, 3) * B(3, 3);
-  result(3, 4) = A(3, 0) * B(0, 4) + A(3, 1) * B(1, 4) + A(3, 2) * B(2, 4) + A(3, 3) * B(3, 4);
-  result(3, 5) = A(3, 0) * B(0, 5) + A(3, 1) * B(1, 5) + A(3, 2) * B(2, 5) + A(3, 3) * B(3, 5);
-
-  result(4, 0) = A(4, 0) * B(0, 0) + A(4, 1) * B(1, 0) + A(4, 2) * B(2, 0) + A(4, 3) * B(3, 0);
-  result(4, 1) = A(4, 0) * B(0, 1) + A(4, 1) * B(1, 1) + A(4, 2) * B(2, 1) + A(4, 3) * B(3, 1);
-  result(4, 2) = A(4, 0) * B(0, 2) + A(4, 1) * B(1, 2) + A(4, 2) * B(2, 2) + A(4, 3) * B(3, 2);
-  result(4, 3) = A(4, 0) * B(0, 3) + A(4, 1) * B(1, 3) + A(4, 2) * B(2, 3) + A(4, 3) * B(3, 3);
-  result(4, 4) = A(4, 0) * B(0, 4) + A(4, 1) * B(1, 4) + A(4, 2) * B(2, 4) + A(4, 3) * B(3, 4);
-  result(4, 5) = A(4, 0) * B(0, 5) + A(4, 1) * B(1, 5) + A(4, 2) * B(2, 5) + A(4, 3) * B(3, 5);
-
-  result(5, 0) = A(5, 0) * B(0, 0) + A(5, 1) * B(1, 0) + A(5, 2) * B(2, 0) + A(5, 3) * B(3, 0);
-  result(5, 1) = A(5, 0) * B(0, 1) + A(5, 1) * B(1, 1) + A(5, 2) * B(2, 1) + A(5, 3) * B(3, 1);
-  result(5, 2) = A(5, 0) * B(0, 2) + A(5, 1) * B(1, 2) + A(5, 2) * B(2, 2) + A(5, 3) * B(3, 2);
-  result(5, 3) = A(5, 0) * B(0, 3) + A(5, 1) * B(1, 3) + A(5, 2) * B(2, 3) + A(5, 3) * B(3, 3);
-  result(5, 4) = A(5, 0) * B(0, 4) + A(5, 1) * B(1, 4) + A(5, 2) * B(2, 4) + A(5, 3) * B(3, 4);
-  result(5, 5) = A(5, 0) * B(0, 5) + A(5, 1) * B(1, 5) + A(5, 2) * B(2, 5) + A(5, 3) * B(3, 5);
-
-  return result;
-}
-
-template <>
-SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 4> multiply<6, 4, 4>(const Eigen::Matrix<float, 6, 4>& A, const Eigen::Matrix<float, 4, 4>& B) {
-  Eigen::Matrix<float, 6, 4> result;
-
-  result(0, 0) = A(0, 0) * B(0, 0) + A(0, 1) * B(1, 0) + A(0, 2) * B(2, 0) + A(0, 3) * B(3, 0);
-  result(0, 1) = A(0, 0) * B(0, 1) + A(0, 1) * B(1, 1) + A(0, 2) * B(2, 1) + A(0, 3) * B(3, 1);
-  result(0, 2) = A(0, 0) * B(0, 2) + A(0, 1) * B(1, 2) + A(0, 2) * B(2, 2) + A(0, 3) * B(3, 2);
-  result(0, 3) = A(0, 0) * B(0, 3) + A(0, 1) * B(1, 3) + A(0, 2) * B(2, 3) + A(0, 3) * B(3, 3);
-
-  result(1, 0) = A(1, 0) * B(0, 0) + A(1, 1) * B(1, 0) + A(1, 2) * B(2, 0) + A(1, 3) * B(3, 0);
-  result(1, 1) = A(1, 0) * B(0, 1) + A(1, 1) * B(1, 1) + A(1, 2) * B(2, 1) + A(1, 3) * B(3, 1);
-  result(1, 2) = A(1, 0) * B(0, 2) + A(1, 1) * B(1, 2) + A(1, 2) * B(2, 2) + A(1, 3) * B(3, 2);
-  result(1, 3) = A(1, 0) * B(0, 3) + A(1, 1) * B(1, 3) + A(1, 2) * B(2, 3) + A(1, 3) * B(3, 3);
-
-  result(2, 0) = A(2, 0) * B(0, 0) + A(2, 1) * B(1, 0) + A(2, 2) * B(2, 0) + A(2, 3) * B(3, 0);
-  result(2, 1) = A(2, 0) * B(0, 1) + A(2, 1) * B(1, 1) + A(2, 2) * B(2, 1) + A(2, 3) * B(3, 1);
-  result(2, 2) = A(2, 0) * B(0, 2) + A(2, 1) * B(1, 2) + A(2, 2) * B(2, 2) + A(2, 3) * B(3, 2);
-  result(2, 3) = A(2, 0) * B(0, 3) + A(2, 1) * B(1, 3) + A(2, 2) * B(2, 3) + A(2, 3) * B(3, 3);
-
-  result(3, 0) = A(3, 0) * B(0, 0) + A(3, 1) * B(1, 0) + A(3, 2) * B(2, 0) + A(3, 3) * B(3, 0);
-  result(3, 1) = A(3, 0) * B(0, 1) + A(3, 1) * B(1, 1) + A(3, 2) * B(2, 1) + A(3, 3) * B(3, 1);
-  result(3, 2) = A(3, 0) * B(0, 2) + A(3, 1) * B(1, 2) + A(3, 2) * B(2, 2) + A(3, 3) * B(3, 2);
-  result(3, 3) = A(3, 0) * B(0, 3) + A(3, 1) * B(1, 3) + A(3, 2) * B(2, 3) + A(3, 3) * B(3, 3);
-
-  result(4, 0) = A(4, 0) * B(0, 0) + A(4, 1) * B(1, 0) + A(4, 2) * B(2, 0) + A(4, 3) * B(3, 0);
-  result(4, 1) = A(4, 0) * B(0, 1) + A(4, 1) * B(1, 1) + A(4, 2) * B(2, 1) + A(4, 3) * B(3, 1);
-  result(4, 2) = A(4, 0) * B(0, 2) + A(4, 1) * B(1, 2) + A(4, 2) * B(2, 2) + A(4, 3) * B(3, 2);
-  result(4, 3) = A(4, 0) * B(0, 3) + A(4, 1) * B(1, 3) + A(4, 2) * B(2, 3) + A(4, 3) * B(3, 3);
-
-  result(5, 0) = A(5, 0) * B(0, 0) + A(5, 1) * B(1, 0) + A(5, 2) * B(2, 0) + A(5, 3) * B(3, 0);
-  result(5, 1) = A(5, 0) * B(0, 1) + A(5, 1) * B(1, 1) + A(5, 2) * B(2, 1) + A(5, 3) * B(3, 1);
-  result(5, 2) = A(5, 0) * B(0, 2) + A(5, 1) * B(1, 2) + A(5, 2) * B(2, 2) + A(5, 3) * B(3, 2);
-  result(5, 3) = A(5, 0) * B(0, 3) + A(5, 1) * B(1, 3) + A(5, 2) * B(2, 3) + A(5, 3) * B(3, 3);
-
-  return result;
-}
-
 // A * v = r
 // row: M, col: N
 template <size_t M, size_t N>
@@ -215,15 +86,6 @@ SYCL_EXTERNAL inline Eigen::Vector<float, M> multiply(const Eigen::Matrix<float,
   return ret;
 }
 
-template <>
-SYCL_EXTERNAL inline Eigen::Vector4f multiply<4, 4>(const Eigen::Matrix4f& A, const Eigen::Vector4f& v) {
-  Eigen::Vector4f ret;
-  ret << A(0, 0) * v(0) + A(0, 1) * v(1) + A(0, 2) * v(2) + A(0, 3) * v(3),  // nolint
-    A(1, 0) * v(0) + A(1, 1) * v(1) + A(1, 2) * v(2) + A(1, 3) * v(3),       // nolint
-    A(2, 0) * v(0) + A(2, 1) * v(1) + A(2, 2) * v(2) + A(2, 3) * v(3),       // nolint
-    A(3, 0) * v(0) + A(3, 1) * v(1) + A(3, 2) * v(2) + A(3, 3) * v(3);
-  return ret;
-}
 
 // A * s = B
 // row: M, col: N
@@ -266,28 +128,6 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, N, M> transpose(const Eigen::Matrix<fl
   return ret;
 }
 
-template <>
-SYCL_EXTERNAL inline Eigen::Matrix4f transpose<4, 4>(const Eigen::Matrix4f& A) {
-  Eigen::Matrix4f ret;
-  ret << A(0, 0), A(1, 0), A(2, 0), A(3, 0),  // nolint
-    A(0, 1), A(1, 1), A(2, 1), A(3, 1),       // nolint
-    A(0, 2), A(1, 2), A(2, 2), A(3, 2),       // nolint
-    A(0, 3), A(1, 3), A(2, 3), A(3, 3);
-  return ret;
-}
-
-template <>
-SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 4> transpose<4, 6>(const Eigen::Matrix<float, 4, 6>& A) {
-  Eigen::Matrix<float, 6, 4> ret;
-  ret << A(0, 0), A(1, 0), A(2, 0), A(3, 0),  // nolint
-    A(0, 1), A(1, 1), A(2, 1), A(3, 1),       // nolint
-    A(0, 2), A(1, 2), A(2, 2), A(3, 2),       // nolint
-    A(0, 3), A(1, 3), A(2, 3), A(3, 3),       // nolint
-    A(0, 4), A(1, 4), A(2, 4), A(3, 4),       // nolint
-    A(0, 5), A(1, 5), A(2, 5), A(3, 5);
-  return ret;
-}
-
 // dot: u·v
 template <size_t N>
 SYCL_EXTERNAL inline float dot(const Eigen::Vector<float, N>& u, const Eigen::Vector<float, N>& v) {
@@ -297,11 +137,6 @@ SYCL_EXTERNAL inline float dot(const Eigen::Vector<float, N>& u, const Eigen::Ve
     result += u(i, 0) * v(i, 0);
   }
   return result;
-}
-
-template <>
-SYCL_EXTERNAL inline float dot<4>(const Eigen::Vector<float, 4>& u, const Eigen::Vector<float, 4>& v) {
-  return u(0) * v(0) + u(1) * v(1) + u(2) * v(2) + u(3) * v(3);
 }
 
 // cross: u × v = w

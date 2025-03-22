@@ -35,11 +35,11 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
   // compute bit on device
   shared_vector<uint64_t> bits(N, VoxelConstants::invalid_coord, alloc);
   {
-    // allocate memory
-    auto point_ptr = points.data();
-    auto bit_ptr = bits.data();
+    // memory ptr
+    const auto point_ptr = points.data();
+    const auto bit_ptr = bits.data();
 
-    queue
+    auto event = queue
       .submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> i) {
           if (!sycl::isfinite(point_ptr[i].x()) || !sycl::isfinite(point_ptr[i].y()) || !sycl::isfinite(point_ptr[i].z())) {
@@ -58,8 +58,8 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
                        (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 1)) |
                        (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 2));
         });
-      })
-      .wait_and_throw();
+      });
+      event.wait();
   }
 
   PointContainerShared result(alloc);
