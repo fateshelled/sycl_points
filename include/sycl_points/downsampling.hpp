@@ -27,13 +27,13 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
   // MIT License
 
   const size_t N = points.size();
-  const shared_allocator<PointType> alloc(queue);
-  if (N == 0) return PointContainerShared(0, alloc);
+  const shared_allocator<PointType> point_alloc(queue);
+  if (N == 0) return PointContainerShared(0, point_alloc);
 
   const float inv_voxel_size = 1.0f / voxel_size;
 
   // compute bit on device
-  shared_vector<uint64_t> bits(N, VoxelConstants::invalid_coord, alloc);
+  shared_vector<uint64_t> bits(N, VoxelConstants::invalid_coord, shared_allocator<uint64_t>(queue));
   {
     // memory ptr
     const auto point_ptr = points.data();
@@ -62,7 +62,7 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
       event.wait();
   }
 
-  PointContainerShared result(alloc);
+  PointContainerShared result(point_alloc);
   result.reserve(N);
   {
     // prepare indices

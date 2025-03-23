@@ -27,6 +27,8 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> add(const Eigen::Matrix<float, M
   return ret;
 }
 
+// A += B
+// row: M, col: N
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline void add_zerocopy(Eigen::Matrix<float, M, N>& A, const Eigen::Matrix<float, M, N>& B) {
 #pragma unroll
