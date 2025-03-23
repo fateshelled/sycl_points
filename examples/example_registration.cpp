@@ -50,8 +50,13 @@ int main() {
     auto dt_build_kdtree = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0).count();
 
     t0 = std::chrono::high_resolution_clock::now();
-    sycl_points::compute_covariances_sycl(source_tree, source_downsampled, num_neighbors);
-    sycl_points::compute_covariances_sycl(target_tree, target_downsampled, num_neighbors);
+    const auto source_neighbors = source_tree.searchKDTree_sycl(source_downsampled, num_neighbors);
+    const auto target_neighbors = target_tree.searchKDTree_sycl(target_downsampled, num_neighbors);
+    auto dt_knn_search_for_covs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0).count();
+
+    t0 = std::chrono::high_resolution_clock::now();
+    *source_downsampled.covs = sycl_points::compute_covariances_sycl(queue, source_neighbors, *source_downsampled.points);
+    *target_downsampled.covs = sycl_points::compute_covariances_sycl(queue, target_neighbors, *target_downsampled.points);
     auto dt_covariance = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0).count();
 
     t0 = std::chrono::high_resolution_clock::now();
@@ -73,6 +78,9 @@ int main() {
 
       if (elapsed.count("build KDTree") == 0) elapsed["build KDTree"] = 0.0;
       elapsed["build KDTree"] += dt_build_kdtree;
+
+      if (elapsed.count("KNN Search") == 0) elapsed["KNN Search"] = 0.0;
+      elapsed["KNN Search"] += dt_knn_search_for_covs;
 
       if (elapsed.count("compute Covariances") == 0) elapsed["compute Covariances"] = 0.0;
       elapsed["compute Covariances"] += dt_covariance;
