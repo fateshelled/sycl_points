@@ -35,9 +35,31 @@ void print_device_info(const sycl::device& device) {
     std::cout << "\tBackend version: " << device.get_info<sycl::info::device::backend_version>() << std::endl;
     std::cout << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << std::endl;
     std::cout << "\tGlobal Memory Size: " << device.get_info<sycl::info::device::global_mem_size>() / 1024.0 / 1024.0 / 1024.0 << " GB" << std::endl;
+    std::cout << "\tLocal Memory Size: " << device.get_info<sycl::info::device::local_mem_size>() / 1024.0 << " KB" << std::endl;
+    std::cout << "\tMax Memory Allocation Size: " << device.get_info<sycl::info::device::max_mem_alloc_size>() / 1024.0 / 1024.0 / 1024.0 << " GB" << std::endl;
+
+    std::cout << "\tMax Work Group Size: " << device.get_info<sycl::info::device::max_work_group_size>() << std::endl;
+    std::cout << "\tMax Work Item Sizes: [";
+    std::cout << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << ", ";
+    std::cout << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << ", ";
+    std::cout << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << "]" << std::endl;
+    std::cout << "\tMax Sub Groups num: " << device.get_info<sycl::info::device::max_num_sub_groups>() << std::endl;
+    std::cout << "\tSub Group Sizes: [";
+    const auto subgroup_sizes = device.get_info<sycl::info::device::sub_group_sizes>();
+    for (size_t i = 0; i < subgroup_sizes.size(); ++i) {
+      std::cout << subgroup_sizes[i];
+      if (i < subgroup_sizes.size() - 1) {
+        std::cout << ", ";
+      }
+    }
+    std::cout << "]" << std::endl;
+
+    std::cout << "\tMax compute units: " << device.get_info<sycl::info::device::max_compute_units>() << std::endl;
+
     std::cout << "\tMax Clock Frequency: " << device.get_info<sycl::info::device::max_clock_frequency>() / 1000.0 << " GHz" << std::endl;
     std::cout << "\tDouble precision support: " << (device.has(sycl::aspect::fp64) ? "true" : "false") << std::endl;
     std::cout << "\tAvailable: " << (device.get_info<sycl::info::device::is_available>() ? "true" : "false") << std::endl;
+    std::cout << std::endl;
   }
 }
 
