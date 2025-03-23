@@ -32,12 +32,13 @@ struct KNNResultSYCL {
 
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode {
-  PointType point;  // Point coordinates (w is assumed to be 1.0)
-  int idx;          // Index of the point in the original dataset
-  int axis;         // Split axis (0=x, 1=y, 2=z)
-  int left;         // Index of left child node (-1 if none)
-  int right;        // Index of right child node (-1 if none)
-};
+  float x, y, z;
+  int idx;         // Index of the point in the original dataset
+  int left;        // Index of left child node (-1 if none)
+  int right;       // Index of right child node (-1 if none)
+  uint8_t axis;    // Split axis (0=x, 1=y, 2=z)
+  uint8_t pad[3];  // Padding for alignment (3 bytes)
+};  // Total: 28 bytes, aligned to 4-byte boundary
 
 class KNNSearch {
 public:
@@ -107,7 +108,9 @@ public:
 
       // Initialize flat node
       auto& node = (*flatTree.tree_)[nodeIdx];
-      node.point = points[pointIdx];
+      node.x = points[pointIdx].x();
+      node.y = points[pointIdx].y();
+      node.z = points[pointIdx].z();
       node.idx = pointIdx;
       node.axis = axis;
       node.left = -1;
@@ -172,11 +175,8 @@ public:
 
       // Calculate distances to all dataset points
       for (size_t j = 0; j < n; ++j) {
-        const auto& target = targets.points[j];
-        const float dx = query.x() - target.x();
-        const float dy = query.y() - target.y();
-        const float dz = query.z() - target.z();
-        const float dist = dx * dx + dy * dy + dz * dz;
+        const auto dt = query - targets.points[j];
+        const float dist = dt.dot(dt);
         distances[j] = {dist, j};
       }
 
@@ -270,7 +270,9 @@ public:
 
       // Initialize flat node
       auto& node = (*flatTree.tree_)[nodeIdx];
-      node.point = points[pointIdx];
+      node.x = points[pointIdx].x();
+      node.y = points[pointIdx].y();
+      node.z = points[pointIdx].z();
       node.idx = pointIdx;
       node.axis = axis;
       node.left = -1;
@@ -312,7 +314,7 @@ public:
   static KNNSearchSYCL buildKDTree(sycl::queue& queue, const PointCloudShared& cloud) { return KNNSearchSYCL::buildKDTree(queue, *cloud.points); }
 
   static KNNResultSYCL searchBruteForce_sycl(sycl::queue& queue, const PointCloudShared& queries, const PointCloudShared& targets, const size_t k) {
-    constexpr size_t MAX_K = 50;
+    constexpr size_t MAX_K = 48;
 
     const size_t n = targets.points->size();  // Number of dataset points
     const size_t q = queries.points->size();  // Number of query points
@@ -352,10 +354,8 @@ public:
             // Calculate distances to all dataset points
             for (size_t j = 0; j < n; j++) {
               // Calculate 3D distance
-              const float dx = query.x() - targets_ptr[j].x();
-              const float dy = query.y() - targets_ptr[j].y();
-              const float dz = query.z() - targets_ptr[j].z();
-              const float dist = dx * dx + dy * dy + dz * dz;
+              const sycl::float4 diff = {query.x() - targets_ptr[j].x(), query.y() - targets_ptr[j].y(), query.z() - targets_ptr[j].z(), 0.0f};
+              const float dist = sycl::dot(diff, diff);
 
               // Check if this point should be included in K nearest
               if (dist < kDistances[k - 1]) {
@@ -393,7 +393,8 @@ public:
     const PointContainerShared& queries,  // Query points
     const size_t k) const {               // Number of neighbors to find
 
-    constexpr size_t MAX_K = 50;
+    constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
+    constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
 
     const size_t q = queries.size();  // Number of query points
     const size_t treeSize = this->tree_->size();
@@ -405,102 +406,119 @@ public:
     result.k = k;
     result.query_size = q;
 
-    try {
-      // memory ptr
-      const auto query_ptr = queries.data();
-      const auto distance_ptr = result.distances->data();
-      const auto index_ptr = result.indices->data();
-      const auto tree_ptr = (*this->tree_).data();
+    // Get pointers
+    const auto query_ptr = queries.data();
+    const auto distance_ptr = result.distances->data();
+    const auto index_ptr = result.indices->data();
+    const auto tree_ptr = (*this->tree_).data();
 
-      // SYCL KD-Tree KNN search kernel
-      this->queue_
-        ->submit([&](sycl::handler& h) {
-          h.parallel_for(sycl::range<1>(q), [=](sycl::id<1> idx) {
-            const size_t queryIdx = idx[0];
-            // Query point
-            const auto& query = query_ptr[queryIdx];
+    // Optimize work group size
+    const size_t work_group_size = 256;
+    const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
 
-            // Arrays to store K nearest points
-            float bestDists[MAX_K];
-            int bestIdxs[MAX_K];
+    auto event = this->queue_->submit([&](sycl::handler& h) {
+      h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+        const size_t queryIdx = item.get_global_id(0);
 
-            // Initialize
-            for (int i = 0; i < k; i++) {
-              bestDists[i] = std::numeric_limits<float>::max();
-              bestIdxs[i] = -1;
+        if (queryIdx >= q) return;  // Early return for extra threads
+
+        // Query point
+        const auto& query = query_ptr[queryIdx];
+
+        // Arrays to store K nearest points
+        float bestDists[MAX_K];
+        int bestIdxs[MAX_K];
+
+        // Initialize
+#pragma unroll 8
+        for (int i = 0; i < k; ++i) {
+          bestDists[i] = std::numeric_limits<float>::max();
+          bestIdxs[i] = -1;
+        }
+
+        // Stack to track nodes that need to be explored
+        // {node index, squared distance to splitting plane}
+        struct NodeEntry {
+          int nodeIdx;
+          float dist_sq;
+        };
+
+        NodeEntry stack[MAX_DEPTH];
+        int stackPtr = 0;
+
+        // Start from root node
+        stack[stackPtr++] = {0, 0.0f};
+
+        // Explore until stack is empty
+        while (stackPtr > 0) {
+          // Pop a node from stack
+          const NodeEntry current = stack[--stackPtr];
+          const int nodeIdx = current.nodeIdx;
+
+          // Skip condition: nodes farther than current kth distance
+          if (current.dist_sq > bestDists[k - 1]) continue;
+
+          // Skip invalid nodes
+          if (nodeIdx == -1 || nodeIdx >= treeSize) continue;
+
+          const auto& node = tree_ptr[nodeIdx];
+
+          // Calculate distance to current node
+          const sycl::float4 diff = {query.x() - node.x, query.y() - node.y, query.z() - node.z, 0.0f};
+          const float dist_sq = sycl::dot(diff, diff);
+
+          // Check if this point should be included in K nearest
+          if (dist_sq < bestDists[k - 1]) {
+            // Find insertion position in K-nearest list (insertion sort)
+            int insertPos = k - 1;
+            while (insertPos > 0 && dist_sq < bestDists[insertPos - 1]) {
+              bestDists[insertPos] = bestDists[insertPos - 1];
+              bestIdxs[insertPos] = bestIdxs[insertPos - 1];
+              insertPos--;
             }
 
-            // Non-recursive KD-Tree traversal using a stack
-            const int MAX_DEPTH = 32;  // Maximum stack depth
-            int nodeStack[MAX_DEPTH];
-            int stackPtr = 0;
+            // Insert result
+            bestDists[insertPos] = dist_sq;
+            bestIdxs[insertPos] = node.idx;
+          }
 
-            // Start from root node
-            nodeStack[stackPtr++] = 0;
+          // Calculate distance along split axis
+          const int axis = node.axis;
+          const float axisDistance = (axis == 0) ? (diff[0]) : (axis == 1) ? (diff[1]) : (diff[2]);
 
-            while (stackPtr > 0) {
-              const int nodeIdx = nodeStack[--stackPtr];
+          // Determine nearer and further subtrees
+          const int nearerNode = (axisDistance <= 0) ? node.left : node.right;
+          const int furtherNode = (axisDistance <= 0) ? node.right : node.left;
 
-              // Skip invalid nodes
-              if (nodeIdx == -1) continue;
+          // Squared distance to splitting plane
+          const float splitDistSq = axisDistance * axisDistance;
 
-              const auto& node = tree_ptr[nodeIdx];
+          // Check if further subtree needs to be explored
+          const bool searchFurther = (splitDistSq < bestDists[k - 1]);
 
-              // Calculate distance to current node (3D space)
-              const float dx = query.x() - node.point.x();
-              const float dy = query.y() - node.point.y();
-              const float dz = query.z() - node.point.z();
-              const float dist = dx * dx + dy * dy + dz * dz;
+          // Optimization for efficient memory access in 64-byte units
+          // Push both near and far sides to stack, but with condition for far side
 
-              // Check if this node should be included in K nearest
-              if (dist < bestDists[k - 1]) {
-                // Find insertion position
-                int insertPos = k - 1;
-                while (insertPos > 0 && dist < bestDists[insertPos - 1]) {
-                  bestDists[insertPos] = bestDists[insertPos - 1];
-                  bestIdxs[insertPos] = bestIdxs[insertPos - 1];
-                  insertPos--;
-                }
+          // Push further subtree to stack (conditional)
+          if (searchFurther && furtherNode != -1 && stackPtr < MAX_DEPTH) {
+            stack[stackPtr++] = {furtherNode, splitDistSq};
+          }
 
-                // Insert new point
-                bestDists[insertPos] = dist;
-                bestIdxs[insertPos] = node.idx;
-              }
+          // Push nearer subtree to stack (always explore)
+          if (nearerNode != -1 && stackPtr < MAX_DEPTH) {
+            stack[stackPtr++] = {nearerNode, 0.0f};  // Prioritize near side with distance 0
+          }
+        }
 
-              // Distance along split axis
-              const float axisDistance(node.axis == 0 ? dx : (node.axis == 1 ? dy : dz));
-
-              // Determine nearer and further subtrees
-              const int nearerNode = (axisDistance <= 0) ? node.left : node.right;
-              const int furtherNode = (axisDistance <= 0) ? node.right : node.left;
-
-              // If distance to splitting plane is less than current kth distance,
-              // both subtrees must be searched
-              if (axisDistance * axisDistance <= bestDists[k - 1]) {
-                // Add further subtree to stack
-                if (furtherNode != -1 && stackPtr < MAX_DEPTH) {
-                  nodeStack[stackPtr++] = furtherNode;
-                }
-              }
-
-              // Add nearer subtree to stack
-              if (nearerNode != -1 && stackPtr < MAX_DEPTH) {
-                nodeStack[stackPtr++] = nearerNode;
-              }
-            }
-
-            // Write results to global memory
-            for (int i = 0; i < k; i++) {
-              distance_ptr[queryIdx * k + i] = bestDists[i];
-              index_ptr[queryIdx * k + i] = bestIdxs[i];
-            }
-          });
-        })
-        .wait_and_throw();
-
-    } catch (const sycl::exception& e) {
-      std::cerr << "SYCL exception caught: " << e.what() << std::endl;
-    }
+        // Write final results to global memory
+#pragma unroll 4
+        for (int i = 0; i < k; ++i) {
+          distance_ptr[queryIdx * k + i] = bestDists[i];
+          index_ptr[queryIdx * k + i] = bestIdxs[i];
+        }
+      });
+    });
+    event.wait();
 
     return result;
   }
