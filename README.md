@@ -25,14 +25,14 @@ Future optimization work will include:
 ## Requirements
 
 - Intel oneAPI DPC++
-    - Installation: https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/2025-0/overview.html
+    - https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/2025-0/overview.html
 - Intel oneAPI for NVIDIA® GPUs (optional)
-    - Installation: https://developer.codeplay.com/apt/index.html
+    - https://developer.codeplay.com/apt/index.html
 - Eigen
 
-## Building
+## Build and run example
 
-To build the library and examples:
+To build examples:
 
 ```bash
 source /opt/intel/oneapi/setvars.sh
@@ -40,10 +40,7 @@ source /opt/intel/oneapi/setvars.sh
 mkdir build && cd build
 cmake ..
 make
-```
 
-## Run example
 
-```
 ./example_registration.cpp
 ```
