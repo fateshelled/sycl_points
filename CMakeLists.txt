@@ -26,6 +26,31 @@ if(OpenMP_FOUND)
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 endif()
 
+set(SYCL_TARGET_FLAGS "spir64")
+
+# Check for Intel oneAPI NVIDIA GPU support
+function(check_oneapi_nvidia_support RESULT_VAR)
+  execute_process(
+    COMMAND bash -c "sycl-ls | grep -q NVIDIA"
+    RESULT_VARIABLE EXIT_CODE
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+  if(EXIT_CODE EQUAL 0)
+    set(${RESULT_VAR} TRUE PARENT_SCOPE)
+  else()
+    set(${RESULT_VAR} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
+check_oneapi_nvidia_support(ENABLE_CUDA_BACKEND)
+if(${ENABLE_CUDA_BACKEND})
+  message(STATUS "Intel oneAPI for NVIDIA GPU support available")
+  set(SYCL_TARGET_FLAGS "${SYCL_TARGET_FLAGS},nvptx64-nvidia-cuda")
+else()
+  message(STATUS "Intel oneAPI for NVIDIA GPU support not available")
+endif()
+
 # add example
 function(add_example_exec EXEC_NAME)
   add_executable(${EXEC_NAME}
@@ -40,7 +65,7 @@ function(add_example_exec EXEC_NAME)
   )
   target_compile_options(${EXEC_NAME} PRIVATE
     -fsycl
-    -fsycl-targets=spir64,nvptx64-nvidia-cuda
+    -fsycl-targets=${SYCL_TARGET_FLAGS}
   )
 
   if(BUILD_WITH_MARCH_NATIVE)
@@ -51,7 +76,7 @@ function(add_example_exec EXEC_NAME)
 
   target_link_options(${EXEC_NAME} PRIVATE
     -fsycl
-    -fsycl-targets=spir64,nvptx64-nvidia-cuda
+    -fsycl-targets=${SYCL_TARGET_FLAGS}
   )
 endfunction()
 
@@ -80,7 +105,7 @@ if (BUILD_TEST)
     )
     target_compile_options(${EXEC_NAME} PRIVATE
       -fsycl
-      -fsycl-targets=spir64,nvptx64-nvidia-cuda
+      -fsycl-targets=${SYCL_TARGET_FLAGS}
     )
 
     if(BUILD_WITH_MARCH_NATIVE)
@@ -91,7 +116,7 @@ if (BUILD_TEST)
 
     target_link_options(${EXEC_NAME} PRIVATE
       -fsycl
-      -fsycl-targets=spir64,nvptx64-nvidia-cuda
+      -fsycl-targets=${SYCL_TARGET_FLAGS}
     )
   endfunction()
 
