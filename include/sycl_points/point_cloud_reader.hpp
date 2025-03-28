@@ -414,15 +414,29 @@ public:
     if (!file.is_open()) {
       throw std::runtime_error("Failed to open PLY file: " + filename);
     }
+
+    // Extract file extension from filename
+    std::string extension;
+    size_t dot_pos = filename.find_last_of(".");
+    if (dot_pos != std::string::npos) {
+      extension = filename.substr(dot_pos + 1);
+      // Convert to lowercase for case-insensitive comparison
+      std::transform(extension.begin(), extension.end(), extension.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+    }
+
     PointCloudCPU cloud;
-    std::string format;
-    std::getline(file, format);
-    if (format == "ply") {
+    if (extension == "ply") {
+      std::string first_line;
+      std::getline(file, first_line);
+      if (first_line != "ply") {
+        throw std::runtime_error("Invalid PLY file format: " + filename);
+      }
       readPLY(file, cloud);
-    } else if (format == "pcd") {
+    } else if (extension == "pcd") {
       readPCD(file, cloud);
     } else {
-      std::cerr << "not supported format [" << format << "]" << std::endl;
+      std::cerr << "not supported format [" << extension << "]" << std::endl;
     }
     file.close();
     return cloud;
