@@ -194,12 +194,12 @@ struct PointCloudShared {
     return ret;
   }
 
-  // transform on device (too slow)
+  // transform on device
   void transform_sycl(const TransformMatrix& trans) {
     const size_t N = this->points->size();
 
-    TransformMatrix* dev_trans = sycl::malloc_shared<TransformMatrix>(1, *this->queue_ptr);
-    dev_trans[0] = trans;
+    TransformMatrix* trans_shared = sycl::malloc_shared<TransformMatrix>(1, *this->queue_ptr);
+    trans_shared[0] = trans;
 
     sycl::event covs_trans_event;
     if (this->has_cov()) {
@@ -208,7 +208,7 @@ struct PointCloudShared {
       covs_trans_event = this->queue_ptr->submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
           const size_t i = idx[0];
-          transform_covs(covs[i], covs[i], dev_trans[0]);
+          transform_covs(covs[i], covs[i], trans_shared[0]);
         });
       });
     }
@@ -220,7 +220,7 @@ struct PointCloudShared {
       points_trans_event = this->queue_ptr->submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
           const size_t i = idx[0];
-          transform_point(points[i], points[i], dev_trans[0]);
+          transform_point(points[i], points[i], trans_shared[0]);
         });
       });
     }
@@ -229,7 +229,7 @@ struct PointCloudShared {
     points_trans_event.wait();
 
     // free
-    sycl::free(dev_trans, *this->queue_ptr);
+    sycl::free(trans_shared, *this->queue_ptr);
   }
 
   // transform on device (too slow)
