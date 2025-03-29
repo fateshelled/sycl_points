@@ -24,6 +24,8 @@ using shared_vector = std::vector<T, shared_allocator<T>>;
 
 namespace sycl_utils {
 
+constexpr size_t default_work_group_size = 256;
+
 void print_device_info(const sycl::device& device) {
   const auto platform =device.get_platform();
   std::cout << "Platform: " << platform.get_info<sycl::info::platform::name>() << std::endl;

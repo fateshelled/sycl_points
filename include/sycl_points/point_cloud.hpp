@@ -201,13 +201,18 @@ struct PointCloudShared {
     TransformMatrix* trans_shared = sycl::malloc_shared<TransformMatrix>(1, *this->queue_ptr);
     trans_shared[0] = trans;
 
+    // Optimize work group size
+    const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)this->queue_ptr->get_device().get_info<sycl::info::device::max_work_group_size>());
+    const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+
     sycl::event covs_trans_event;
     if (this->has_cov()) {
       auto covs = (*this->covs).data();
       /* Transform Covariance */
       covs_trans_event = this->queue_ptr->submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
-          const size_t i = idx[0];
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+          const size_t i = item.get_global_id(0);
+          if (i >= N) return;
           transform_covs(covs[i], covs[i], trans_shared[0]);
         });
       });
@@ -218,8 +223,9 @@ struct PointCloudShared {
       auto points = (*this->points).data();
       /* Transform Points*/
       points_trans_event = this->queue_ptr->submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
-          const size_t i = idx[0];
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+          const size_t i = item.get_global_id(0);
+          if (i >= N) return;
           transform_point(points[i], points[i], trans_shared[0]);
         });
       });

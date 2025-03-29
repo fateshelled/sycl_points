@@ -42,6 +42,7 @@ linearlize_point_to_point(const TransformMatrix& T, const PointType& source, con
   LinearlizedResult ret;
   return ret;
 }
+
 SYCL_EXTERNAL inline LinearlizedResult
 linearlize_gicp(const TransformMatrix& T, const PointType& source, const PointType& target, const Covariance& source_cov, const Covariance& target_cov) {
   LinearlizedResult ret;
@@ -129,6 +130,10 @@ public:
     const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
     const auto verbose = this->params_.verbose;
 
+    // Optimize work group size
+    const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)queue.get_device().get_info<sycl::info::device::max_work_group_size>());
+    const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+
     for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
       prev_T = result.T;
       // nearest neighbor search
@@ -156,8 +161,10 @@ public:
 
         auto linearlized_ptr = linearlized_results.data();
         auto event = queue.submit([&](sycl::handler& h) {
-          h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
-            const size_t i = idx[0];
+          h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+            const size_t i = item.get_global_id(0);
+            if (i >= N) return;
+
             if (distances_ptr[i] > max_dist_ptr[0]) {
               return;
             }

@@ -75,8 +75,15 @@ inline CovarianceContainerShared compute_covariances_sycl(
   const auto index_ptr = neightbors.indices->data();
   const auto k_correspondences = neightbors.k;
 
+  // Optimize work group size
+  const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)queue.get_device().get_info<sycl::info::device::max_work_group_size>());
+  const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+
   auto event = queue.submit([&](sycl::handler& h) {
-    h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> i) {
+    h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+      const size_t i = item.get_global_id(0);
+      if (i >= N) return;
+
       PointType sum_points = PointType::Zero();
       Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
 

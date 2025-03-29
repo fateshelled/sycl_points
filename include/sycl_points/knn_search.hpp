@@ -326,65 +326,65 @@ public:
     result.k = k;
     result.query_size = q;
 
-    try {
-      // memory ptr
-      auto targets_ptr = (*targets.points).data();
-      auto queries_ptr = (*queries.points).data();
+    // Optimize work group size
+    const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)queue.get_device().get_info<sycl::info::device::max_work_group_size>());
+    const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
 
-      float* distance_ptr = result.distances->data();
-      int* index_ptr = result.indices->data();
+    // memory ptr
+    auto targets_ptr = (*targets.points).data();
+    auto queries_ptr = (*queries.points).data();
 
-      // KNN search kernel BruteForce
-      queue
-        .submit([&](sycl::handler& h) {
-          h.parallel_for(sycl::range<1>(q), [=](sycl::id<1> idx) {
-            const size_t queryIdx = idx[0];
-            const auto query = queries_ptr[queryIdx];
+    float* distance_ptr = result.distances->data();
+    int* index_ptr = result.indices->data();
 
-            // Arrays to store K nearest points
-            float kDistances[MAX_K];
-            int kIndices[MAX_K];
+    // KNN search kernel BruteForce
+    auto event = queue
+      .submit([&](sycl::handler& h) {
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+          const size_t queryIdx = item.get_global_id(0);
+          if (queryIdx >= q) return;
+          const auto query = queries_ptr[queryIdx];
 
-            // Initialize
-            for (int i = 0; i < k; i++) {
-              kDistances[i] = std::numeric_limits<float>::max();
-              kIndices[i] = -1;
-            }
+          // Arrays to store K nearest points
+          float kDistances[MAX_K];
+          int kIndices[MAX_K];
 
-            // Calculate distances to all dataset points
-            for (size_t j = 0; j < n; j++) {
-              // Calculate 3D distance
-              const sycl::float4 diff = {query.x() - targets_ptr[j].x(), query.y() - targets_ptr[j].y(), query.z() - targets_ptr[j].z(), 0.0f};
-              const float dist = sycl::dot(diff, diff);
+          // Initialize
+          for (int i = 0; i < k; i++) {
+            kDistances[i] = std::numeric_limits<float>::max();
+            kIndices[i] = -1;
+          }
 
-              // Check if this point should be included in K nearest
-              if (dist < kDistances[k - 1]) {
-                // Find insertion position
-                int insertPos = k - 1;
-                while (insertPos > 0 && dist < kDistances[insertPos - 1]) {
-                  kDistances[insertPos] = kDistances[insertPos - 1];
-                  kIndices[insertPos] = kIndices[insertPos - 1];
-                  insertPos--;
-                }
+          // Calculate distances to all dataset points
+          for (size_t j = 0; j < n; j++) {
+            // Calculate 3D distance
+            const sycl::float4 diff = {query.x() - targets_ptr[j].x(), query.y() - targets_ptr[j].y(), query.z() - targets_ptr[j].z(), 0.0f};
+            const float dist = sycl::dot(diff, diff);
 
-                // Insert new point
-                kDistances[insertPos] = dist;
-                kIndices[insertPos] = j;
+            // Check if this point should be included in K nearest
+            if (dist < kDistances[k - 1]) {
+              // Find insertion position
+              int insertPos = k - 1;
+              while (insertPos > 0 && dist < kDistances[insertPos - 1]) {
+                kDistances[insertPos] = kDistances[insertPos - 1];
+                kIndices[insertPos] = kIndices[insertPos - 1];
+                insertPos--;
               }
-            }
 
-            // Write results to global memory
-            for (int i = 0; i < k; i++) {
-              distance_ptr[queryIdx * k + i] = kDistances[i];
-              index_ptr[queryIdx * k + i] = kIndices[i];
+              // Insert new point
+              kDistances[insertPos] = dist;
+              kIndices[insertPos] = j;
             }
-          });
-        })
-        .wait_and_throw();
+          }
 
-    } catch (const sycl::exception& e) {
-      std::cerr << "SYCL exception caught: " << e.what() << std::endl;
-    }
+          // Write results to global memory
+          for (int i = 0; i < k; i++) {
+            distance_ptr[queryIdx * k + i] = kDistances[i];
+            index_ptr[queryIdx * k + i] = kIndices[i];
+          }
+        });
+      });
+    event.wait();
 
     return result;
   }
@@ -413,7 +413,7 @@ public:
     const auto tree_ptr = (*this->tree_).data();
 
     // Optimize work group size
-    const size_t work_group_size = 256;
+    const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)this->queue_->get_device().get_info<sycl::info::device::max_work_group_size>());
     const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
 
     auto event = this->queue_->submit([&](sycl::handler& h) {
