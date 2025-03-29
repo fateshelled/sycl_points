@@ -89,10 +89,7 @@ inline CovarianceContainerShared compute_covariances_sycl(
 
       for (size_t j = 0; j < k_correspondences; ++j) {
         const auto& pt = point_ptr[index_ptr[i * k_correspondences + j]];
-        sum_points.x() += pt.x();
-        sum_points.y() += pt.y();
-        sum_points.z() += pt.z();
-        sum_points.w() += pt.w();
+        eigen_utils::add_zerocopy<4, 1>(sum_points, pt);
 
         const auto outer = eigen_utils::block3x3(eigen_utils::outer(pt, pt));
         eigen_utils::add_zerocopy<3, 3>(sum_outer, outer);
