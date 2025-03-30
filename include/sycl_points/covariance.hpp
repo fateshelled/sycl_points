@@ -88,7 +88,7 @@ inline CovarianceContainerShared compute_covariances_sycl(
       Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
 
       for (size_t j = 0; j < k_correspondences; ++j) {
-        const auto& pt = point_ptr[index_ptr[i * k_correspondences + j]];
+        const auto pt = point_ptr[index_ptr[i * k_correspondences + j]];
         eigen_utils::add_zerocopy<4, 1>(sum_points, pt);
 
         const auto outer = eigen_utils::block3x3(eigen_utils::outer(pt, pt));

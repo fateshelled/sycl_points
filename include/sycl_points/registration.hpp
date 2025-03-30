@@ -170,8 +170,6 @@ public:
             }
             linearlized_ptr[i] = factor::linearlize_gicp(cur_T_ptr[0], source_ptr[i], target_ptr[index_ptr[i]], source_cov_ptr[i], target_cov_ptr[index_ptr[i]]);
             // linearlized_ptr[i] = factor::linearlize_point_to_point(cur_T_ptr[0], source_ptr[i], target_ptr[index_ptr[i]], source_cov_ptr[i], target_cov_ptr[index_ptr[i]]);
-
-            // reduction here ?
           });
         });
         event.wait();

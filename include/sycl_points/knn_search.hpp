@@ -423,14 +423,13 @@ public:
         if (queryIdx >= q) return;  // Early return for extra threads
 
         // Query point
-        const auto& query = query_ptr[queryIdx];
+        const auto query = query_ptr[queryIdx];
 
         // Arrays to store K nearest points
         float bestDists[MAX_K];
         int bestIdxs[MAX_K];
 
         // Initialize
-#pragma unroll 8
         for (int i = 0; i < k; ++i) {
           bestDists[i] = std::numeric_limits<float>::max();
           bestIdxs[i] = -1;
@@ -461,7 +460,7 @@ public:
           // Skip invalid nodes
           if (nodeIdx == -1 || nodeIdx >= treeSize) continue;
 
-          const auto& node = tree_ptr[nodeIdx];
+          const auto node = tree_ptr[nodeIdx];
 
           // Calculate distance to current node
           const sycl::float4 diff = {query.x() - node.x, query.y() - node.y, query.z() - node.z, 0.0f};
@@ -511,7 +510,6 @@ public:
         }
 
         // Write final results to global memory
-#pragma unroll 4
         for (int i = 0; i < k; ++i) {
           distance_ptr[queryIdx * k + i] = bestDists[i];
           index_ptr[queryIdx * k + i] = bestIdxs[i];
