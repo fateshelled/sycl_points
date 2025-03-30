@@ -71,35 +71,48 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
 
   PointContainerShared result(point_alloc);
   result.reserve(N);
+  /* Kahan algorithm (high precision) */
+  // {
+  //   std::unordered_map<uint64_t, PointType> voxel_map;
+  //   std::unordered_map<uint64_t, PointType> kahan_map;
+  //   voxel_map.reserve(N / 2);
+  //   kahan_map.reserve(N / 2);
+
+  //   for (size_t i = 0; i < N; ++i) {
+  //     if (bits[i] == VoxelConstants::invalid_coord) continue;
+
+  //     const auto it = voxel_map.find(bits[i]);
+  //     if (it == voxel_map.end()) {
+  //       voxel_map[bits[i]] = points[i];
+  //     } else {
+  //       const auto y = points[i] - kahan_map[bits[i]];
+  //       const auto t = it->second + y;
+  //       kahan_map[bits[i]] = (t - it->second) - y;
+  //       it->second = t;
+  //     }
+  //   }
+  //   for (auto& [_, point] : voxel_map) {
+  //     point /= point.w();
+  //     result.emplace_back(point);
+  //   }
+  // }
   {
-    // prepare indices
-    std::vector<size_t> indices(N);
-    std::iota(indices.begin(), indices.end(), (size_t)0);
+    std::unordered_map<uint64_t, PointType> voxel_map;
+    voxel_map.reserve(N / 2);
 
-    // sort indices by bits
-    std::sort(indices.begin(), indices.end(), [&bits](size_t a, size_t b) { return bits[a] < bits[b]; });
+    for (size_t i = 0; i < N; ++i) {
+      if (bits[i] == VoxelConstants::invalid_coord) continue;
 
-    // compute average coords with same bit
-    size_t counter = 1;
-    auto& current_bit = bits[indices[0]];
-    if (current_bit != VoxelConstants::invalid_coord) {
-      result.emplace_back(points[indices[0]]);
-      for (size_t i = 1; i < N; ++i) {
-        if (bits[indices[i]] == VoxelConstants::invalid_coord) break;
-
-        if (current_bit == bits[indices[i]]) {
-          result.back() += points[indices[i]];
-          ++counter;
-          if (i == N - 1) {
-            result.back() /= counter;
-          }
-        } else {
-          result.back() /= counter;
-          counter = 1;
-          current_bit = bits[indices[i]];
-          result.emplace_back(points[indices[i]]);
-        }
+      const auto it = voxel_map.find(bits[i]);
+      if (it == voxel_map.end()) {
+        voxel_map[bits[i]] = points[i];
+      } else {
+        it->second += points[i];
       }
+    }
+    for (auto& [_, point] : voxel_map) {
+      point /= point.w();
+      result.emplace_back(point);
     }
   }
   result.shrink_to_fit();
