@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cassert>
-#include <deque>
 
 #if __has_include(<sycl/sycl.hpp>)
 #include <sycl/sycl.hpp>
@@ -71,14 +70,14 @@ void print_device_info(const sycl::queue& queue) {
 }
 
 struct events {
-  std::deque<sycl::event> events;
+  std::vector<sycl::event> events;
 
   void push_back(const sycl::event& event) { events.push_back(event); }
   void wait() {
     while (events.size() > 0) {
-      auto& event = events.front();
+      auto& event = events.back();
       event.wait();
-      events.pop_front();
+      events.pop_back();
     }
   }
 };
