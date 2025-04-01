@@ -194,12 +194,11 @@ struct PointCloudShared {
     return ret;
   }
 
-  // transform on device
-  void transform_sycl(const TransformMatrix& trans) {
+  // async transform on device
+  sycl_utils::events transform_sycl_async(const TransformMatrix& trans) {
     const size_t N = this->points->size();
 
-    TransformMatrix* trans_shared = sycl::malloc_shared<TransformMatrix>(1, *this->queue_ptr);
-    trans_shared[0] = trans;
+    shared_vector<TransformMatrix> trans_shared(1, trans, shared_allocator<TransformMatrix>(*this->queue_ptr));
 
     // Optimize work group size
     const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)this->queue_ptr->get_device().get_info<sycl::info::device::max_work_group_size>());
@@ -207,13 +206,15 @@ struct PointCloudShared {
 
     sycl::event covs_trans_event;
     if (this->has_cov()) {
-      auto covs = (*this->covs).data();
+      const auto covs = (*this->covs).data();
+      const auto trans_ptr = trans_shared.data();
+
       /* Transform Covariance */
       covs_trans_event = this->queue_ptr->submit([&](sycl::handler& h) {
         h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
           const size_t i = item.get_global_id(0);
           if (i >= N) return;
-          transform_covs(covs[i], covs[i], trans_shared[0]);
+          transform_covs(covs[i], covs[i], trans_ptr[0]);
         });
       });
     }
@@ -221,21 +222,26 @@ struct PointCloudShared {
     sycl::event points_trans_event;
     {
       auto points = (*this->points).data();
+      const auto trans_ptr = trans_shared.data();
       /* Transform Points*/
       points_trans_event = this->queue_ptr->submit([&](sycl::handler& h) {
         h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
           const size_t i = item.get_global_id(0);
           if (i >= N) return;
-          transform_point(points[i], points[i], trans_shared[0]);
+          transform_point(points[i], points[i], trans_ptr[0]);
         });
       });
     }
 
-    covs_trans_event.wait();
-    points_trans_event.wait();
+    sycl_utils::events ev;
+    ev.events.push_back(covs_trans_event);
+    ev.events.push_back(points_trans_event);
+    return ev;
+  }
 
-    // free
-    sycl::free(trans_shared, *this->queue_ptr);
+  // transform on device
+  void transform_sycl(const TransformMatrix& trans) {
+    transform_sycl_async(trans).wait();
   }
 
   // transform on device (too slow)

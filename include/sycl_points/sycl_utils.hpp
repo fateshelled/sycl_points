@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <deque>
 
 #if __has_include(<sycl/sycl.hpp>)
 #include <sycl/sycl.hpp>
@@ -27,7 +28,7 @@ namespace sycl_utils {
 constexpr size_t default_work_group_size = 256;
 
 void print_device_info(const sycl::device& device) {
-  const auto platform =device.get_platform();
+  const auto platform = device.get_platform();
   std::cout << "Platform: " << platform.get_info<sycl::info::platform::name>() << std::endl;
 
   for (auto device : platform.get_devices()) {
@@ -68,6 +69,19 @@ void print_device_info(const sycl::device& device) {
 void print_device_info(const sycl::queue& queue) {
   print_device_info(queue.get_device());
 }
+
+struct events {
+  std::deque<sycl::event> events;
+
+  void push_back(const sycl::event& event) { events.push_back(event); }
+  void wait() {
+    while (events.size() > 0) {
+      auto& event = events.front();
+      event.wait();
+      events.pop_front();
+    }
+  }
+};
 
 }  // namespace sycl_utils
 }  // namespace sycl_points

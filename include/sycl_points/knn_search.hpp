@@ -338,61 +338,61 @@ public:
     int* index_ptr = result.indices->data();
 
     // KNN search kernel BruteForce
-    auto event = queue
-      .submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
-          const size_t queryIdx = item.get_global_id(0);
-          if (queryIdx >= q) return;
-          const auto query = queries_ptr[queryIdx];
+    auto event = queue.submit([&](sycl::handler& h) {
+      h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+        const size_t queryIdx = item.get_global_id(0);
+        if (queryIdx >= q) return;
+        const auto query = queries_ptr[queryIdx];
 
-          // Arrays to store K nearest points
-          float kDistances[MAX_K];
-          int kIndices[MAX_K];
+        // Arrays to store K nearest points
+        float kDistances[MAX_K];
+        int kIndices[MAX_K];
 
-          // Initialize
-          for (int i = 0; i < k; i++) {
-            kDistances[i] = std::numeric_limits<float>::max();
-            kIndices[i] = -1;
-          }
+        // Initialize
+        for (int i = 0; i < k; ++i) {
+          kDistances[i] = std::numeric_limits<float>::max();
+          kIndices[i] = -1;
+        }
 
-          // Calculate distances to all dataset points
-          for (size_t j = 0; j < n; j++) {
-            // Calculate 3D distance
-            const sycl::float4 diff = {query.x() - targets_ptr[j].x(), query.y() - targets_ptr[j].y(), query.z() - targets_ptr[j].z(), 0.0f};
-            const float dist = sycl::dot(diff, diff);
+        // Calculate distances to all dataset points
+        for (size_t j = 0; j < n; ++j) {
+          // Calculate 3D distance
+          const auto target = targets_ptr[j];
+          const sycl::float4 diff = {query.x() - target.x(), query.y() - target.y(), query.z() - target.z(), 0.0f};
+          const float dist = sycl::dot(diff, diff);
 
-            // Check if this point should be included in K nearest
-            if (dist < kDistances[k - 1]) {
-              // Find insertion position
-              int insertPos = k - 1;
-              while (insertPos > 0 && dist < kDistances[insertPos - 1]) {
-                kDistances[insertPos] = kDistances[insertPos - 1];
-                kIndices[insertPos] = kIndices[insertPos - 1];
-                insertPos--;
-              }
-
-              // Insert new point
-              kDistances[insertPos] = dist;
-              kIndices[insertPos] = j;
+          // Check if this point should be included in K nearest
+          if (dist < kDistances[k - 1]) {
+            // Find insertion position
+            int insertPos = k - 1;
+            while (insertPos > 0 && dist < kDistances[insertPos - 1]) {
+              kDistances[insertPos] = kDistances[insertPos - 1];
+              kIndices[insertPos] = kIndices[insertPos - 1];
+              insertPos--;
             }
-          }
 
-          // Write results to global memory
-          for (int i = 0; i < k; i++) {
-            distance_ptr[queryIdx * k + i] = kDistances[i];
-            index_ptr[queryIdx * k + i] = kIndices[i];
+            // Insert new point
+            kDistances[insertPos] = dist;
+            kIndices[insertPos] = j;
           }
-        });
+        }
+
+        // Write results to global memory
+        for (int i = 0; i < k; i++) {
+          distance_ptr[queryIdx * k + i] = kDistances[i];
+          index_ptr[queryIdx * k + i] = kIndices[i];
+        }
       });
+    });
     event.wait();
 
     return result;
   }
 
-  KNNResultSYCL searchKDTree_sycl(
+  sycl_utils::events searchKDTree_sycl_async(
     const PointContainerShared& queries,  // Query points
-    const size_t k) const {               // Number of neighbors to find
-
+    const size_t k,                       // Number of neighbors to find
+    KNNResultSYCL& result) const {
     constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
     constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
 
@@ -400,7 +400,6 @@ public:
     const size_t treeSize = this->tree_->size();
 
     // Initialize result structure
-    KNNResultSYCL result;
     result.indices = std::make_shared<shared_vector<int>>(q * k, -1, shared_allocator<int>(*this->queue_));
     result.distances = std::make_shared<shared_vector<float>>(q * k, std::numeric_limits<float>::max(), shared_allocator<float>(*this->queue_));
     result.k = k;
@@ -510,21 +509,41 @@ public:
         }
 
         // Write final results to global memory
-        for (int i = 0; i < k; ++i) {
+        for (size_t i = 0; i < k; ++i) {
           distance_ptr[queryIdx * k + i] = bestDists[i];
           index_ptr[queryIdx * k + i] = bestIdxs[i];
         }
       });
     });
-    event.wait();
+    sycl_utils::events events;
+    events.push_back(event);
+    return events;
+  }
 
+  sycl_utils::events searchKDTree_sycl_async(
+    const PointCloudShared& queries,  // Query points
+    const size_t k,// Number of neighbors to find
+    KNNResultSYCL& result) const {
+
+    return searchKDTree_sycl_async(*queries.points, k, result);
+  }
+
+  KNNResultSYCL searchKDTree_sycl(
+    const PointContainerShared& queries,  // Query points
+    const size_t k) const {               // Number of neighbors to find
+
+    KNNResultSYCL result;
+    searchKDTree_sycl_async(queries, k, result).wait();
     return result;
   }
 
   KNNResultSYCL searchKDTree_sycl(
     const PointCloudShared& queries,  // Query points
     const size_t k) const {           // Number of neighbors to find
-    return searchKDTree_sycl(*queries.points, k);
+
+    KNNResultSYCL result;
+    searchKDTree_sycl_async(*queries.points, k, result).wait();
+    return result;
   }
 };
 
