@@ -45,8 +45,6 @@ linearlize_point_to_point(const TransformMatrix& T, const PointType& source, con
 
 SYCL_EXTERNAL inline LinearlizedResult
 linearlize_gicp(const TransformMatrix& T, const PointType& source, const PointType& target, const Covariance& source_cov, const Covariance& target_cov) {
-  LinearlizedResult ret;
-
   Covariance mahalanobis = Covariance::Zero();
   {
     const Eigen::Matrix3f RCR = eigen_utils::add<3, 3>(eigen_utils::block3x3(source_cov), eigen_utils::block3x3(target_cov));
@@ -69,7 +67,7 @@ linearlize_gicp(const TransformMatrix& T, const PointType& source, const PointTy
   {
     const Eigen::Matrix3f skewed = eigen_utils::skew(source);
     const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(T);
-    Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
+    const Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
     J(0, 0) = T_skewed(0, 0);
     J(0, 1) = T_skewed(0, 1);
     J(0, 2) = T_skewed(0, 2);
@@ -91,8 +89,9 @@ linearlize_gicp(const TransformMatrix& T, const PointType& source, const PointTy
     J(2, 5) = -T(2, 2);
   }
 
-  Eigen::Matrix<float, 6, 4> J_T_mah = eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
+  const Eigen::Matrix<float, 6, 4> J_T_mah = eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
 
+  LinearlizedResult ret;
   // J.transpose() * mahalanobis * J;
   ret.H = eigen_utils::multiply<6, 4, 6>(J_T_mah, J);
   // J.transpose() * mahalanobis * residual;
@@ -134,10 +133,14 @@ public:
     const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)queue.get_device().get_info<sycl::info::device::max_work_group_size>());
     const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
 
+    sycl_utils::events transform_events;
+
     for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
       prev_T = result.T;
+      transform_events.wait();
       // nearest neighbor search
-      const auto neighbors = target_tree.searchKDTree_sycl(trans_source, 1);
+      KNNResultSYCL neighbors;
+      auto knn_event = target_tree.searchKDTree_sycl_async(trans_source, 1, neighbors);
 
       // linearlize
       LinearlizedResult linearlized;
@@ -149,8 +152,6 @@ public:
         shared_vector<LinearlizedResult> linearlized_results(N, LinearlizedResult(), shared_allocator<LinearlizedResult>(queue, {}));
         shared_vector<float> max_distance(1, max_dist_2, shared_allocator<float>(queue, {}));
 
-        auto index_ptr = neighbors.indices->data();
-        auto distances_ptr = neighbors.distances->data();
         auto max_dist_ptr = max_distance.data();
         auto cur_T_ptr = cur_T.data();
 
@@ -160,19 +161,23 @@ public:
         auto target_cov_ptr = target.covs->data();
 
         auto linearlized_ptr = linearlized_results.data();
-        auto event = queue.submit([&](sycl::handler& h) {
+
+        knn_event.wait();
+        auto index_ptr = neighbors.indices->data();
+        auto distances_ptr = neighbors.distances->data();
+
+        auto linearlize_event = queue.submit([&](sycl::handler& h) {
           h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
 
-            if (distances_ptr[i] > max_dist_ptr[0]) {
-              return;
-            }
+            if (distances_ptr[i] > max_dist_ptr[0]) return;
+
             linearlized_ptr[i] = factor::linearlize_gicp(cur_T_ptr[0], source_ptr[i], target_ptr[index_ptr[i]], source_cov_ptr[i], target_cov_ptr[index_ptr[i]]);
             // linearlized_ptr[i] = factor::linearlize_point_to_point(cur_T_ptr[0], source_ptr[i], target_ptr[index_ptr[i]], source_cov_ptr[i], target_cov_ptr[index_ptr[i]]);
           });
         });
-        event.wait();
+        linearlize_event.wait();
 
         // reduction
         for (size_t i = 0; i < N; ++i) {
@@ -207,7 +212,7 @@ public:
         break;
       }
       // transform source points
-      trans_source.transform_sycl(result.T.matrix() * prev_T.matrix().inverse());  // zero copy
+      transform_events = trans_source.transform_sycl_async(result.T.matrix() * prev_T.matrix().inverse());  // zero copy
     }
     return result;
   }
