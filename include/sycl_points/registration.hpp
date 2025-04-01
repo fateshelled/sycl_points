@@ -135,6 +135,20 @@ public:
 
     sycl_utils::events transform_events;
 
+    // memory allocation
+    shared_vector<TransformMatrix> cur_T(1, result.T.matrix(), shared_allocator<TransformMatrix>(queue, {}));
+    shared_vector<LinearlizedResult> linearlized_results(N, LinearlizedResult(), shared_allocator<LinearlizedResult>(queue, {}));
+    shared_vector<float> max_distance(1, max_dist_2, shared_allocator<float>(queue, {}));
+
+    // get pointers
+    const auto max_dist_ptr = max_distance.data();
+    const auto linearlized_ptr = linearlized_results.data();
+
+    const auto source_ptr = trans_source.points->data();
+    const auto target_ptr = target.points->data();
+    const auto source_cov_ptr = trans_source.covs->data();
+    const auto target_cov_ptr = target.covs->data();
+
     for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
       prev_T = result.T;
       transform_events.wait();
@@ -148,33 +162,22 @@ public:
       linearlized.b = Eigen::Matrix<float, 6, 1>::Zero();
       linearlized.error = 0.0;
       {
-        shared_vector<TransformMatrix> cur_T(1, result.T.matrix(), shared_allocator<TransformMatrix>(queue, {}));
-        shared_vector<LinearlizedResult> linearlized_results(N, LinearlizedResult(), shared_allocator<LinearlizedResult>(queue, {}));
-        shared_vector<float> max_distance(1, max_dist_2, shared_allocator<float>(queue, {}));
-
-        auto max_dist_ptr = max_distance.data();
-        auto cur_T_ptr = cur_T.data();
-
-        auto source_ptr = trans_source.points->data();
-        auto target_ptr = target.points->data();
-        auto source_cov_ptr = trans_source.covs->data();
-        auto target_cov_ptr = target.covs->data();
-
-        auto linearlized_ptr = linearlized_results.data();
+        cur_T[0] = result.T.matrix();
+        const auto cur_T_ptr = cur_T.data();
 
         knn_event.wait();
-        auto index_ptr = neighbors.indices->data();
-        auto distances_ptr = neighbors.distances->data();
+        const auto neighbors_index_ptr = neighbors.indices->data();
+        const auto neighbors_distances_ptr = neighbors.distances->data();
 
         auto linearlize_event = queue.submit([&](sycl::handler& h) {
           h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
 
-            if (distances_ptr[i] > max_dist_ptr[0]) return;
+            if (neighbors_distances_ptr[i] > max_dist_ptr[0]) return;
 
-            linearlized_ptr[i] = factor::linearlize_gicp(cur_T_ptr[0], source_ptr[i], target_ptr[index_ptr[i]], source_cov_ptr[i], target_cov_ptr[index_ptr[i]]);
-            // linearlized_ptr[i] = factor::linearlize_point_to_point(cur_T_ptr[0], source_ptr[i], target_ptr[index_ptr[i]], source_cov_ptr[i], target_cov_ptr[index_ptr[i]]);
+            linearlized_ptr[i] = factor::linearlize_gicp(cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]], source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+            // linearlized_ptr[i] = factor::linearlize_point_to_point(cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]], source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
           });
         });
         linearlize_event.wait();
