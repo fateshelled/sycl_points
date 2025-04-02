@@ -234,6 +234,7 @@ public:
     };
 
     std::vector<BuildTask> taskStack;
+    taskStack.reserve(n);
     int nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
 
     // Add the first task to the stack

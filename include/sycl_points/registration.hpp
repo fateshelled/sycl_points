@@ -211,12 +211,13 @@ public:
           // std::cout << "trans: " << std::endl << result.T.matrix() << std::endl;
         }
       }
+      // transform source points
+      transform_events = trans_source.transform_sycl_async(result.T.matrix() * prev_T.matrix().inverse());  // zero copy
       if (result.converged) {
         break;
       }
-      // transform source points
-      transform_events = trans_source.transform_sycl_async(result.T.matrix() * prev_T.matrix().inverse());  // zero copy
     }
+    transform_events.wait();
     return result;
   }
 };

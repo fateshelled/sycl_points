@@ -79,8 +79,8 @@ int main() {
       if (elapsed.count("build KDTree") == 0) elapsed["build KDTree"] = 0.0;
       elapsed["build KDTree"] += dt_build_kdtree;
 
-      if (elapsed.count("KNN Search") == 0) elapsed["KNN Search"] = 0.0;
-      elapsed["KNN Search"] += dt_knn_search_for_covs;
+      if (elapsed.count("KNN Search kdtree") == 0) elapsed["KNN Search kdtree"] = 0.0;
+      elapsed["KNN Search kdtree"] += dt_knn_search_for_covs;
 
       if (elapsed.count("compute Covariances") == 0) elapsed["compute Covariances"] = 0.0;
       elapsed["compute Covariances"] += dt_covariance;
