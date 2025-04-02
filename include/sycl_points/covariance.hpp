@@ -165,7 +165,8 @@ inline CovarianceContainerShared compute_covariances_sycl(
 /// @param k_correspondences Number of neighbor points
 /// @return Covariances
 inline CovarianceContainerShared compute_covariances_sycl(const KNNSearchSYCL& kdtree, const PointContainerShared& points, const size_t k_correspondences) {
-  return compute_covariances_sycl(kdtree, points, k_correspondences);
+  const KNNResultSYCL neightbors = kdtree.searchKDTree_sycl(points, k_correspondences);
+  return compute_covariances_sycl(*kdtree.queue_, neightbors, points);
 }
 
 /// @brief Compute covariance using SYCL
