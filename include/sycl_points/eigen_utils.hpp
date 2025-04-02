@@ -88,7 +88,6 @@ SYCL_EXTERNAL inline Eigen::Vector<float, M> multiply(const Eigen::Matrix<float,
   return ret;
 }
 
-
 // A * s = B
 // row: M, col: N
 template <size_t M, size_t N>
@@ -258,6 +257,32 @@ inline Eigen::Isometry3f se3_exp(const Eigen::Matrix<float, 6, 1>& a) {
   }
 
   return se3;
+}
+
+inline sycl::vec<float, 4> to_sycl_vec(const Eigen::Vector4f& vec) {
+  return {vec[0], vec[1], vec[2], vec[3]};
+}
+
+inline std::array<sycl::vec<float, 4>, 4> to_sycl_vec(const Eigen::Matrix4f& mat) {
+  std::array<sycl::vec<float, 4>, 4> vecs;
+  for (size_t i = 0; i < 4; ++i) {
+    vecs[i] = sycl::vec<float, 4>(mat(i, 0), mat(i, 1), mat(i, 2), mat(i, 3));
+  }
+  return vecs;
+}
+
+inline Eigen::Vector4f from_sycl_vec(const sycl::vec<float, 4>& vec) {
+  return {vec.x(), vec.y(), vec.z(), vec.w()};
+}
+
+inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::vec<float, 4>, 4>& vecs) {
+  Eigen::Matrix4f mat;
+  for (size_t i = 0; i < 4; ++i) {
+    for (size_t j = 0; j < 4; ++j) {
+      mat(i, j) = vecs[i][j];
+    }
+  }
+  return mat;
 }
 
 }  // namespace eigen_utils
