@@ -33,7 +33,7 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
   const float inv_voxel_size = 1.0f / voxel_size;
 
   // Optimize work group size
-  const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)queue.get_device().get_info<sycl::info::device::max_work_group_size>());
+  const size_t work_group_size = sycl_utils::get_work_group_size(queue);
   const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
 
   // compute bit on device

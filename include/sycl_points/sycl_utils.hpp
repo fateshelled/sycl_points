@@ -24,7 +24,30 @@ using shared_vector = std::vector<T, shared_allocator<T>>;
 
 namespace sycl_utils {
 
-constexpr size_t default_work_group_size = 256;
+size_t get_work_group_size(const sycl::device& device) {
+  const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
+  size_t work_group_size = 128;
+  switch (vendor_id) {
+    case 32902:  // Intel
+      if (device.is_cpu()) {
+        work_group_size = 16;
+        return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+      } else {
+        work_group_size = 32;
+        return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+      }
+      break;
+    case 4318:  // NVIDIA
+      work_group_size = 256;
+      return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+      break;
+  }
+  return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+}
+
+size_t get_work_group_size(const sycl::queue& queue) {
+  return get_work_group_size(queue.get_device());
+}
 
 void print_device_info(const sycl::device& device) {
   const auto platform = device.get_platform();
@@ -33,6 +56,7 @@ void print_device_info(const sycl::device& device) {
   for (auto device : platform.get_devices()) {
     std::cout << "\tDevice: " << device.get_info<sycl::info::device::name>() << std::endl;
     std::cout << "\ttype: " << (device.is_cpu() ? "CPU" : "GPU") << std::endl;
+    std::cout << "\tVendor: " << device.get_info<sycl::info::device::vendor>() << std::endl;
     std::cout << "\tVendorID: " << device.get_info<sycl::info::device::vendor_id>() << std::endl;
     std::cout << "\tBackend version: " << device.get_info<sycl::info::device::backend_version>() << std::endl;
     std::cout << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << std::endl;

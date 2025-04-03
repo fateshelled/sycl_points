@@ -328,7 +328,7 @@ public:
     result.query_size = q;
 
     // Optimize work group size
-    const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)queue.get_device().get_info<sycl::info::device::max_work_group_size>());
+    const size_t work_group_size = sycl_utils::get_work_group_size(queue);
     const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
 
     // memory ptr
@@ -413,7 +413,7 @@ public:
     const auto tree_ptr = (*this->tree_).data();
 
     // Optimize work group size
-    const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)this->queue_->get_device().get_info<sycl::info::device::max_work_group_size>());
+    const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_);
     const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
 
     auto event = this->queue_->submit([&](sycl::handler& h) {

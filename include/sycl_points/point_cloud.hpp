@@ -187,7 +187,7 @@ struct PointCloudShared {
     }
 
     // Optimize work group size
-    const size_t work_group_size = std::min(sycl_utils::default_work_group_size, (size_t)this->queue_ptr->get_device().get_info<sycl::info::device::max_work_group_size>());
+    const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr);
     const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
 
     sycl::event covs_trans_event;
