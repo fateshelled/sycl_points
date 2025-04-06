@@ -69,13 +69,10 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
       event.wait();
   }
 
-  PointContainerShared result(point_alloc);
-  result.reserve(N);
+  std::unordered_map<uint64_t, PointType> voxel_map;
   /* Kahan algorithm (high precision) */
   // {
-  //   std::unordered_map<uint64_t, PointType> voxel_map;
   //   std::unordered_map<uint64_t, PointType> kahan_map;
-  //   voxel_map.reserve(N / 2);
   //   kahan_map.reserve(N / 2);
 
   //   for (size_t i = 0; i < N; ++i) {
@@ -91,18 +88,11 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
   //       it->second = t;
   //     }
   //   }
-  //   for (auto& [_, point] : voxel_map) {
-  //     point /= point.w();
-  //     result.emplace_back(point);
-  //   }
   // }
+  /* Fast algorithm */
   {
-    std::unordered_map<uint64_t, PointType> voxel_map;
-    voxel_map.reserve(N / 2);
-
     for (size_t i = 0; i < N; ++i) {
       if (bits[i] == VoxelConstants::invalid_coord) continue;
-
       const auto it = voxel_map.find(bits[i]);
       if (it == voxel_map.end()) {
         voxel_map[bits[i]] = points[i];
@@ -110,12 +100,12 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
         it->second += points[i];
       }
     }
-    for (auto& [_, point] : voxel_map) {
-      point /= point.w();
-      result.emplace_back(point);
-    }
   }
-  result.shrink_to_fit();
+  PointContainerShared result(voxel_map.size(), point_alloc);
+  size_t idx = 0;
+  for (const auto& [_, point] : voxel_map) {
+    result[idx++] = point / point.w();
+  }
   return result;
 }
 

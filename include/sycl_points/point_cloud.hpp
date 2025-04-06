@@ -65,30 +65,37 @@ struct PointCloudCPU {
 SYCL_EXTERNAL inline void transform_covs(const Covariance& cov, Covariance& result, const sycl::vec<float, 4>* trans) {
   const auto cov_vec = eigen_utils::to_sycl_vec(eigen_utils::transpose<4, 4>(cov));
 
-  const sycl::vec<float, 4> tmp0(sycl::dot(trans[0], cov_vec[0]), sycl::dot(trans[0], cov_vec[1]), sycl::dot(trans[0], cov_vec[2]), sycl::dot(trans[0], cov_vec[3]));
-  const sycl::vec<float, 4> tmp1(sycl::dot(trans[1], cov_vec[0]), sycl::dot(trans[1], cov_vec[1]), sycl::dot(trans[1], cov_vec[2]), sycl::dot(trans[1], cov_vec[3]));
-  const sycl::vec<float, 4> tmp2(sycl::dot(trans[2], cov_vec[0]), sycl::dot(trans[2], cov_vec[1]), sycl::dot(trans[2], cov_vec[2]), sycl::dot(trans[2], cov_vec[3]));
-  const sycl::vec<float, 4> tmp3(sycl::dot(trans[3], cov_vec[0]), sycl::dot(trans[3], cov_vec[1]), sycl::dot(trans[3], cov_vec[2]), sycl::dot(trans[3], cov_vec[3]));
+  {
+    const sycl::vec<float, 4> tmp0(sycl::dot(trans[0], cov_vec[0]), sycl::dot(trans[0], cov_vec[1]), sycl::dot(trans[0], cov_vec[2]), sycl::dot(trans[0], cov_vec[3]));
+    result(0, 0) = sycl::dot(tmp0, trans[0]);
+    result(0, 1) = sycl::dot(tmp0, trans[1]);
+    result(0, 2) = sycl::dot(tmp0, trans[2]);
+    result(0, 3) = sycl::dot(tmp0, trans[3]);
+  }
 
-  result(0, 0) = sycl::dot(tmp0, trans[0]);
-  result(0, 1) = sycl::dot(tmp0, trans[1]);
-  result(0, 2) = sycl::dot(tmp0, trans[2]);
-  result(0, 3) = sycl::dot(tmp0, trans[3]);
+  {
+    const sycl::vec<float, 4> tmp1(sycl::dot(trans[1], cov_vec[0]), sycl::dot(trans[1], cov_vec[1]), sycl::dot(trans[1], cov_vec[2]), sycl::dot(trans[1], cov_vec[3]));
+    result(1, 0) = sycl::dot(tmp1, trans[0]);
+    result(1, 1) = sycl::dot(tmp1, trans[1]);
+    result(1, 2) = sycl::dot(tmp1, trans[2]);
+    result(1, 3) = sycl::dot(tmp1, trans[3]);
+  }
 
-  result(1, 0) = sycl::dot(tmp1, trans[0]);
-  result(1, 1) = sycl::dot(tmp1, trans[1]);
-  result(1, 2) = sycl::dot(tmp1, trans[2]);
-  result(1, 3) = sycl::dot(tmp1, trans[3]);
+  {
+    const sycl::vec<float, 4> tmp2(sycl::dot(trans[2], cov_vec[0]), sycl::dot(trans[2], cov_vec[1]), sycl::dot(trans[2], cov_vec[2]), sycl::dot(trans[2], cov_vec[3]));
+    result(2, 0) = sycl::dot(tmp2, trans[0]);
+    result(2, 1) = sycl::dot(tmp2, trans[1]);
+    result(2, 2) = sycl::dot(tmp2, trans[2]);
+    result(2, 3) = sycl::dot(tmp2, trans[3]);
+  }
 
-  result(2, 0) = sycl::dot(tmp2, trans[0]);
-  result(2, 1) = sycl::dot(tmp2, trans[1]);
-  result(2, 2) = sycl::dot(tmp2, trans[2]);
-  result(2, 3) = sycl::dot(tmp2, trans[3]);
-
-  result(3, 0) = sycl::dot(tmp3, trans[0]);
-  result(3, 1) = sycl::dot(tmp3, trans[1]);
-  result(3, 2) = sycl::dot(tmp3, trans[2]);
-  result(3, 3) = sycl::dot(tmp3, trans[3]);
+  {
+    const sycl::vec<float, 4> tmp3(sycl::dot(trans[3], cov_vec[0]), sycl::dot(trans[3], cov_vec[1]), sycl::dot(trans[3], cov_vec[2]), sycl::dot(trans[3], cov_vec[3]));
+    result(3, 0) = sycl::dot(tmp3, trans[0]);
+    result(3, 1) = sycl::dot(tmp3, trans[1]);
+    result(3, 2) = sycl::dot(tmp3, trans[2]);
+    result(3, 3) = sycl::dot(tmp3, trans[3]);
+  }
 }
 
 SYCL_EXTERNAL inline void transform_point(const PointType& point, PointType& result, const sycl::vec<float, 4>* trans) {
@@ -105,7 +112,7 @@ struct PointCloudShared {
   std::shared_ptr<sycl::queue> queue_ptr = nullptr;
   // PointType* points_device_ptr_ = nullptr;
   // Covariance* covs_device_ptr_ = nullptr;
-  sycl::property_list propeties = {sycl::property::no_init()};
+  const sycl::property_list propeties = {sycl::property::no_init()};
 
   PointCloudShared(sycl::queue& q) : queue_ptr(std::make_shared<sycl::queue>(q)) {
     const sycl_points::shared_allocator<PointContainerShared> alloc_pc(*this->queue_ptr, propeties);
@@ -207,7 +214,7 @@ struct PointCloudShared {
 
     sycl::event points_trans_event;
     {
-      auto points = (*this->points).data();
+      const auto point_ptr = (*this->points).data();
       const auto trans_vec_ptr = trans_vec_shared.data();
 
       /* Transform Points*/
@@ -215,8 +222,7 @@ struct PointCloudShared {
         h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
           const size_t i = item.get_global_id(0);
           if (i >= N) return;
-          // transform_point(points[i], points[i], trans_ptr[0]);
-          transform_point(points[i], points[i], trans_vec_ptr);
+          transform_point(point_ptr[i], point_ptr[i], trans_vec_ptr);
         });
       });
     }

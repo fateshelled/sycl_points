@@ -116,7 +116,7 @@ public:
     sycl::queue& queue,
     const PointCloudShared& source,
     const PointCloudShared& target,
-    const KNNSearchSYCL& target_tree,
+    const KDTreeSYCL& target_tree,
     const TransformMatrix& init_T = TransformMatrix::Identity()) const {
     const size_t N = source.size();
     RegistrationResult result;
@@ -154,7 +154,7 @@ public:
       transform_events.wait();
       // nearest neighbor search
       KNNResultSYCL neighbors;
-      auto knn_event = target_tree.searchKDTree_sycl_async(trans_source, 1, neighbors);
+      auto knn_event = target_tree.knn_search_async(trans_source, 1, neighbors);
 
       // linearlize
       LinearlizedResult linearlized;

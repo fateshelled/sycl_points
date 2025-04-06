@@ -45,13 +45,13 @@ int main() {
     auto dt_downsampled = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0).count();
 
     t0 = std::chrono::high_resolution_clock::now();
-    const auto source_tree = sycl_points::KNNSearchSYCL::buildKDTree(queue, source_downsampled);
-    const auto target_tree = sycl_points::KNNSearchSYCL::buildKDTree(queue, target_downsampled);
+    const auto source_tree = sycl_points::KDTreeSYCL::build(queue, source_downsampled);
+    const auto target_tree = sycl_points::KDTreeSYCL::build(queue, target_downsampled);
     auto dt_build_kdtree = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0).count();
 
     t0 = std::chrono::high_resolution_clock::now();
-    const auto source_neighbors = source_tree.searchKDTree_sycl(source_downsampled, num_neighbors);
-    const auto target_neighbors = target_tree.searchKDTree_sycl(target_downsampled, num_neighbors);
+    const auto source_neighbors = source_tree.knn_search(source_downsampled, num_neighbors);
+    const auto target_neighbors = target_tree.knn_search(target_downsampled, num_neighbors);
     auto dt_knn_search_for_covs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0).count();
 
     t0 = std::chrono::high_resolution_clock::now();

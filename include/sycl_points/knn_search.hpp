@@ -40,20 +40,20 @@ struct FlatKDNode {
   uint8_t pad[3];  // Padding for alignment (3 bytes)
 };  // Total: 28 bytes, aligned to 4-byte boundary
 
-class KNNSearch {
+class KDTree {
 public:
   std::shared_ptr<std::vector<FlatKDNode>> tree_;
 
-  KNNSearch() { tree_ = std::make_shared<std::vector<FlatKDNode>>(); }
+  KDTree() { tree_ = std::make_shared<std::vector<FlatKDNode>>(); }
 
-  ~KNNSearch() {}
+  ~KDTree() {}
 
-  static KNNSearch buildKDTree(const PointContainerCPU& points) {
+  static KDTree build(const PointContainerCPU& points) {
     const size_t n = points.size();
 
     // Estimate tree size with some margin
     const int estimatedSize = n * 2;
-    KNNSearch flatTree;
+    KDTree flatTree;
 
     flatTree.tree_->resize(estimatedSize);
 
@@ -123,10 +123,10 @@ public:
       }
 
       // Extract indices for right subtree
-      std::vector<int> rightIndices;
-      rightIndices.reserve(subIndices.size() - medianPos - 1);
+      std::vector<int> rightIndices(subIndices.size() - medianPos - 1);
+      size_t counter = 0;
       for (size_t i = medianPos + 1; i < sortedValues.size(); ++i) {
-        rightIndices.push_back(sortedValues[i].second);
+        rightIndices[counter++] = sortedValues[i].second;
       }
 
       // Add left subtree to processing queue if not empty
@@ -149,73 +149,31 @@ public:
     return flatTree;
   }
 
-  static KNNSearch buildKDTree(const PointCloudCPU& points) { return buildKDTree(points.points); }
-
-  static KNNResult searchBruteForce(const PointCloudCPU& queries, const PointCloudCPU& targets, const size_t k, const size_t num_threads = 8) {
-    const size_t n = targets.points.size();  // Number of dataset points
-    const size_t q = queries.points.size();  // Number of query points
-
-    // Initialize result structure
-    KNNResult result;
-    result.indices.resize(q);
-    result.distances.resize(q);
-
-    for (size_t i = 0; i < q; ++i) {
-      result.indices[i].resize(k, -1);
-      result.distances[i].resize(k, std::numeric_limits<float>::max());
-    }
-
-// For each query point, find K nearest neighbors
-#pragma omp parallel for num_threads(num_threads)
-    for (size_t i = 0; i < q; ++i) {
-      const auto& query = queries.points[i];
-
-      // Vector to store distances and indices of all points
-      std::vector<std::pair<float, int>> distances(n);
-
-      // Calculate distances to all dataset points
-      for (size_t j = 0; j < n; ++j) {
-        const auto dt = query - targets.points[j];
-        const float dist = dt.dot(dt);
-        distances[j] = {dist, j};
-      }
-
-      // Sort to find K smallest distances
-      std::partial_sort(distances.begin(), distances.begin() + k, distances.end());
-
-      // Store the results
-      for (int j = 0; j < k; ++j) {
-        result.indices[i][j] = distances[j].second;
-        result.distances[i][j] = distances[j].first;
-      }
-    }
-
-    return result;
-  }
+  static KDTree build(const PointCloudCPU& points) { return build(points.points); }
 };
 
-class KNNSearchSYCL {
+class KDTreeSYCL {
 public:
   std::shared_ptr<shared_vector<FlatKDNode>> tree_;
   std::shared_ptr<sycl::queue> queue_ = nullptr;
 
-  KNNSearchSYCL(sycl::queue& queue) : queue_(std::make_shared<sycl::queue>(queue)) { tree_ = std::make_shared<shared_vector<FlatKDNode>>(0, *this->queue_); }
+  KDTreeSYCL(sycl::queue& queue) : queue_(std::make_shared<sycl::queue>(queue)) { tree_ = std::make_shared<shared_vector<FlatKDNode>>(0, *this->queue_); }
 
-  KNNSearchSYCL(sycl::queue& queue, const KNNSearch& kdtree) : queue_(std::make_shared<sycl::queue>(queue)) {
+  KDTreeSYCL(sycl::queue& queue, const KDTree& kdtree) : queue_(std::make_shared<sycl::queue>(queue)) {
     tree_ = std::make_shared<shared_vector<FlatKDNode>>(kdtree.tree_->size(), *this->queue_);
     for (size_t i = 0; i < kdtree.tree_->size(); ++i) {
       (*tree_)[i] = (*kdtree.tree_)[i];
     }
   }
 
-  ~KNNSearchSYCL() {}
+  ~KDTreeSYCL() {}
 
-  static KNNSearchSYCL buildKDTree(sycl::queue& queue, const PointContainerShared& points) {
+  static KDTreeSYCL build(sycl::queue& queue, const PointContainerShared& points) {
     const size_t n = points.size();
 
     // Estimate tree size with some margin
     const int estimatedSize = n * 2;
-    KNNSearchSYCL flatTree(queue);
+    KDTreeSYCL flatTree(queue);
 
     flatTree.tree_->resize(estimatedSize);
 
@@ -286,10 +244,10 @@ public:
       }
 
       // Extract indices for right subtree
-      std::vector<int> rightIndices;
-      rightIndices.reserve(subIndices.size() - medianPos - 1);
+      std::vector<int> rightIndices(subIndices.size() - medianPos - 1);
+      size_t counter = 0;
       for (size_t i = medianPos + 1; i < sortedValues.size(); ++i) {
-        rightIndices.push_back(sortedValues[i].second);
+        rightIndices[counter++] = sortedValues[i].second;
       }
 
       // Add left subtree to processing queue if not empty
@@ -312,85 +270,9 @@ public:
     return flatTree;
   }
 
-  static KNNSearchSYCL buildKDTree(sycl::queue& queue, const PointCloudShared& cloud) { return KNNSearchSYCL::buildKDTree(queue, *cloud.points); }
+  static KDTreeSYCL build(sycl::queue& queue, const PointCloudShared& cloud) { return KDTreeSYCL::build(queue, *cloud.points); }
 
-  static KNNResultSYCL searchBruteForce_sycl(sycl::queue& queue, const PointCloudShared& queries, const PointCloudShared& targets, const size_t k) {
-    constexpr size_t MAX_K = 48;
-
-    const size_t n = targets.points->size();  // Number of dataset points
-    const size_t q = queries.points->size();  // Number of query points
-
-    // Initialize result structure
-    KNNResultSYCL result;
-    result.indices = std::make_shared<shared_vector<int>>(q * k, -1, shared_allocator<int>(queue));
-    result.distances = std::make_shared<shared_vector<float>>(q * k, std::numeric_limits<float>::max(), shared_allocator<float>(queue));
-    result.k = k;
-    result.query_size = q;
-
-    // Optimize work group size
-    const size_t work_group_size = sycl_utils::get_work_group_size(queue);
-    const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
-
-    // memory ptr
-    auto targets_ptr = (*targets.points).data();
-    auto queries_ptr = (*queries.points).data();
-
-    float* distance_ptr = result.distances->data();
-    int* index_ptr = result.indices->data();
-
-    // KNN search kernel BruteForce
-    auto event = queue.submit([&](sycl::handler& h) {
-      h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
-        const size_t queryIdx = item.get_global_id(0);
-        if (queryIdx >= q) return;
-        const auto query = queries_ptr[queryIdx];
-
-        // Arrays to store K nearest points
-        float kDistances[MAX_K];
-        int kIndices[MAX_K];
-
-        // Initialize
-        for (int i = 0; i < k; ++i) {
-          kDistances[i] = std::numeric_limits<float>::max();
-          kIndices[i] = -1;
-        }
-
-        // Calculate distances to all dataset points
-        for (size_t j = 0; j < n; ++j) {
-          // Calculate 3D distance
-          const auto target = targets_ptr[j];
-          const sycl::float4 diff = {query.x() - target.x(), query.y() - target.y(), query.z() - target.z(), 0.0f};
-          const float dist = sycl::dot(diff, diff);
-
-          // Check if this point should be included in K nearest
-          if (dist < kDistances[k - 1]) {
-            // Find insertion position
-            int insertPos = k - 1;
-            while (insertPos > 0 && dist < kDistances[insertPos - 1]) {
-              kDistances[insertPos] = kDistances[insertPos - 1];
-              kIndices[insertPos] = kIndices[insertPos - 1];
-              insertPos--;
-            }
-
-            // Insert new point
-            kDistances[insertPos] = dist;
-            kIndices[insertPos] = j;
-          }
-        }
-
-        // Write results to global memory
-        for (int i = 0; i < k; i++) {
-          distance_ptr[queryIdx * k + i] = kDistances[i];
-          index_ptr[queryIdx * k + i] = kIndices[i];
-        }
-      });
-    });
-    event.wait();
-
-    return result;
-  }
-
-  sycl_utils::events searchKDTree_sycl_async(
+  sycl_utils::events knn_search_async(
     const PointContainerShared& queries,  // Query points
     const size_t k,                       // Number of neighbors to find
     KNNResultSYCL& result) const {
@@ -521,31 +403,149 @@ public:
     return events;
   }
 
-  sycl_utils::events searchKDTree_sycl_async(
+  sycl_utils::events knn_search_async(
     const PointCloudShared& queries,  // Query points
     const size_t k,// Number of neighbors to find
     KNNResultSYCL& result) const {
 
-    return searchKDTree_sycl_async(*queries.points, k, result);
+    return knn_search_async(*queries.points, k, result);
   }
 
-  KNNResultSYCL searchKDTree_sycl(
+  KNNResultSYCL knn_search(
     const PointContainerShared& queries,  // Query points
     const size_t k) const {               // Number of neighbors to find
 
     KNNResultSYCL result;
-    searchKDTree_sycl_async(queries, k, result).wait();
+    knn_search_async(queries, k, result).wait();
     return result;
   }
 
-  KNNResultSYCL searchKDTree_sycl(
+  KNNResultSYCL knn_search(
     const PointCloudShared& queries,  // Query points
     const size_t k) const {           // Number of neighbors to find
 
     KNNResultSYCL result;
-    searchKDTree_sycl_async(*queries.points, k, result).wait();
+    knn_search_async(*queries.points, k, result).wait();
     return result;
   }
 };
 
+
+inline KNNResult knn_search_bruteforce(const PointCloudCPU& queries, const PointCloudCPU& targets, const size_t k, const size_t num_threads = 8) {
+  const size_t n = targets.points.size();  // Number of dataset points
+  const size_t q = queries.points.size();  // Number of query points
+
+  // Initialize result structure
+  KNNResult result;
+  result.indices.resize(q);
+  result.distances.resize(q);
+
+  for (size_t i = 0; i < q; ++i) {
+    result.indices[i].resize(k, -1);
+    result.distances[i].resize(k, std::numeric_limits<float>::max());
+  }
+
+// For each query point, find K nearest neighbors
+#pragma omp parallel for num_threads(num_threads)
+  for (size_t i = 0; i < q; ++i) {
+    const auto& query = queries.points[i];
+
+    // Vector to store distances and indices of all points
+    std::vector<std::pair<float, int>> distances(n);
+
+    // Calculate distances to all dataset points
+    for (size_t j = 0; j < n; ++j) {
+      const auto dt = query - targets.points[j];
+      const float dist = dt.dot(dt);
+      distances[j] = {dist, j};
+    }
+
+    // Sort to find K smallest distances
+    std::partial_sort(distances.begin(), distances.begin() + k, distances.end());
+
+    // Store the results
+    for (int j = 0; j < k; ++j) {
+      result.indices[i][j] = distances[j].second;
+      result.distances[i][j] = distances[j].first;
+    }
+  }
+
+  return result;
+}
+
+inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointCloudShared& queries, const PointCloudShared& targets, const size_t k) {
+  constexpr size_t MAX_K = 48;
+
+  const size_t n = targets.points->size();  // Number of dataset points
+  const size_t q = queries.points->size();  // Number of query points
+
+  // Initialize result structure
+  KNNResultSYCL result;
+  result.indices = std::make_shared<shared_vector<int>>(q * k, -1, shared_allocator<int>(queue));
+  result.distances = std::make_shared<shared_vector<float>>(q * k, std::numeric_limits<float>::max(), shared_allocator<float>(queue));
+  result.k = k;
+  result.query_size = q;
+
+  // Optimize work group size
+  const size_t work_group_size = sycl_utils::get_work_group_size(queue);
+  const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
+
+  // memory ptr
+  auto targets_ptr = (*targets.points).data();
+  auto queries_ptr = (*queries.points).data();
+
+  float* distance_ptr = result.distances->data();
+  int* index_ptr = result.indices->data();
+
+  // KNN search kernel BruteForce
+  auto event = queue.submit([&](sycl::handler& h) {
+    h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+      const size_t queryIdx = item.get_global_id(0);
+      if (queryIdx >= q) return;
+      const auto query = queries_ptr[queryIdx];
+
+      // Arrays to store K nearest points
+      float kDistances[MAX_K];
+      int kIndices[MAX_K];
+
+      // Initialize
+      for (int i = 0; i < k; ++i) {
+        kDistances[i] = std::numeric_limits<float>::max();
+        kIndices[i] = -1;
+      }
+
+      // Calculate distances to all dataset points
+      for (size_t j = 0; j < n; ++j) {
+        // Calculate 3D distance
+        const auto target = targets_ptr[j];
+        const sycl::float4 diff = {query.x() - target.x(), query.y() - target.y(), query.z() - target.z(), 0.0f};
+        const float dist = sycl::dot(diff, diff);
+
+        // Check if this point should be included in K nearest
+        if (dist < kDistances[k - 1]) {
+          // Find insertion position
+          int insertPos = k - 1;
+          while (insertPos > 0 && dist < kDistances[insertPos - 1]) {
+            kDistances[insertPos] = kDistances[insertPos - 1];
+            kIndices[insertPos] = kIndices[insertPos - 1];
+            insertPos--;
+          }
+
+          // Insert new point
+          kDistances[insertPos] = dist;
+          kIndices[insertPos] = j;
+        }
+      }
+
+      // Write results to global memory
+      for (int i = 0; i < k; i++) {
+        distance_ptr[queryIdx * k + i] = kDistances[i];
+        index_ptr[queryIdx * k + i] = kIndices[i];
+      }
+    });
+  });
+  event.wait();
+
+  return result;
+}
 }  // namespace sycl_points

@@ -26,16 +26,16 @@ int main() {
   double dt_build_kdtree = 0.0;
   for (size_t i = 0; i < 10; ++i) {
     s = std::chrono::high_resolution_clock::now();
-    auto kdtree_cpu = sycl_points::KNNSearch::buildKDTree(source_points);
+    auto kdtree_cpu = sycl_points::KDTree::build(source_points);
     dt_build_kdtree += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
   }
   dt_build_kdtree /= 10;
 
-  auto kdtree_sycl = sycl_points::KNNSearchSYCL::buildKDTree(queue, shared_points);
+  auto kdtree_sycl = sycl_points::KDTreeSYCL::build(queue, shared_points);
   double dt_build_kdtree_sycl = 0.0;
   for (size_t i = 0; i < 10; ++i) {
     s = std::chrono::high_resolution_clock::now();
-    auto tmp = sycl_points::KNNSearchSYCL::buildKDTree(queue, shared_points);
+    auto tmp = sycl_points::KDTreeSYCL::build(queue, shared_points);
     dt_build_kdtree_sycl += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
   }
   dt_build_kdtree_sycl /= 10;
