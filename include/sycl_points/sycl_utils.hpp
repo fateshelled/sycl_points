@@ -24,29 +24,29 @@ using shared_vector = std::vector<T, shared_allocator<T>>;
 
 namespace sycl_utils {
 
-size_t get_work_group_size(const sycl::device& device) {
+size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 0) {
+  if (work_group_size > 0) {
+    return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+  }
+
   const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
-  size_t work_group_size = 128;
   switch (vendor_id) {
     case 32902:  // Intel
       if (device.is_cpu()) {
-        work_group_size = 16;
-        return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+        return std::min((size_t)16, device.get_info<sycl::info::device::max_work_group_size>());
       } else {
-        work_group_size = 32;
-        return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+        return std::min((size_t)32, device.get_info<sycl::info::device::max_work_group_size>());
       }
       break;
     case 4318:  // NVIDIA
-      work_group_size = 256;
-      return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+      return std::min((size_t)256, device.get_info<sycl::info::device::max_work_group_size>());
       break;
   }
-  return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+  return std::min((size_t)128, device.get_info<sycl::info::device::max_work_group_size>());
 }
 
-size_t get_work_group_size(const sycl::queue& queue) {
-  return get_work_group_size(queue.get_device());
+size_t get_work_group_size(const sycl::queue& queue, size_t work_group_size = 0) {
+  return get_work_group_size(queue.get_device(), work_group_size);
 }
 
 void print_device_info(const sycl::device& device) {

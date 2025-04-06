@@ -115,23 +115,24 @@ struct PointCloudShared {
   const sycl::property_list propeties = {sycl::property::no_init()};
 
   PointCloudShared(sycl::queue& q) : queue_ptr(std::make_shared<sycl::queue>(q)) {
-    const sycl_points::shared_allocator<PointContainerShared> alloc_pc(*this->queue_ptr, propeties);
+    const sycl_points::shared_allocator<PointContainerShared> alloc_pc(*this->queue_ptr, this->propeties);
     this->points = std::make_shared<PointContainerShared>(0, alloc_pc);
 
-    const sycl_points::shared_allocator<CovarianceContainerShared> alloc_cov(*this->queue_ptr, propeties);
+    const sycl_points::shared_allocator<CovarianceContainerShared> alloc_cov(*this->queue_ptr, this->propeties);
     this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
   }
 
   PointCloudShared(sycl::queue& q, const PointCloudCPU& cpu) : queue_ptr(std::make_shared<sycl::queue>(q)) {
-    const sycl_points::shared_allocator<PointContainerShared> alloc_pc(*this->queue_ptr, propeties);
+    const sycl_points::shared_allocator<PointContainerShared> alloc_pc(*this->queue_ptr, this->propeties);
     this->points = std::make_shared<PointContainerShared>(cpu.points.size(), alloc_pc);
-    const sycl_points::shared_allocator<CovarianceContainerShared> alloc_cov(*this->queue_ptr, propeties);
-    this->covs = std::make_shared<CovarianceContainerShared>(cpu.covs.size(), alloc_cov);
+
 
     for (size_t i = 0; i < cpu.points.size(); ++i) {
       (*this->points)[i] = cpu.points[i];
     }
 
+    const sycl_points::shared_allocator<CovarianceContainerShared> alloc_cov(*this->queue_ptr, this->propeties);
+    this->covs = std::make_shared<CovarianceContainerShared>(cpu.covs.size(), alloc_cov);
     for (size_t i = 0; i < cpu.covs.size(); ++i) {
       (*this->covs)[i] = cpu.covs[i];
     }
@@ -139,10 +140,21 @@ struct PointCloudShared {
 
   // copy constructor
   PointCloudShared(const PointCloudShared& other) : queue_ptr(other.queue_ptr) {
-    const sycl_points::shared_allocator<PointContainerShared> alloc_pc(*this->queue_ptr, propeties);
-    const sycl_points::shared_allocator<CovarianceContainerShared> alloc_cov(*this->queue_ptr, propeties);
-    this->points = std::make_shared<PointContainerShared>(*other.points, alloc_pc);
-    this->covs = std::make_shared<CovarianceContainerShared>(*other.covs, alloc_cov);
+    const sycl_points::shared_allocator<CovarianceContainerShared> alloc_cov(*this->queue_ptr, this->propeties);
+    const sycl_points::shared_allocator<PointContainerShared> alloc_pc(*this->queue_ptr, this->propeties);
+
+    const size_t N = other.size();
+    sycl::event copy_cov_event;
+    if (other.has_cov()) {
+      this->covs = std::make_shared<CovarianceContainerShared>(N, alloc_cov);
+      copy_cov_event = this->queue_ptr->memcpy(this->covs->data(), other.covs->data(), N * sizeof(Covariance));
+    } else {
+      this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
+    }
+    this->points = std::make_shared<PointContainerShared>(N, alloc_pc);
+    sycl::event copy_pt_event =  this->queue_ptr->memcpy(this->points->data(), other.points->data(), N * sizeof(PointType));
+    copy_cov_event.wait();
+    copy_pt_event.wait();
   }
 
   ~PointCloudShared() {}
@@ -236,11 +248,60 @@ struct PointCloudShared {
   // transform on device
   void transform_sycl(const TransformMatrix& trans) { transform_sycl_async(trans).wait(); }
 
-  // transform on device (too slow)
+  // transform on device
   PointCloudShared transform_sycl_copy(const TransformMatrix& trans) const {
-    PointCloudShared ret(*this);  // copy
-    ret.transform_sycl(trans);
+
+    PointCloudShared ret(*this->queue_ptr);
+    const size_t N = this->points->size();
+
+    shared_vector<sycl::vec<float, 4>> trans_vec_shared(4, shared_allocator<TransformMatrix>(*this->queue_ptr));
+    for (size_t i = 0; i < 4; ++i) {
+      for (size_t j = 0; j < 4; ++j) {
+        trans_vec_shared[i][j] = trans(i, j);
+      }
+    }
+
+    // Optimize work group size
+    const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr);
+    const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+
+    sycl::event covs_event;
+    if (this->has_cov()) {
+      ret.covs->resize(N);
+      const auto covs = (*this->covs).data();
+      const auto output_covs = (*ret.covs).data();
+      const auto trans_vec_ptr = trans_vec_shared.data();
+
+      /* Transform Covariance */
+      covs_event = this->queue_ptr->submit([&](sycl::handler& h) {
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+          const size_t i = item.get_global_id(0);
+          if (i >= N) return;
+          transform_covs(covs[i], output_covs[i], trans_vec_ptr);
+        });
+      });
+    }
+
+    sycl::event points_event;
+    {
+      ret.points->resize(N);
+      const auto point_ptr = (*this->points).data();
+      const auto output_points = (*ret.points).data();
+      const auto trans_vec_ptr = trans_vec_shared.data();
+
+      /* Transform Points*/
+      points_event = this->queue_ptr->submit([&](sycl::handler& h) {
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)), [=](sycl::nd_item<1> item) {
+          const size_t i = item.get_global_id(0);
+          if (i >= N) return;
+          transform_point(point_ptr[i], output_points[i], trans_vec_ptr);
+        });
+      });
+    }
+    covs_event.wait();
+    points_event.wait();
     return ret;
+
   };
 };
 
