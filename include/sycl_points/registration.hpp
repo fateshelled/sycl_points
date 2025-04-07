@@ -23,7 +23,7 @@ struct RegistrationParams {
 struct LinearlizedResult {
     Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
-    float error = 0.0;
+    float error = 0.0f;
 };
 
 struct RegistrationResult {
@@ -32,17 +32,17 @@ struct RegistrationResult {
     size_t iterations = 0;
     Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
-    float error = 0.0;
+    float error = 0.0f;
 };
 
 namespace factor {
 
-SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
-                                                                 const PointType& target, const Covariance& source_cov,
-                                                                 const Covariance& target_cov) {
-    LinearlizedResult ret;
-    return ret;
-}
+// SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
+//                                                                  const PointType& target, const Covariance& source_cov,
+//                                                                  const Covariance& target_cov) {
+//     LinearlizedResult ret;
+//     return ret;
+// }
 
 SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T, const PointType& source,
                                                        const PointType& target, const Covariance& source_cov,

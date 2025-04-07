@@ -276,11 +276,12 @@ public:
         return KDTreeSYCL::build(queue, *cloud.points);
     }
 
+    template <size_t MAX_K=48, size_t MAX_DEPTH=32>
     sycl_utils::events knn_search_async(const PointContainerShared& queries,  // Query points
                                         const size_t k,                       // Number of neighbors to find
                                         KNNResultSYCL& result) const {
-        constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
-        constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
+        // constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
+        // constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
 
         const size_t q = queries.size();  // Number of query points
         const size_t treeSize = this->tree_->size();
@@ -351,7 +352,7 @@ public:
                         const auto node = tree_ptr[nodeIdx];
 
                         // Calculate distance to current node
-                        const sycl::float4 diff = {query.x() - node.x, query.y() - node.y, query.z() - node.z, 0.0f};
+                        const sycl::float3 diff = {query.x() - node.x, query.y() - node.y, query.z() - node.z};
                         const float dist_sq = sycl::dot(diff, diff);
 
                         // Check if this point should be included in K nearest
@@ -409,25 +410,28 @@ public:
         return events;
     }
 
+    template <size_t MAX_K=48, size_t MAX_DEPTH=32>
     sycl_utils::events knn_search_async(const PointCloudShared& queries,  // Query points
                                         const size_t k,                   // Number of neighbors to find
                                         KNNResultSYCL& result) const {
-        return knn_search_async(*queries.points, k, result);
+        return knn_search_async<MAX_K, MAX_DEPTH>(*queries.points, k, result);
     }
 
+    template <size_t MAX_K=48, size_t MAX_DEPTH=32>
     KNNResultSYCL knn_search(const PointContainerShared& queries,  // Query points
                              const size_t k) const {               // Number of neighbors to find
 
         KNNResultSYCL result;
-        knn_search_async(queries, k, result).wait();
+        knn_search_async<MAX_K, MAX_DEPTH>(queries, k, result).wait();
         return result;
     }
 
+    template <size_t MAX_K=48, size_t MAX_DEPTH=32>
     KNNResultSYCL knn_search(const PointCloudShared& queries,  // Query points
                              const size_t k) const {           // Number of neighbors to find
 
         KNNResultSYCL result;
-        knn_search_async(*queries.points, k, result).wait();
+        knn_search_async<MAX_K, MAX_DEPTH>(*queries.points, k, result).wait();
         return result;
     }
 };
