@@ -286,12 +286,12 @@ TEST_F(EigenUtilsTest, Skew) {
               -2.0f, 1.0f, 0.0f;
 
   // Vector3fバージョン
-  Eigen::Matrix3f result3 = skew(v);
+  Eigen::Matrix3f result3 = lie::skew(v);
   expectMatrixNear(expected, result3);
 
   // Vector4fバージョン（最初の3要素だけ使用）
   Eigen::Vector4f v4(1.0f, 2.0f, 3.0f, 4.0f);
-  Eigen::Matrix3f result4 = skew(v4);
+  Eigen::Matrix3f result4 = lie::skew(v4);
   expectMatrixNear(expected, result4);
 }
 
@@ -299,7 +299,7 @@ TEST_F(EigenUtilsTest, Skew) {
 TEST_F(EigenUtilsTest, SO3Exp) {
   // 単位ベクトルと少し回転するケース
   Eigen::Vector3f small_rotation(0.1f, 0.2f, 0.3f);
-  Eigen::Quaternionf quat1 = so3_exp(small_rotation);
+  Eigen::Quaternionf quat1 = lie::so3_exp(small_rotation);
 
   // 回転ベクトル -> 回転行列 -> クォータニオンでの手動計算と比較
   float angle = small_rotation.norm();
@@ -314,7 +314,7 @@ TEST_F(EigenUtilsTest, SO3Exp) {
 
   // ほぼゼロのケース
   Eigen::Vector3f zero_rotation(1e-10f, 2e-10f, 3e-10f);
-  Eigen::Quaternionf quat2 = so3_exp(zero_rotation);
+  Eigen::Quaternionf quat2 = lie::so3_exp(zero_rotation);
 
   // ゼロ回転はクォータニオン (1,0,0,0) に近いはず
   EXPECT_NEAR(1.0f, quat2.w(), EPSILON);
@@ -329,11 +329,11 @@ TEST_F(EigenUtilsTest, SE3Exp) {
   Eigen::Matrix<float, 6, 1> twist;
   twist << 0.1f, 0.2f, 0.3f, 1.0f, 2.0f, 3.0f;  // [rx, ry, rz, tx, ty, tz]
 
-  Eigen::Isometry3f transform = se3_exp(twist);
+  Eigen::Isometry3f transform = lie::se3_exp(twist);
 
   // 回転部分は so3_exp と一致するはず
   Eigen::Vector3f rotation_part = twist.head<3>();
-  Eigen::Quaternionf quat = so3_exp(rotation_part);
+  Eigen::Quaternionf quat = lie::so3_exp(rotation_part);
   Eigen::Matrix3f expected_rotation = quat.toRotationMatrix();
 
   for (int i = 0; i < 3; ++i) {
@@ -358,7 +358,7 @@ TEST_F(EigenUtilsTest, SE3Exp) {
   Eigen::Matrix<float, 6, 1> small_twist;
   small_twist << 1e-10f, 2e-10f, 3e-10f, 1.0f, 2.0f, 3.0f;
 
-  Eigen::Isometry3f small_transform = se3_exp(small_twist);
+  Eigen::Isometry3f small_transform = lie::se3_exp(small_twist);
 
   // 回転部分は単位行列に近いはず
   Eigen::Matrix3f identity = Eigen::Matrix3f::Identity();
