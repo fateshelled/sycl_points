@@ -38,7 +38,39 @@ struct FlatKDNode {
     int right;       // Index of right child node (-1 if none)
     uint8_t axis;    // Split axis (0=x, 1=y, 2=z)
     uint8_t pad[3];  // Padding for alignment (3 bytes)
-};                   // Total: 28 bytes, aligned to 4-byte boundary
+};  // Total: 28 bytes, aligned to 4-byte boundary
+
+namespace {
+
+// Helper function to find best split axis based on range
+template <typename T, typename ALLOCATOR>
+inline int find_best_axis(const std::vector<T, ALLOCATOR>& points, const std::vector<int>& indices) {
+    if (indices.size() <= 1) return 0;
+
+    // Find min/max for each axis
+    std::array<float, 3> min_vals = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                                     std::numeric_limits<float>::max()};
+    std::array<float, 3> max_vals = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                                     std::numeric_limits<float>::lowest()};
+
+    // Find the range of each axis
+    for (const auto& idx : indices) {
+        for (int axis = 0; axis < 3; ++axis) {
+            min_vals[axis] = std::min(min_vals[axis], points[idx](axis));
+            max_vals[axis] = std::max(max_vals[axis], points[idx](axis));
+        }
+    }
+
+    // Find the axis with largest range
+    std::array<float, 3> ranges = {max_vals[0] - min_vals[0], max_vals[1] - min_vals[1], max_vals[2] - min_vals[2]};
+
+    // Return the axis with the largest range
+    if (ranges[0] >= ranges[1] && ranges[0] >= ranges[2]) return 0;
+    if (ranges[1] >= ranges[0] && ranges[1] >= ranges[2]) return 1;
+    return 2;
+}
+
+}  // namespace
 
 class KDTree {
 public:
@@ -89,8 +121,8 @@ public:
 
             if (subIndices.empty()) continue;
 
-            // Split axis based on current depth (x->y->z->x->...)
-            const int axis = depth % 3;
+            // Split axis
+            const int axis = find_best_axis(points, subIndices);
 
             // Create pairs of values and indices for sorting along the axis
             sortedValues.resize(subIndices.size());
@@ -212,8 +244,8 @@ public:
 
             if (subIndices.empty()) continue;
 
-            // Split axis based on current depth (x->y->z->x->...)
-            const int axis = depth % 3;
+            // Split axis
+            const int axis = find_best_axis(points, subIndices);
 
             // Create pairs of values and indices for sorting along the axis
             sortedValues.resize(subIndices.size());
@@ -276,7 +308,7 @@ public:
         return KDTreeSYCL::build(queue, *cloud.points);
     }
 
-    template <size_t MAX_K=48, size_t MAX_DEPTH=32>
+    template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointContainerShared& queries,  // Query points
                                         const size_t k,                       // Number of neighbors to find
                                         KNNResultSYCL& result) const {
@@ -410,14 +442,14 @@ public:
         return events;
     }
 
-    template <size_t MAX_K=48, size_t MAX_DEPTH=32>
+    template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointCloudShared& queries,  // Query points
                                         const size_t k,                   // Number of neighbors to find
                                         KNNResultSYCL& result) const {
         return knn_search_async<MAX_K, MAX_DEPTH>(*queries.points, k, result);
     }
 
-    template <size_t MAX_K=48, size_t MAX_DEPTH=32>
+    template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     KNNResultSYCL knn_search(const PointContainerShared& queries,  // Query points
                              const size_t k) const {               // Number of neighbors to find
 
@@ -426,7 +458,7 @@ public:
         return result;
     }
 
-    template <size_t MAX_K=48, size_t MAX_DEPTH=32>
+    template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     KNNResultSYCL knn_search(const PointCloudShared& queries,  // Query points
                              const size_t k) const {           // Number of neighbors to find
 
