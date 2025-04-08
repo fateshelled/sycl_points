@@ -114,10 +114,29 @@ private:
         return delta.template head<3>().norm() < this->params_.rotation_eps &&
                delta.template tail<3>().norm() < this->params_.translation_eps;
     }
+    std::shared_ptr<sycl::queue> queue_ = nullptr;
+    std::shared_ptr<shared_vector<TransformMatrix>> cur_T_ = nullptr;
+    std::shared_ptr<shared_vector<float>> max_distance_ = nullptr;
+    std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
+    std::shared_ptr<shared_vector<LinearlizedResult>> linearlized_ = nullptr;
 
 public:
-    Registration(const RegistrationParams& params = RegistrationParams()) : params_(params) {}
-    RegistrationResult optimize(sycl::queue& queue, const PointCloudShared& source, const PointCloudShared& target,
+    Registration(sycl::queue& queue, const RegistrationParams& params = RegistrationParams())
+        : params_(params), queue_(std::make_shared<sycl::queue>(queue)) {
+        this->cur_T_ = std::make_shared<shared_vector<TransformMatrix>>(
+            1, TransformMatrix::Identity(), shared_allocator<TransformMatrix>(*this->queue_, {}));
+
+        this->max_distance_ = std::make_shared<shared_vector<float>>(1, params_.max_correspondence_distance,
+                                                                     shared_allocator<float>(*this->queue_, {}));
+
+        this->neighbors_ = std::make_shared<shared_vector<KNNResultSYCL>>(
+            1, KNNResultSYCL(), shared_allocator<KNNResultSYCL>(*this->queue_, {}));
+        this->neighbors_->at(0).allocate(*this->queue_, 0, 0);
+
+        this->linearlized_ = std::make_shared<shared_vector<LinearlizedResult>>(
+            0, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_, {}));
+    }
+    RegistrationResult optimize(const PointCloudShared& source, const PointCloudShared& target,
                                 const KDTreeSYCL& target_tree,
                                 const TransformMatrix& init_T = TransformMatrix::Identity()) const {
         const size_t N = source.size();
@@ -132,20 +151,20 @@ public:
         const auto verbose = this->params_.verbose;
 
         // Optimize work group size
-        const size_t work_group_size = sycl_utils::get_work_group_size(queue);
+        const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_);
         const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
 
         sycl_utils::events transform_events;
 
         // memory allocation
-        shared_vector<TransformMatrix> cur_T(1, result.T.matrix(), shared_allocator<TransformMatrix>(queue, {}));
-        shared_vector<LinearlizedResult> linearlized_results(N, LinearlizedResult(),
-                                                             shared_allocator<LinearlizedResult>(queue, {}));
-        shared_vector<float> max_distance(1, max_dist_2, shared_allocator<float>(queue, {}));
+        this->linearlized_->resize(N, LinearlizedResult());
+        this->cur_T_->data()[0] = result.T.matrix();
+        this->max_distance_->at(0) = max_dist_2;
 
         // get pointers
-        const auto max_dist_ptr = max_distance.data();
-        const auto linearlized_ptr = linearlized_results.data();
+        const auto linearlized_ptr = this->linearlized_->data();
+        const auto max_dist_ptr = this->max_distance_->data();
+        const auto cur_T_ptr = this->cur_T_->data();
 
         const auto source_ptr = trans_source.points->data();
         const auto target_ptr = target.points->data();
@@ -156,8 +175,7 @@ public:
             prev_T = result.T;
             transform_events.wait();
             // nearest neighbor search
-            KNNResultSYCL neighbors;
-            auto knn_event = target_tree.knn_search_async(trans_source, 1, neighbors);
+            auto knn_event = target_tree.knn_search_async(trans_source, 1, (*this->neighbors_)[0]);
 
             // linearlize
             LinearlizedResult linearlized;
@@ -165,14 +183,13 @@ public:
             linearlized.b = Eigen::Matrix<float, 6, 1>::Zero();
             linearlized.error = 0.0;
             {
-                cur_T[0] = result.T.matrix();
-                const auto cur_T_ptr = cur_T.data();
+                this->cur_T_->at(0) = result.T.matrix();
 
                 knn_event.wait();
-                const auto neighbors_index_ptr = neighbors.indices->data();
-                const auto neighbors_distances_ptr = neighbors.distances->data();
+                const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+                const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
-                auto linearlize_event = queue.submit([&](sycl::handler& h) {
+                auto linearlize_event = this->queue_->submit([&](sycl::handler& h) {
                     h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
                                    [=](sycl::nd_item<1> item) {
                                        const size_t i = item.get_global_id(0);
@@ -192,9 +209,9 @@ public:
 
                 // reduction
                 for (size_t i = 0; i < N; ++i) {
-                    linearlized.H += linearlized_results[i].H;
-                    linearlized.b += linearlized_results[i].b;
-                    linearlized.error += linearlized_results[i].error;
+                    linearlized.H += (*this->linearlized_)[i].H;
+                    linearlized.b += (*this->linearlized_)[i].b;
+                    linearlized.error += (*this->linearlized_)[i].error;
                 }
             }
 

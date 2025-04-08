@@ -24,10 +24,18 @@ struct KNNResult {
 };
 
 struct KNNResultSYCL {
-    std::shared_ptr<shared_vector<int>> indices;
-    std::shared_ptr<shared_vector<float>> distances;
+    std::shared_ptr<shared_vector<int>> indices = nullptr;
+    std::shared_ptr<shared_vector<float>> distances = nullptr;
     size_t query_size;
     size_t k;
+    KNNResultSYCL() : query_size(0), k(0) {}
+    void allocate(sycl::queue& queue, size_t query_size = 0, size_t k = 0) {
+        this->query_size = query_size;
+        this->k = k;
+        this->indices = std::make_shared<shared_vector<int>>(query_size * k, -1, shared_allocator<int>(queue, {}));
+        this->distances = std::make_shared<shared_vector<float>>(query_size * k, std::numeric_limits<float>::max(),
+                                                                 shared_allocator<float>(queue, {}));
+    }
 };
 
 // Node structure for KD-Tree (ignoring w component)
@@ -319,11 +327,14 @@ public:
         const size_t treeSize = this->tree_->size();
 
         // Initialize result structure
-        result.indices = std::make_shared<shared_vector<int>>(q * k, -1, shared_allocator<int>(*this->queue_));
-        result.distances = std::make_shared<shared_vector<float>>(q * k, std::numeric_limits<float>::max(),
-                                                                  shared_allocator<float>(*this->queue_));
-        result.k = k;
-        result.query_size = q;
+        if (result.indices == nullptr || result.distances == nullptr) {
+            result.allocate(*this->queue_, q, k);
+        } else {
+            result.indices->resize(q * k, -1);
+            result.distances->resize(q * k, std::numeric_limits<float>::max());
+            result.k = k;
+            result.query_size = q;
+        }
 
         // Get pointers
         const auto query_ptr = queries.data();
@@ -520,11 +531,7 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointC
 
     // Initialize result structure
     KNNResultSYCL result;
-    result.indices = std::make_shared<shared_vector<int>>(q * k, -1, shared_allocator<int>(queue));
-    result.distances = std::make_shared<shared_vector<float>>(q * k, std::numeric_limits<float>::max(),
-                                                              shared_allocator<float>(queue));
-    result.k = k;
-    result.query_size = q;
+    result.allocate(queue, q, k);
 
     // Optimize work group size
     const size_t work_group_size = sycl_utils::get_work_group_size(queue);

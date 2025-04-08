@@ -28,7 +28,7 @@ int main() {
     param.max_iterations = 10;
     param.max_correspondence_distance = 1.0f;
     param.verbose = false;
-    const auto reg = sycl_points::Registration(param);
+    const auto reg = sycl_points::Registration(queue, param);
 
     const size_t LOOP = 10;
     std::map<std::string, double> elapsed;
@@ -80,7 +80,7 @@ int main() {
 
         t0 = std::chrono::high_resolution_clock::now();
         sycl_points::TransformMatrix init_T = sycl_points::TransformMatrix::Identity();
-        const auto ret = reg.optimize(queue, source_downsampled, target_downsampled, target_tree, init_T);
+        const auto ret = reg.optimize(source_downsampled, target_downsampled, target_tree, init_T);
         auto dt_registration =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
