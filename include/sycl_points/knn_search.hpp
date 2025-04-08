@@ -376,16 +376,24 @@ public:
                         float dist_sq;
                     };
 
-                    NodeEntry stack[MAX_DEPTH];
-                    int stackPtr = 0;
+                    NodeEntry nearStack[MAX_DEPTH / 2];
+                    int nearStackPtr = 0;
+
+                    NodeEntry farStack[MAX_DEPTH / 2];
+                    int farStackPtr = 0;
 
                     // Start from root node
-                    stack[stackPtr++] = {0, 0.0f};
+                    nearStack[nearStackPtr++] = {0, 0.0f};
 
                     // Explore until stack is empty
-                    while (stackPtr > 0) {
+                    while (nearStackPtr > 0 || farStackPtr > 0) {
                         // Pop a node from stack
-                        const NodeEntry current = stack[--stackPtr];
+                        NodeEntry current;
+                        if (nearStackPtr > 0) {
+                            current = nearStack[--nearStackPtr];
+                        } else {
+                            current = farStack[--farStackPtr];
+                        }
                         const int nodeIdx = current.nodeIdx;
 
                         // Skip condition: nodes farther than current kth distance
@@ -433,13 +441,13 @@ public:
                         // Push both near and far sides to stack, but with condition for far side
 
                         // Push further subtree to stack (conditional)
-                        if (searchFurther && furtherNode != -1 && stackPtr < MAX_DEPTH) {
-                            stack[stackPtr++] = {furtherNode, splitDistSq};
+                        if (searchFurther && furtherNode != -1 && farStackPtr < MAX_DEPTH / 2) {
+                            farStack[farStackPtr++] = {furtherNode, splitDistSq};
                         }
 
                         // Push nearer subtree to stack (always explore)
-                        if (nearerNode != -1 && stackPtr < MAX_DEPTH) {
-                            stack[stackPtr++] = {nearerNode, 0.0f};  // Prioritize near side with distance 0
+                        if (nearerNode != -1 && nearStackPtr < MAX_DEPTH / 2) {
+                            nearStack[nearStackPtr++] = {nearerNode, 0.0f};  // Prioritize near side with distance 0
                         }
                     }
 
