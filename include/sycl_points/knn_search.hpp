@@ -319,7 +319,8 @@ public:
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointContainerShared& queries,  // Query points
                                         const size_t k,                       // Number of neighbors to find
-                                        KNNResultSYCL& result) const {
+                                        KNNResultSYCL& result,
+                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         // constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
         // constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
 
@@ -336,17 +337,18 @@ public:
             result.query_size = q;
         }
 
-        // Get pointers
-        const auto query_ptr = queries.data();
-        const auto distance_ptr = result.distances->data();
-        const auto index_ptr = result.indices->data();
-        const auto tree_ptr = (*this->tree_).data();
-
         // Optimize work group size
         const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_);
         const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
 
         auto event = this->queue_->submit([&](sycl::handler& h) {
+            // Get pointers
+            const auto query_ptr = queries.data();
+            const auto distance_ptr = result.distances->data();
+            const auto index_ptr = result.indices->data();
+            const auto tree_ptr = (*this->tree_).data();
+
+            h.depends_on(depends);
             h.parallel_for(
                 sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
                 [=](sycl::nd_item<1> item) {
@@ -456,25 +458,28 @@ public:
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointCloudShared& queries,  // Query points
                                         const size_t k,                   // Number of neighbors to find
-                                        KNNResultSYCL& result) const {
-        return knn_search_async<MAX_K, MAX_DEPTH>(*queries.points, k, result);
+                                        KNNResultSYCL& result,
+                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
+        return knn_search_async<MAX_K, MAX_DEPTH>(*queries.points, k, result, depends);
     }
 
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     KNNResultSYCL knn_search(const PointContainerShared& queries,  // Query points
-                             const size_t k) const {               // Number of neighbors to find
+                             const size_t k, const std::vector<sycl::event>& depends = std::vector<sycl::event>())
+        const {  // Number of neighbors to find
 
         KNNResultSYCL result;
-        knn_search_async<MAX_K, MAX_DEPTH>(queries, k, result).wait();
+        knn_search_async<MAX_K, MAX_DEPTH>(queries, k, result, depends).wait();
         return result;
     }
 
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     KNNResultSYCL knn_search(const PointCloudShared& queries,  // Query points
-                             const size_t k) const {           // Number of neighbors to find
+                             const size_t k, const std::vector<sycl::event>& depends = std::vector<sycl::event>())
+        const {  // Number of neighbors to find
 
         KNNResultSYCL result;
-        knn_search_async<MAX_K, MAX_DEPTH>(*queries.points, k, result).wait();
+        knn_search_async<MAX_K, MAX_DEPTH>(*queries.points, k, result, depends).wait();
         return result;
     }
 };

@@ -131,10 +131,10 @@ public:
 
         this->neighbors_ = std::make_shared<shared_vector<KNNResultSYCL>>(
             1, KNNResultSYCL(), shared_allocator<KNNResultSYCL>(*this->queue_, {}));
-        this->neighbors_->at(0).allocate(*this->queue_, 0, 0);
+        this->neighbors_->at(0).allocate(*this->queue_, 1, 1);
 
         this->linearlized_ = std::make_shared<shared_vector<LinearlizedResult>>(
-            0, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_, {}));
+            1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_, {}));
     }
     RegistrationResult optimize(const PointCloudShared& source, const PointCloudShared& target,
                                 const KDTreeSYCL& target_tree,
@@ -161,48 +161,54 @@ public:
         this->cur_T_->data()[0] = result.T.matrix();
         this->max_distance_->at(0) = max_dist_2;
 
-        // get pointers
-        const auto linearlized_ptr = this->linearlized_->data();
-        const auto max_dist_ptr = this->max_distance_->data();
-        const auto cur_T_ptr = this->cur_T_->data();
-
-        const auto source_ptr = trans_source.points->data();
-        const auto target_ptr = target.points->data();
-        const auto source_cov_ptr = trans_source.covs->data();
-        const auto target_cov_ptr = target.covs->data();
-
         for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
             prev_T = result.T;
-            transform_events.wait();
+            (*this->cur_T_)[0] = result.T.matrix();
+
             // nearest neighbor search
-            auto knn_event = target_tree.knn_search_async(trans_source, 1, (*this->neighbors_)[0]);
+            auto knn_event =
+                target_tree.knn_search_async(trans_source, 1, (*this->neighbors_)[0], transform_events.events);
 
             // linearlize
             LinearlizedResult linearlized;
-            linearlized.H = Eigen::Matrix<float, 6, 6>::Zero();
-            linearlized.b = Eigen::Matrix<float, 6, 1>::Zero();
-            linearlized.error = 0.0;
+            linearlized.H.setZero();
+            linearlized.b.setZero();
+            linearlized.error = 0.0f;
             {
-                this->cur_T_->at(0) = result.T.matrix();
-
-                knn_event.wait();
-                const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
-                const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
-
                 auto linearlize_event = this->queue_->submit([&](sycl::handler& h) {
+                    // get pointers
+                    const auto linearlized_ptr = this->linearlized_->data();
+                    const auto max_dist_ptr = this->max_distance_->data();
+                    const auto cur_T_ptr = this->cur_T_->data();
+
+                    const auto source_ptr = trans_source.points->data();
+                    const auto target_ptr = target.points->data();
+                    const auto source_cov_ptr = trans_source.covs->data();
+                    const auto target_cov_ptr = target.covs->data();
+
+                    const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+                    const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+
+                    // wait for knn search
+                    h.depends_on(knn_event.events);
+
                     h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
                                    [=](sycl::nd_item<1> item) {
                                        const size_t i = item.get_global_id(0);
                                        if (i >= N) return;
 
-                                       if (neighbors_distances_ptr[i] > max_dist_ptr[0]) return;
-
-                                       linearlized_ptr[i] = factor::linearlize_gicp(
-                                           cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                                           source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
-                                       // linearlized_ptr[i] = factor::linearlize_point_to_point(cur_T_ptr[0],
-                                       // source_ptr[i], target_ptr[neighbors_index_ptr[i]], source_cov_ptr[i],
-                                       // target_cov_ptr[neighbors_index_ptr[i]]);
+                                       if (neighbors_distances_ptr[i] > max_dist_ptr[0]) {
+                                           linearlized_ptr[i].H.setZero();
+                                           linearlized_ptr[i].b.setZero();
+                                           linearlized_ptr[i].error = 0.0f;
+                                       } else {
+                                           linearlized_ptr[i] = factor::linearlize_gicp(
+                                               cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
+                                               source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+                                           // linearlized_ptr[i] = factor::linearlize_point_to_point(cur_T_ptr[0],
+                                           // source_ptr[i], target_ptr[neighbors_index_ptr[i]], source_cov_ptr[i],
+                                           // target_cov_ptr[neighbors_index_ptr[i]]);
+                                       }
                                    });
                 });
                 linearlize_event.wait();
