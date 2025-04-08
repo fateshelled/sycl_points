@@ -44,7 +44,7 @@ struct PointCloudCPU {
         }
     };
 
-    PointCloudCPU transform_copy(const TransformMatrix& trans) {
+    PointCloudCPU transform_copy(const TransformMatrix& trans) const {
         const size_t N = this->points.size();
 
         PointCloudCPU transformed;
@@ -62,6 +62,8 @@ struct PointCloudCPU {
         return transformed;
     };
 };
+
+namespace kernel {
 
 SYCL_EXTERNAL inline void transform_covs(const Covariance& cov, Covariance& result, const sycl::vec<float, 4>* trans) {
     const auto cov_vec = eigen_utils::to_sycl_vec(eigen_utils::transpose<4, 4>(cov));
@@ -110,6 +112,8 @@ SYCL_EXTERNAL inline void transform_point(const PointType& point, PointType& res
     result[2] = sycl::dot(trans[2], pt);
     result[3] = 1.0f;
 }
+
+}  // namespace kernel
 
 struct PointCloudShared {
     std::shared_ptr<PointContainerShared> points = nullptr;
@@ -168,7 +172,7 @@ struct PointCloudShared {
 
     bool has_cov() const { return this->covs->size() > 0; }
 
-    std::vector<sycl::event> copyToCPU(PointCloudCPU& cpu) {
+    std::vector<sycl::event> copyToCPU(PointCloudCPU& cpu) const {
         std::vector<sycl::event> events;
         cpu.points.resize(this->points->size());
         events.push_back(
@@ -227,7 +231,7 @@ struct PointCloudShared {
                                [=](sycl::nd_item<1> item) {
                                    const size_t i = item.get_global_id(0);
                                    if (i >= N) return;
-                                   transform_covs(covs[i], covs[i], trans_vec_ptr);
+                                   kernel::transform_covs(covs[i], covs[i], trans_vec_ptr);
                                });
             });
         }
@@ -243,7 +247,7 @@ struct PointCloudShared {
                                [=](sycl::nd_item<1> item) {
                                    const size_t i = item.get_global_id(0);
                                    if (i >= N) return;
-                                   transform_point(point_ptr[i], point_ptr[i], trans_vec_ptr);
+                                   kernel::transform_point(point_ptr[i], point_ptr[i], trans_vec_ptr);
                                });
             });
         }
@@ -286,7 +290,7 @@ struct PointCloudShared {
                                [=](sycl::nd_item<1> item) {
                                    const size_t i = item.get_global_id(0);
                                    if (i >= N) return;
-                                   transform_covs(covs[i], output_covs[i], trans_vec_ptr);
+                                   kernel::transform_covs(covs[i], output_covs[i], trans_vec_ptr);
                                });
             });
         }
@@ -304,7 +308,7 @@ struct PointCloudShared {
                                [=](sycl::nd_item<1> item) {
                                    const size_t i = item.get_global_id(0);
                                    if (i >= N) return;
-                                   transform_point(point_ptr[i], output_points[i], trans_vec_ptr);
+                                   kernel::transform_point(point_ptr[i], output_points[i], trans_vec_ptr);
                                });
             });
         }

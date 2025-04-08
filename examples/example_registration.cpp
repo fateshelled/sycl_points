@@ -63,10 +63,8 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        *source_downsampled.covs =
-            sycl_points::compute_covariances_sycl(queue, source_neighbors, *source_downsampled.points);
-        *target_downsampled.covs =
-            sycl_points::compute_covariances_sycl(queue, target_neighbors, *target_downsampled.points);
+        sycl_points::compute_covariances_sycl(queue, source_neighbors, source_downsampled);
+        sycl_points::compute_covariances_sycl(queue, target_neighbors, target_downsampled);
         auto dt_covariance =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();

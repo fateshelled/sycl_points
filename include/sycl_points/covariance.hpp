@@ -91,11 +91,19 @@ inline sycl_utils::events compute_covariances_sycl_async(const KDTreeSYCL& kdtre
 /// @param queue SYCL queue
 /// @param neightbors KNN search result
 /// @param points Point Container
+inline void compute_covariances_sycl(sycl::queue& queue, const KNNResultSYCL& neightbors,
+                                     const PointCloudShared& points) {
+    const size_t N = points.size();
+    compute_covariances_sycl_async(queue, neightbors, *points.points, *points.covs).wait();
+}
+
+/// @brief Compute covariance using SYCL
+/// @param queue SYCL queue
+/// @param neightbors KNN search result
+/// @param points Point Container
 /// @return Covariances
-inline CovarianceContainerShared compute_covariances_sycl(sycl::queue& queue,
-                                                          const KNNResultSYCL& neightbors,    // KNN search result
-                                                          const PointContainerShared& points  // Point Cloud
-) {
+inline CovarianceContainerShared compute_covariances_sycl(sycl::queue& queue, const KNNResultSYCL& neightbors,
+                                                          const PointContainerShared& points) {
     const size_t N = points.size();
     CovarianceContainerShared covs(N, Covariance::Zero(), shared_allocator<Covariance>(queue));
     compute_covariances_sycl_async(queue, neightbors, points, covs).wait();
