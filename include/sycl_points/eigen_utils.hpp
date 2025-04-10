@@ -118,6 +118,19 @@ SYCL_EXTERNAL inline Eigen::Vector<float, N> multiply(const Eigen::Vector<float,
     return ret;
 }
 
+// A *= s
+// row: M, col: N
+template <size_t M, size_t N>
+SYCL_EXTERNAL inline Eigen::Vector<float, N> multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float scalar) {
+    #pragma unroll
+    for (size_t i = 0; i < M; ++i) {
+#pragma unroll
+        for (size_t j = 0; j < N; ++j) {
+             A(i, j) *= scalar;
+        }
+    }
+}
+
 // trans(A) = B
 // row: M, col: N
 template <size_t M, size_t N>
