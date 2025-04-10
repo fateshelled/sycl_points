@@ -44,20 +44,21 @@ inline sycl_utils::events compute_covariances_sycl_async(sycl::queue& queue, con
                            }
                            const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / k_correspondences);
 
-                           const auto cov3x3 = eigen_utils::subtract<3, 3>(
+                           auto cov3x3 = eigen_utils::subtract<3, 3>(
                                sum_outer, eigen_utils::block3x3(eigen_utils::outer(mean, sum_points)));
+                           cov3x3 = eigen_utils::ensure_symmetric<3>(cov3x3);
 
                            // ensure symmetric
                            cov_ptr[i](0, 0) = cov3x3(0, 0);
-                           cov_ptr[i](0, 1) = (cov3x3(0, 1) + cov3x3(1, 0)) * 0.5f;
-                           cov_ptr[i](0, 2) = (cov3x3(0, 2) + cov3x3(2, 0)) * 0.5f;
+                           cov_ptr[i](0, 1) = cov3x3(0, 1);
+                           cov_ptr[i](0, 2) = cov3x3(0, 2);
 
-                           cov_ptr[i](1, 0) = (cov3x3(1, 0) + cov3x3(0, 1)) * 0.5f;
+                           cov_ptr[i](1, 0) = cov3x3(1, 0);
                            cov_ptr[i](1, 1) = cov3x3(1, 1);
-                           cov_ptr[i](1, 2) = (cov3x3(1, 2) + cov3x3(2, 1)) * 0.5f;
+                           cov_ptr[i](1, 2) = cov3x3(1, 2);
 
-                           cov_ptr[i](2, 0) = (cov3x3(2, 0) + cov3x3(0, 2)) * 0.5f;
-                           cov_ptr[i](2, 1) = (cov3x3(2, 1) + cov3x3(1, 2)) * 0.5f;
+                           cov_ptr[i](2, 0) = cov3x3(2, 0);
+                           cov_ptr[i](2, 1) = cov3x3(2, 1);
                            cov_ptr[i](2, 2) = cov3x3(2, 2);
                        });
     });
