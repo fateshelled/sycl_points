@@ -21,6 +21,29 @@ struct VoxelConstants {
 
 namespace sycl_points {
 
+namespace kernel {
+
+SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float inv_voxel_size) {
+    if (!sycl::isfinite(point.x()) || !sycl::isfinite(point.y()) || !sycl::isfinite(point.z())) {
+        return VoxelConstants::invalid_coord;
+    }
+
+    const auto coord0 = static_cast<int64_t>(sycl::floor(point.x() * inv_voxel_size)) + VoxelConstants::coord_offset;
+    const auto coord1 = static_cast<int64_t>(sycl::floor(point.y() * inv_voxel_size)) + VoxelConstants::coord_offset;
+    const auto coord2 = static_cast<int64_t>(sycl::floor(point.z() * inv_voxel_size)) + VoxelConstants::coord_offset;
+    if (coord0 < 0 || VoxelConstants::coord_bit_mask < coord0 || coord1 < 0 ||
+        VoxelConstants::coord_bit_mask < coord1 || coord2 < 0 || VoxelConstants::coord_bit_mask < coord2) {
+        return VoxelConstants::invalid_coord;
+    }
+
+    // Compute voxel coord bits (0|1bit, z|21bit, y|21bit, x|21bit)
+    return (static_cast<uint64_t>(coord0 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 0)) |
+           (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 1)) |
+           (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 2));
+}
+
+}  // namespace kernel
+
 inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const PointContainerShared& points,
                                                     const float voxel_size) {
     // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
@@ -45,35 +68,13 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
         const auto bit_ptr = bits.data();
 
         auto event = queue.submit([&](sycl::handler& h) {
-            h.parallel_for(
-                sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-                [=](sycl::nd_item<1> item) {
-                    const size_t i = item.get_global_id(0);
-                    if (i >= N) return;
+            h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
+                           [=](sycl::nd_item<1> item) {
+                               const size_t i = item.get_global_id(0);
+                               if (i >= N) return;
 
-                    if (!sycl::isfinite(point_ptr[i].x()) || !sycl::isfinite(point_ptr[i].y()) ||
-                        !sycl::isfinite(point_ptr[i].z())) {
-                        return;
-                    }
-                    const auto coord0 = static_cast<int64_t>(sycl::floor(point_ptr[i].x() * inv_voxel_size)) +
-                                        VoxelConstants::coord_offset;
-                    const auto coord1 = static_cast<int64_t>(sycl::floor(point_ptr[i].y() * inv_voxel_size)) +
-                                        VoxelConstants::coord_offset;
-                    const auto coord2 = static_cast<int64_t>(sycl::floor(point_ptr[i].z() * inv_voxel_size)) +
-                                        VoxelConstants::coord_offset;
-                    if (coord0 < 0 || VoxelConstants::coord_bit_mask < coord0 || coord1 < 0 ||
-                        VoxelConstants::coord_bit_mask < coord1 || coord2 < 0 ||
-                        VoxelConstants::coord_bit_mask < coord2) {
-                        return;
-                    }
-                    // Compute voxel coord bits (0|1bit, z|21bit, y|21bit, x|21bit)
-                    bit_ptr[i] = (static_cast<uint64_t>(coord0 & VoxelConstants::coord_bit_mask)
-                                  << (VoxelConstants::coord_bit_size * 0)) |
-                                 (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask)
-                                  << (VoxelConstants::coord_bit_size * 1)) |
-                                 (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask)
-                                  << (VoxelConstants::coord_bit_size * 2));
-                });
+                               bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], inv_voxel_size);
+                           });
         });
         event.wait();
     }

@@ -97,8 +97,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T,
 
     LinearlizedResult ret;
     // J.transpose() * mahalanobis * J;
-    ret.H = eigen_utils::multiply<6, 4, 6>(J_T_mah, J);
-    ret.H = eigen_utils::ensure_symmetric<6>(ret.H);
+    ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T_mah, J));
     // J.transpose() * mahalanobis * residual;
     ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
     // 0.5 * residual.transpose() * mahalanobis * residual;

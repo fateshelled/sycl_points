@@ -5,6 +5,59 @@
 
 namespace sycl_points {
 
+namespace kernel {
+
+SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* point_ptr,
+                                             const size_t k_correspondences, const int* index_ptr, const size_t i) {
+    PointType sum_points = PointType::Zero();
+    Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
+
+    for (size_t j = 0; j < k_correspondences; ++j) {
+        const auto pt = point_ptr[index_ptr[i * k_correspondences + j]];
+        eigen_utils::add_zerocopy<4, 1>(sum_points, pt);
+
+        const auto outer = eigen_utils::block3x3(eigen_utils::outer(pt, pt));
+        eigen_utils::add_zerocopy<3, 3>(sum_outer, outer);
+    }
+
+    const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / k_correspondences);
+
+    const auto cov3x3 = eigen_utils::ensure_symmetric<3>(
+        eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::block3x3(eigen_utils::outer(mean, sum_points))));
+
+    ret(0, 0) = cov3x3(0, 0);
+    ret(0, 1) = cov3x3(0, 1);
+    ret(0, 2) = cov3x3(0, 2);
+
+    ret(1, 0) = cov3x3(1, 0);
+    ret(1, 1) = cov3x3(1, 1);
+    ret(1, 2) = cov3x3(1, 2);
+
+    ret(2, 0) = cov3x3(2, 0);
+    ret(2, 1) = cov3x3(2, 1);
+    ret(2, 2) = cov3x3(2, 2);
+}
+
+SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
+    Eigen::Vector3f eigenvalues;
+    Eigen::Matrix3f eigenvectors;
+    eigen_utils::symmetric_eigen_decomposition_3x3(eigen_utils::block3x3(cov), eigenvalues, eigenvectors);
+    const auto diag = eigen_utils::as_diagonal<3>({1e-3f, 1.0f, 1.0f});
+    const auto new_cov = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
+                                                        eigen_utils::transpose<3, 3>(eigenvectors));
+    cov(0, 0) = new_cov(0, 0);
+    cov(0, 1) = new_cov(0, 1);
+    cov(0, 2) = new_cov(0, 2);
+    cov(1, 0) = new_cov(1, 0);
+    cov(1, 1) = new_cov(1, 1);
+    cov(1, 2) = new_cov(1, 2);
+    cov(2, 0) = new_cov(2, 0);
+    cov(2, 1) = new_cov(2, 1);
+    cov(2, 2) = new_cov(2, 2);
+}
+
+}  // namespace kernel
+
 /// @brief Async compute covariance using SYCL
 /// @param queue SYCL queue
 /// @param neightbors KNN search result
@@ -31,35 +84,7 @@ inline sycl_utils::events compute_covariances_sycl_async(sycl::queue& queue, con
                        [=](sycl::nd_item<1> item) {
                            const size_t i = item.get_global_id(0);
                            if (i >= N) return;
-
-                           PointType sum_points = PointType::Zero();
-                           Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
-
-                           for (size_t j = 0; j < k_correspondences; ++j) {
-                               const auto pt = point_ptr[index_ptr[i * k_correspondences + j]];
-                               eigen_utils::add_zerocopy<4, 1>(sum_points, pt);
-
-                               const auto outer = eigen_utils::block3x3(eigen_utils::outer(pt, pt));
-                               eigen_utils::add_zerocopy<3, 3>(sum_outer, outer);
-                           }
-                           const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / k_correspondences);
-
-                           auto cov3x3 = eigen_utils::subtract<3, 3>(
-                               sum_outer, eigen_utils::block3x3(eigen_utils::outer(mean, sum_points)));
-                           cov3x3 = eigen_utils::ensure_symmetric<3>(cov3x3);
-
-                           // ensure symmetric
-                           cov_ptr[i](0, 0) = cov3x3(0, 0);
-                           cov_ptr[i](0, 1) = cov3x3(0, 1);
-                           cov_ptr[i](0, 2) = cov3x3(0, 2);
-
-                           cov_ptr[i](1, 0) = cov3x3(1, 0);
-                           cov_ptr[i](1, 1) = cov3x3(1, 1);
-                           cov_ptr[i](1, 2) = cov3x3(1, 2);
-
-                           cov_ptr[i](2, 0) = cov3x3(2, 0);
-                           cov_ptr[i](2, 1) = cov3x3(2, 1);
-                           cov_ptr[i](2, 2) = cov3x3(2, 2);
+                           kernel::compute_covariance(cov_ptr[i], point_ptr, k_correspondences, index_ptr, i);
                        });
     });
     sycl_utils::events events;
@@ -158,23 +183,7 @@ inline sycl_utils::events covariance_update_plane_sycl_async(sycl::queue& queue,
                            const size_t i = item.get_global_id(0);
                            if (i >= N) return;
 
-                           Eigen::Vector3f eigenvalues;
-                           Eigen::Matrix3f eigenvectors;
-                           eigen_utils::symmetric_eigen_decomposition_3x3(eigen_utils::block3x3(cov_ptr[i]),
-                                                                          eigenvalues, eigenvectors);
-                           const auto diag = eigen_utils::as_diagonal<3>({1e-3f, 1.0f, 1.0f});
-                           const auto new_cov =
-                               eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
-                                                              eigen_utils::transpose<3, 3>(eigenvectors));
-                           cov_ptr[i](0, 0) = new_cov(0, 0);
-                           cov_ptr[i](0, 1) = new_cov(0, 1);
-                           cov_ptr[i](0, 2) = new_cov(0, 2);
-                           cov_ptr[i](1, 0) = new_cov(1, 0);
-                           cov_ptr[i](1, 1) = new_cov(1, 1);
-                           cov_ptr[i](1, 2) = new_cov(1, 2);
-                           cov_ptr[i](2, 0) = new_cov(2, 0);
-                           cov_ptr[i](2, 1) = new_cov(2, 1);
-                           cov_ptr[i](2, 2) = new_cov(2, 2);
+                           kernel::update_covariance_plane(cov_ptr[i]);
                        });
     });
 
