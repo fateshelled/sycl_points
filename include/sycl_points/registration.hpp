@@ -38,8 +38,8 @@ struct RegistrationResult {
 namespace factor {
 
 // SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
-//                                                                  const PointType& target, const Covariance& source_cov,
-//                                                                  const Covariance& target_cov) {
+//                                                                  const PointType& target, const Covariance&
+//                                                                  source_cov, const Covariance& target_cov) {
 //     LinearlizedResult ret;
 //     return ret;
 // }
@@ -227,6 +227,8 @@ public:
             {
                 const Eigen::Matrix<float, 6, 1> delta =
                     (linearlized.H + lambda * Eigen::Matrix<float, 6, 6>::Identity()).ldlt().solve(-linearlized.b);
+                // const auto delta = eigen_utils::solve_system_6x6(
+                //     linearlized.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), -linearlized.b);
                 result.converged = this->is_converged(delta);
                 result.T = result.T * eigen_utils::lie::se3_exp(delta);
                 result.iterations = iter;

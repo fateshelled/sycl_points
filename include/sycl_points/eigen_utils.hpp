@@ -361,6 +361,72 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
     }
 }
 
+SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Matrix<float, 6, 6>& A,
+                                                                 const Eigen::Matrix<float, 6, 1>& b) {
+    // Cholesky decomposition
+    Eigen::Matrix<float, 6, 6> L = Eigen::Matrix<float, 6, 6>::Zero();
+    constexpr float eps = 1e-8f;
+
+    L(0, 0) = sycl::sqrt(A(0, 0) > eps ? A(0, 0) : eps);
+    const float inv_L00 = 1.0f / L(0, 0);
+
+    for (int i = 1; i < 6; ++i) {
+        L(i, 0) = A(i, 0) * inv_L00;
+    }
+
+    for (int j = 1; j < 6; ++j) {
+        float diag_sum = 0.0f;
+
+#pragma unroll
+        for (int k = 0; k < j; ++k) {
+            diag_sum += L(j, k) * L(j, k);
+        }
+
+        float val = A(j, j) - diag_sum;
+        L(j, j) = sycl::sqrt(val > eps ? val : eps);
+        const float inv_Ljj = 1.0f / L(j, j);
+
+        for (int i = j + 1; i < 6; ++i) {
+            float off_diag_sum = 0.0f;
+
+#pragma unroll
+            for (int k = 0; k < j; ++k) {
+                off_diag_sum += L(i, k) * L(j, k);
+            }
+
+            L(i, j) = (A(i, j) - off_diag_sum) * inv_Ljj;
+        }
+    }
+
+    Eigen::Matrix<float, 6, 1> y = Eigen::Matrix<float, 6, 1>::Zero();
+    for (int i = 0; i < 6; ++i) {
+        float sum = 0.0f;
+
+#pragma unroll
+        for (int j = 0; j < i; ++j) {
+            sum += L(i, j) * y(j);
+        }
+
+        const float inv_Lii = 1.0f / (sycl::fabs(L(i, i)) < eps ? eps : L(i, i));
+        y(i) = (b(i) - sum) * inv_Lii;
+    }
+
+    Eigen::Matrix<float, 6, 1> x = Eigen::Matrix<float, 6, 1>::Zero();
+    for (int i = 5; i >= 0; --i) {
+        float sum = 0.0f;
+
+#pragma unroll
+        for (int j = i + 1; j < 6; ++j) {
+            sum += L(j, i) * x(j);
+        }
+
+        const float inv_Lii = 1.0f / (sycl::fabs(L(i, i)) < eps ? eps : L(i, i));
+        x(i) = (y(i) - sum) * inv_Lii;
+    }
+
+    return x;
+}
+
 inline sycl::vec<float, 4> to_sycl_vec(const Eigen::Vector4f& vec) { return {vec[0], vec[1], vec[2], vec[3]}; }
 
 inline std::array<sycl::vec<float, 4>, 4> to_sycl_vec(const Eigen::Matrix4f& mat) {
