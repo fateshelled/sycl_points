@@ -194,15 +194,17 @@ public:
 
 class KDTreeSYCL {
 public:
-    std::shared_ptr<shared_vector<FlatKDNode>> tree_;
+    using FlatKDNodeVector = shared_vector<FlatKDNode>;
+
+    std::shared_ptr<FlatKDNodeVector> tree_;
     std::shared_ptr<sycl::queue> queue_ = nullptr;
 
     KDTreeSYCL(sycl::queue& queue) : queue_(std::make_shared<sycl::queue>(queue)) {
-        tree_ = std::make_shared<shared_vector<FlatKDNode>>(0, *this->queue_);
+        tree_ = std::make_shared<FlatKDNodeVector>(0, *this->queue_);
     }
 
     KDTreeSYCL(sycl::queue& queue, const KDTree& kdtree) : queue_(std::make_shared<sycl::queue>(queue)) {
-        tree_ = std::make_shared<shared_vector<FlatKDNode>>(kdtree.tree_->size(), *this->queue_);
+        tree_ = std::make_shared<FlatKDNodeVector>(kdtree.tree_->size(), *this->queue_);
         for (size_t i = 0; i < kdtree.tree_->size(); ++i) {
             (*tree_)[i] = (*kdtree.tree_)[i];
         }

@@ -105,7 +105,7 @@ inline void compute_covariances_sycl(sycl::queue& queue, const KNNResultSYCL& ne
 inline CovarianceContainerShared compute_covariances_sycl(sycl::queue& queue, const KNNResultSYCL& neightbors,
                                                           const PointContainerShared& points) {
     const size_t N = points.size();
-    CovarianceContainerShared covs(N, Covariance::Zero(), shared_allocator<Covariance>(queue));
+    CovarianceContainerShared covs(N, Covariance::Zero(), CovarianceAllocatorShared(queue));
     compute_covariances_sycl_async(queue, neightbors, points, covs).wait();
     return covs;
 }

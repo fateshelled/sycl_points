@@ -28,7 +28,7 @@ inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const Po
     // MIT License
 
     const size_t N = points.size();
-    const shared_allocator<PointType> point_alloc(queue);
+    const PointAllocatorShared point_alloc(queue);
     if (N == 0) return PointContainerShared(0, point_alloc);
 
     const float inv_voxel_size = 1.0f / voxel_size;

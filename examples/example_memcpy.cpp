@@ -18,8 +18,8 @@ int main() {
     {
         // make allocator
         auto s = std::chrono::high_resolution_clock::now();
-        sycl_points::host_allocator<float> host_alloc(queue);
-        sycl_points::shared_allocator<float> shared_alloc(queue);
+        sycl_points::PointAllocatorHost host_alloc(queue);
+        sycl_points::PointAllocatorShared shared_alloc(queue);
         const auto dt_make_allocate =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
