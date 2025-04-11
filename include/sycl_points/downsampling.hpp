@@ -44,86 +44,98 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
 
 }  // namespace kernel
 
-inline PointContainerShared voxel_downsampling_sycl(sycl::queue& queue, const PointContainerShared& points,
-                                                    const float voxel_size) {
-    // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
-    // function: voxelgrid_sampling
-    // MIT License
-
-    const size_t N = points.size();
-    const PointAllocatorShared point_alloc(queue);
-    if (N == 0) return PointContainerShared(0, point_alloc);
-
-    const float inv_voxel_size = 1.0f / voxel_size;
-
-    // Optimize work group size
-    const size_t work_group_size = sycl_utils::get_work_group_size(queue);
-    const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
-
-    // compute bit on device
-    shared_vector<uint64_t> bits(N, VoxelConstants::invalid_coord, shared_allocator<uint64_t>(queue));
-    {
-        // memory ptr
-        const auto point_ptr = points.data();
-        const auto bit_ptr = bits.data();
-
-        auto event = queue.submit([&](sycl::handler& h) {
-            h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-                           [=](sycl::nd_item<1> item) {
-                               const size_t i = item.get_global_id(0);
-                               if (i >= N) return;
-
-                               bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], inv_voxel_size);
-                           });
-        });
-        event.wait();
+class VoxelGridSYCL {
+public:
+    VoxelGridSYCL(const std::shared_ptr<sycl::queue>& queue_ptr, const float voxel_size)
+        : queue_ptr_(queue_ptr), voxel_size_(voxel_size) {
+        this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, VoxelConstants::invalid_coord,
+                                                                   shared_allocator<uint64_t>(*queue_ptr_));
+        this->voxel_size_inv_ = 1.0f / this->voxel_size_;
     }
 
-    std::unordered_map<uint64_t, PointType> voxel_map;
-    /* Kahan algorithm (high precision) */
-    // {
-    //   std::unordered_map<uint64_t, PointType> kahan_map;
-    //   kahan_map.reserve(N / 2);
+    void set_voxel_size(const float voxel_size) { voxel_size_ = voxel_size; }
+    float get_voxel_size() const { return voxel_size_; }
 
-    //   for (size_t i = 0; i < N; ++i) {
-    //     if (bits[i] == VoxelConstants::invalid_coord) continue;
+    void downsampling(const PointContainerShared& points, PointContainerShared& result) {
+        // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
+        // function: voxelgrid_sampling
+        // MIT License
+        const size_t N = points.size();
+        if (N == 0) {
+            result.resize(0);
+            return;
+        }
+        const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr_);
+        const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+        // compute bit on device
+        this->bit_ptr_->resize(N, VoxelConstants::invalid_coord);
+        {
+            auto event = queue_ptr_->submit([&](sycl::handler& h) {
+                // memory ptr
+                const auto point_ptr = points.data();
+                const auto bit_ptr = this->bit_ptr_->data();
+                const auto voxel_size_inv = this->voxel_size_inv_;
+                h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
+                               [=](sycl::nd_item<1> item) {
+                                   const size_t i = item.get_global_id(0);
+                                   if (i >= N) return;
 
-    //     const auto it = voxel_map.find(bits[i]);
-    //     if (it == voxel_map.end()) {
-    //       voxel_map[bits[i]] = points[i];
-    //     } else {
-    //       const auto y = points[i] - kahan_map[bits[i]];
-    //       const auto t = it->second + y;
-    //       kahan_map[bits[i]] = (t - it->second) - y;
-    //       it->second = t;
-    //     }
-    //   }
-    // }
-    /* Fast algorithm */
-    {
-        for (size_t i = 0; i < N; ++i) {
-            if (bits[i] == VoxelConstants::invalid_coord) continue;
-            const auto it = voxel_map.find(bits[i]);
-            if (it == voxel_map.end()) {
-                voxel_map[bits[i]] = points[i];
-            } else {
-                it->second += points[i];
+                                   bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], voxel_size_inv);
+                               });
+            });
+            event.wait();
+        }
+
+        std::unordered_map<uint64_t, PointType> voxel_map;
+        /* Kahan algorithm (high precision) */
+        // {
+        //   std::unordered_map<uint64_t, PointType> kahan_map;
+        //   kahan_map.reserve(N / 2);
+
+        //   for (size_t i = 0; i < N; ++i) {
+        //     if (bits[i] == VoxelConstants::invalid_coord) continue;
+
+        //     const auto it = voxel_map.find(bits[i]);
+        //     if (it == voxel_map.end()) {
+        //       voxel_map[bits[i]] = points[i];
+        //     } else {
+        //       const auto y = points[i] - kahan_map[bits[i]];
+        //       const auto t = it->second + y;
+        //       kahan_map[bits[i]] = (t - it->second) - y;
+        //       it->second = t;
+        //     }
+        //   }
+        // }
+        /* Fast algorithm */
+        {
+            for (size_t i = 0; i < N; ++i) {
+                if ((*this->bit_ptr_)[i] == VoxelConstants::invalid_coord) continue;
+                const auto it = voxel_map.find((*this->bit_ptr_)[i]);
+                if (it == voxel_map.end()) {
+                    voxel_map[(*this->bit_ptr_)[i]] = points[i];
+                } else {
+                    it->second += points[i];
+                }
             }
         }
-    }
-    PointContainerShared result(voxel_map.size(), point_alloc);
-    size_t idx = 0;
-    for (const auto& [_, point] : voxel_map) {
-        result[idx++] = point / point.w();
-    }
-    return result;
-}
 
-inline PointCloudShared voxel_downsampling_sycl(sycl::queue& queue, const PointCloudShared& points,
-                                                const float voxel_size) {
-    PointCloudShared ret(queue);
-    *ret.points = voxel_downsampling_sycl(queue, *points.points, voxel_size);
-    return ret;
-}
+        result.resize(voxel_map.size());
+        size_t idx = 0;
+        for (const auto& [_, point] : voxel_map) {
+            result[idx++] = point / point.w();
+        }
+    }
+
+    void downsampling(const PointCloudShared& cloud, PointCloudShared& result) {
+        this->downsampling(*cloud.points, *result.points);
+    }
+
+private:
+    std::shared_ptr<sycl::queue> queue_ptr_;
+    float voxel_size_;
+    float voxel_size_inv_;
+
+    std::shared_ptr<shared_vector<uint64_t>> bit_ptr_ = nullptr;
+};
 
 }  // namespace sycl_points

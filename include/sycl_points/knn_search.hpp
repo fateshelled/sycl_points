@@ -199,11 +199,11 @@ public:
     std::shared_ptr<FlatKDNodeVector> tree_;
     std::shared_ptr<sycl::queue> queue_ = nullptr;
 
-    KDTreeSYCL(sycl::queue& queue) : queue_(std::make_shared<sycl::queue>(queue)) {
+    KDTreeSYCL(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_(queue_ptr) {
         tree_ = std::make_shared<FlatKDNodeVector>(0, *this->queue_);
     }
 
-    KDTreeSYCL(sycl::queue& queue, const KDTree& kdtree) : queue_(std::make_shared<sycl::queue>(queue)) {
+    KDTreeSYCL(const std::shared_ptr<sycl::queue>& queue_ptr, const KDTree& kdtree) : queue_(queue_ptr) {
         tree_ = std::make_shared<FlatKDNodeVector>(kdtree.tree_->size(), *this->queue_);
         for (size_t i = 0; i < kdtree.tree_->size(); ++i) {
             (*tree_)[i] = (*kdtree.tree_)[i];
@@ -212,12 +212,12 @@ public:
 
     ~KDTreeSYCL() {}
 
-    static KDTreeSYCL build(sycl::queue& queue, const PointContainerShared& points) {
+    static KDTreeSYCL build(const std::shared_ptr<sycl::queue>& queue_ptr, const PointContainerShared& points) {
         const size_t n = points.size();
 
         // Estimate tree size with some margin
         const int estimatedSize = n * 2;
-        KDTreeSYCL flatTree(queue);
+        KDTreeSYCL flatTree(queue_ptr);
 
         flatTree.tree_->resize(estimatedSize);
 
@@ -314,8 +314,8 @@ public:
         return flatTree;
     }
 
-    static KDTreeSYCL build(sycl::queue& queue, const PointCloudShared& cloud) {
-        return KDTreeSYCL::build(queue, *cloud.points);
+    static KDTreeSYCL build(const std::shared_ptr<sycl::queue>& queue_ptr, const PointCloudShared& cloud) {
+        return KDTreeSYCL::build(queue_ptr, *cloud.points);
     }
 
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>

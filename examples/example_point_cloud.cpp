@@ -13,9 +13,9 @@ int main() {
 
     /* Specity device */
     sycl::device dev;  // set from Environments variable `ONEAPI_DEVICE_SELECTOR`
-    sycl::queue queue(dev);
+    std::shared_ptr<sycl::queue> queue  = std::make_shared<sycl::queue>(dev);
 
-    sycl_points::sycl_utils::print_device_info(queue);
+    sycl_points::sycl_utils::print_device_info(*queue);
 
     auto s = std::chrono::high_resolution_clock::now();
     sycl_points::PointCloudShared shared_points(queue, source_points);
@@ -62,9 +62,11 @@ int main() {
     // Downsampling
     double dt_voxel_downsampling = 0.0;
     const float voxel_size = 1.0;
+    sycl_points::VoxelGridSYCL voxel_grid(queue, voxel_size);
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto downsampled = sycl_points::voxel_downsampling_sycl(queue, shared_points, voxel_size);
+        sycl_points::PointCloudShared downsampled(queue);
+        voxel_grid.downsampling(shared_points, downsampled);
         if (i > 0) {
             dt_voxel_downsampling +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)

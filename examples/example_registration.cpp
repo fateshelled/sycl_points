@@ -17,9 +17,9 @@ int main() {
 
     /* Specity device */
     sycl::device dev;  // set from Environments variable `ONEAPI_DEVICE_SELECTOR`
-    sycl::queue queue(dev);
+    std::shared_ptr<sycl::queue> queue  = std::make_shared<sycl::queue>(dev);
 
-    sycl_points::sycl_utils::print_device_info(queue);
+    sycl_points::sycl_utils::print_device_info(*queue);
 
     const float voxel_size = 0.25f;
     const size_t num_neighbors = 10;
@@ -29,6 +29,8 @@ int main() {
     param.max_correspondence_distance = 1.0f;
     param.verbose = false;
     const auto reg = sycl_points::Registration(queue, param);
+
+    sycl_points::VoxelGridSYCL voxel_grid(queue, voxel_size);
 
     const size_t LOOP = 10;
     std::map<std::string, double> elapsed;
@@ -42,8 +44,11 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        const auto source_downsampled = sycl_points::voxel_downsampling_sycl(queue, source_shared, voxel_size);
-        const auto target_downsampled = sycl_points::voxel_downsampling_sycl(queue, target_shared, voxel_size);
+        sycl_points::PointCloudShared source_downsampled(queue);
+        voxel_grid.downsampling(source_shared, source_downsampled);
+
+        sycl_points::PointCloudShared target_downsampled(queue);
+        voxel_grid.downsampling(target_shared, target_downsampled);
         auto dt_downsampled =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();

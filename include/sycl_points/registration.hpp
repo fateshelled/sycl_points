@@ -114,27 +114,27 @@ private:
         return delta.template head<3>().norm() < this->params_.rotation_eps &&
                delta.template tail<3>().norm() < this->params_.translation_eps;
     }
-    std::shared_ptr<sycl::queue> queue_ = nullptr;
+    std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
     std::shared_ptr<shared_vector<TransformMatrix>> cur_T_ = nullptr;
     std::shared_ptr<shared_vector<float>> max_distance_ = nullptr;
     std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
     std::shared_ptr<shared_vector<LinearlizedResult>> linearlized_ = nullptr;
 
 public:
-    Registration(sycl::queue& queue, const RegistrationParams& params = RegistrationParams())
-        : params_(params), queue_(std::make_shared<sycl::queue>(queue)) {
+    Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
+        : params_(params), queue_ptr_(queue_ptr) {
         this->cur_T_ = std::make_shared<shared_vector<TransformMatrix>>(
-            1, TransformMatrix::Identity(), shared_allocator<TransformMatrix>(*this->queue_, {}));
+            1, TransformMatrix::Identity(), shared_allocator<TransformMatrix>(*this->queue_ptr_, {}));
 
         this->max_distance_ = std::make_shared<shared_vector<float>>(1, params_.max_correspondence_distance,
-                                                                     shared_allocator<float>(*this->queue_, {}));
+                                                                     shared_allocator<float>(*this->queue_ptr_, {}));
 
         this->neighbors_ = std::make_shared<shared_vector<KNNResultSYCL>>(
-            1, KNNResultSYCL(), shared_allocator<KNNResultSYCL>(*this->queue_, {}));
-        this->neighbors_->at(0).allocate(*this->queue_, 1, 1);
+            1, KNNResultSYCL(), shared_allocator<KNNResultSYCL>(*this->queue_ptr_, {}));
+        this->neighbors_->at(0).allocate(*this->queue_ptr_, 1, 1);
 
         this->linearlized_ = std::make_shared<shared_vector<LinearlizedResult>>(
-            1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_, {}));
+            1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_ptr_, {}));
     }
     RegistrationResult optimize(const PointCloudShared& source, const PointCloudShared& target,
                                 const KDTreeSYCL& target_tree,
@@ -151,7 +151,7 @@ public:
         const auto verbose = this->params_.verbose;
 
         // Optimize work group size
-        const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_);
+        const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
         const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
 
         sycl_utils::events transform_events;
@@ -175,7 +175,7 @@ public:
             linearlized.b.setZero();
             linearlized.error = 0.0f;
             {
-                auto linearlize_event = this->queue_->submit([&](sycl::handler& h) {
+                auto linearlize_event = this->queue_ptr_->submit([&](sycl::handler& h) {
                     // get pointers
                     const auto linearlized_ptr = this->linearlized_->data();
                     const auto max_dist_ptr = this->max_distance_->data();

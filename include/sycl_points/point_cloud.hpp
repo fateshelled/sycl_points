@@ -12,18 +12,21 @@ using PointType = Eigen::Vector4f;
 using Covariance = Eigen::Matrix4f;
 using TransformMatrix = Eigen::Matrix4f;
 
-using PointAllocatorHost = host_allocator<PointType, 16>;
-using CovarianceAllocatorHost = host_allocator<PointType, 64>;
-using PointAllocatorShared = shared_allocator<PointType, 16>;
-using CovarianceAllocatorShared = shared_allocator<PointType, 64>;
+constexpr size_t PointAlignment = 16;
+constexpr size_t CovarianceAlignment = 64;
+
+using PointAllocatorHost = host_allocator<PointType, PointAlignment>;
+using CovarianceAllocatorHost = host_allocator<PointType, CovarianceAlignment>;
+using PointAllocatorShared = shared_allocator<PointType, PointAlignment>;
+using CovarianceAllocatorShared = shared_allocator<PointType, CovarianceAlignment>;
 
 using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
-using PointContainerHost = host_vector<PointType, 16>;
-using PointContainerShared = shared_vector<PointType, 16>;
+using PointContainerHost = host_vector<PointType, PointAlignment>;
+using PointContainerShared = shared_vector<PointType, PointAlignment>;
 
 using CovarianceContainerCPU = std::vector<Covariance, Eigen::aligned_allocator<Covariance>>;
-using CovarianceContainerHost = host_vector<Covariance, 64>;
-using CovarianceContainerShared = shared_vector<Covariance, 64>;
+using CovarianceContainerHost = host_vector<Covariance, CovarianceAlignment>;
+using CovarianceContainerShared = shared_vector<Covariance, CovarianceAlignment>;
 
 struct PointCloudCPU {
     PointContainerCPU points;
@@ -128,7 +131,7 @@ struct PointCloudShared {
     // Covariance* covs_device_ptr_ = nullptr;
     const sycl::property_list propeties = {sycl::property::no_init()};
 
-    PointCloudShared(sycl::queue& q) : queue_ptr(std::make_shared<sycl::queue>(q)) {
+    PointCloudShared(const std::shared_ptr<sycl::queue>& q) : queue_ptr(q) {
         const PointAllocatorShared alloc_pc(*this->queue_ptr, this->propeties);
         this->points = std::make_shared<PointContainerShared>(0, alloc_pc);
 
@@ -136,7 +139,7 @@ struct PointCloudShared {
         this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
     }
 
-    PointCloudShared(sycl::queue& q, const PointCloudCPU& cpu) : queue_ptr(std::make_shared<sycl::queue>(q)) {
+    PointCloudShared(const std::shared_ptr<sycl::queue>& q, const PointCloudCPU& cpu) : queue_ptr(q) {
         const PointAllocatorShared alloc_pc(*this->queue_ptr, this->propeties);
         this->points = std::make_shared<PointContainerShared>(cpu.points.size(), alloc_pc);
 
@@ -268,7 +271,7 @@ struct PointCloudShared {
 
     // transform on device
     PointCloudShared transform_sycl_copy(const TransformMatrix& trans) const {
-        PointCloudShared ret(*this->queue_ptr);
+        PointCloudShared ret(this->queue_ptr);
         const size_t N = this->points->size();
 
         shared_vector<sycl::vec<float, 4>> trans_vec_shared(4, shared_allocator<TransformMatrix>(*this->queue_ptr));
