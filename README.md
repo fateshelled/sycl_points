@@ -1,10 +1,13 @@
 # sycl_points
 
-A point cloud processing library accelerated with SYCL for heterogeneous computing systems.
+A C++ header-only point cloud processing library accelerated with SYCL for heterogeneous computing systems.
 
 ## Overview
 
 sycl_points provides efficient implementations of common point cloud processing operations using Intel's SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on various hardware architectures including CPUs, GPUs, and other accelerators that support SYCL.
+
+This project was developed with reference to small_gicp, a lightweight point cloud registration library.
+- https://github.com/koide3/small_gicp
 
 Key features:
 - Efficient point cloud data structures for CPU and accelerator memory
