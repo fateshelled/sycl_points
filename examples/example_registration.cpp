@@ -17,7 +17,7 @@ int main() {
 
     /* Specity device */
     sycl::device dev;  // set from Environments variable `ONEAPI_DEVICE_SELECTOR`
-    std::shared_ptr<sycl::queue> queue  = std::make_shared<sycl::queue>(dev);
+    std::shared_ptr<sycl::queue> queue = std::make_shared<sycl::queue>(dev);
 
     sycl_points::sycl_utils::print_device_info(*queue);
 

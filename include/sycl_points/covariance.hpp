@@ -64,7 +64,8 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 /// @param points Point Container
 /// @param covs Covariance Container
 /// @return events
-inline sycl_utils::events compute_covariances_sycl_async(const std::shared_ptr<sycl::queue>& queue_ptr, const KNNResultSYCL& neightbors,
+inline sycl_utils::events compute_covariances_sycl_async(const std::shared_ptr<sycl::queue>& queue_ptr,
+                                                         const KNNResultSYCL& neightbors,
                                                          const PointContainerShared& points,
                                                          CovarianceContainerShared& covs) {
     const size_t N = points.size();
@@ -130,7 +131,8 @@ inline void compute_covariances_sycl(const std::shared_ptr<sycl::queue>& queue_p
 /// @param neightbors KNN search result
 /// @param points Point Container
 /// @return Covariances
-inline CovarianceContainerShared compute_covariances_sycl(const std::shared_ptr<sycl::queue>& queue_ptr, const KNNResultSYCL& neightbors,
+inline CovarianceContainerShared compute_covariances_sycl(const std::shared_ptr<sycl::queue>& queue_ptr,
+                                                          const KNNResultSYCL& neightbors,
                                                           const PointContainerShared& points) {
     const size_t N = points.size();
     CovarianceContainerShared covs(N, Covariance::Zero(), CovarianceAllocatorShared(*queue_ptr));
@@ -171,7 +173,8 @@ inline void covariance_update_plane(const PointCloudShared& points) {
     }
 }
 
-inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_ptr<sycl::queue>& queue_ptr, const PointCloudShared& points) {
+inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_ptr<sycl::queue>& queue_ptr,
+                                                             const PointCloudShared& points) {
     const size_t N = points.size();
     const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);
     const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
@@ -192,7 +195,8 @@ inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_p
     return events;
 }
 
-inline void covariance_update_plane_sycl(const std::shared_ptr<sycl::queue>& queue_ptr, const PointCloudShared& points) {
+inline void covariance_update_plane_sycl(const std::shared_ptr<sycl::queue>& queue_ptr,
+                                         const PointCloudShared& points) {
     covariance_update_plane_sycl_async(queue_ptr, points).wait();
 }
 }  // namespace sycl_points

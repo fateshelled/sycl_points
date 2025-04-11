@@ -46,7 +46,7 @@ struct FlatKDNode {
     int right;       // Index of right child node (-1 if none)
     uint8_t axis;    // Split axis (0=x, 1=y, 2=z)
     uint8_t pad[3];  // Padding for alignment (3 bytes)
-};  // Total: 28 bytes, aligned to 4-byte boundary
+};                   // Total: 28 bytes, aligned to 4-byte boundary
 
 namespace {
 
