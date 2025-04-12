@@ -7,7 +7,8 @@
 #include <string>
 #include <vector>
 
-#include "point_cloud.hpp"
+#include <sycl_points/points/point_cloud.hpp>
+
 
 namespace sycl_points {
 
@@ -207,7 +208,7 @@ private:
                 }
 
                 // 点を追加（if文の外に移動）
-                points.points.emplace_back(x, y, z, static_cast<T>(1.0));
+                points.points->emplace_back(x, y, z, static_cast<T>(1.0));
             }
         } else {
             // ASCII形式の場合
@@ -224,7 +225,7 @@ private:
                 T y = static_cast<T>(values[y_index]);
                 T z = static_cast<T>(values[z_index]);
 
-                points.points.emplace_back(x, y, z, static_cast<T>(1.0));
+                points.points->emplace_back(x, y, z, static_cast<T>(1.0));
             }
         }
     }
@@ -386,7 +387,7 @@ private:
                 }
 
                 // 点を追加（if文の外に移動）
-                points.points.emplace_back(x, y, z, static_cast<T>(1.0));
+                points.points->emplace_back(x, y, z, static_cast<T>(1.0));
             }
         } else {
             // ASCII形式の場合
@@ -403,7 +404,7 @@ private:
                 T y = static_cast<T>(values[y_index]);
                 T z = static_cast<T>(values[z_index]);
 
-                points.points.emplace_back(x, y, z, static_cast<T>(1.0));
+                points.points->emplace_back(x, y, z, static_cast<T>(1.0));
             }
         }
     }

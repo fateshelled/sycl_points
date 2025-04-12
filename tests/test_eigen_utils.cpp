@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
-#include "sycl_points/eigen_utils.hpp"
-#include <Eigen/Dense>
+#include <sycl_points/utils/eigen_utils.hpp>
 #include <cmath>
 
 namespace sycl_points {

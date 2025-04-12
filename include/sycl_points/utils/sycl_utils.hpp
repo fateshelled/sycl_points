@@ -99,6 +99,16 @@ void print_device_info(const sycl::device& device) {
 
 void print_device_info(const sycl::queue& queue) { print_device_info(queue.get_device()); }
 
+bool is_nvidia_gpu(const sycl::device& device) {
+    const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
+    return vendor_id == 4318 && device.is_gpu();  // NVIDIA
+}
+
+bool is_intel_igpu(const sycl::device& device) {
+    const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
+    return vendor_id == 32902 && device.is_gpu();  // Intel
+}
+
 struct events {
     std::vector<sycl::event> events;
 
@@ -108,6 +118,32 @@ struct events {
             auto& event = events.back();
             event.wait();
             events.pop_back();
+        }
+    }
+};
+
+
+template <typename T, size_t Alignment>
+struct ContainerDevice {
+    T* device_ptr = nullptr;
+    size_t size = 0;
+    std::shared_ptr<sycl::queue> queue_ptr = nullptr;
+    const sycl::property_list propeties = {sycl::property::no_init()};
+
+    ContainerDevice(const std::shared_ptr<sycl::queue>& q) : queue_ptr(q) {}
+    ~ContainerDevice() { free(); }
+    void allocate(size_t N) {
+        if (this->device_ptr != nullptr) {
+            sycl::free(this->device_ptr, *this->queue_ptr);
+        }
+        this->size = N;
+        this->device_ptr = sycl::aligned_alloc_device<T>(Alignment, N, *this->queue_ptr, this->propeties);
+    }
+
+    void free() {
+        if (this->device_ptr != nullptr) {
+            sycl::free(this->device_ptr, *this->queue_ptr);
+            this->device_ptr = nullptr;
         }
     }
 };

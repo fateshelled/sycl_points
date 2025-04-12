@@ -1,12 +1,8 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <sycl_points/utils/sycl_utils.hpp>
 
-#if __has_include(<sycl/sycl.hpp>)
-#include <sycl/sycl.hpp>
-#else
-#include <CL/sycl.hpp>
-#endif
 
 namespace sycl_points {
 namespace eigen_utils {

@@ -2,11 +2,11 @@
 #include <iostream>
 #include <map>
 
-#include "sycl_points/covariance.hpp"
-#include "sycl_points/downsampling.hpp"
-#include "sycl_points/point_cloud_reader.hpp"
-#include "sycl_points/registration.hpp"
-#include "sycl_points/sycl_utils.hpp"
+#include <sycl_points/algorithms/covariance.hpp>
+#include <sycl_points/algorithms/downsampling.hpp>
+#include <sycl_points/algorithms/registration.hpp>
+#include <sycl_points/io/point_cloud_reader.hpp>
+
 
 int main() {
     std::string source_filename = "../data/source.ply";
@@ -24,13 +24,13 @@ int main() {
     const float voxel_size = 0.25f;
     const size_t num_neighbors = 10;
 
-    sycl_points::RegistrationParams param;
+    sycl_points::algorithms::RegistrationParams param;
     param.max_iterations = 10;
     param.max_correspondence_distance = 1.0f;
     param.verbose = false;
-    const auto reg = sycl_points::Registration(queue, param);
+    const auto reg = sycl_points::algorithms::Registration<sycl_points::PointCloudShared>(queue, param);
 
-    sycl_points::VoxelGridSYCL voxel_grid(queue, voxel_size);
+    sycl_points::algorithms::VoxelGridSYCL voxel_grid(queue, voxel_size);
 
     const size_t LOOP = 10;
     std::map<std::string, double> elapsed;
@@ -54,8 +54,8 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        const auto source_tree = sycl_points::KDTreeSYCL::build(queue, source_downsampled);
-        const auto target_tree = sycl_points::KDTreeSYCL::build(queue, target_downsampled);
+        const auto source_tree = sycl_points::algorithms::KDTreeSYCL::build(queue, source_downsampled);
+        const auto target_tree = sycl_points::algorithms::KDTreeSYCL::build(queue, target_downsampled);
         auto dt_build_kdtree =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
@@ -68,15 +68,15 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::compute_covariances_sycl(queue, source_neighbors, source_downsampled);
-        sycl_points::compute_covariances_sycl(queue, target_neighbors, target_downsampled);
+        sycl_points::algorithms::compute_covariances_sycl(queue, source_neighbors, source_downsampled);
+        sycl_points::algorithms::compute_covariances_sycl(queue, target_neighbors, target_downsampled);
         auto dt_covariance =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::covariance_update_plane_sycl(queue, source_downsampled);
-        sycl_points::covariance_update_plane_sycl(queue, target_downsampled);
+        sycl_points::algorithms::covariance_update_plane_sycl(queue, source_downsampled);
+        sycl_points::algorithms::covariance_update_plane_sycl(queue, target_downsampled);
         auto dt_to_plane =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();

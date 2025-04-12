@@ -1,10 +1,9 @@
 #include <chrono>
 #include <iostream>
-
-#include "sycl_points/covariance.hpp"
-#include "sycl_points/downsampling.hpp"
-#include "sycl_points/point_cloud_reader.hpp"
-#include "sycl_points/sycl_utils.hpp"
+#include <sycl_points/algorithms/covariance.hpp>
+#include <sycl_points/algorithms/downsampling.hpp>
+#include <sycl_points/algorithms/transform.hpp>
+#include <sycl_points/io/point_cloud_reader.hpp>
 
 int main() {
     std::string source_filename = "../data/source.ply";
@@ -27,18 +26,18 @@ int main() {
     double dt_build_kdtree = 0.0;
     for (size_t i = 0; i < 10; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto kdtree_cpu = sycl_points::KDTree::build(source_points);
+        auto kdtree_cpu = sycl_points::algorithms::KDTree::build(source_points);
         dt_build_kdtree +=
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
     }
     dt_build_kdtree /= 10;
 
-    auto kdtree_sycl = sycl_points::KDTreeSYCL::build(queue, shared_points);
+    auto kdtree_sycl = sycl_points::algorithms::KDTreeSYCL::build(queue, shared_points);
     double dt_build_kdtree_sycl = 0.0;
     for (size_t i = 0; i < 10; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto tmp = sycl_points::KDTreeSYCL::build(queue, shared_points);
+        auto tmp = sycl_points::algorithms::KDTreeSYCL::build(queue, shared_points);
         dt_build_kdtree_sycl +=
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
@@ -50,7 +49,7 @@ int main() {
     const size_t k_correspondence_covariance = 10;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        sycl_points::compute_covariances_sycl(kdtree_sycl, shared_points, k_correspondence_covariance);
+        sycl_points::algorithms::compute_covariances_sycl(kdtree_sycl, shared_points, k_correspondence_covariance);
         if (i > 0) {
             dt_covariances_sycl +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
@@ -62,7 +61,7 @@ int main() {
     // Downsampling
     double dt_voxel_downsampling = 0.0;
     const float voxel_size = 1.0;
-    sycl_points::VoxelGridSYCL voxel_grid(queue, voxel_size);
+    sycl_points::algorithms::VoxelGridSYCL voxel_grid(queue, voxel_size);
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::PointCloudShared downsampled(queue);
@@ -79,7 +78,7 @@ int main() {
     double dt_transform_cpu_copy = 0.0;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto tmp = shared_points.transform_cpu_copy(Eigen::Matrix4f::Identity());
+        auto tmp = sycl_points::algorithms::transform_cpu_copy(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
             dt_transform_cpu_copy +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
@@ -91,7 +90,7 @@ int main() {
     double dt_transform_cpu_zerocopy = 0.0;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        shared_points.transform_cpu(Eigen::Matrix4f::Identity());
+        sycl_points::algorithms::transform_cpu(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
             dt_transform_cpu_zerocopy +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
@@ -103,7 +102,7 @@ int main() {
     double dt_transform_copy = 0.0;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto ret = shared_points.transform_sycl_copy(Eigen::Matrix4f::Identity() * 2);
+        auto ret = sycl_points::algorithms::transform_cpu_copy(shared_points, Eigen::Matrix4f::Identity() * 2);
         if (i == 0) {
             // for (size_t j = 0; j < 10; ++j) {
             //   std::cout << "source: " << source_points.points[j].transpose() << std::endl;
@@ -121,7 +120,7 @@ int main() {
     double dt_transform_zerocopy = 0.0;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        shared_points.transform_sycl(Eigen::Matrix4f::Identity());
+        sycl_points::algorithms::transform_sycl(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
             dt_transform_zerocopy +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)

@@ -1,8 +1,7 @@
 #include <chrono>
 #include <iostream>
-
-#include "sycl_points/point_cloud_reader.hpp"
-#include "sycl_points/sycl_utils.hpp"
+#include <sycl_points/io/point_cloud_reader.hpp>
+#include <sycl_points/utils/sycl_utils.hpp>
 
 int main() {
     std::string source_filename = "../data/source.ply";
@@ -28,7 +27,7 @@ int main() {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::PointContainerHost host_points(source_points.size(), host_alloc);
         for (size_t i = 0; i < source_points.size(); ++i) {
-            host_points[i] = source_points.points[i];
+            host_points[i] = (*source_points.points)[i];
         }
         const auto dt_copy_to_host =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
@@ -38,7 +37,7 @@ int main() {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::PointContainerShared shared_points(source_points.size(), shared_alloc);
         for (size_t i = 0; i < source_points.size(); ++i) {
-            shared_points[i] = source_points.points[i];
+            shared_points[i] = (*source_points.points)[i];
         }
         const auto dt_copy_to_shared =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
@@ -49,7 +48,7 @@ int main() {
         s = std::chrono::high_resolution_clock::now();
         host_points.resize(source_points.size());
         queue
-            .memcpy(host_points.data(), source_points.points.data(),
+            .memcpy(host_points.data(), source_points.points->data(),
                     source_points.size() * sizeof(sycl_points::PointType))
             .wait();
         const auto dt_memcpy_to_host =
@@ -61,7 +60,7 @@ int main() {
         s = std::chrono::high_resolution_clock::now();
         shared_points.resize(source_points.size());
         queue
-            .memcpy(shared_points.data(), source_points.points.data(),
+            .memcpy(shared_points.data(), source_points.points->data(),
                     source_points.size() * sizeof(sycl_points::PointType))
             .wait();
         const auto dt_memcpy_to_shared =
@@ -72,7 +71,7 @@ int main() {
         sycl_points::PointType* device_ptr;
         s = std::chrono::high_resolution_clock::now();
         device_ptr = sycl::malloc_device<sycl_points::PointType>(source_points.size(), queue);
-        queue.memcpy(device_ptr, source_points.points.data(), source_points.size() * sizeof(sycl_points::PointType))
+        queue.memcpy(device_ptr, source_points.points->data(), source_points.size() * sizeof(sycl_points::PointType))
             .wait();
         const auto dt_copy_to_device =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
@@ -168,10 +167,10 @@ int main() {
 
         // validate
         for (size_t i = 0; i < transformed_points.size(); ++i) {
-            const auto delta = transformed_points.points[i] - host_results[i];
+            const auto delta = (*transformed_points.points)[i] - host_results[i];
             if (delta.norm() > 1e-5) {
                 std::cout << "ERROR: [" << i << "]" << std::endl;
-                std::cout << transformed_points.points[i].transpose() << std::endl;
+                std::cout << (*transformed_points.points)[i].transpose() << std::endl;
                 std::cout << host_results[i].transpose() << std::endl;
                 break;
             }

@@ -1,10 +1,12 @@
 #pragma once
 
-#include "knn_search.hpp"
-#include "point_cloud.hpp"
+#include <sycl_points/algorithms/knn_search.hpp>
+#include <sycl_points/points/point_cloud.hpp>
+#include <sycl_points/utils/eigen_utils.hpp>
 
 namespace sycl_points {
 
+namespace algorithms {
 namespace kernel {
 
 SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* point_ptr,
@@ -199,4 +201,6 @@ inline void covariance_update_plane_sycl(const std::shared_ptr<sycl::queue>& que
                                          const PointCloudShared& points) {
     covariance_update_plane_sycl_async(queue_ptr, points).wait();
 }
+
+}  // namespace algorithms
 }  // namespace sycl_points

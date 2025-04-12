@@ -1,12 +1,6 @@
 #pragma once
 
-#include "point_cloud.hpp"
-
-#if __has_include(<sycl/sycl.hpp>)
-#include <sycl/sycl.hpp>
-#else
-#include <CL/sycl.hpp>
-#endif
+#include <sycl_points/points/point_cloud.hpp>
 
 namespace {
 
@@ -20,6 +14,8 @@ struct VoxelConstants {
 }  // namespace
 
 namespace sycl_points {
+
+namespace algorithms {
 
 namespace kernel {
 
@@ -138,4 +134,5 @@ private:
     std::shared_ptr<shared_vector<uint64_t>> bit_ptr_ = nullptr;
 };
 
+}  // namespace algorithms
 }  // namespace sycl_points
