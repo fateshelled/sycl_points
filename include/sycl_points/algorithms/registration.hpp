@@ -66,7 +66,7 @@ public:
 
     RegistrationResult optimize(const PointCloud& source, const PointCloud& target, const KDTreeSYCL& target_tree,
                                 const TransformMatrix& init_T = TransformMatrix::Identity()) const {
-        const size_t N = traits::size(source);
+        const size_t N = traits::pointcloud::size(source);
         RegistrationResult result;
         result.T.matrix() = init_T;
 
@@ -94,7 +94,7 @@ public:
 
             // nearest neighbor search
             auto knn_event =
-                target_tree.knn_search_async(traits::points_ptr(transform_source), traits::size(transform_source), 1,
+                target_tree.knn_search_async(traits::pointcloud::points_ptr(transform_source), traits::pointcloud::size(transform_source), 1,
                                              (*this->neighbors_)[0], transform_events.events);
 
             // linearlize
@@ -109,10 +109,10 @@ public:
                     const auto max_dist_ptr = this->max_distance_->data();
                     const auto cur_T_ptr = this->cur_T_->data();
 
-                    const auto source_ptr = traits::points_ptr(transform_source);
-                    const auto target_ptr = traits::points_ptr(target);
-                    const auto source_cov_ptr = traits::covs_ptr(transform_source);
-                    const auto target_cov_ptr = traits::covs_ptr(target);
+                    const auto source_ptr = traits::pointcloud::points_ptr(transform_source);
+                    const auto target_ptr = traits::pointcloud::points_ptr(target);
+                    const auto source_cov_ptr = traits::pointcloud::covs_ptr(transform_source);
+                    const auto target_cov_ptr = traits::pointcloud::covs_ptr(target);
 
                     const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
                     const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();

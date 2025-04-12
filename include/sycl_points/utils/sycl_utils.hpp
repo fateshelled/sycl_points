@@ -16,11 +16,17 @@ using host_allocator = sycl::usm_allocator<T, sycl::usm::alloc::host, Alignment>
 template <typename T, size_t Alignment = 0>
 using shared_allocator = sycl::usm_allocator<T, sycl::usm::alloc::shared, Alignment>;
 
+// template <typename T, size_t Alignment = 0>
+// using device_allocator = sycl::usm_allocator<T, sycl::usm::alloc::device, Alignment>;
+
 template <typename T, size_t Alignment = 0>
 using host_vector = std::vector<T, host_allocator<T, Alignment>>;
 
 template <typename T, size_t Alignment = 0>
 using shared_vector = std::vector<T, shared_allocator<T, Alignment>>;
+
+// template <typename T, size_t Alignment = 0>
+// using device_vector = std::vector<T, device_allocator<T, Alignment>>;
 
 namespace sycl_utils {
 
@@ -104,7 +110,7 @@ bool is_nvidia_gpu(const sycl::device& device) {
     return vendor_id == 4318 && device.is_gpu();  // NVIDIA
 }
 
-bool is_intel_igpu(const sycl::device& device) {
+bool is_intel_gpu(const sycl::device& device) {
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
     return vendor_id == 32902 && device.is_gpu();  // Intel
 }
@@ -132,7 +138,8 @@ struct ContainerDevice {
 
     ContainerDevice(const std::shared_ptr<sycl::queue>& q) : queue_ptr(q) {}
     ~ContainerDevice() { free(); }
-    void allocate(size_t N) {
+
+    void resize(size_t N) {
         if (this->device_ptr != nullptr) {
             sycl::free(this->device_ptr, *this->queue_ptr);
         }
@@ -144,6 +151,7 @@ struct ContainerDevice {
         if (this->device_ptr != nullptr) {
             sycl::free(this->device_ptr, *this->queue_ptr);
             this->device_ptr = nullptr;
+            this->size = 0;
         }
     }
 };

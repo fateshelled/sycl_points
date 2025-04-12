@@ -27,6 +27,7 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
     const auto cov3x3 = eigen_utils::ensure_symmetric<3>(
         eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::block3x3(eigen_utils::outer(mean, sum_points))));
 
+    ret.setZero();
     ret(0, 0) = cov3x3(0, 0);
     ret(0, 1) = cov3x3(0, 1);
     ret(0, 2) = cov3x3(0, 2);
@@ -65,24 +66,23 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 /// @param neightbors KNN search result
 /// @param points Point Container
 /// @param covs Covariance Container
-/// @return events
+/// @return eventscd
+template <typename PointContainer = PointContainerShared, typename CovarianceContainer = CovarianceContainerShared>
 inline sycl_utils::events compute_covariances_sycl_async(const std::shared_ptr<sycl::queue>& queue_ptr,
-                                                         const KNNResultSYCL& neightbors,
-                                                         const PointContainerShared& points,
-                                                         CovarianceContainerShared& covs) {
-    const size_t N = points.size();
-    covs.resize(N, Covariance::Zero());
-
-    const auto point_ptr = points.data();
-    const auto cov_ptr = covs.data();
-    const auto index_ptr = neightbors.indices->data();
-    const auto k_correspondences = neightbors.k;
+                                                         const KNNResultSYCL& neightbors, const PointContainer& points,
+                                                         CovarianceContainer& covs) {
+    const size_t N = traits::point::size(points);
+    traits::covariance::resize(covs, N);
 
     // Optimize work group size
     const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);
     const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
 
     auto event = queue_ptr->submit([&](sycl::handler& h) {
+        const auto point_ptr = traits::point::const_data_ptr(points);
+        const auto cov_ptr = traits::covariance::data_ptr(covs);
+        const auto index_ptr = neightbors.indices->data();
+        const auto k_correspondences = neightbors.k;
         h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
                        [=](sycl::nd_item<1> item) {
                            const size_t i = item.get_global_id(0);

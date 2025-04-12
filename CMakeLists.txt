@@ -27,11 +27,6 @@ if(OpenMP_FOUND)
 endif()
 
 set(SYCL_TARGET_FLAGS "spir64")
-add_compile_definitions(
-  EIGEN_USE_BLAS
-  EIGEN_USE_LAPACK
-  MKL_ILP64
-)
 
 # Check for Intel oneAPI NVIDIA GPU support
 function(check_oneapi_nvidia_support RESULT_VAR)

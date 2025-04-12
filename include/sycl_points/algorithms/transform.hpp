@@ -62,10 +62,10 @@ SYCL_EXTERNAL inline void transform_point(const PointType& point, PointType& res
 
 template <typename PointCloud>
 inline sycl_utils::events transform_sycl_async(PointCloud& cloud, const TransformMatrix& trans) {
-    const size_t N = traits::size(cloud);
+    const size_t N = traits::pointcloud::size(cloud);
     if (N == 0) return sycl_utils::events();
 
-    const auto queue_ptr = traits::queue_ptr(cloud);
+    const auto queue_ptr = traits::pointcloud::queue_ptr(cloud);
 
     shared_vector<sycl::vec<float, 4>> trans_vec_shared(4, shared_allocator<TransformMatrix>(*queue_ptr));
     for (size_t i = 0; i < 4; ++i) {
@@ -79,8 +79,8 @@ inline sycl_utils::events transform_sycl_async(PointCloud& cloud, const Transfor
     const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
 
     sycl::event covs_trans_event;
-    if (traits::has_cov(cloud)) {
-        const auto covs = traits::covs_ptr(cloud);
+    if (traits::pointcloud::has_cov(cloud)) {
+        const auto covs = traits::pointcloud::covs_ptr(cloud);
         const auto trans_vec_ptr = trans_vec_shared.data();
 
         /* Transform Covariance */
@@ -96,7 +96,7 @@ inline sycl_utils::events transform_sycl_async(PointCloud& cloud, const Transfor
 
     sycl::event points_trans_event;
     {
-        const auto point_ptr = traits::points_ptr(cloud);
+        const auto point_ptr = traits::pointcloud::points_ptr(cloud);
         const auto trans_vec_ptr = trans_vec_shared.data();
 
         /* Transform Points*/
@@ -124,22 +124,22 @@ inline void transform_sycl(PointCloud& cloud, const TransformMatrix& trans) {
 
 template <typename PointCloud>
 PointCloud transform_sycl_copy(PointCloud& cloud, const TransformMatrix& trans) {
-    const auto queue_ptr = traits::queue_ptr(cloud);
+    const auto queue_ptr = traits::pointcloud::queue_ptr(cloud);
 
-    std::shared_ptr<PointCloud> ret = traits::constructor<PointCloud>(queue_ptr);
-    traits::resize_points(*ret, traits::size(cloud));
+    std::shared_ptr<PointCloud> ret = traits::pointcloud::constructor<PointCloud>(queue_ptr);
+    traits::pointcloud::resize_points(*ret, traits::pointcloud::size(cloud));
 
     sycl::event copy_cov_event;
-    if (traits::has_cov(cloud)) {
-        traits::resize_covs(*ret, traits::size(cloud));
+    if (traits::pointcloud::has_cov(cloud)) {
+        traits::pointcloud::resize_covs(*ret, traits::pointcloud::size(cloud));
         copy_cov_event = queue_ptr->submit([&](sycl::handler& h) {
-            const auto covs = traits::covs_ptr(cloud);
-            const auto output_covs = traits::covs_ptr(*ret);
-            h.memcpy(output_covs, covs, traits::size(cloud) * sizeof(Covariance));
+            const auto covs = traits::pointcloud::covs_ptr(cloud);
+            const auto output_covs = traits::pointcloud::covs_ptr(*ret);
+            h.memcpy(output_covs, covs, traits::pointcloud::size(cloud) * sizeof(Covariance));
         });
     }
     sycl::event copy_pt_event =
-        queue_ptr->memcpy(traits::points_ptr(*ret), traits::points_ptr(cloud), traits::size(cloud) * sizeof(PointType));
+        queue_ptr->memcpy(traits::pointcloud::points_ptr(*ret), traits::pointcloud::points_ptr(cloud), traits::pointcloud::size(cloud) * sizeof(PointType));
     copy_cov_event.wait();
     copy_pt_event.wait();
 

@@ -1,33 +1,54 @@
 #pragma once
 
 #include <Eigen/Dense>
-#include <vector>
-
+#include <sycl_points/points/container_traits.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
-
+#include <vector>
 
 namespace sycl_points {
 
-    using PointType = Eigen::Vector4f;
-    using Covariance = Eigen::Matrix4f;
-    using TransformMatrix = Eigen::Matrix4f;
+namespace traits {
 
-    constexpr size_t PointAlignment = 16;
-    constexpr size_t CovarianceAlignment = 64;
+template <>
+struct PointContainerTraits<PointContainerShared> {
+    static bool is_shared() { return true; }
+    static bool is_device() { return false; }
+    static size_t size(const PointContainerShared& pc) { return pc.size(); }
+    static const PointType* const_data_ptr(const PointContainerShared& pc) { return pc.data(); }
+    static PointType* data_ptr(const PointContainerShared& pc) { return const_cast<PointType*>(pc.data()); }
+    static void resize(PointContainerShared& pc, size_t N) { pc.resize(N); }
+};
 
-    using PointAllocatorHost = host_allocator<PointType, PointAlignment>;
-    using CovarianceAllocatorHost = host_allocator<PointType, CovarianceAlignment>;
-    using PointAllocatorShared = shared_allocator<PointType, PointAlignment>;
-    using CovarianceAllocatorShared = shared_allocator<PointType, CovarianceAlignment>;
+template <>
+struct PointContainerTraits<PointContainerDevice> {
+    static bool is_shared() { return false; }
+    static bool is_device() { return true; }
+    static size_t size(const PointContainerDevice& pc) { return pc.size; }
+    static const PointType* const_data_ptr(const PointContainerDevice& pc) { return pc.device_ptr; }
+    static PointType* data_ptr(PointContainerDevice& pc) { return pc.device_ptr; }
+    static void resize(PointContainerDevice& pc, size_t N) { pc.resize(N); }
+};
 
-    using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
-    using PointContainerHost = host_vector<PointType, PointAlignment>;
-    using PointContainerShared = shared_vector<PointType, PointAlignment>;
-    using PointContainerDevice = sycl_utils::ContainerDevice<PointType, PointAlignment>;
+template <>
+struct CovarianceContainerTraits<CovarianceContainerShared> {
+    static bool is_shared() { return true; }
+    static bool is_device() { return false; }
+    static size_t size(const CovarianceContainerShared& cc) { return cc.size(); }
+    static const Covariance* const_data_ptr(const CovarianceContainerShared& cc) { return cc.data(); }
+    static Covariance* data_ptr(CovarianceContainerShared& cc) { return const_cast<Covariance*>(cc.data()); }
+    static void resize(CovarianceContainerShared& cc, size_t N) { cc.resize(N); }
+};
 
-    using CovarianceContainerCPU = std::vector<Covariance, Eigen::aligned_allocator<Covariance>>;
-    using CovarianceContainerHost = host_vector<Covariance, CovarianceAlignment>;
-    using CovarianceContainerShared = shared_vector<Covariance, CovarianceAlignment>;
-    using CovarianceContainerDevice = sycl_utils::ContainerDevice<Covariance, CovarianceAlignment>;
+template <>
+struct CovarianceContainerTraits<CovarianceContainerDevice> {
+    static bool is_shared() { return false; }
+    static bool is_device() { return true; }
+    static size_t size(const CovarianceContainerDevice& cc) { return cc.size; }
+    static const Covariance* const_data_ptr(const CovarianceContainerDevice& cc) { return cc.device_ptr; }
+    static Covariance* data_ptr(CovarianceContainerDevice& cc) { return cc.device_ptr; }
+    static void resize(CovarianceContainerDevice& cc, size_t N) { cc.resize(N); }
+};
 
-} // namespace sycl_points
+
+}  // namespace traits
+}  // namespace sycl_points
