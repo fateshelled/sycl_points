@@ -30,7 +30,13 @@ using shared_vector = std::vector<T, shared_allocator<T, Alignment>>;
 
 namespace sycl_utils {
 
-size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 0) {
+namespace DEVICE_ID {
+constexpr uint32_t INTEL = 0x8086;   // 32902
+constexpr uint32_t NVIDIA = 0x10de;  // 4318
+constexpr uint32_t AMD = 0x1002;     // 4098
+};  // namespace DEVICE_ID
+
+inline size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 0) {
     if (work_group_size > 0) {
         return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
     }
@@ -51,11 +57,11 @@ size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 
     return std::min((size_t)128, device.get_info<sycl::info::device::max_work_group_size>());
 }
 
-size_t get_work_group_size(const sycl::queue& queue, size_t work_group_size = 0) {
+inline size_t get_work_group_size(const sycl::queue& queue, size_t work_group_size = 0) {
     return get_work_group_size(queue.get_device(), work_group_size);
 }
 
-void print_device_info(const sycl::device& device) {
+inline void print_device_info(const sycl::device& device) {
     const auto platform = device.get_platform();
     std::cout << "Platform: " << platform.get_info<sycl::info::platform::name>() << std::endl;
 
@@ -103,16 +109,36 @@ void print_device_info(const sycl::device& device) {
     }
 }
 
-void print_device_info(const sycl::queue& queue) { print_device_info(queue.get_device()); }
+inline void print_device_info(const sycl::queue& queue) { print_device_info(queue.get_device()); }
 
-bool is_nvidia_gpu(const sycl::device& device) {
+/// @brief device is CPU or not
+inline bool is_cpu(const sycl::queue& queue) { return queue.get_device().is_cpu(); }
+
+/// @brief device is iGPU/dGPU or not
+inline bool is_gpu(const sycl::queue& queue) { return queue.get_device().is_gpu(); }
+
+/// @brief device is FPGA or not
+inline bool is_accelerator(const sycl::queue& queue) { return queue.get_device().is_accelerator(); }
+
+/// @brief device is NVIDIA or not
+inline bool is_nvidia(const sycl::queue& queue) {
+    const auto device = queue.get_device();
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
-    return vendor_id == 4318 && device.is_gpu();  // NVIDIA
+    return vendor_id == DEVICE_ID::NVIDIA;
 }
 
-bool is_intel_gpu(const sycl::device& device) {
+/// @brief device is INTEL or not
+inline bool is_intel(const sycl::queue& queue) {
+    const auto device = queue.get_device();
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
-    return vendor_id == 32902 && device.is_gpu();  // Intel
+    return vendor_id == DEVICE_ID::INTEL;
+}
+
+/// @brief device is AMD or not
+inline bool is_amd(const sycl::queue& queue) {
+    const auto device = queue.get_device();
+    const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
+    return vendor_id == DEVICE_ID::AMD;
 }
 
 struct events {
@@ -127,7 +153,6 @@ struct events {
         }
     }
 };
-
 
 template <typename T, size_t Alignment>
 struct ContainerDevice {

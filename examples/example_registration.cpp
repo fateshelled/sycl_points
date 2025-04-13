@@ -28,7 +28,7 @@ int main() {
     param.max_iterations = 10;
     param.max_correspondence_distance = 1.0f;
     param.verbose = false;
-    const auto reg = sycl_points::algorithms::Registration<sycl_points::PointCloudShared>(queue, param);
+    auto reg = sycl_points::algorithms::Registration<sycl_points::PointCloudShared>(queue, param);
 
     sycl_points::algorithms::VoxelGridSYCL voxel_grid(queue, voxel_size);
 

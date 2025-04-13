@@ -195,8 +195,8 @@ namespace traits {
 
 template <>
 struct PointCloudTraits<PointCloudShared> {
-    static bool is_shared() { return true; }
-    static bool is_device() { return false; }
+    static constexpr bool is_shared() { return true; }
+    static constexpr bool is_device() { return false; }
     static std::shared_ptr<PointCloudShared> constructor(const std::shared_ptr<sycl::queue>& queue_ptr) {
         return std::make_shared<PointCloudShared>(queue_ptr);
     }
@@ -211,8 +211,8 @@ struct PointCloudTraits<PointCloudShared> {
 
 template <>
 struct PointCloudTraits<PointCloudDevice> {
-    static bool is_shared() { return false; }
-    static bool is_device() { return true; }
+    static constexpr bool is_shared() { return false; }
+    static constexpr bool is_device() { return true; }
     static std::shared_ptr<PointCloudDevice> constructor(const std::shared_ptr<sycl::queue>& queue_ptr) {
         return std::make_shared<PointCloudDevice>(queue_ptr);
     }

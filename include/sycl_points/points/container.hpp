@@ -11,8 +11,8 @@ namespace traits {
 
 template <>
 struct PointContainerTraits<PointContainerShared> {
-    static bool is_shared() { return true; }
-    static bool is_device() { return false; }
+    static constexpr bool is_shared() { return true; }
+    static constexpr bool is_device() { return false; }
     static size_t size(const PointContainerShared& pc) { return pc.size(); }
     static const PointType* const_data_ptr(const PointContainerShared& pc) { return pc.data(); }
     static PointType* data_ptr(const PointContainerShared& pc) { return const_cast<PointType*>(pc.data()); }
@@ -21,8 +21,8 @@ struct PointContainerTraits<PointContainerShared> {
 
 template <>
 struct PointContainerTraits<PointContainerDevice> {
-    static bool is_shared() { return false; }
-    static bool is_device() { return true; }
+    static constexpr bool is_shared() { return false; }
+    static constexpr bool is_device() { return true; }
     static size_t size(const PointContainerDevice& pc) { return pc.size; }
     static const PointType* const_data_ptr(const PointContainerDevice& pc) { return pc.device_ptr; }
     static PointType* data_ptr(PointContainerDevice& pc) { return pc.device_ptr; }

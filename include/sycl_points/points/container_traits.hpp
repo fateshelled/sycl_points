@@ -14,12 +14,12 @@ struct PointContainerTraits;
 namespace point {
 
 template <typename T>
-bool is_shared() {
+constexpr bool is_shared() {
     return PointContainerTraits<std::remove_cv_t<T>>::is_shared();
 }
 
 template <typename T>
-bool is_device() {
+constexpr bool is_device() {
     return PointContainerTraits<std::remove_cv_t<T>>::is_device();
 }
 
@@ -49,12 +49,12 @@ struct CovarianceContainerTraits;
 
 namespace covariance {
 template <typename T>
-bool is_shared() {
+constexpr bool is_shared() {
     return CovarianceContainerTraits<std::remove_cv_t<T>>::is_shared();
 }
 
 template <typename T>
-bool is_device() {
+constexpr bool is_device() {
     return CovarianceContainerTraits<std::remove_cv_t<T>>::is_device();
 }
 

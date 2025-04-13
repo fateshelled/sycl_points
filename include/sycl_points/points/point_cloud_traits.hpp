@@ -15,12 +15,12 @@ struct PointCloudTraits;
 namespace pointcloud {
 
 template <typename T>
-bool is_shared() {
+constexpr bool is_shared() {
     return PointCloudTraits<std::remove_cv_t<T>>::is_shared();
 }
 
 template <typename T>
-bool is_device() {
+constexpr bool is_device() {
     return PointCloudTraits<std::remove_cv_t<T>>::is_device();
 }
 
