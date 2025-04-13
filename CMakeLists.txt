@@ -121,4 +121,5 @@ if (BUILD_TEST)
   endfunction()
 
   add_test_exec(test_eigen_utils)
+  add_test_exec(test_algorithms)
 endif()
