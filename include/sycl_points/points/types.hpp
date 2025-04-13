@@ -25,12 +25,12 @@ using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointT
 using PointContainerHost = host_vector<PointType, PointAlignment>;
 using PointContainerShared = shared_vector<PointType, PointAlignment>;
 // using PointContainerDevice = device_vector<PointType, PointAlignment>;
-using PointContainerDevice = sycl_utils::ContainerDevice<PointType, PointAlignment>;
+using PointContainerDevice = ContainerDevice<PointType, PointAlignment>;
 
 using CovarianceContainerCPU = std::vector<Covariance, Eigen::aligned_allocator<Covariance>>;
 using CovarianceContainerHost = host_vector<Covariance, CovarianceAlignment>;
 using CovarianceContainerShared = shared_vector<Covariance, CovarianceAlignment>;
 // using CovarianceContainerDevice = device_vector<Covariance, CovarianceAlignment>;
-using CovarianceContainerDevice = sycl_utils::ContainerDevice<Covariance, CovarianceAlignment>;
+using CovarianceContainerDevice = ContainerDevice<Covariance, CovarianceAlignment>;
 
 }  // namespace sycl_points

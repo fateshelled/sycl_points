@@ -28,13 +28,40 @@ using shared_vector = std::vector<T, shared_allocator<T, Alignment>>;
 // template <typename T, size_t Alignment = 0>
 // using device_vector = std::vector<T, device_allocator<T, Alignment>>;
 
+template <typename T, size_t Alignment>
+struct ContainerDevice {
+    T* device_ptr = nullptr;
+    size_t size = 0;
+    std::shared_ptr<sycl::queue> queue_ptr = nullptr;
+    const sycl::property_list propeties = {sycl::property::no_init()};
+
+    ContainerDevice(const std::shared_ptr<sycl::queue>& q) : queue_ptr(q) {}
+    ~ContainerDevice() { free(); }
+
+    void resize(size_t N) {
+        if (this->device_ptr != nullptr) {
+            sycl::free(this->device_ptr, *this->queue_ptr);
+        }
+        this->size = N;
+        this->device_ptr = sycl::aligned_alloc_device<T>(Alignment, N, *this->queue_ptr, this->propeties);
+    }
+
+    void free() {
+        if (this->device_ptr != nullptr) {
+            sycl::free(this->device_ptr, *this->queue_ptr);
+            this->device_ptr = nullptr;
+            this->size = 0;
+        }
+    }
+};
+
 namespace sycl_utils {
 
-namespace DEVICE_ID {
+namespace VENDOR_ID {
 constexpr uint32_t INTEL = 0x8086;   // 32902
 constexpr uint32_t NVIDIA = 0x10de;  // 4318
 constexpr uint32_t AMD = 0x1002;     // 4098
-};  // namespace DEVICE_ID
+};  // namespace VENDOR_ID
 
 inline size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 0) {
     if (work_group_size > 0) {
@@ -124,21 +151,21 @@ inline bool is_accelerator(const sycl::queue& queue) { return queue.get_device()
 inline bool is_nvidia(const sycl::queue& queue) {
     const auto device = queue.get_device();
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
-    return vendor_id == DEVICE_ID::NVIDIA;
+    return vendor_id == VENDOR_ID::NVIDIA;
 }
 
 /// @brief device is INTEL or not
 inline bool is_intel(const sycl::queue& queue) {
     const auto device = queue.get_device();
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
-    return vendor_id == DEVICE_ID::INTEL;
+    return vendor_id == VENDOR_ID::INTEL;
 }
 
 /// @brief device is AMD or not
 inline bool is_amd(const sycl::queue& queue) {
     const auto device = queue.get_device();
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
-    return vendor_id == DEVICE_ID::AMD;
+    return vendor_id == VENDOR_ID::AMD;
 }
 
 struct events {
@@ -154,32 +181,24 @@ struct events {
     }
 };
 
-template <typename T, size_t Alignment>
-struct ContainerDevice {
-    T* device_ptr = nullptr;
-    size_t size = 0;
-    std::shared_ptr<sycl::queue> queue_ptr = nullptr;
-    const sycl::property_list propeties = {sycl::property::no_init()};
+namespace device_selector {
 
-    ContainerDevice(const std::shared_ptr<sycl::queue>& q) : queue_ptr(q) {}
-    ~ContainerDevice() { free(); }
+inline int intel_cpu_selector_v(const sycl::device& dev) {
+    const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
+    return dev.is_cpu() && (vendor_id == VENDOR_ID::INTEL);
+}
 
-    void resize(size_t N) {
-        if (this->device_ptr != nullptr) {
-            sycl::free(this->device_ptr, *this->queue_ptr);
-        }
-        this->size = N;
-        this->device_ptr = sycl::aligned_alloc_device<T>(Alignment, N, *this->queue_ptr, this->propeties);
-    }
+inline int intel_gpu_selector_v(const sycl::device& dev) {
+    const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
+    return dev.is_gpu() && (vendor_id == VENDOR_ID::INTEL);
+}
 
-    void free() {
-        if (this->device_ptr != nullptr) {
-            sycl::free(this->device_ptr, *this->queue_ptr);
-            this->device_ptr = nullptr;
-            this->size = 0;
-        }
-    }
-};
+inline int nvidia_gpu_selector_v(const sycl::device& dev) {
+    const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
+    return dev.is_gpu() && (vendor_id == VENDOR_ID::NVIDIA);
+}
+
+}  // namespace device_selector
 
 }  // namespace sycl_utils
 }  // namespace sycl_points
