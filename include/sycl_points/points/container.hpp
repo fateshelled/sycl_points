@@ -31,8 +31,8 @@ struct PointContainerTraits<PointContainerDevice> {
 
 template <>
 struct CovarianceContainerTraits<CovarianceContainerShared> {
-    static bool is_shared() { return true; }
-    static bool is_device() { return false; }
+    static constexpr bool is_shared() { return true; }
+    static constexpr bool is_device() { return false; }
     static size_t size(const CovarianceContainerShared& cc) { return cc.size(); }
     static const Covariance* const_data_ptr(const CovarianceContainerShared& cc) { return cc.data(); }
     static Covariance* data_ptr(CovarianceContainerShared& cc) { return const_cast<Covariance*>(cc.data()); }
@@ -41,8 +41,8 @@ struct CovarianceContainerTraits<CovarianceContainerShared> {
 
 template <>
 struct CovarianceContainerTraits<CovarianceContainerDevice> {
-    static bool is_shared() { return false; }
-    static bool is_device() { return true; }
+    static constexpr bool is_shared() { return false; }
+    static constexpr bool is_device() { return true; }
     static size_t size(const CovarianceContainerDevice& cc) { return cc.size; }
     static const Covariance* const_data_ptr(const CovarianceContainerDevice& cc) { return cc.device_ptr; }
     static Covariance* data_ptr(CovarianceContainerDevice& cc) { return cc.device_ptr; }

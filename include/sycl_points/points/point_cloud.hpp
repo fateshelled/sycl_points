@@ -17,7 +17,7 @@ struct PointCloudCPU {
 
     size_t size() const { return this->points->size(); }
 
-    bool has_cov() const { return this->covs->size() > 0; }
+    bool has_cov() const { return this->covs != nullptr && this->covs->size() > 0; }
 
     void transform(const TransformMatrix& trans) {
         const size_t N = this->points->size();
@@ -77,14 +77,30 @@ struct PointCloudSYCL {
         sycl::event copy_cov_event;
         if (cpu.has_cov()) {
             this->covs = std::make_shared<CovarianceContainer>(N, alloc_cov);
-            copy_cov_event = this->queue_ptr->memcpy(this->covs->data(), cpu.covs->data(), N * sizeof(Covariance));
+            if (N > 0) {
+                if (!sycl_utils::is_cpu(*queue_ptr) && traits::covariance::is_shared<CovarianceContainer>()) {
+                    for (size_t i = 0; i < N; ++i) {
+                        (*this->covs)[i] = (*cpu.covs)[i];
+                    }
+                } else {
+                    copy_cov_event =
+                        this->queue_ptr->memcpy(this->covs->data(), cpu.covs->data(), N * sizeof(Covariance));
+                }
+            }
         } else {
             this->covs = std::make_shared<CovarianceContainer>(0, alloc_cov);
         }
         this->points = std::make_shared<PointContainer>(N, alloc_pc);
         sycl::event copy_pt_event;
         if (N > 0) {
-            copy_pt_event = this->queue_ptr->memcpy(this->points->data(), cpu.points->data(), N * sizeof(PointType));
+            if (!sycl_utils::is_cpu(*queue_ptr) && traits::point::is_shared<PointContainer>()) {
+                for (size_t i = 0; i < N; ++i) {
+                    (*this->points)[i] = (*cpu.points)[i];
+                }
+            } else {
+                copy_pt_event =
+                    this->queue_ptr->memcpy(this->points->data(), cpu.points->data(), N * sizeof(PointType));
+            }
         }
         copy_cov_event.wait();
         copy_pt_event.wait();
