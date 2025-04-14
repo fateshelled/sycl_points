@@ -7,9 +7,9 @@ namespace {
 
 struct VoxelConstants {
     static constexpr std::uint64_t invalid_coord = std::numeric_limits<std::uint64_t>::max();
-    static constexpr int coord_bit_size = 21;                       // Bits to represent each voxel coordinate
-    static constexpr size_t coord_bit_mask = (1 << 21) - 1;         // Bit mask
-    static constexpr int coord_offset = 1 << (coord_bit_size - 1);  // Coordinate offset to make values positive
+    static constexpr uint8_t coord_bit_size = 21;                       // Bits to represent each voxel coordinate
+    static constexpr size_t coord_bit_mask = (1 << 21) - 1;             // Bit mask
+    static constexpr int32_t coord_offset = 1 << (coord_bit_size - 1);  // Coordinate offset to make values positive
 };
 
 }  // namespace

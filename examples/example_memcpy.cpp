@@ -73,7 +73,7 @@ int main() {
         device_ptr = sycl::malloc_device<sycl_points::PointType>(source_points.size(), queue);
         queue.memcpy(device_ptr, source_points.points->data(), source_points.size() * sizeof(sycl_points::PointType))
             .wait();
-        const auto dt_copy_to_device =
+        const auto dt_memcpy_to_device =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
         sycl::free(device_ptr, queue);
@@ -82,7 +82,7 @@ int main() {
         s = std::chrono::high_resolution_clock::now();
         device_ptr = sycl::malloc_device<sycl_points::PointType>(host_points.size(), queue);
         queue.memcpy(device_ptr, host_points.data(), host_points.size() * sizeof(sycl_points::PointType)).wait();
-        const auto dt_copy_from_host_to_device =
+        const auto dt_memcpy_from_host_to_device =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
         sycl::free(device_ptr, queue);
@@ -91,21 +91,21 @@ int main() {
         s = std::chrono::high_resolution_clock::now();
         device_ptr = sycl::malloc_device<sycl_points::PointType>(shared_points.size(), queue);
         queue.memcpy(device_ptr, shared_points.data(), shared_points.size() * sizeof(sycl_points::PointType)).wait();
-        const auto dt_copy_from_shared_to_device =
+        const auto dt_memcpy_from_shared_to_device =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
 
         // copy from device ptr to host container
         s = std::chrono::high_resolution_clock::now();
         queue.memcpy(host_points.data(), device_ptr, host_points.size() * sizeof(sycl_points::PointType)).wait();
-        const auto dt_copy_from_device_to_host =
+        const auto dt_memcpy_from_device_to_host =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
 
         // copy from device ptr to shared container
         s = std::chrono::high_resolution_clock::now();
         queue.memcpy(shared_points.data(), device_ptr, shared_points.size() * sizeof(sycl_points::PointType)).wait();
-        const auto dt_copy_from_device_to_shared =
+        const auto dt_memcpy_from_device_to_shared =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
 
@@ -215,12 +215,14 @@ int main() {
         std::cout << "make allocator: " << dt_make_allocate << " us" << std::endl;
         std::cout << "copy from cpu to host container: " << dt_copy_to_host << " us" << std::endl;
         std::cout << "copy from cpu to shared container: " << dt_copy_to_shared << " us" << std::endl;
-        std::cout << "copy from cpu to device ptr: " << dt_copy_to_device << " us" << std::endl;
-        std::cout << "copy from host container to device ptr: " << dt_copy_from_host_to_device << " us" << std::endl;
-        std::cout << "copy from shared container to device ptr: " << dt_copy_from_shared_to_device << " us"
+        std::cout << "memcpy from cpu to device ptr: " << dt_memcpy_to_device << " us" << std::endl;
+        std::cout << "memcpy from host container to device ptr: " << dt_memcpy_from_host_to_device << " us"
                   << std::endl;
-        std::cout << "copy from device ptr to host container: " << dt_copy_from_device_to_host << " us" << std::endl;
-        std::cout << "copy from device ptr to shared container: " << dt_copy_from_device_to_shared << " us"
+        std::cout << "memcpy from shared container to device ptr: " << dt_memcpy_from_shared_to_device << " us"
+                  << std::endl;
+        std::cout << "memcpy from device ptr to host container: " << dt_memcpy_from_device_to_host << " us"
+                  << std::endl;
+        std::cout << "memcpy from device ptr to shared container: " << dt_memcpy_from_device_to_shared << " us"
                   << std::endl;
 
         std::cout << "memcpy cpu to host: " << dt_memcpy_to_host << " us" << std::endl;

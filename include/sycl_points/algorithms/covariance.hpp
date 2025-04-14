@@ -10,7 +10,7 @@ namespace algorithms {
 namespace kernel {
 
 SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* point_ptr,
-                                             const size_t k_correspondences, const int* index_ptr, const size_t i) {
+                                             const size_t k_correspondences, const int32_t* index_ptr, const size_t i) {
     PointType sum_points = PointType::Zero();
     Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
 

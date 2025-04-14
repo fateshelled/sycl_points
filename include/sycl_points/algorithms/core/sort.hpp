@@ -32,8 +32,8 @@ SYCL_EXTERNAL inline void heap_sort_descending(T* const arr, const size_t size) 
 }
 
 template <typename T, size_t MAX_STACK_SIZE = 32>
-SYCL_EXTERNAL inline bool quick_sort(T* arr, int start, int end) {
-    const int size = end - start;
+SYCL_EXTERNAL inline bool quick_sort(T* arr, int32_t start, int32_t end) {
+    const int32_t size = end - start;
     if (size <= 1) return true;
 
     if (MAX_STACK_SIZE < 2 * static_cast<size_t>(std::log2f(static_cast<float>(size))) + 1) {
@@ -41,8 +41,8 @@ SYCL_EXTERNAL inline bool quick_sort(T* arr, int start, int end) {
     }
 
     // stack base
-    int stack[MAX_STACK_SIZE][2];
-    int top = 0;
+    int32_t stack[MAX_STACK_SIZE][2];
+    int32_t top = 0;
 
     stack[top][0] = start;
     stack[top][1] = end;
@@ -56,7 +56,7 @@ SYCL_EXTERNAL inline bool quick_sort(T* arr, int start, int end) {
         if (l >= r) continue;
 
         // pivot
-        const int mid = l + (r - l) / 2;
+        const int32_t mid = l + (r - l) / 2;
         if (arr[mid] < arr[l]) {
             const auto temp = arr[l];
             arr[l] = arr[mid];
@@ -75,8 +75,8 @@ SYCL_EXTERNAL inline bool quick_sort(T* arr, int start, int end) {
 
         const auto pivot = arr[r];
         // partition
-        int i = l - 1;
-        for (int j = l; j < r; ++j) {
+        int32_t i = l - 1;
+        for (int32_t j = l; j < r; ++j) {
             if (arr[j] <= pivot) {
                 ++i;
                 const auto temp = arr[i];
@@ -107,8 +107,8 @@ SYCL_EXTERNAL inline bool quick_sort(T* arr, int start, int end) {
 }
 
 template <typename T, size_t MAX_STACK_SIZE = 32>
-SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int start, int end) {
-    const int size = end - start;
+SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int32_t start, int32_t end) {
+    const int32_t size = end - start;
     if (size <= 1) return true;
 
     if (MAX_STACK_SIZE < 2 * static_cast<size_t>(std::log2f(static_cast<float>(size))) + 1) {
@@ -116,8 +116,8 @@ SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int start, int end) {
     }
 
     // stack base
-    int stack[MAX_STACK_SIZE][2];
-    int top = 0;
+    int32_t stack[MAX_STACK_SIZE][2];
+    int32_t top = 0;
 
     stack[top][0] = start;
     stack[top][1] = end;
@@ -131,7 +131,7 @@ SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int start, int end) {
         if (l >= r) continue;
 
         // pivot with median-of-three (reversed comparison for descending order)
-        const int mid = l + (r - l) / 2;
+        const int32_t mid = l + (r - l) / 2;
         if (arr[mid] > arr[l]) {  // Changed comparison
             const auto temp = arr[l];
             arr[l] = arr[mid];
@@ -150,8 +150,8 @@ SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int start, int end) {
 
         const auto pivot = arr[r];
         // partition (reversed comparison for descending order)
-        int i = l - 1;
-        for (int j = l; j < r; ++j) {
+        int32_t i = l - 1;
+        for (int32_t j = l; j < r; ++j) {
             if (arr[j] >= pivot) {  // Changed comparison
                 ++i;
                 const auto temp = arr[i];

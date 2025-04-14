@@ -14,12 +14,12 @@ namespace algorithms {
 
 // Structure to store K nearest neighbors and their distances
 struct KNNResult {
-    std::vector<std::vector<int>> indices;      // Indices of K nearest points for each query point
+    std::vector<std::vector<int32_t>> indices;  // Indices of K nearest points for each query point
     std::vector<std::vector<float>> distances;  // Squared distances to K nearest points for each query point
 };
 
 struct KNNResultSYCL {
-    std::shared_ptr<shared_vector<int>> indices = nullptr;
+    std::shared_ptr<shared_vector<int32_t>> indices = nullptr;
     std::shared_ptr<shared_vector<float>> distances = nullptr;
     size_t query_size;
     size_t k;
@@ -27,7 +27,8 @@ struct KNNResultSYCL {
     void allocate(sycl::queue& queue, size_t query_size = 0, size_t k = 0) {
         this->query_size = query_size;
         this->k = k;
-        this->indices = std::make_shared<shared_vector<int>>(query_size * k, -1, shared_allocator<int>(queue, {}));
+        this->indices =
+            std::make_shared<shared_vector<int32_t>>(query_size * k, -1, shared_allocator<int32_t>(queue, {}));
         this->distances = std::make_shared<shared_vector<float>>(query_size * k, std::numeric_limits<float>::max(),
                                                                  shared_allocator<float>(queue, {}));
     }
@@ -36,9 +37,9 @@ struct KNNResultSYCL {
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode {
     float x, y, z;
-    int idx;         // Index of the point in the original dataset
-    int left;        // Index of left child node (-1 if none)
-    int right;       // Index of right child node (-1 if none)
+    int32_t idx;     // Index of the point in the original dataset
+    int32_t left;    // Index of left child node (-1 if none)
+    int32_t right;   // Index of right child node (-1 if none)
     uint8_t axis;    // Split axis (0=x, 1=y, 2=z)
     uint8_t pad[3];  // Padding for alignment (3 bytes)
 };  // Total: 28 bytes, aligned to 4-byte boundary
@@ -47,7 +48,7 @@ namespace {
 
 // Helper function to find best split axis based on range
 template <typename T, typename ALLOCATOR>
-inline int find_best_axis(const std::vector<T, ALLOCATOR>& points, const std::vector<int>& indices) {
+inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std::vector<size_t>& indices) {
     if (indices.size() <= 1) return 0;
 
     // Find min/max for each axis
@@ -58,7 +59,7 @@ inline int find_best_axis(const std::vector<T, ALLOCATOR>& points, const std::ve
 
     // Find the range of each axis
     for (const auto& idx : indices) {
-        for (int axis = 0; axis < 3; ++axis) {
+        for (size_t axis = 0; axis < 3; ++axis) {
             min_vals[axis] = std::min(min_vals[axis], points[idx](axis));
             max_vals[axis] = std::max(max_vals[axis], points[idx](axis));
         }
@@ -87,27 +88,27 @@ public:
         const size_t n = points.size();
 
         // Estimate tree size with some margin
-        const int estimatedSize = n * 2;
+        const size_t estimatedSize = n * 2;
         KDTree flatTree;
 
         flatTree.tree_->resize(estimatedSize);
 
         // Main index array
-        std::vector<int> indices(n);
+        std::vector<size_t> indices(n);
         std::iota(indices.begin(), indices.end(), 0);
 
         // Reusable temporary array for sorting
-        std::vector<std::pair<float, int>> sortedValues(n);
+        std::vector<std::pair<float, size_t>> sortedValues(n);
 
         // Data structure for non-recursive KD-tree construction
         struct BuildTask {
-            std::vector<int> indices;  // Indices corresponding to this node
-            int nodeIdx;               // Node index in the tree
-            int depth;                 // Depth in the tree
+            std::vector<size_t> indices;  // Indices corresponding to this node
+            size_t nodeIdx;               // Node index in the tree
+            size_t depth;                 // Depth in the tree
         };
 
         std::vector<BuildTask> taskStack;
-        int nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
+        size_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
 
         // Add the first task to the stack
         taskStack.push_back({indices, 0, 0});
@@ -118,19 +119,19 @@ public:
             BuildTask task = std::move(taskStack.back());
             taskStack.pop_back();
 
-            std::vector<int>& subIndices = task.indices;
-            const int nodeIdx = task.nodeIdx;
-            const int depth = task.depth;
+            std::vector<size_t>& subIndices = task.indices;
+            const auto nodeIdx = task.nodeIdx;
+            const auto depth = task.depth;
 
             if (subIndices.empty()) continue;
 
             // Split axis
-            const int axis = find_best_axis(points, subIndices);
+            const auto axis = find_best_axis(points, subIndices);
 
             // Create pairs of values and indices for sorting along the axis
             sortedValues.resize(subIndices.size());
             for (size_t i = 0; i < subIndices.size(); ++i) {
-                const int idx = subIndices[i];
+                const auto idx = subIndices[i];
                 sortedValues[i] = {points[idx](axis), idx};
             }
 
@@ -139,7 +140,7 @@ public:
             std::nth_element(sortedValues.begin(), sortedValues.begin() + medianPos, sortedValues.end());
 
             // Get the median point
-            const int pointIdx = sortedValues[medianPos].second;
+            const auto pointIdx = sortedValues[medianPos].second;
 
             // Initialize flat node
             auto& node = (*flatTree.tree_)[nodeIdx];
@@ -152,13 +153,13 @@ public:
             node.right = -1;
 
             // Extract indices for left subtree
-            std::vector<int> leftIndices(medianPos);
+            std::vector<size_t> leftIndices(medianPos);
             for (size_t i = 0; i < medianPos; ++i) {
                 leftIndices[i] = sortedValues[i].second;
             }
 
             // Extract indices for right subtree
-            std::vector<int> rightIndices(subIndices.size() - medianPos - 1);
+            std::vector<size_t> rightIndices(subIndices.size() - medianPos - 1);
             size_t counter = 0;
             for (size_t i = medianPos + 1; i < sortedValues.size(); ++i) {
                 rightIndices[counter++] = sortedValues[i].second;
@@ -166,14 +167,14 @@ public:
 
             // Add left subtree to processing queue if not empty
             if (!leftIndices.empty()) {
-                const int leftNodeIdx = nextNodeIdx++;
+                const auto leftNodeIdx = nextNodeIdx++;
                 node.left = leftNodeIdx;
                 taskStack.push_back({std::move(leftIndices), leftNodeIdx, depth + 1});
             }
 
             // Add right subtree to processing queue if not empty
             if (!rightIndices.empty()) {
-                const int rightNodeIdx = nextNodeIdx++;
+                const auto rightNodeIdx = nextNodeIdx++;
                 node.right = rightNodeIdx;
                 taskStack.push_back({std::move(rightIndices), rightNodeIdx, depth + 1});
             }
@@ -211,28 +212,28 @@ public:
         const size_t n = points.size();
 
         // Estimate tree size with some margin
-        const int estimatedSize = n * 2;
+        const size_t estimatedSize = n * 2;
         KDTreeSYCL flatTree(queue_ptr);
 
         flatTree.tree_->resize(estimatedSize);
 
         // Main index array
-        std::vector<int> indices(n);
+        std::vector<size_t> indices(n);
         std::iota(indices.begin(), indices.end(), 0);
 
         // Reusable temporary array for sorting
-        std::vector<std::pair<float, int>> sortedValues(n);
+        std::vector<std::pair<float, size_t>> sortedValues(n);
 
         // Data structure for non-recursive KD-tree construction
         struct BuildTask {
-            std::vector<int> indices;  // Indices corresponding to this node
-            int nodeIdx;               // Node index in the tree
-            int depth;                 // Depth in the tree
+            std::vector<size_t> indices;  // Indices corresponding to this node
+            size_t nodeIdx;               // Node index in the tree
+            size_t depth;                 // Depth in the tree
         };
 
         std::vector<BuildTask> taskStack;
         taskStack.reserve(n);
-        int nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
+        size_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
 
         // Add the first task to the stack
         taskStack.push_back({indices, 0, 0});
@@ -243,19 +244,19 @@ public:
             BuildTask task = std::move(taskStack.back());
             taskStack.pop_back();
 
-            std::vector<int>& subIndices = task.indices;
-            const int nodeIdx = task.nodeIdx;
-            const int depth = task.depth;
+            auto& subIndices = task.indices;
+            const auto nodeIdx = task.nodeIdx;
+            const auto depth = task.depth;
 
             if (subIndices.empty()) continue;
 
             // Split axis
-            const int axis = find_best_axis(points, subIndices);
+            const auto axis = find_best_axis(points, subIndices);
 
             // Create pairs of values and indices for sorting along the axis
             sortedValues.resize(subIndices.size());
             for (size_t i = 0; i < subIndices.size(); ++i) {
-                const int idx = subIndices[i];
+                const auto idx = subIndices[i];
                 sortedValues[i] = {points[idx](axis), idx};
             }
 
@@ -264,7 +265,7 @@ public:
             std::nth_element(sortedValues.begin(), sortedValues.begin() + medianPos, sortedValues.end());
 
             // Get the median point
-            const int pointIdx = sortedValues[medianPos].second;
+            const auto pointIdx = sortedValues[medianPos].second;
 
             // Initialize flat node
             auto& node = (*flatTree.tree_)[nodeIdx];
@@ -277,13 +278,13 @@ public:
             node.right = -1;
 
             // Extract indices for left subtree
-            std::vector<int> leftIndices(medianPos);
+            std::vector<size_t> leftIndices(medianPos);
             for (size_t i = 0; i < medianPos; ++i) {
                 leftIndices[i] = sortedValues[i].second;
             }
 
             // Extract indices for right subtree
-            std::vector<int> rightIndices(subIndices.size() - medianPos - 1);
+            std::vector<size_t> rightIndices(subIndices.size() - medianPos - 1);
             size_t counter = 0;
             for (size_t i = medianPos + 1; i < sortedValues.size(); ++i) {
                 rightIndices[counter++] = sortedValues[i].second;
@@ -291,14 +292,14 @@ public:
 
             // Add left subtree to processing queue if not empty
             if (!leftIndices.empty()) {
-                const int leftNodeIdx = nextNodeIdx++;
+                const auto leftNodeIdx = nextNodeIdx++;
                 node.left = leftNodeIdx;
                 taskStack.push_back({std::move(leftIndices), leftNodeIdx, depth + 1});
             }
 
             // Add right subtree to processing queue if not empty
             if (!rightIndices.empty()) {
-                const int rightNodeIdx = nextNodeIdx++;
+                const auto rightNodeIdx = nextNodeIdx++;
                 node.right = rightNodeIdx;
                 taskStack.push_back({std::move(rightIndices), rightNodeIdx, depth + 1});
             }
@@ -356,10 +357,10 @@ public:
 
                     // Arrays to store K nearest points
                     float bestDists[MAX_K];
-                    int bestIdxs[MAX_K];
+                    int32_t bestIdxs[MAX_K];
 
                     // Initialize
-                    for (int i = 0; i < k; ++i) {
+                    for (size_t i = 0; i < k; ++i) {
                         bestDists[i] = std::numeric_limits<float>::max();
                         bestIdxs[i] = -1;
                     }
@@ -367,15 +368,15 @@ public:
                     // Stack to track nodes that need to be explored
                     // {node index, squared distance to splitting plane}
                     struct NodeEntry {
-                        int nodeIdx;
+                        int32_t nodeIdx;
                         float dist_sq;
                     };
 
                     NodeEntry nearStack[MAX_DEPTH / 2];
-                    int nearStackPtr = 0;
+                    size_t nearStackPtr = 0;
 
                     NodeEntry farStack[MAX_DEPTH / 2];
-                    int farStackPtr = 0;
+                    size_t farStackPtr = 0;
 
                     // Start from root node
                     nearStack[nearStackPtr++] = {0, 0.0f};
@@ -383,13 +384,9 @@ public:
                     // Explore until stack is empty
                     while (nearStackPtr > 0 || farStackPtr > 0) {
                         // Pop a node from stack
-                        NodeEntry current;
-                        if (nearStackPtr > 0) {
-                            current = nearStack[--nearStackPtr];
-                        } else {
-                            current = farStack[--farStackPtr];
-                        }
-                        const int nodeIdx = current.nodeIdx;
+                        const NodeEntry current =
+                            nearStackPtr > 0 ? nearStack[--nearStackPtr] : farStack[--farStackPtr];
+                        const auto nodeIdx = current.nodeIdx;
 
                         // Skip condition: nodes farther than current kth distance
                         if (current.dist_sq > bestDists[k - 1]) continue;
@@ -406,7 +403,7 @@ public:
                         // Check if this point should be included in K nearest
                         if (dist_sq < bestDists[k - 1]) {
                             // Find insertion position in K-nearest list (insertion sort)
-                            int insertPos = k - 1;
+                            int32_t insertPos = k - 1;
                             while (insertPos > 0 && dist_sq < bestDists[insertPos - 1]) {
                                 bestDists[insertPos] = bestDists[insertPos - 1];
                                 bestIdxs[insertPos] = bestIdxs[insertPos - 1];
@@ -419,12 +416,13 @@ public:
                         }
 
                         // Calculate distance along split axis
-                        const int axis = node.axis;
-                        const float axisDistance = (axis == 0) ? (diff[0]) : (axis == 1) ? (diff[1]) : (diff[2]);
+                        const float axisDistance = (node.axis == 0)   ? (diff[0])
+                                                   : (node.axis == 1) ? (diff[1])
+                                                                      : (diff[2]);
 
                         // Determine nearer and further subtrees
-                        const int nearerNode = (axisDistance <= 0) ? node.left : node.right;
-                        const int furtherNode = (axisDistance <= 0) ? node.right : node.left;
+                        const auto nearerNode = (axisDistance <= 0) ? node.left : node.right;
+                        const auto furtherNode = (axisDistance <= 0) ? node.right : node.left;
 
                         // Squared distance to splitting plane
                         const float splitDistSq = axisDistance * axisDistance;
@@ -515,7 +513,7 @@ inline KNNResult knn_search_bruteforce(const PointCloudCPU& queries, const Point
         std::partial_sort(distances.begin(), distances.begin() + k, distances.end());
 
         // Store the results
-        for (int j = 0; j < k; ++j) {
+        for (size_t j = 0; j < k; ++j) {
             result.indices[i][j] = distances[j].second;
             result.distances[i][j] = distances[j].first;
         }
@@ -543,8 +541,8 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointC
     auto targets_ptr = (*targets.points).data();
     auto queries_ptr = (*queries.points).data();
 
-    float* distance_ptr = result.distances->data();
-    int* index_ptr = result.indices->data();
+    auto* distance_ptr = result.distances->data();
+    auto* index_ptr = result.indices->data();
 
     // KNN search kernel BruteForce
     auto event = queue.submit([&](sycl::handler& h) {
@@ -556,10 +554,10 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointC
 
                            // Arrays to store K nearest points
                            float kDistances[MAX_K];
-                           int kIndices[MAX_K];
+                           int32_t kIndices[MAX_K];
 
                            // Initialize
-                           for (int i = 0; i < k; ++i) {
+                           for (size_t i = 0; i < k; ++i) {
                                kDistances[i] = std::numeric_limits<float>::max();
                                kIndices[i] = -1;
                            }
@@ -575,7 +573,7 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointC
                                // Check if this point should be included in K nearest
                                if (dist < kDistances[k - 1]) {
                                    // Find insertion position
-                                   int insertPos = k - 1;
+                                   int32_t insertPos = k - 1;
                                    while (insertPos > 0 && dist < kDistances[insertPos - 1]) {
                                        kDistances[insertPos] = kDistances[insertPos - 1];
                                        kIndices[insertPos] = kIndices[insertPos - 1];
@@ -589,7 +587,7 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointC
                            }
 
                            // Write results to global memory
-                           for (int i = 0; i < k; i++) {
+                           for (size_t i = 0; i < k; i++) {
                                distance_ptr[queryIdx * k + i] = kDistances[i];
                                index_ptr[queryIdx * k + i] = kIndices[i];
                            }
