@@ -5,10 +5,8 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <vector>
-
 #include <sycl_points/points/point_cloud.hpp>
-
+#include <vector>
 
 namespace sycl_points {
 

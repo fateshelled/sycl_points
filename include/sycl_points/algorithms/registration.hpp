@@ -35,20 +35,6 @@ struct RegistrationResult {
 
 template <typename PointCloud = PointCloudShared>
 class Registration {
-private:
-    RegistrationParams params_;
-    bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
-        return delta.template head<3>().norm() < this->params_.rotation_eps &&
-               delta.template tail<3>().norm() < this->params_.translation_eps;
-    }
-    std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
-    std::shared_ptr<shared_vector<TransformMatrix>> cur_T_ = nullptr;
-    std::shared_ptr<shared_vector<float>> max_distance_ = nullptr;
-    std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
-    std::shared_ptr<shared_vector<factor::LinearlizedResult>> linearlized_ = nullptr;
-    // std::shared_ptr<PointCloud> transformed_source_ = nullptr;
-    std::mutex mtx_;
-
 public:
     Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_ptr_(queue_ptr) {
@@ -101,7 +87,7 @@ public:
                 // nearest neighbor search
                 auto knn_event = target_tree.knn_search_async(traits::pointcloud::points_ptr(transform_source),
                                                               traits::pointcloud::size(transform_source), 1,
-                                                              (*this->neighbors_)[0], transform_events.events);
+                                                              (*this->neighbors_)[0], transform_events.evs);
 
                 // linearlize
                 factor::LinearlizedResult linearlized;
@@ -124,7 +110,7 @@ public:
                         const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
                         // wait for knn search
-                        h.depends_on(knn_event.events);
+                        h.depends_on(knn_event.evs);
 
                         h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
                                        [=](sycl::nd_item<1> item) {
@@ -187,6 +173,20 @@ public:
         }
         return result;
     }
+
+private:
+    RegistrationParams params_;
+    bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
+        return delta.template head<3>().norm() < this->params_.rotation_eps &&
+               delta.template tail<3>().norm() < this->params_.translation_eps;
+    }
+    std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
+    std::shared_ptr<shared_vector<TransformMatrix>> cur_T_ = nullptr;
+    std::shared_ptr<shared_vector<float>> max_distance_ = nullptr;
+    std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
+    std::shared_ptr<shared_vector<factor::LinearlizedResult>> linearlized_ = nullptr;
+    // std::shared_ptr<PointCloud> transformed_source_ = nullptr;
+    std::mutex mtx_;
 };
 
 }  // namespace algorithms

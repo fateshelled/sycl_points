@@ -24,8 +24,8 @@ struct PointContainerTraits<PointContainerDevice> {
     static constexpr bool is_shared() { return false; }
     static constexpr bool is_device() { return true; }
     static size_t size(const PointContainerDevice& pc) { return pc.size; }
-    static const PointType* const_data_ptr(const PointContainerDevice& pc) { return pc.device_ptr; }
-    static PointType* data_ptr(PointContainerDevice& pc) { return pc.device_ptr; }
+    static const PointType* const_data_ptr(const PointContainerDevice& pc) { return pc.data; }
+    static PointType* data_ptr(PointContainerDevice& pc) { return pc.data; }
     static void resize(PointContainerDevice& pc, size_t N) { pc.resize(N); }
 };
 
@@ -44,11 +44,10 @@ struct CovarianceContainerTraits<CovarianceContainerDevice> {
     static constexpr bool is_shared() { return false; }
     static constexpr bool is_device() { return true; }
     static size_t size(const CovarianceContainerDevice& cc) { return cc.size; }
-    static const Covariance* const_data_ptr(const CovarianceContainerDevice& cc) { return cc.device_ptr; }
-    static Covariance* data_ptr(CovarianceContainerDevice& cc) { return cc.device_ptr; }
+    static const Covariance* const_data_ptr(const CovarianceContainerDevice& cc) { return cc.data; }
+    static Covariance* data_ptr(CovarianceContainerDevice& cc) { return cc.data; }
     static void resize(CovarianceContainerDevice& cc, size_t N) { cc.resize(N); }
 };
-
 
 }  // namespace traits
 }  // namespace sycl_points

@@ -111,8 +111,8 @@ inline sycl_utils::events transform_sycl_async(PointCloud& cloud, const Transfor
     }
 
     sycl_utils::events ev;
-    ev.events.push_back(covs_trans_event);
-    ev.events.push_back(points_trans_event);
+    ev += covs_trans_event;
+    ev += points_trans_event;
     return ev;
 }
 
@@ -139,7 +139,8 @@ PointCloud transform_sycl_copy(PointCloud& cloud, const TransformMatrix& trans) 
         });
     }
     sycl::event copy_pt_event =
-        queue_ptr->memcpy(traits::pointcloud::points_ptr(*ret), traits::pointcloud::points_ptr(cloud), traits::pointcloud::size(cloud) * sizeof(PointType));
+        queue_ptr->memcpy(traits::pointcloud::points_ptr(*ret), traits::pointcloud::points_ptr(cloud),
+                          traits::pointcloud::size(cloud) * sizeof(PointType));
     copy_cov_event.wait();
     copy_pt_event.wait();
 

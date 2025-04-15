@@ -165,8 +165,8 @@ struct PointCloudDevice {
 
     size_t size() const { return this->points->size; }
     bool has_cov() const { return this->covs->size > 0; }
-    PointType* points_ptr() const { return this->points->device_ptr; }
-    Covariance* covs_ptr() const { return this->covs->device_ptr; }
+    PointType* points_ptr() const { return this->points->data; }
+    Covariance* covs_ptr() const { return this->covs->data; }
 
     void resize_points(size_t N) const { this->points->resize(N); }
     void resize_covs(size_t N) const { this->covs->resize(N); }
@@ -182,9 +182,9 @@ struct PointCloudDevice {
 //     shared.covs = std::make_shared<CovarianceContainerShared>(device.covs->size, alloc_cov);
 
 //     auto copy_cov_event =
-//         device.queue_ptr->memcpy(shared.covs->data(), device.covs->device_ptr, device.covs->size *
+//         device.queue_ptr->memcpy(shared.covs->data(), device.covs->data, device.covs->size *
 //         sizeof(Covariance));
-//     auto copy_pt_event = device.queue_ptr->memcpy(shared.points->data(), device.points->device_ptr,
+//     auto copy_pt_event = device.queue_ptr->memcpy(shared.points->data(), device.points->data,
 //                                                   device.points->size * sizeof(PointType));
 //     copy_cov_event.wait();
 //     copy_pt_event.wait();
@@ -198,9 +198,9 @@ struct PointCloudDevice {
 //     device.points->allocate(shared.points->size());
 //     device.covs->allocate(shared.covs->size());
 
-//     auto copy_cov_event = shared.queue_ptr->memcpy(device.covs->device_ptr, shared.covs->data(),
+//     auto copy_cov_event = shared.queue_ptr->memcpy(device.covs->data, shared.covs->data(),
 //                                                    shared.covs->size() * sizeof(Covariance));
-//     auto copy_pt_event = shared.queue_ptr->memcpy(device.points->device_ptr, shared.points->data(),
+//     auto copy_pt_event = shared.queue_ptr->memcpy(device.points->data, shared.points->data(),
 //                                                   shared.points->size() * sizeof(PointType));
 //     copy_cov_event.wait();
 //     copy_pt_event.wait();
