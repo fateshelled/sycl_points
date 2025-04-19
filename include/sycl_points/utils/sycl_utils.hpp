@@ -87,6 +87,11 @@ inline void print_device_info(const sycl::device& device) {
         std::cout << "\tMax Clock Frequency: " << device.get_info<sycl::info::device::max_clock_frequency>() / 1000.0
                   << " GHz" << std::endl;
         std::cout << "\tDouble precision support: " << (device.has(sycl::aspect::fp64) ? "true" : "false") << std::endl;
+
+        std::cout << "\tUSM host allocations: " << (device.has(sycl::aspect::usm_host_allocations) ? "true" : "false")<< std::endl;
+        std::cout << "\tUSM device allocations: " << (device.has(sycl::aspect::usm_device_allocations) ? "true" : "false")<< std::endl;
+        std::cout << "\tUSM shared allocations: " << (device.has(sycl::aspect::usm_shared_allocations) ? "true" : "false")<< std::endl;
+
         std::cout << "\tAvailable: " << (device.get_info<sycl::info::device::is_available>() ? "true" : "false")
                   << std::endl;
         std::cout << std::endl;

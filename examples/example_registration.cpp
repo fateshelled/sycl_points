@@ -1,12 +1,10 @@
 #include <chrono>
 #include <iostream>
 #include <map>
-
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/downsampling.hpp>
 #include <sycl_points/algorithms/registration.hpp>
 #include <sycl_points/io/point_cloud_reader.hpp>
-
 
 int main() {
     std::string source_filename = "../data/source.ply";

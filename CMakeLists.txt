@@ -83,7 +83,7 @@ endfunction()
 add_example_exec(example_memcpy)
 add_example_exec(example_point_cloud)
 add_example_exec(example_registration)
-
+add_example_exec(device_query)
 
 # add test
 if (BUILD_TEST)
