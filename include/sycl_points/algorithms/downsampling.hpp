@@ -6,10 +6,10 @@
 namespace {
 
 struct VoxelConstants {
-    static constexpr std::uint64_t invalid_coord = std::numeric_limits<std::uint64_t>::max();
+    static constexpr uint64_t invalid_coord = std::numeric_limits<uint64_t>::max();
     static constexpr uint8_t coord_bit_size = 21;                       // Bits to represent each voxel coordinate
-    static constexpr size_t coord_bit_mask = (1 << 21) - 1;             // Bit mask
-    static constexpr int32_t coord_offset = 1 << (coord_bit_size - 1);  // Coordinate offset to make values positive
+    static constexpr int64_t coord_bit_mask = (1 << 21) - 1;            // Bit mask
+    static constexpr int64_t coord_offset = 1 << (coord_bit_size - 1);  // Coordinate offset to make values positive
 };
 
 }  // namespace
@@ -20,14 +20,15 @@ namespace algorithms {
 
 namespace kernel {
 
-SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float inv_voxel_size) {
+SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float voxel_size_inv) {
     if (!sycl::isfinite(point.x()) || !sycl::isfinite(point.y()) || !sycl::isfinite(point.z())) {
         return VoxelConstants::invalid_coord;
     }
 
-    const auto coord0 = static_cast<int64_t>(sycl::floor(point.x() * inv_voxel_size)) + VoxelConstants::coord_offset;
-    const auto coord1 = static_cast<int64_t>(sycl::floor(point.y() * inv_voxel_size)) + VoxelConstants::coord_offset;
-    const auto coord2 = static_cast<int64_t>(sycl::floor(point.z() * inv_voxel_size)) + VoxelConstants::coord_offset;
+    const auto coord0 = static_cast<int64_t>(std::floor(point.x() * voxel_size_inv)) + VoxelConstants::coord_offset;
+    const auto coord1 = static_cast<int64_t>(std::floor(point.y() * voxel_size_inv)) + VoxelConstants::coord_offset;
+    const auto coord2 = static_cast<int64_t>(std::floor(point.z() * voxel_size_inv)) + VoxelConstants::coord_offset;
+
     if (coord0 < 0 || VoxelConstants::coord_bit_mask < coord0 || coord1 < 0 ||
         VoxelConstants::coord_bit_mask < coord1 || coord2 < 0 || VoxelConstants::coord_bit_mask < coord2) {
         return VoxelConstants::invalid_coord;
@@ -41,7 +42,6 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
 
 }  // namespace kernel
 
-template <typename PointContainer = PointContainerShared>
 class VoxelGridSYCL {
 public:
     VoxelGridSYCL(const std::shared_ptr<sycl::queue>& queue_ptr, const float voxel_size)
@@ -54,6 +54,7 @@ public:
     void set_voxel_size(const float voxel_size) { voxel_size_ = voxel_size; }
     float get_voxel_size() const { return voxel_size_; }
 
+    template <typename PointContainer = PointContainerShared>
     void downsampling(const PointContainer& points, PointContainer& result) {
         // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
         // function: voxelgrid_sampling
@@ -88,27 +89,23 @@ public:
                 event.wait();
             }
 
-            if constexpr (traits::point::is_shared<PointContainer>()) {
-                std::unordered_map<uint64_t, PointType> voxel_map;
-                {
-                    for (size_t i = 0; i < N; ++i) {
-                        if ((*this->bit_ptr_)[i] == VoxelConstants::invalid_coord) continue;
-                        const auto it = voxel_map.find((*this->bit_ptr_)[i]);
-                        if (it == voxel_map.end()) {
-                            voxel_map[(*this->bit_ptr_)[i]] = points[i];
-                        } else {
-                            it->second += points[i];
-                        }
+            std::unordered_map<uint64_t, PointType> voxel_map;
+            {
+                for (size_t i = 0; i < N; ++i) {
+                    if ((*this->bit_ptr_)[i] == VoxelConstants::invalid_coord) continue;
+                    const auto it = voxel_map.find((*this->bit_ptr_)[i]);
+                    if (it == voxel_map.end()) {
+                        voxel_map[(*this->bit_ptr_)[i]] = points[i];
+                    } else {
+                        it->second += points[i];
                     }
                 }
+            }
 
-                result.resize(voxel_map.size());
-                size_t idx = 0;
-                for (const auto& [_, point] : voxel_map) {
-                    result[idx++] = point / point.w();
-                }
-            } else {
-                static_assert("NOT SUPPORT CONTAINER");
+            result.resize(voxel_map.size());
+            size_t idx = 0;
+            for (const auto& [_, point] : voxel_map) {
+                result[idx++] = point / point.w();
             }
         }
     }
