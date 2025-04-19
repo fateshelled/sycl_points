@@ -122,4 +122,5 @@ if (BUILD_TEST)
 
   add_test_exec(test_eigen_utils)
   add_test_exec(test_algorithms)
+  add_test_exec(test_bitonic_sort)
 endif()
