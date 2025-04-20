@@ -58,39 +58,27 @@ SYCL_EXTERNAL inline bool quick_sort(T* arr, int32_t start, int32_t end) {
         // pivot
         const int32_t mid = l + (r - l) / 2;
         if (arr[mid] < arr[l]) {
-            const auto temp = arr[l];
-            arr[l] = arr[mid];
-            arr[mid] = temp;
+            std::swap(arr[mid], arr[l]);
         }
         if (arr[r] < arr[l]) {
-            const auto temp = arr[l];
-            arr[l] = arr[r];
-            arr[r] = temp;
+            std::swap(arr[r], arr[l]);
         }
         if (arr[mid] < arr[r]) {
-            const auto temp = arr[mid];
-            arr[mid] = arr[r];
-            arr[r] = temp;
+            std::swap(arr[mid], arr[r]);
         }
 
         const auto pivot = arr[r];
-        // partition
+        // partition (TODO: parallel partition)
         int32_t i = l - 1;
         for (int32_t j = l; j < r; ++j) {
             if (arr[j] <= pivot) {
                 ++i;
-                const auto temp = arr[i];
-                arr[i] = arr[j];
-                arr[j] = temp;
+                std::swap(arr[i], arr[j]);
             }
         }
         ++i;
 
-        {
-            const auto temp = arr[i];
-            arr[i] = arr[r];
-            arr[r] = temp;
-        }
+        std::swap(arr[i], arr[r]);
 
         if (i - 1 > l) {
             stack[top][0] = l;
@@ -133,19 +121,13 @@ SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int32_t start, int32_t e
         // pivot with median-of-three (reversed comparison for descending order)
         const int32_t mid = l + (r - l) / 2;
         if (arr[mid] > arr[l]) {  // Changed comparison
-            const auto temp = arr[l];
-            arr[l] = arr[mid];
-            arr[mid] = temp;
+            std::swap(arr[mid], arr[l]);
         }
         if (arr[r] > arr[l]) {  // Changed comparison
-            const auto temp = arr[l];
-            arr[l] = arr[r];
-            arr[r] = temp;
+            std::swap(arr[r], arr[l]);
         }
         if (arr[mid] > arr[r]) {  // Changed comparison
-            const auto temp = arr[mid];
-            arr[mid] = arr[r];
-            arr[r] = temp;
+            std::swap(arr[mid], arr[r]);
         }
 
         const auto pivot = arr[r];
@@ -154,18 +136,12 @@ SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int32_t start, int32_t e
         for (int32_t j = l; j < r; ++j) {
             if (arr[j] >= pivot) {  // Changed comparison
                 ++i;
-                const auto temp = arr[i];
-                arr[i] = arr[j];
-                arr[j] = temp;
+                std::swap(arr[i], arr[j]);
             }
         }
         ++i;
 
-        {
-            const auto temp = arr[i];
-            arr[i] = arr[r];
-            arr[r] = temp;
-        }
+        std::swap(arr[i], arr[r]);
 
         if (i - 1 > l) {
             stack[top][0] = l;
