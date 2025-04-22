@@ -3,7 +3,6 @@
 #include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
 #include <type_traits>
-#include <vector>
 
 namespace sycl_points {
 

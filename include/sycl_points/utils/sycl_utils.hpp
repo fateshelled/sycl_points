@@ -1,6 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
 
 #if __has_include(<sycl/sycl.hpp>)
 #include <sycl/sycl.hpp>
@@ -16,7 +19,7 @@ namespace VENDOR_ID {
 constexpr uint32_t INTEL = 0x8086;   // 32902
 constexpr uint32_t NVIDIA = 0x10de;  // 4318
 constexpr uint32_t AMD = 0x1002;     // 4098
-};                                   // namespace VENDOR_ID
+};  // namespace VENDOR_ID
 
 inline constexpr bool is_not_power_of_two(size_t alignment) { return (alignment & (alignment - 1)) != 0; }
 
@@ -88,9 +91,12 @@ inline void print_device_info(const sycl::device& device) {
                   << " GHz" << std::endl;
         std::cout << "\tDouble precision support: " << (device.has(sycl::aspect::fp64) ? "true" : "false") << std::endl;
 
-        std::cout << "\tUSM host allocations: " << (device.has(sycl::aspect::usm_host_allocations) ? "true" : "false")<< std::endl;
-        std::cout << "\tUSM device allocations: " << (device.has(sycl::aspect::usm_device_allocations) ? "true" : "false")<< std::endl;
-        std::cout << "\tUSM shared allocations: " << (device.has(sycl::aspect::usm_shared_allocations) ? "true" : "false")<< std::endl;
+        std::cout << "\tUSM host allocations: " << (device.has(sycl::aspect::usm_host_allocations) ? "true" : "false")
+                  << std::endl;
+        std::cout << "\tUSM device allocations: "
+                  << (device.has(sycl::aspect::usm_device_allocations) ? "true" : "false") << std::endl;
+        std::cout << "\tUSM shared allocations: "
+                  << (device.has(sycl::aspect::usm_shared_allocations) ? "true" : "false") << std::endl;
 
         std::cout << "\tAvailable: " << (device.get_info<sycl::info::device::is_available>() ? "true" : "false")
                   << std::endl;

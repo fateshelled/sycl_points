@@ -3,7 +3,6 @@
 #include <Eigen/Dense>
 #include <sycl_points/points/container_traits.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
-#include <vector>
 
 namespace sycl_points {
 
