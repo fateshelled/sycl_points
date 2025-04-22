@@ -52,6 +52,7 @@ public:
             1, factor::LinearlizedResult(), shared_allocator<factor::LinearlizedResult>(*this->queue_ptr_, {}));
     }
 
+    template <factor::ICPType icp>
     RegistrationResult optimize(const PointCloud& source, const PointCloud& target, const KDTreeSYCL& target_tree,
                                 const TransformMatrix& init_T = TransformMatrix::Identity()) {
         const size_t N = traits::pointcloud::size(source);
@@ -122,9 +123,15 @@ public:
                                                linearlized_ptr[i].b.setZero();
                                                linearlized_ptr[i].error = 0.0f;
                                            } else {
-                                               linearlized_ptr[i] = factor::linearlize_gicp(
-                                                   cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                                                   source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+                                               if constexpr (icp == factor::ICPType::GICP) {
+                                                   linearlized_ptr[i] = factor::linearlize_gicp(
+                                                       cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
+                                                       source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+                                               } else if constexpr (icp == factor::ICPType::POINT_TO_POINT) {
+                                                   linearlized_ptr[i] = factor::linearlize_point_to_point(
+                                                       cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
+                                                       source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+                                               }
                                            }
                                        });
                     });

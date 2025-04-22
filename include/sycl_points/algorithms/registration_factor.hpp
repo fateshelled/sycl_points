@@ -15,12 +15,47 @@ struct LinearlizedResult {
     float error = 0.0f;
 };
 
-// SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
-//                                                                  const PointType& target, const Covariance&
-//                                                                  source_cov, const Covariance& target_cov) {
-//     LinearlizedResult ret;
-//     return ret;
-// }
+enum class ICPType {
+    POINT_TO_POINT,
+    GICP
+};
+
+SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
+                                                                 const PointType& target, const Covariance&
+                                                                 source_cov, const Covariance& target_cov) {
+    const PointType residual(target.x() - source.x(), target.y() - source.y(), target.z() - source.z(), 0.0f);
+    Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
+    {
+        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source);
+        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(T);
+        const Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
+        J(0, 0) = T_skewed(0, 0);
+        J(0, 1) = T_skewed(0, 1);
+        J(0, 2) = T_skewed(0, 2);
+        J(1, 0) = T_skewed(1, 0);
+        J(1, 1) = T_skewed(1, 1);
+        J(1, 2) = T_skewed(1, 2);
+        J(2, 0) = T_skewed(2, 0);
+        J(2, 1) = T_skewed(2, 1);
+        J(2, 2) = T_skewed(2, 2);
+
+        J(0, 3) = -T(0, 0);
+        J(0, 4) = -T(0, 1);
+        J(0, 5) = -T(0, 2);
+        J(1, 3) = -T(1, 0);
+        J(1, 4) = -T(1, 1);
+        J(1, 5) = -T(1, 2);
+        J(2, 3) = -T(2, 0);
+        J(2, 4) = -T(2, 1);
+        J(2, 5) = -T(2, 2);
+    }
+    LinearlizedResult ret;
+    const auto J_T = eigen_utils::transpose<4, 6>(J);
+    ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
+    ret.b = eigen_utils::multiply<6, 4>(J_T, residual);
+    ret.error = 0.5f * eigen_utils::frobenius_norm<4>(residual);
+    return ret;
+}
 
 SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T, const PointType& source,
                                                        const PointType& target, const Covariance& source_cov,

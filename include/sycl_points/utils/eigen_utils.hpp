@@ -64,7 +64,8 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<flo
         for (size_t j = 0; j < N; ++j) {
 #pragma unroll
             for (size_t k = 0; k < K; ++k) {
-                ret(i, j) += A(i, k) * B(k, j);
+                // ret(i, j) += A(i, k) * B(k, j);
+                ret(i, j) = sycl::fma(A(i, k), B(k, j), ret(i, j));
             }
         }
     }
@@ -81,7 +82,8 @@ SYCL_EXTERNAL inline Eigen::Vector<float, M> multiply(const Eigen::Matrix<float,
     for (size_t i = 0; i < M; ++i) {
 #pragma unroll
         for (size_t j = 0; j < N; ++j) {
-            ret(i) += A(i, j) * v(j);
+            // ret(i) += A(i, j) * v(j);
+            ret(i) = sycl::fma(A(i, j), v(j), ret(i));
         }
     }
     return ret;
@@ -160,7 +162,8 @@ SYCL_EXTERNAL inline float dot(const Eigen::Vector<float, N>& u, const Eigen::Ve
     float result = 0.0f;
 #pragma unroll
     for (size_t i = 0; i < N; ++i) {
-        result += u(i, 0) * v(i, 0);
+        // result += u(i, 0) * v(i, 0);
+        result = sycl::fma(u(i, 0), v(i, 0), result);
     }
     return result;
 }
@@ -214,8 +217,20 @@ SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
     for (size_t i = 0; i < M; ++i) {
 #pragma unroll
         for (size_t j = 0; j < N; ++j) {
-            ret += A(i, j) * A(i, j);
+            // ret += A(i, j) * A(i, j);
+            ret = sycl::fma(A(i, j), A(i, j), ret);
         }
+    }
+    return sycl::sqrt(ret);
+}
+
+template <size_t M>
+SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Vector<float, M>& A) {
+    float ret = 0.0f;
+#pragma unroll
+    for (size_t i = 0; i < M; ++i) {
+        // ret += A(i) * A(i);
+        ret = sycl::fma(A(i), A(i), ret);
     }
     return sycl::sqrt(ret);
 }
@@ -370,7 +385,8 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
 
 #pragma unroll
         for (size_t k = 0; k < j; ++k) {
-            diag_sum += L(j, k) * L(j, k);
+            // diag_sum += L(j, k) * L(j, k);
+            diag_sum = sycl::fma(L(j, k), L(j, k), diag_sum);
         }
 
         float val = A(j, j) - diag_sum;
@@ -382,7 +398,8 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
 
 #pragma unroll
             for (size_t k = 0; k < j; ++k) {
-                off_diag_sum += L(i, k) * L(j, k);
+                // off_diag_sum += L(i, k) * L(j, k);
+                off_diag_sum = sycl::fma(L(i, k), L(j, k), off_diag_sum);
             }
 
             L(i, j) = (A(i, j) - off_diag_sum) * inv_Ljj;
@@ -395,7 +412,8 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
 
 #pragma unroll
         for (size_t j = 0; j < i; ++j) {
-            sum += L(i, j) * y(j);
+            // sum += L(i, j) * y(j);
+            sum = sycl::fma(L(i, j), y(j), sum);
         }
 
         const float inv_Lii = 1.0f / (sycl::fabs(L(i, i)) < eps ? eps : L(i, i));
@@ -408,7 +426,8 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
 
 #pragma unroll
         for (size_t j = i + 1; j < 6; ++j) {
-            sum += L(j, i) * x(j);
+            // sum += L(j, i) * x(j);
+            sum = sycl::fma(L(j, i), x(j), sum);
         }
 
         const float inv_Lii = 1.0f / (sycl::fabs(L(i, i)) < eps ? eps : L(i, i));
