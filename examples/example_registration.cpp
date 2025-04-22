@@ -81,7 +81,8 @@ int main() {
 
         t0 = std::chrono::high_resolution_clock::now();
         sycl_points::TransformMatrix init_T = sycl_points::TransformMatrix::Identity();
-        const auto ret = reg.optimize(source_downsampled, target_downsampled, target_tree, init_T);
+        const auto ret = reg.optimize<sycl_points::algorithms::factor::ICPType::GICP>(
+            source_downsampled, target_downsampled, target_tree, init_T);
         auto dt_registration =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
