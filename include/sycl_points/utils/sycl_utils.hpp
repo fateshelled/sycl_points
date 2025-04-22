@@ -189,7 +189,9 @@ struct ContainerDevice {
     T* data = nullptr;
     size_t size = 0;
     std::shared_ptr<sycl::queue> queue_ptr = nullptr;
-    const sycl::property_list propeties = {sycl::property::no_init()};
+    const sycl::property_list propeties = {
+        // sycl::property::no_init()
+    };
 
     ContainerDevice(const std::shared_ptr<sycl::queue>& q) : queue_ptr(q) {
         if constexpr (sycl_utils::is_not_power_of_two(Alignment)) {
