@@ -3,6 +3,7 @@
 #include <map>
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/downsampling.hpp>
+#include <sycl_points/algorithms/filter.hpp>
 #include <sycl_points/algorithms/registration.hpp>
 #include <sycl_points/io/point_cloud_reader.hpp>
 
@@ -30,21 +31,25 @@ int main() {
 
     sycl_points::algorithms::VoxelGridSYCL voxel_grid(queue, voxel_size);
 
+    const float CROP_BOX_MIN_DISTANCE = 0.5f;
+    const float CROP_BOX_MAX_DISTANCE = 50.0f;
     const size_t LOOP = 10;
     std::map<std::string, double> elapsed;
     for (size_t i = 0; i < LOOP + 1; ++i) {
         auto t0 = std::chrono::high_resolution_clock::now();
 
-        const sycl_points::PointCloudShared source_shared(queue, source_points);
-        const sycl_points::PointCloudShared target_shared(queue, target_points);
+        sycl_points::PointCloudShared source_shared(queue, source_points);
+        sycl_points::PointCloudShared target_shared(queue, target_points);
         auto dt_to_shared =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
+        sycl_points::algorithms::filter::crop_box(source_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
         sycl_points::PointCloudShared source_downsampled(queue);
         voxel_grid.downsampling(source_shared, source_downsampled);
 
+        sycl_points::algorithms::filter::crop_box(target_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
         sycl_points::PointCloudShared target_downsampled(queue);
         voxel_grid.downsampling(target_shared, target_downsampled);
         auto dt_downsampled =
