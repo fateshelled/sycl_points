@@ -33,7 +33,7 @@ struct RegistrationResult {
     float error = 0.0f;
 };
 
-template <typename PointCloud = PointCloudShared>
+template <typename PointCloud = PointCloudShared, factor::ICPType icp = factor::ICPType::GICP>
 class Registration {
 public:
     Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
@@ -52,7 +52,6 @@ public:
             1, factor::LinearlizedResult(), shared_allocator<factor::LinearlizedResult>(*this->queue_ptr_, {}));
     }
 
-    template <factor::ICPType icp>
     RegistrationResult optimize(const PointCloud& source, const PointCloud& target, const KDTreeSYCL& target_tree,
                                 const TransformMatrix& init_T = TransformMatrix::Identity()) {
         const size_t N = traits::pointcloud::size(source);
@@ -192,7 +191,6 @@ private:
     std::shared_ptr<shared_vector<float>> max_distance_ = nullptr;
     std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
     std::shared_ptr<shared_vector<factor::LinearlizedResult>> linearlized_ = nullptr;
-    // std::shared_ptr<PointCloud> transformed_source_ = nullptr;
     std::mutex mtx_;
 };
 
