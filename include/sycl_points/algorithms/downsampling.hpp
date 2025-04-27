@@ -78,13 +78,12 @@ public:
                     const auto point_ptr = traits::point::const_data_ptr(points);
                     const auto bit_ptr = this->bit_ptr_->data();
                     const auto voxel_size_inv = this->voxel_size_inv_;
-                    h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-                                   [=](sycl::nd_item<1> item) {
-                                       const size_t i = item.get_global_id(0);
-                                       if (i >= N) return;
+                    h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                        const size_t i = item.get_global_id(0);
+                        if (i >= N) return;
 
-                                       bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], voxel_size_inv);
-                                   });
+                        bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], voxel_size_inv);
+                    });
                 });
                 event.wait();
             }

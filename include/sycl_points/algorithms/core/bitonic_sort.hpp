@@ -75,23 +75,23 @@ public:
                                        const uint64_t ixj = i ^ j;
 
                                        if (ixj > i && i < pow2_size && ixj < pow2_size) {
-                                              // necessary swap or not
-                                              const auto data_i = data_ptr[i];
-                                              const auto data_ixj = data_ptr[ixj];
-                                              const bool is_equal = (data_i == data_ixj);
-                                              const auto index_i = indices_ptr[i];
-                                              const auto index_ixj = indices_ptr[ixj];
-                                              const bool idx_compare = (index_i > index_ixj);
-                                              const bool val_compare = (data_i > data_ixj);
+                                           // necessary swap or not
+                                           const auto data_i = data_ptr[i];
+                                           const auto data_ixj = data_ptr[ixj];
+                                           const bool is_equal = (data_i == data_ixj);
+                                           const auto index_i = indices_ptr[i];
+                                           const auto index_ixj = indices_ptr[ixj];
+                                           const bool idx_compare = (index_i > index_ixj);
+                                           const bool val_compare = (data_i > data_ixj);
 
-                                              const bool should_swap = is_equal ? (idx_compare == ((i & k) == 0))
-                                                                                : (val_compare == ((i & k) == 0));
-                                              if (should_swap) {
-                                                  data_ptr[i] = data_ixj;
-                                                  data_ptr[ixj] = data_i;
-                                                  indices_ptr[i] = index_ixj;
-                                                  indices_ptr[ixj] = index_i;
-                                              }
+                                           const bool should_swap = is_equal ? (idx_compare == ((i & k) == 0))
+                                                                             : (val_compare == ((i & k) == 0));
+                                           if (should_swap) {
+                                               data_ptr[i] = data_ixj;
+                                               data_ptr[ixj] = data_i;
+                                               indices_ptr[i] = index_ixj;
+                                               indices_ptr[ixj] = index_i;
+                                           }
                                        }
                                    });
                 });

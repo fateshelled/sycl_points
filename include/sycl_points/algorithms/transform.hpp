@@ -85,12 +85,11 @@ inline sycl_utils::events transform_sycl_async(PointCloud& cloud, const Transfor
 
         /* Transform Covariance */
         covs_trans_event = queue_ptr->submit([&](sycl::handler& h) {
-            h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-                           [=](sycl::nd_item<1> item) {
-                               const size_t i = item.get_global_id(0);
-                               if (i >= N) return;
-                               kernel::transform_covs(covs[i], covs[i], trans_vec_ptr);
-                           });
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) return;
+                kernel::transform_covs(covs[i], covs[i], trans_vec_ptr);
+            });
         });
     }
 
@@ -101,12 +100,11 @@ inline sycl_utils::events transform_sycl_async(PointCloud& cloud, const Transfor
 
         /* Transform Points*/
         points_trans_event = queue_ptr->submit([&](sycl::handler& h) {
-            h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-                           [=](sycl::nd_item<1> item) {
-                               const size_t i = item.get_global_id(0);
-                               if (i >= N) return;
-                               kernel::transform_point(point_ptr[i], point_ptr[i], trans_vec_ptr);
-                           });
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) return;
+                kernel::transform_point(point_ptr[i], point_ptr[i], trans_vec_ptr);
+            });
         });
     }
 

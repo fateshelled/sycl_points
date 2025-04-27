@@ -83,12 +83,11 @@ inline sycl_utils::events compute_covariances_sycl_async(const std::shared_ptr<s
         const auto cov_ptr = traits::covariance::data_ptr(covs);
         const auto index_ptr = neightbors.indices->data();
         const auto k_correspondences = neightbors.k;
-        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-                       [=](sycl::nd_item<1> item) {
-                           const size_t i = item.get_global_id(0);
-                           if (i >= N) return;
-                           kernel::compute_covariance(cov_ptr[i], point_ptr, k_correspondences, index_ptr, i);
-                       });
+        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+            const size_t i = item.get_global_id(0);
+            if (i >= N) return;
+            kernel::compute_covariance(cov_ptr[i], point_ptr, k_correspondences, index_ptr, i);
+        });
     });
     sycl_utils::events events;
     events.push_back(event);
@@ -183,13 +182,12 @@ inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_p
 
     auto event = queue_ptr->submit([&](sycl::handler& h) {
         const auto cov_ptr = points.covs->data();
-        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-                       [=](sycl::nd_item<1> item) {
-                           const size_t i = item.get_global_id(0);
-                           if (i >= N) return;
+        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+            const size_t i = item.get_global_id(0);
+            if (i >= N) return;
 
-                           kernel::update_covariance_plane(cov_ptr[i]);
-                       });
+            kernel::update_covariance_plane(cov_ptr[i]);
+        });
     });
 
     sycl_utils::events events;

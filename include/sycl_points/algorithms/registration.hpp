@@ -25,6 +25,8 @@ struct RegistrationParams {
 };
 
 struct RegistrationResult {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
     Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
     bool converged = false;
     size_t iterations = 0;
@@ -72,7 +74,6 @@ public:
         sycl_utils::events transform_events;
 
         {
-            std::lock_guard<std::mutex> lock(this->mtx_);
             // memory allocation
             if (this->linearlized_->size() < N) {
                 this->linearlized_->resize(N, factor::LinearlizedResult());
@@ -112,27 +113,26 @@ public:
                         // wait for knn search
                         h.depends_on(knn_event.evs);
 
-                        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-                                       [=](sycl::nd_item<1> item) {
-                                           const size_t i = item.get_global_id(0);
-                                           if (i >= N) return;
+                        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                            const size_t i = item.get_global_id(0);
+                            if (i >= N) return;
 
-                                           if (neighbors_distances_ptr[i] > max_dist_ptr[0]) {
-                                               linearlized_ptr[i].H.setZero();
-                                               linearlized_ptr[i].b.setZero();
-                                               linearlized_ptr[i].error = 0.0f;
-                                           } else {
-                                               if constexpr (icp == factor::ICPType::GICP) {
-                                                   linearlized_ptr[i] = factor::linearlize_gicp(
-                                                       cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                                                       source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
-                                               } else if constexpr (icp == factor::ICPType::POINT_TO_POINT) {
-                                                   linearlized_ptr[i] = factor::linearlize_point_to_point(
-                                                       cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                                                       source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
-                                               }
-                                           }
-                                       });
+                            if (neighbors_distances_ptr[i] > max_dist_ptr[0]) {
+                                linearlized_ptr[i].H.setZero();
+                                linearlized_ptr[i].b.setZero();
+                                linearlized_ptr[i].error = 0.0f;
+                            } else {
+                                if constexpr (icp == factor::ICPType::GICP) {
+                                    linearlized_ptr[i] = factor::linearlize_gicp(
+                                        cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
+                                        source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+                                } else if constexpr (icp == factor::ICPType::POINT_TO_POINT) {
+                                    linearlized_ptr[i] = factor::linearlize_point_to_point(
+                                        cur_T_ptr[0], source_ptr[i], target_ptr[neighbors_index_ptr[i]],
+                                        source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+                                }
+                            }
+                        });
                     });
                     linearlize_event.wait();
 
@@ -191,7 +191,6 @@ private:
     std::shared_ptr<shared_vector<float>> max_distance_ = nullptr;
     std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
     std::shared_ptr<shared_vector<factor::LinearlizedResult>> linearlized_ = nullptr;
-    std::mutex mtx_;
 };
 
 }  // namespace algorithms

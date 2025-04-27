@@ -10,19 +10,18 @@ namespace algorithms {
 namespace factor {
 
 struct LinearlizedResult {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
     Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
     float error = 0.0f;
 };
 
-enum class ICPType {
-    POINT_TO_POINT,
-    GICP
-};
+enum class ICPType { POINT_TO_POINT, GICP };
 
 SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
-                                                                 const PointType& target, const Covariance&
-                                                                 source_cov, const Covariance& target_cov) {
+                                                                 const PointType& target, const Covariance& source_cov,
+                                                                 const Covariance& target_cov) {
     const PointType residual(target.x() - source.x(), target.y() - source.y(), target.z() - source.z(), 0.0f);
     Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
     {
