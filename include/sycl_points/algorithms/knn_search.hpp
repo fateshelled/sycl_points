@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <execution>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -48,7 +49,7 @@ namespace {
 
 // Helper function to find best split axis based on range
 template <typename T, typename ALLOCATOR>
-inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std::vector<size_t>& indices) {
+inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std::vector<uint32_t>& indices) {
     if (indices.size() <= 1) return 0;
 
     // Find min/max for each axis
@@ -94,21 +95,21 @@ public:
         flatTree.tree_->resize(estimatedSize);
 
         // Main index array
-        std::vector<size_t> indices(n);
+        std::vector<uint32_t> indices(n);
         std::iota(indices.begin(), indices.end(), 0);
 
         // Reusable temporary array for sorting
-        std::vector<std::pair<float, size_t>> sortedValues(n);
+        std::vector<std::pair<float, uint32_t>> sortedValues(n);
 
         // Data structure for non-recursive KD-tree construction
         struct BuildTask {
-            std::vector<size_t> indices;  // Indices corresponding to this node
-            size_t nodeIdx;               // Node index in the tree
-            size_t depth;                 // Depth in the tree
+            std::vector<uint32_t> indices;  // Indices corresponding to this node
+            uint32_t nodeIdx;               // Node index in the tree
+            uint32_t depth;                 // Depth in the tree
         };
 
         std::vector<BuildTask> taskStack;
-        size_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
+        uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
 
         // Add the first task to the stack
         taskStack.push_back({indices, 0, 0});
@@ -119,7 +120,7 @@ public:
             BuildTask task = std::move(taskStack.back());
             taskStack.pop_back();
 
-            std::vector<size_t>& subIndices = task.indices;
+            std::vector<uint32_t>& subIndices = task.indices;
             const auto nodeIdx = task.nodeIdx;
             const auto depth = task.depth;
 
@@ -137,8 +138,12 @@ public:
 
             // Partial sort to find median
             const size_t medianPos = subIndices.size() / 2;
+#if __cplusplus >= 202002L
+            std::nth_element(std::execution::unseq, sortedValues.begin(), sortedValues.begin() + medianPos,
+                             sortedValues.end());
+#else
             std::nth_element(sortedValues.begin(), sortedValues.begin() + medianPos, sortedValues.end());
-
+#endif
             // Get the median point
             const auto pointIdx = sortedValues[medianPos].second;
 
@@ -153,13 +158,13 @@ public:
             node.right = -1;
 
             // Extract indices for left subtree
-            std::vector<size_t> leftIndices(medianPos);
+            std::vector<uint32_t> leftIndices(medianPos);
             for (size_t i = 0; i < medianPos; ++i) {
                 leftIndices[i] = sortedValues[i].second;
             }
 
             // Extract indices for right subtree
-            std::vector<size_t> rightIndices(subIndices.size() - medianPos - 1);
+            std::vector<uint32_t> rightIndices(subIndices.size() - medianPos - 1);
             size_t counter = 0;
             for (size_t i = medianPos + 1; i < sortedValues.size(); ++i) {
                 rightIndices[counter++] = sortedValues[i].second;
@@ -218,22 +223,22 @@ public:
         flatTree.tree_->resize(estimatedSize);
 
         // Main index array
-        std::vector<size_t> indices(n);
+        std::vector<uint32_t> indices(n);
         std::iota(indices.begin(), indices.end(), 0);
 
         // Reusable temporary array for sorting
-        std::vector<std::pair<float, size_t>> sortedValues(n);
+        std::vector<std::pair<float, uint32_t>> sortedValues(n);
 
         // Data structure for non-recursive KD-tree construction
         struct BuildTask {
-            std::vector<size_t> indices;  // Indices corresponding to this node
-            size_t nodeIdx;               // Node index in the tree
-            size_t depth;                 // Depth in the tree
+            std::vector<uint32_t> indices;  // Indices corresponding to this node
+            uint32_t nodeIdx;               // Node index in the tree
+            uint32_t depth;                 // Depth in the tree
         };
 
         std::vector<BuildTask> taskStack;
         taskStack.reserve(n);
-        size_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
+        uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
 
         // Add the first task to the stack
         taskStack.push_back({indices, 0, 0});
@@ -262,7 +267,12 @@ public:
 
             // Partial sort to find median
             const size_t medianPos = subIndices.size() / 2;
+#if __cplusplus >= 202002L
+            std::nth_element(std::execution::unseq, sortedValues.begin(), sortedValues.begin() + medianPos,
+                             sortedValues.end());
+#else
             std::nth_element(sortedValues.begin(), sortedValues.begin() + medianPos, sortedValues.end());
+#endif
 
             // Get the median point
             const auto pointIdx = sortedValues[medianPos].second;
@@ -278,13 +288,13 @@ public:
             node.right = -1;
 
             // Extract indices for left subtree
-            std::vector<size_t> leftIndices(medianPos);
+            std::vector<uint32_t> leftIndices(medianPos);
             for (size_t i = 0; i < medianPos; ++i) {
                 leftIndices[i] = sortedValues[i].second;
             }
 
             // Extract indices for right subtree
-            std::vector<size_t> rightIndices(subIndices.size() - medianPos - 1);
+            std::vector<uint32_t> rightIndices(subIndices.size() - medianPos - 1);
             size_t counter = 0;
             for (size_t i = medianPos + 1; i < sortedValues.size(); ++i) {
                 rightIndices[counter++] = sortedValues[i].second;
@@ -365,10 +375,8 @@ public:
                 int32_t bestIdxs[MAX_K];
 
                 // Initialize
-                for (size_t i = 0; i < k; ++i) {
-                    bestDists[i] = std::numeric_limits<float>::max();
-                    bestIdxs[i] = -1;
-                }
+                std::fill(bestDists, bestDists + MAX_K, std::numeric_limits<float>::max());
+                std::fill(bestIdxs, bestIdxs + MAX_K, -1);
 
                 // Stack to track nodes that need to be explored
                 // {node index, squared distance to splitting plane}
