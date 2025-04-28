@@ -101,9 +101,9 @@ public:
                 (*this->cur_T_)[0] = result.T.matrix();
 
                 // nearest neighbor search
-                auto knn_event = target_tree.knn_search_async(traits::pointcloud::points_ptr(transform_source),
-                                                              traits::pointcloud::size(transform_source), 1,
-                                                              (*this->neighbors_)[0], transform_events.evs);
+                auto knn_event = target_tree.knn_search_async<1>(traits::pointcloud::points_ptr(transform_source),
+                                                                 traits::pointcloud::size(transform_source), 1,
+                                                                 (*this->neighbors_)[0], transform_events.evs);
 
                 // linearlize
                 factor::LinearlizedResult linearlized;
