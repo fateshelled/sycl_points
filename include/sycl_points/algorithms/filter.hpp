@@ -146,10 +146,9 @@ public:
         if (N == 0) return;
 
         if (this->flags_->size() < N) {
-            this->flags_->resize(N, INCLUDE_FLAG);
-        } else {
-            this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
+            this->flags_->resize(N);
         }
+        this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
 
         auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
             const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
@@ -183,10 +182,9 @@ public:
         if (N == 0) return;
 
         if (this->flags_->size() < N) {
-            this->flags_->resize(N, INCLUDE_FLAG);
-        } else {
-            this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
+            this->flags_->resize(N);
         }
+        this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
 
         auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
             const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);

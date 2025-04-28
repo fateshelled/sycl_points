@@ -327,10 +327,16 @@ public:
         if (result.indices == nullptr || result.distances == nullptr) {
             result.allocate(*this->queue_, query_size, k);
         } else {
-            result.indices->resize(query_size * k, -1);
-            result.distances->resize(query_size * k, std::numeric_limits<float>::max());
+            result.indices->resize(query_size * k);
+            result.distances->resize(query_size * k);
             result.k = k;
             result.query_size = query_size;
+        }
+        {
+            sycl_utils::events fill_events;
+            fill_events += this->queue_->fill(result.indices->data(), -1, query_size * k);
+            fill_events += this->queue_->fill(result.distances->data(), std::numeric_limits<float>::max(), query_size * k);
+            fill_events.wait();
         }
 
         // Optimize work group size
@@ -485,8 +491,10 @@ inline KNNResult knn_search_bruteforce(const PointCloudCPU& queries, const Point
     result.distances.resize(q);
 
     for (size_t i = 0; i < q; ++i) {
-        result.indices[i].resize(k, -1);
-        result.distances[i].resize(k, std::numeric_limits<float>::max());
+        result.indices[i].resize(k);
+        result.distances[i].resize(k);
+        std::fill(result.indices[i].begin(), result.indices[i].end(), -1);
+        std::fill(result.distances[i].begin(), result.distances[i].end(), std::numeric_limits<float>::max());
     }
 
 // For each query point, find K nearest neighbors

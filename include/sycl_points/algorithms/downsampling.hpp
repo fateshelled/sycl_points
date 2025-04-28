@@ -68,10 +68,11 @@ public:
         const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
         // compute bit on device
         {
-            std::lock_guard<std::mutex> lock(mtx_);
             if (this->bit_ptr_->size() < N) {
-                this->bit_ptr_->resize(N, VoxelConstants::invalid_coord);
+                this->bit_ptr_->resize(N);
             }
+            this->queue_ptr_->fill(this->bit_ptr_->data(), VoxelConstants::invalid_coord, N).wait();
+
             {
                 auto event = queue_ptr_->submit([&](sycl::handler& h) {
                     // memory ptr
@@ -91,10 +92,11 @@ public:
             std::unordered_map<uint64_t, PointType> voxel_map;
             {
                 for (size_t i = 0; i < N; ++i) {
-                    if ((*this->bit_ptr_)[i] == VoxelConstants::invalid_coord) continue;
-                    const auto it = voxel_map.find((*this->bit_ptr_)[i]);
+                    const auto voxel_bit = (*this->bit_ptr_)[i];
+                    if (voxel_bit == VoxelConstants::invalid_coord) continue;
+                    const auto it = voxel_map.find(voxel_bit);
                     if (it == voxel_map.end()) {
-                        voxel_map[(*this->bit_ptr_)[i]] = points[i];
+                        voxel_map[voxel_bit] = points[i];
                     } else {
                         it->second += points[i];
                     }
@@ -117,7 +119,6 @@ private:
     std::shared_ptr<sycl::queue> queue_ptr_;
     float voxel_size_;
     float voxel_size_inv_;
-    std::mutex mtx_;
 
     std::shared_ptr<shared_vector<uint64_t>> bit_ptr_ = nullptr;
 };

@@ -76,8 +76,21 @@ public:
         {
             // memory allocation
             if (this->linearlized_->size() < N) {
-                this->linearlized_->resize(N, factor::LinearlizedResult());
+                this->linearlized_->resize(N);
             }
+            auto fill_event = this->queue_ptr_->submit([&](sycl::handler& h) {
+                // get pointers
+                const auto linearlized_ptr = this->linearlized_->data();
+                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                    const size_t i = item.get_global_id(0);
+                    if (i >= N) return;
+                    linearlized_ptr[i].b.setZero();
+                    linearlized_ptr[i].H.setZero();
+                    linearlized_ptr[i].error = 0.0f;
+                });
+            });
+            fill_event.wait();
+
             this->cur_T_->data()[0] = result.T.matrix();
             this->max_distance_->at(0) = max_dist_2;
 
