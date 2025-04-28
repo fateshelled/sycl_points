@@ -32,6 +32,7 @@ int main() {
                                               sycl_points::algorithms::factor::ICPType::GICP>(queue, param);
 
     sycl_points::algorithms::VoxelGridSYCL voxel_grid(queue, voxel_size);
+    sycl_points::algorithms::filter::PreprocessFilter preprocess_filter(queue);
 
     const float CROP_BOX_MIN_DISTANCE = 0.5f;
     const float CROP_BOX_MAX_DISTANCE = 50.0f;
@@ -47,11 +48,11 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::filter::crop_box(source_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
+        preprocess_filter.crop_box(source_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
         sycl_points::PointCloudShared source_downsampled(queue);
         voxel_grid.downsampling(source_shared, source_downsampled);
 
-        sycl_points::algorithms::filter::crop_box(target_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
+        preprocess_filter.crop_box(target_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
         sycl_points::PointCloudShared target_downsampled(queue);
         voxel_grid.downsampling(target_shared, target_downsampled);
         auto dt_downsampled =

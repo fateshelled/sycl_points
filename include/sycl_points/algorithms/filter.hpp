@@ -28,142 +28,204 @@ SYCL_EXTERNAL inline void crop_box(const PointType& pt, uint8_t& flag, float min
 }
 }  // namespace kernel
 
-template <typename T, typename Allocator>
-void filter_by_flags(std::vector<T, Allocator>& data, const shared_vector<uint8_t, sizeof(uint8_t)>& flags) {
-    const size_t N = data.size();
-    size_t new_size = 0;
-    for (size_t i = 0; i < N; ++i) {
-        if (flags[i] == INCLUDE_FLAG) {
-            data[new_size] = data[i];
-            ++new_size;
+class FilterByFlags {
+public:
+    FilterByFlags(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
+        points_copy_ptr_ = std::make_shared<sycl_points::PointContainerShared>(*this->queue_ptr_);
+        covs_copy_ptr_ = std::make_shared<sycl_points::CovarianceContainerShared>(*this->queue_ptr_);
+        prefix_sum_ptr_ = std::make_shared<shared_vector<uint32_t, sizeof(uint32_t)>>(*this->queue_ptr_);
+    }
+
+    template <typename T, size_t AllocSize = 0>
+    static void filter_by_flags(shared_vector<T, AllocSize>& data,
+                                const shared_vector<uint8_t, sizeof(uint8_t)>& flags) {
+        const size_t N = data.size();
+        size_t new_size = 0;
+        for (size_t i = 0; i < N; ++i) {
+            if (flags[i] == INCLUDE_FLAG) {
+                data[new_size] = data[i];
+                ++new_size;
+            }
         }
-    }
-    data.resize(new_size);
-}
-
-template <typename T>
-sycl_utils::events filter_by_flags_async(const std::shared_ptr<sycl::queue>& queue_ptr,
-                                         std::vector<T, shared_allocator<T, sizeof(T)>>& data,
-                                         const shared_vector<uint8_t, sizeof(uint8_t)>& flags) {
-    static_assert(std::is_same<T, PointType>::value || std::is_same<T, Covariance>::value, "T is not supported type.");
-
-    sycl_utils::events events;
-
-    const size_t N = data.size();
-    if (N == 0) return events;
-
-    std::vector<T, shared_allocator<T, sizeof(T)>> data_copy(N, *queue_ptr);
-    auto copy_event = queue_ptr->memcpy(data_copy.data(), data.data(), N * sizeof(T));
-
-    shared_vector<uint32_t, sizeof(uint32_t)> prefix_sum(N, 0, *queue_ptr);
-    size_t new_size = 0;
-    for (size_t i = 0; i < N; ++i) {
-        prefix_sum[i] = new_size;
-        new_size += flags[i];
+        data.resize(new_size);
     }
 
-    copy_event.wait();
-    data.resize(new_size);
+    template <typename T, size_t AllocSize = 0>
+    sycl_utils::events filter_by_flags_async(shared_vector<T, AllocSize>& data,
+                                             const shared_vector<uint8_t, sizeof(uint8_t)>& flags) {
+        static_assert(std::is_same<T, PointType>::value || std::is_same<T, Covariance>::value,
+                      "T is not supported type.");
 
-    auto event = queue_ptr->submit([&](sycl::handler& h) {
-        const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);
-        const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
-        // memory ptr
-        T* data_ptr = data.data();
-        const T* data_copy_ptr = data_copy.data();
-        const auto flag_ptr = flags.data();
-        const auto prefix_sum_ptr = prefix_sum.data();
-        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-            const size_t i = item.get_global_id(0);
-            if (i >= N) return;
-            if (flag_ptr[i] == INCLUDE_FLAG) {
-                if constexpr (std::is_same<T, PointType>::value) {
-                    const PointType pt = data_copy_ptr[i];
-                    data_ptr[prefix_sum_ptr[i]](0) = pt(0);
-                    data_ptr[prefix_sum_ptr[i]](1) = pt(1);
-                    data_ptr[prefix_sum_ptr[i]](2) = pt(2);
-                    data_ptr[prefix_sum_ptr[i]](3) = pt(3);
-                } else if constexpr (std::is_same<T, Covariance>::value) {
-                    const Covariance cov = data_copy_ptr[i];
-                    for (size_t j = 0; j < 3; ++j) {
-                        for (size_t k = 0; k < 3; ++k) {
-                            data_ptr[prefix_sum_ptr[i]](j, k) = cov(j, k);
+        sycl_utils::events events;
+
+        const size_t N = data.size();
+        if (N == 0) return events;
+
+        // allocate memory
+        sycl::event copy_event;
+        if constexpr (std::is_same<T, PointType>::value) {
+            if (this->points_copy_ptr_->size() < N) {
+                this->points_copy_ptr_->resize(N);
+            }
+            copy_event = this->queue_ptr_->memcpy(this->points_copy_ptr_->data(), data.data(), N * sizeof(T));
+        } else if constexpr (std::is_same<T, Covariance>::value) {
+            if (this->covs_copy_ptr_->size() < N) {
+                this->covs_copy_ptr_->resize(N);
+            }
+            copy_event = this->queue_ptr_->memcpy(this->covs_copy_ptr_->data(), data.data(), N * sizeof(T));
+        }
+
+        if (this->prefix_sum_ptr_->size() < N) {
+            this->prefix_sum_ptr_->resize(N);
+        }
+        size_t new_size = 0;
+        for (size_t i = 0; i < N; ++i) {
+            (*this->prefix_sum_ptr_)[i] = new_size;
+            new_size += flags[i];
+        }
+
+        copy_event.wait();
+        data.resize(new_size);
+
+        auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
+            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
+            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+            // memory ptr
+            T* data_ptr = data.data();
+            T* copy_ptr;
+            if constexpr (std::is_same<T, PointType>::value) {
+                copy_ptr = this->points_copy_ptr_->data();
+            } else if constexpr (std::is_same<T, Covariance>::value) {
+                copy_ptr = this->covs_copy_ptr_->data();
+            }
+
+            const auto flag_ptr = flags.data();
+            const auto prefix_sum_ptr = this->prefix_sum_ptr_->data();
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) return;
+                if (flag_ptr[i] == INCLUDE_FLAG) {
+                    if constexpr (std::is_same<T, PointType>::value) {
+                        const PointType pt = copy_ptr[i];
+                        data_ptr[prefix_sum_ptr[i]](0) = pt(0);
+                        data_ptr[prefix_sum_ptr[i]](1) = pt(1);
+                        data_ptr[prefix_sum_ptr[i]](2) = pt(2);
+                        data_ptr[prefix_sum_ptr[i]](3) = pt(3);
+                    } else if constexpr (std::is_same<T, Covariance>::value) {
+                        const Covariance cov = copy_ptr[i];
+                        for (size_t j = 0; j < 3; ++j) {
+                            for (size_t k = 0; k < 3; ++k) {
+                                data_ptr[prefix_sum_ptr[i]](j, k) = cov(j, k);
+                            }
                         }
                     }
                 }
-            }
+            });
         });
-    });
-    events += event;
-    return events;
-}
-
-void crop_box(const std::shared_ptr<sycl::queue>& queue_ptr, PointContainerShared& data, float min_distance = 1.0f,
-              float max_distance = std::numeric_limits<float>::max()) {
-    const size_t N = data.size();
-    if (N == 0) return;
-
-    shared_vector<uint8_t, sizeof(uint8_t)> flags(N, INCLUDE_FLAG, *queue_ptr);
-
-    auto event = queue_ptr->submit([&](sycl::handler& h) {
-        const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);
-        const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
-        // memory ptr
-        const auto point_ptr = traits::point::const_data_ptr(data);
-        auto flag_ptr = flags.data();
-        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-            const size_t i = item.get_global_id(0);
-            if (i >= N) return;
-            if (!kernel::is_finite(point_ptr[i])) {
-                flag_ptr[i] = REMOVE_FLAG;
-                return;
-            }
-            kernel::crop_box(point_ptr[i], flag_ptr[i], min_distance, max_distance);
-        });
-    });
-    event.wait();
-
-    if (sycl_utils::is_nvidia(*queue_ptr)) {
-        filter_by_flags_async(queue_ptr, data, flags).wait();
-    } else {
-        filter_by_flags(data, flags);
+        events += event;
+        return events;
     }
-}
 
-void crop_box(PointCloudShared& data, float min_distance = 1.0f,
-              float max_distance = std::numeric_limits<float>::max()) {
-    const size_t N = data.size();
-    if (N == 0) return;
+private:
+    std::shared_ptr<sycl::queue> queue_ptr_;
+    std::shared_ptr<sycl_points::PointContainerShared> points_copy_ptr_;
+    std::shared_ptr<sycl_points::CovarianceContainerShared> covs_copy_ptr_;
+    std::shared_ptr<shared_vector<uint32_t, sizeof(uint32_t)>> prefix_sum_ptr_;
+};
 
-    shared_vector<uint8_t, sizeof(uint8_t)> flags(N, INCLUDE_FLAG, *data.queue_ptr);
+class PreprocessFilter {
+public:
+    PreprocessFilter(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
+        filter_ = std::make_shared<FilterByFlags>(this->queue_ptr_);
+        flags_ = std::make_shared<shared_vector<uint8_t, sizeof(uint8_t)>>(*this->queue_ptr_);
+    }
 
-    auto event = data.queue_ptr->submit([&](sycl::handler& h) {
-        const size_t work_group_size = sycl_utils::get_work_group_size(*data.queue_ptr);
-        const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+    void crop_box(PointContainerShared& data, float min_distance = 1.0f,
+                  float max_distance = std::numeric_limits<float>::max()) {
+        const size_t N = data.size();
+        if (N == 0) return;
 
-        const auto point_ptr = data.points_ptr();
-        auto flag_ptr = flags.data();
-        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-            const size_t i = item.get_global_id(0);
-            if (i >= N) return;
-            kernel::crop_box(point_ptr[i], flag_ptr[i], min_distance, max_distance);
-        });
-    });
-    event.wait();
-
-    if (sycl_utils::is_nvidia(*data.queue_ptr)) {
-        auto events = filter_by_flags_async(data.queue_ptr, *data.points, flags);
-        if (data.has_cov()) {
-            events += filter_by_flags_async(data.queue_ptr, *data.covs, flags);
+        if (this->flags_->size() < N) {
+            this->flags_->resize(N, INCLUDE_FLAG);
+        } else {
+            this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
         }
-        events.wait();
-    } else {
-        filter_by_flags(*data.points, flags);
-        if (data.has_cov()) {
-            filter_by_flags(*data.covs, flags);
+
+        auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
+            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
+            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+            // memory ptr
+            const auto point_ptr = traits::point::const_data_ptr(data);
+            auto flag_ptr = this->flags_->data();
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) return;
+                if (flag_ptr[i] == REMOVE_FLAG) return;
+                if (!kernel::is_finite(point_ptr[i])) {
+                    flag_ptr[i] = REMOVE_FLAG;
+                    return;
+                }
+                kernel::crop_box(point_ptr[i], flag_ptr[i], min_distance, max_distance);
+            });
+        });
+        event.wait();
+
+        if (sycl_utils::is_nvidia(*this->queue_ptr_)) {
+            filter_->filter_by_flags_async(data, *this->flags_).wait();
+        } else {
+            filter_->filter_by_flags(data, *this->flags_);
         }
     }
-}
+
+    void crop_box(PointCloudShared& data, float min_distance = 1.0f,
+                  float max_distance = std::numeric_limits<float>::max()) {
+        const size_t N = data.size();
+        if (N == 0) return;
+
+        if (this->flags_->size() < N) {
+            this->flags_->resize(N, INCLUDE_FLAG);
+        } else {
+            this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
+        }
+
+        auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
+            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
+            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+            // memory ptr
+            const auto point_ptr = data.points_ptr();
+            auto flag_ptr = this->flags_->data();
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) return;
+                if (flag_ptr[i] == REMOVE_FLAG) return;
+                if (!kernel::is_finite(point_ptr[i])) {
+                    flag_ptr[i] = REMOVE_FLAG;
+                    return;
+                }
+                kernel::crop_box(point_ptr[i], flag_ptr[i], min_distance, max_distance);
+            });
+        });
+        event.wait();
+
+        if (sycl_utils::is_nvidia(*this->queue_ptr_)) {
+            auto events = filter_->filter_by_flags_async(*data.points, *this->flags_);
+            if (data.has_cov()) {
+                events += filter_->filter_by_flags_async(*data.covs, *this->flags_);
+            }
+            events.wait();
+        } else {
+            filter_->filter_by_flags(*data.points, *this->flags_);
+            if (data.has_cov()) {
+                filter_->filter_by_flags(*data.covs, *this->flags_);
+            }
+        }
+    }
+
+private:
+    std::shared_ptr<sycl::queue> queue_ptr_;
+    std::shared_ptr<FilterByFlags> filter_;
+    std::shared_ptr<shared_vector<uint8_t, sizeof(uint8_t)>> flags_;
+};
 }  // namespace filter
 
 }  // namespace algorithms
