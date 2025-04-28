@@ -7,6 +7,9 @@
 namespace sycl_points {
 
 struct PointCloudCPU {
+    using Ptr = std::shared_ptr<PointCloudCPU>;
+    using ConstPtr = std::shared_ptr<PointCloudCPU>;
+
     std::shared_ptr<PointContainerCPU> points = nullptr;
     std::shared_ptr<CovarianceContainerCPU> covs = nullptr;
 
@@ -54,6 +57,9 @@ struct PointCloudCPU {
 
 template <typename PointContainer, typename CovarianceContainer, typename PointAllocator, typename CovarianceAllocator>
 struct PointCloudSYCL {
+    using Ptr = std::shared_ptr<PointCloudSYCL>;
+    using ConstPtr = std::shared_ptr<PointCloudSYCL>;
+
     std::shared_ptr<sycl::queue> queue_ptr = nullptr;
     const sycl::property_list propeties = {
         // sycl::property::no_init()
@@ -148,6 +154,9 @@ using PointCloudShared =
     PointCloudSYCL<PointContainerShared, CovarianceContainerShared, PointAllocatorShared, CovarianceAllocatorShared>;
 
 struct PointCloudDevice {
+    using Ptr = std::shared_ptr<PointCloudDevice>;
+    using ConstPtr = std::shared_ptr<PointCloudDevice>;
+
     std::shared_ptr<sycl::queue> queue_ptr = nullptr;
     const sycl::property_list propeties = {
         // sycl::property::no_init()
