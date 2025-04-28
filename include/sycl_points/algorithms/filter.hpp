@@ -40,6 +40,8 @@ public:
     static void filter_by_flags(shared_vector<T, AllocSize>& data,
                                 const shared_vector<uint8_t, sizeof(uint8_t)>& flags) {
         const size_t N = data.size();
+        if (N == 0) return;
+
         size_t new_size = 0;
         for (size_t i = 0; i < N; ++i) {
             if (flags[i] == INCLUDE_FLAG) {

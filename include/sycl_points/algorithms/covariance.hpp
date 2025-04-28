@@ -73,6 +73,7 @@ inline sycl_utils::events compute_covariances_sycl_async(const std::shared_ptr<s
                                                          CovarianceContainer& covs) {
     const size_t N = traits::point::size(points);
     traits::covariance::resize(covs, N);
+    if (N == 0) return sycl_utils::events();
 
     // Optimize work group size
     const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);

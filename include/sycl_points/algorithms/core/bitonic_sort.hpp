@@ -31,8 +31,8 @@ public:
     template <typename Allocator = std::allocator<T>>
     void sort(std::vector<T, Allocator> &input) {
         const auto N = input.size();
-
         this->last_N_ = N;
+        if (N == 0) return;
 
         size_t pow2_size = 1;
         while (pow2_size < N) {

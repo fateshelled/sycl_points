@@ -32,7 +32,7 @@ struct RegistrationResult {
     size_t iterations = 0;
     Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
-    float error = 0.0f;
+    float error = std::numeric_limits<float>::max();
 };
 
 template <typename PointCloud = PointCloudShared, factor::ICPType icp = factor::ICPType::GICP>
@@ -59,6 +59,8 @@ public:
         const size_t N = traits::pointcloud::size(source);
         RegistrationResult result;
         result.T.matrix() = init_T;
+
+        if (N == 0) return result;
 
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
         const auto transform_source = transform_sycl_copy(source, init_T);
@@ -137,13 +139,15 @@ public:
                                 linearlized_ptr[i].error = 0.0f;
                             } else {
                                 if constexpr (icp == factor::ICPType::GICP) {
-                                    linearlized_ptr[i] = factor::linearlize_gicp(
-                                        cur_T_ptr[0], source_ptr[i], transform_source_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                                        source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+                                    linearlized_ptr[i] =
+                                        factor::linearlize_gicp(cur_T_ptr[0], source_ptr[i], transform_source_ptr[i],
+                                                                target_ptr[neighbors_index_ptr[i]], source_cov_ptr[i],
+                                                                target_cov_ptr[neighbors_index_ptr[i]]);
                                 } else if constexpr (icp == factor::ICPType::POINT_TO_POINT) {
                                     linearlized_ptr[i] = factor::linearlize_point_to_point(
-                                        cur_T_ptr[0], source_ptr[i], transform_source_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                                        source_cov_ptr[i], target_cov_ptr[neighbors_index_ptr[i]]);
+                                        cur_T_ptr[0], source_ptr[i], transform_source_ptr[i],
+                                        target_ptr[neighbors_index_ptr[i]], source_cov_ptr[i],
+                                        target_cov_ptr[neighbors_index_ptr[i]]);
                                 }
                             }
                         });

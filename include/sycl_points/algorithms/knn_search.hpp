@@ -324,18 +324,19 @@ public:
         const size_t treeSize = this->tree_->size();
 
         // Initialize result structure
+        const size_t total_size = query_size * k;
         if (result.indices == nullptr || result.distances == nullptr) {
             result.allocate(*this->queue_, query_size, k);
         } else {
-            result.indices->resize(query_size * k);
-            result.distances->resize(query_size * k);
+            result.indices->resize(total_size);
+            result.distances->resize(total_size);
             result.k = k;
             result.query_size = query_size;
         }
         {
             sycl_utils::events fill_events;
-            fill_events += this->queue_->fill(result.indices->data(), -1, query_size * k);
-            fill_events += this->queue_->fill(result.distances->data(), std::numeric_limits<float>::max(), query_size * k);
+            fill_events += this->queue_->fill(result.indices->data(), -1, total_size);
+            fill_events += this->queue_->fill(result.distances->data(), std::numeric_limits<float>::max(), total_size);
             fill_events.wait();
         }
 
@@ -489,6 +490,8 @@ inline KNNResult knn_search_bruteforce(const PointCloudCPU& queries, const Point
     KNNResult result;
     result.indices.resize(q);
     result.distances.resize(q);
+
+    if (n == 0 || q == 0) return result;
 
     for (size_t i = 0; i < q; ++i) {
         result.indices[i].resize(k);
