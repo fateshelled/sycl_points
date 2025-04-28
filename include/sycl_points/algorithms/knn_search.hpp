@@ -330,6 +330,9 @@ public:
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         // constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
         // constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
+        if (MAX_K < k) {
+            throw std::runtime_error("template arg `MAX_K` must be larger than `k`.");
+        }
 
         const size_t treeSize = this->tree_->size();
 
