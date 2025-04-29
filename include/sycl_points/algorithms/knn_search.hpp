@@ -47,6 +47,19 @@ struct FlatKDNode {
 
 namespace {
 
+// Data structure for non-recursive KD-tree construction
+struct BuildTask {
+    std::vector<uint32_t> indices;  // Indices corresponding to this node
+    uint32_t nodeIdx;               // Node index in the tree
+    uint32_t depth;                 // Depth in the tree
+};
+
+// Stack to track nodes that need to be explored
+struct NodeEntry {
+    int32_t nodeIdx;  // node index
+    float dist_sq;    // squared distance to splitting plane
+};
+
 // Helper function to find best split axis based on range
 template <typename T, typename ALLOCATOR>
 inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std::vector<uint32_t>& indices) {
@@ -101,13 +114,6 @@ public:
 
         // Reusable temporary array for sorting
         std::vector<std::pair<float, uint32_t>> sortedValues(n);
-
-        // Data structure for non-recursive KD-tree construction
-        struct BuildTask {
-            std::vector<uint32_t> indices;  // Indices corresponding to this node
-            uint32_t nodeIdx;               // Node index in the tree
-            uint32_t depth;                 // Depth in the tree
-        };
 
         std::vector<BuildTask> taskStack;
         uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
@@ -229,13 +235,6 @@ public:
 
         // Reusable temporary array for sorting
         std::vector<std::pair<float, uint32_t>> sortedValues(n);
-
-        // Data structure for non-recursive KD-tree construction
-        struct BuildTask {
-            std::vector<uint32_t> indices;  // Indices corresponding to this node
-            uint32_t nodeIdx;               // Node index in the tree
-            uint32_t depth;                 // Depth in the tree
-        };
 
         std::vector<BuildTask> taskStack;
         taskStack.reserve(n);
@@ -382,17 +381,10 @@ public:
                 std::fill(bestDists, bestDists + MAX_K, std::numeric_limits<float>::max());
                 std::fill(bestIdxs, bestIdxs + MAX_K, -1);
 
-                // Stack to track nodes that need to be explored
-                // {node index, squared distance to splitting plane}
-                struct NodeEntry {
-                    int32_t nodeIdx;
-                    float dist_sq;
-                };
-
-                NodeEntry nearStack[MAX_DEPTH / 2];
+                std::array<NodeEntry, MAX_DEPTH / 2> nearStack;
                 size_t nearStackPtr = 0;
 
-                NodeEntry farStack[MAX_DEPTH / 2];
+                std::array<NodeEntry, MAX_DEPTH / 2> farStack;
                 size_t farStackPtr = 0;
 
                 // Start from root node
@@ -443,9 +435,6 @@ public:
 
                     // Check if further subtree needs to be explored
                     const bool searchFurther = (splitDistSq < bestDists[k - 1]);
-
-                    // Optimization for efficient memory access in 64-byte units
-                    // Push both near and far sides to stack, but with condition for far side
 
                     // Push further subtree to stack (conditional)
                     if (searchFurther && furtherNode != -1 && farStackPtr < MAX_DEPTH / 2) {
