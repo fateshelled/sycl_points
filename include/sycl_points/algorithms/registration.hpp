@@ -2,7 +2,6 @@
 
 #include <mutex>
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/downsampling.hpp>
 #include <sycl_points/algorithms/knn_search.hpp>
 #include <sycl_points/algorithms/registration_factor.hpp>
 #include <sycl_points/algorithms/transform.hpp>

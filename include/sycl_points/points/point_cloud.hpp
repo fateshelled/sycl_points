@@ -2,7 +2,6 @@
 
 #include <sycl_points/points/container.hpp>
 #include <sycl_points/points/point_cloud_traits.hpp>
-#include <sycl_points/utils/eigen_utils.hpp>
 
 namespace sycl_points {
 

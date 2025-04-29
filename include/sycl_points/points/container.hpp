@@ -1,6 +1,5 @@
 #pragma once
 
-#include <Eigen/Dense>
 #include <sycl_points/points/container_traits.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
 

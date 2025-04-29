@@ -1,6 +1,5 @@
 #pragma once
 
-#include <sycl_points/points/container.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
