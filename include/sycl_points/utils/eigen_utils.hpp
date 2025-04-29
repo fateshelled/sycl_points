@@ -13,9 +13,9 @@ template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> add(const Eigen::Matrix<float, M, N>& A,
                                                     const Eigen::Matrix<float, M, N>& B) {
     Eigen::Matrix<float, M, N> ret;
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll N
         for (size_t j = 0; j < N; ++j) {
             ret(i, j) = A(i, j) + B(i, j);
         }
@@ -27,9 +27,9 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> add(const Eigen::Matrix<float, M
 // row: M, col: N
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline void add_zerocopy(Eigen::Matrix<float, M, N>& A, const Eigen::Matrix<float, M, N>& B) {
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll N
         for (size_t j = 0; j < N; ++j) {
             A(i, j) += B(i, j);
         }
@@ -42,9 +42,9 @@ template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> subtract(const Eigen::Matrix<float, M, N>& A,
                                                          const Eigen::Matrix<float, M, N>& B) {
     Eigen::Matrix<float, M, N> ret;
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll N
         for (size_t j = 0; j < N; ++j) {
             ret(i, j) = A(i, j) - B(i, j);
         }
@@ -58,11 +58,11 @@ template <size_t M, size_t K, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<float, M, K>& A,
                                                          const Eigen::Matrix<float, K, N>& B) {
     Eigen::Matrix<float, M, N> ret = Eigen::Matrix<float, M, N>::Zero();
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll K
         for (size_t k = 0; k < K; ++k) {
-#pragma unroll
+#pragma unroll N
             for (size_t j = 0; j < N; ++j) {
                 // ret(i, j) += A(i, k) * B(k, j);
                 ret(i, j) = sycl::fma(A(i, k), B(k, j), ret(i, j));
@@ -78,9 +78,9 @@ template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Vector<float, M> multiply(const Eigen::Matrix<float, M, N>& A,
                                                       const Eigen::Vector<float, N>& v) {
     Eigen::Vector<float, M> ret = Eigen::Vector<float, M>::Zero();
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll N
         for (size_t j = 0; j < N; ++j) {
             // ret(i) += A(i, j) * v(j);
             ret(i) = sycl::fma(A(i, j), v(j), ret(i));
@@ -94,9 +94,9 @@ SYCL_EXTERNAL inline Eigen::Vector<float, M> multiply(const Eigen::Matrix<float,
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<float, M, N>& A, float scalar) {
     Eigen::Matrix<float, M, N> ret;
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll N
         for (size_t j = 0; j < N; ++j) {
             ret(i, j) = A(i, j) * scalar;
         }
@@ -108,7 +108,7 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<flo
 template <size_t N>
 SYCL_EXTERNAL inline Eigen::Vector<float, N> multiply(const Eigen::Vector<float, N>& a, float scalar) {
     Eigen::Vector<float, N> ret;
-#pragma unroll
+#pragma unroll N
     for (size_t i = 0; i < N; ++i) {
         ret(i) = a(i) * scalar;
     }
@@ -119,9 +119,9 @@ SYCL_EXTERNAL inline Eigen::Vector<float, N> multiply(const Eigen::Vector<float,
 // row: M, col: N
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float scalar) {
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll N
         for (size_t j = 0; j < N; ++j) {
             A(i, j) *= scalar;
         }
@@ -131,9 +131,9 @@ SYCL_EXTERNAL inline void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float
 template <size_t M>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, M> ensure_symmetric(const Eigen::Matrix<float, M, M>& A) {
     Eigen::Matrix<float, M, M> ret;
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll M
         for (size_t j = 0; j < M; ++j) {
             ret(i, j) = (i == j) ? A(i, j) : (A(i, j) + A(j, i)) * 0.5f;
         }
@@ -146,9 +146,9 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, M> ensure_symmetric(const Eigen::Ma
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, N, M> transpose(const Eigen::Matrix<float, M, N>& A) {
     Eigen::Matrix<float, N, M> ret;
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll N
         for (size_t j = 0; j < N; ++j) {
             ret(j, i) = A(i, j);
         }
@@ -160,7 +160,7 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, N, M> transpose(const Eigen::Matrix<fl
 template <size_t N>
 SYCL_EXTERNAL inline float dot(const Eigen::Vector<float, N>& u, const Eigen::Vector<float, N>& v) {
     float result = 0.0f;
-#pragma unroll
+#pragma unroll N
     for (size_t i = 0; i < N; ++i) {
         // result += u(i, 0) * v(i, 0);
         result = sycl::fma(u(i, 0), v(i, 0), result);
@@ -198,7 +198,7 @@ SYCL_EXTERNAL inline Eigen::Matrix3f block3x3(const Eigen::Matrix4f& src) {
 template <size_t M>
 SYCL_EXTERNAL inline float trace(const Eigen::Matrix<float, M, M>& A) {
     float ret = 0.0f;
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
         ret += A(i, i);
     }
@@ -213,9 +213,9 @@ SYCL_EXTERNAL inline float determinant(const Eigen::Matrix3f& A) {
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
     float ret = 0.0f;
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-#pragma unroll
+#pragma unroll N
         for (size_t j = 0; j < N; ++j) {
             // ret += A(i, j) * A(i, j);
             ret = sycl::fma(A(i, j), A(i, j), ret);
@@ -227,7 +227,7 @@ SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
 template <size_t M>
 SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Vector<float, M>& A) {
     float ret = 0.0f;
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
         // ret += A(i) * A(i);
         ret = sycl::fma(A(i), A(i), ret);
@@ -260,7 +260,7 @@ SYCL_EXTERNAL inline Eigen::Matrix3f inverse(const Eigen::Matrix3f& src) {
 template <size_t M>
 SYCL_EXTERNAL inline Eigen::Matrix3f as_diagonal(const Eigen::Vector<float, M>& diag) {
     Eigen::Matrix<float, M, M> ret = Eigen::Matrix<float, M, M>::Zero();
-#pragma unroll
+#pragma unroll M
     for (size_t i = 0; i < M; ++i) {
         ret(i, i) = diag(i);
     }
@@ -305,25 +305,19 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
     }
     // sort
     if (eigenvalues(0) > eigenvalues(1)) {
-        const float temp = eigenvalues(0);
-        eigenvalues(0) = eigenvalues(1);
-        eigenvalues(1) = temp;
+        std::swap(eigenvalues(0), eigenvalues(1));
     }
     if (eigenvalues(1) > eigenvalues(2)) {
-        const float temp = eigenvalues(1);
-        eigenvalues(1) = eigenvalues(2);
-        eigenvalues(2) = temp;
+        std::swap(eigenvalues(1), eigenvalues(2));
     }
     if (eigenvalues(0) > eigenvalues(1)) {
-        const float temp = eigenvalues(0);
-        eigenvalues(0) = eigenvalues(1);
-        eigenvalues(1) = temp;
+        std::swap(eigenvalues(1), eigenvalues(0));
     }
 
     // compute eigenvectors
     eigenvectors = Eigen::Matrix3f::Zero();
 
-#pragma unroll
+#pragma unroll 3
     for (size_t k = 0; k < 3; ++k) {
         // solve (A - λI)x = 0
         const Eigen::Matrix3f M = subtract<3, 3>(A, multiply<3, 3>(Eigen::Matrix3f::Identity(), eigenvalues(k)));
@@ -376,10 +370,12 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
     L(0, 0) = sycl::sqrt(A(0, 0) > eps ? A(0, 0) : eps);
     const float inv_L00 = 1.0f / L(0, 0);
 
+#pragma unroll 6
     for (size_t i = 1; i < 6; ++i) {
         L(i, 0) = A(i, 0) * inv_L00;
     }
 
+#pragma unroll 6
     for (size_t j = 1; j < 6; ++j) {
         float diag_sum = 0.0f;
 
@@ -421,6 +417,7 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
     }
 
     Eigen::Matrix<float, 6, 1> x = Eigen::Matrix<float, 6, 1>::Zero();
+#pragma unroll
     for (size_t i = 5; i >= 0; --i) {
         float sum = 0.0f;
 
@@ -441,6 +438,7 @@ inline sycl::vec<float, 4> to_sycl_vec(const Eigen::Vector4f& vec) { return {vec
 
 inline std::array<sycl::vec<float, 4>, 4> to_sycl_vec(const Eigen::Matrix4f& mat) {
     std::array<sycl::vec<float, 4>, 4> vecs;
+#pragma unroll 4
     for (size_t i = 0; i < 4; ++i) {
         vecs[i] = sycl::vec<float, 4>(mat(i, 0), mat(i, 1), mat(i, 2), mat(i, 3));
     }
@@ -451,6 +449,7 @@ inline Eigen::Vector4f from_sycl_vec(const sycl::vec<float, 4>& vec) { return {v
 
 inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::vec<float, 4>, 4>& vecs) {
     Eigen::Matrix4f mat;
+#pragma unroll 4
     for (size_t i = 0; i < 4; ++i) {
         for (size_t j = 0; j < 4; ++j) {
             mat(i, j) = vecs[i][j];

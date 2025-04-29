@@ -68,7 +68,10 @@ inline sycl_utils::events transform_sycl_async(PointCloud& cloud, const Transfor
     const auto queue_ptr = traits::pointcloud::queue_ptr(cloud);
 
     shared_vector<sycl::vec<float, 4>> trans_vec_shared(4, shared_allocator<TransformMatrix>(*queue_ptr));
+
+#pragma unroll 4
     for (size_t i = 0; i < 4; ++i) {
+#pragma unroll 4
         for (size_t j = 0; j < 4; ++j) {
             trans_vec_shared[i][j] = trans(i, j);
         }

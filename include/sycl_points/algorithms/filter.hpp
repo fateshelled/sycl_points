@@ -20,11 +20,29 @@ SYCL_EXTERNAL inline bool is_finite(const PointType& pt) {
 }
 
 SYCL_EXTERNAL inline void crop_box(const PointType& pt, uint8_t& flag, float min_distance, float max_distance) {
+#pragma unroll 3
     for (size_t j = 0; j < 3; ++j) {
         const auto val = std::fabs(pt[j]);
         if (val < min_distance || val > max_distance) {
             flag = REMOVE_FLAG;
             return;
+        }
+    }
+}
+
+SYCL_EXTERNAL inline void copy_point(const PointType& src, PointType& dst) {
+    dst(0) = src(0);
+    dst(1) = src(1);
+    dst(2) = src(2);
+    dst(3) = src(3);
+}
+
+SYCL_EXTERNAL inline void copy_covariance(const Covariance& src, Covariance& dst) {
+#pragma unroll 4
+    for (size_t j = 0; j < 4; ++j) {
+#pragma unroll 4
+        for (size_t k = 0; k < 4; ++k) {
+            dst(j, k) = src(j, k);
         }
     }
 }
@@ -112,17 +130,10 @@ public:
                 if (flag_ptr[i] == INCLUDE_FLAG) {
                     if constexpr (std::is_same<T, PointType>::value) {
                         const PointType pt = copy_ptr[i];
-                        data_ptr[prefix_sum_ptr[i]](0) = pt(0);
-                        data_ptr[prefix_sum_ptr[i]](1) = pt(1);
-                        data_ptr[prefix_sum_ptr[i]](2) = pt(2);
-                        data_ptr[prefix_sum_ptr[i]](3) = pt(3);
+                        kernel::copy_point(pt, data_ptr[prefix_sum_ptr[i]]);
                     } else if constexpr (std::is_same<T, Covariance>::value) {
                         const Covariance cov = copy_ptr[i];
-                        for (size_t j = 0; j < 3; ++j) {
-                            for (size_t k = 0; k < 3; ++k) {
-                                data_ptr[prefix_sum_ptr[i]](j, k) = cov(j, k);
-                            }
-                        }
+                        kernel::copy_covariance(cov, data_ptr[prefix_sum_ptr[i]]);
                     }
                 }
             });

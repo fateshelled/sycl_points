@@ -60,6 +60,7 @@ inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std
 
     // Find the range of each axis
     for (const auto& idx : indices) {
+#pragma unroll 3
         for (size_t axis = 0; axis < 3; ++axis) {
             min_vals[axis] = std::min(min_vals[axis], points[idx](axis));
             max_vals[axis] = std::max(max_vals[axis], points[idx](axis));
