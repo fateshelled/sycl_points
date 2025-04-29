@@ -226,7 +226,7 @@ template <>
 struct PointCloudTraits<PointCloudShared> {
     static constexpr bool is_shared() { return true; }
     static constexpr bool is_device() { return false; }
-    static std::shared_ptr<PointCloudShared> constructor(const std::shared_ptr<sycl::queue>& queue_ptr) {
+    static PointCloudShared::Ptr constructor(const std::shared_ptr<sycl::queue>& queue_ptr) {
         return std::make_shared<PointCloudShared>(queue_ptr);
     }
     static std::shared_ptr<sycl::queue> queue_ptr(const PointCloudShared& pc) { return pc.queue_ptr; }
@@ -242,7 +242,7 @@ template <>
 struct PointCloudTraits<PointCloudDevice> {
     static constexpr bool is_shared() { return false; }
     static constexpr bool is_device() { return true; }
-    static std::shared_ptr<PointCloudDevice> constructor(const std::shared_ptr<sycl::queue>& queue_ptr) {
+    static PointCloudDevice::Ptr constructor(const std::shared_ptr<sycl::queue>& queue_ptr) {
         return std::make_shared<PointCloudDevice>(queue_ptr);
     }
     static std::shared_ptr<sycl::queue> queue_ptr(const PointCloudDevice& pc) { return pc.queue_ptr; }

@@ -139,15 +139,18 @@ inline bool is_amd(const sycl::queue& queue) {
 struct events {
     std::vector<sycl::event> evs;
 
-    void push_back(const sycl::event& event) { evs.push_back(event); }
+    void push_back(const sycl::event& event) { this->evs.push_back(event); }
     void wait() {
         while (evs.size() > 0) {
-            auto& event = evs.back();
+            auto& event = this->evs.back();
             event.wait();
             evs.pop_back();
         }
     }
-    void operator+=(const sycl::event event) { evs.push_back(event); }
+    void clear() {
+        this->evs.clear();
+    }
+    void operator+=(const sycl::event& event) { evs.push_back(event); }
     void operator+=(const events& e) { std::copy(e.evs.begin(), e.evs.end(), std::back_inserter(evs)); }
 };
 
