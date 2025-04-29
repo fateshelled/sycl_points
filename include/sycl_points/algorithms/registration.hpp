@@ -119,8 +119,8 @@ public:
 
                         const auto source_ptr = traits::pointcloud::points_ptr(source);
                         const auto transform_source_ptr = traits::pointcloud::points_ptr(transform_source);
+                        const auto transform_source_cov_ptr = traits::pointcloud::covs_ptr(transform_source);
                         const auto target_ptr = traits::pointcloud::points_ptr(target);
-                        const auto source_cov_ptr = traits::pointcloud::covs_ptr(transform_source);
                         const auto target_cov_ptr = traits::pointcloud::covs_ptr(target);
 
                         const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
@@ -139,14 +139,14 @@ public:
                                 linearlized_ptr[i].error = 0.0f;
                             } else {
                                 if constexpr (icp == factor::ICPType::GICP) {
-                                    linearlized_ptr[i] =
-                                        factor::linearlize_gicp(cur_T_ptr[0], source_ptr[i], transform_source_ptr[i],
-                                                                target_ptr[neighbors_index_ptr[i]], source_cov_ptr[i],
-                                                                target_cov_ptr[neighbors_index_ptr[i]]);
+                                    linearlized_ptr[i] = factor::linearlize_gicp(
+                                        cur_T_ptr[0], source_ptr[i], transform_source_ptr[i],
+                                        transform_source_cov_ptr[i], target_ptr[neighbors_index_ptr[i]],
+                                        target_cov_ptr[neighbors_index_ptr[i]]);
                                 } else if constexpr (icp == factor::ICPType::POINT_TO_POINT) {
                                     linearlized_ptr[i] = factor::linearlize_point_to_point(
                                         cur_T_ptr[0], source_ptr[i], transform_source_ptr[i],
-                                        target_ptr[neighbors_index_ptr[i]], source_cov_ptr[i],
+                                        transform_source_cov_ptr[i], target_ptr[neighbors_index_ptr[i]],
                                         target_cov_ptr[neighbors_index_ptr[i]]);
                                 }
                             }

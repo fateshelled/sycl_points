@@ -21,7 +21,8 @@ enum class ICPType { POINT_TO_POINT, GICP };
 
 SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
                                                                  const PointType& transform_source,
-                                                                 const PointType& target, const Covariance& source_cov,
+                                                                 const Covariance& transform_source_cov,
+                                                                 const PointType& target,
                                                                  const Covariance& target_cov) {
     const PointType residual(target.x() - transform_source.x(), target.y() - transform_source.y(),
                              target.z() - transform_source.z(), 0.0f);
@@ -59,12 +60,13 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const Transform
 }
 
 SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T, const PointType& source,
-                                                       const PointType& transform_source, const PointType& target,
-                                                       const Covariance& source_cov, const Covariance& target_cov) {
+                                                       const PointType& transform_source,
+                                                       const Covariance& transform_source_cov, const PointType& target,
+                                                       const Covariance& target_cov) {
     Covariance mahalanobis = Covariance::Zero();
     {
         const Eigen::Matrix3f RCR =
-            eigen_utils::add<3, 3>(eigen_utils::block3x3(source_cov), eigen_utils::block3x3(target_cov));
+            eigen_utils::add<3, 3>(eigen_utils::block3x3(transform_source_cov), eigen_utils::block3x3(target_cov));
         const Eigen::Matrix3f RCR_inv = eigen_utils::inverse(RCR);
 
         mahalanobis(0, 0) = RCR_inv(0, 0);
