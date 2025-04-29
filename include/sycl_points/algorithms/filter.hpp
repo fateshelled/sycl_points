@@ -1,5 +1,7 @@
 #pragma once
 
+#include <execution>
+#include <numeric>
 #include <sycl_points/utils/sycl_utils.hpp>
 
 namespace sycl_points {
@@ -80,11 +82,12 @@ public:
         if (this->prefix_sum_ptr_->size() < N) {
             this->prefix_sum_ptr_->resize(N);
         }
-        size_t new_size = 0;
-        for (size_t i = 0; i < N; ++i) {
-            (*this->prefix_sum_ptr_)[i] = new_size;
-            new_size += flags[i];
-        }
+
+        // calc prefix sum
+        std::transform_inclusive_scan(
+            std::execution::unseq, flags.begin(), flags.begin() + N, this->prefix_sum_ptr_->begin(),
+            [](uint32_t a, uint32_t b) { return a + b; }, [](uint8_t a) { return static_cast<uint32_t>(a); });
+        const size_t new_size = this->prefix_sum_ptr_->at(N - 1);
 
         copy_event.wait();
         data.resize(new_size);
