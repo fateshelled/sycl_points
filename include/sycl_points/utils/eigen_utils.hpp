@@ -61,9 +61,9 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<flo
 #pragma unroll
     for (size_t i = 0; i < M; ++i) {
 #pragma unroll
-        for (size_t j = 0; j < N; ++j) {
+        for (size_t k = 0; k < K; ++k) {
 #pragma unroll
-            for (size_t k = 0; k < K; ++k) {
+            for (size_t j = 0; j < N; ++j) {
                 // ret(i, j) += A(i, k) * B(k, j);
                 ret(i, j) = sycl::fma(A(i, k), B(k, j), ret(i, j));
             }
@@ -118,7 +118,7 @@ SYCL_EXTERNAL inline Eigen::Vector<float, N> multiply(const Eigen::Vector<float,
 // A *= s
 // row: M, col: N
 template <size_t M, size_t N>
-SYCL_EXTERNAL inline Eigen::Vector<float, N> multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float scalar) {
+SYCL_EXTERNAL inline void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float scalar) {
 #pragma unroll
     for (size_t i = 0; i < M; ++i) {
 #pragma unroll
