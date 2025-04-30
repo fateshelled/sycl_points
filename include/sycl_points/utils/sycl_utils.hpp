@@ -98,6 +98,9 @@ inline void print_device_info(const sycl::device& device) {
         std::cout << "\tUSM shared allocations: "
                   << (device.has(sycl::aspect::usm_shared_allocations) ? "true" : "false") << std::endl;
 
+        std::cout << "\tUSM atomic shared allocations: "
+                  << (device.has(sycl::aspect::usm_atomic_shared_allocations) ? "true" : "false") << std::endl;
+
         std::cout << "\tAvailable: " << (device.get_info<sycl::info::device::is_available>() ? "true" : "false")
                   << std::endl;
         std::cout << std::endl;
@@ -136,6 +139,14 @@ inline bool is_amd(const sycl::queue& queue) {
     return vendor_id == VENDOR_ID::AMD;
 }
 
+inline bool enable_shared_allications(const sycl::queue& queue) {
+    return queue.get_device().has(sycl::aspect::usm_shared_allocations);
+}
+
+inline bool enable_atomic_shared_allocations(const sycl::queue& queue) {
+    return queue.get_device().has(sycl::aspect::usm_atomic_shared_allocations);
+}
+
 struct events {
     std::vector<sycl::event> evs;
 
@@ -147,11 +158,9 @@ struct events {
             evs.pop_back();
         }
     }
-    void clear() {
-        this->evs.clear();
-    }
-    void operator+=(const sycl::event& event) { evs.push_back(event); }
-    void operator+=(const events& e) { std::copy(e.evs.begin(), e.evs.end(), std::back_inserter(evs)); }
+    void clear() { this->evs.clear(); }
+    void operator+=(const sycl::event& event) { this->evs.push_back(event); }
+    void operator+=(const events& e) { std::copy(e.evs.begin(), e.evs.end(), std::back_inserter(this->evs)); }
 };
 
 namespace device_selector {
