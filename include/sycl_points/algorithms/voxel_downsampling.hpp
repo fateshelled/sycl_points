@@ -64,51 +64,19 @@ public:
             result.resize(0);
             return;
         }
-        const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr_);
-        const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
-        // compute bit on device
-        {
-            if (this->bit_ptr_->size() < N) {
-                this->bit_ptr_->resize(N);
-            }
-            this->queue_ptr_->fill(this->bit_ptr_->data(), VoxelConstants::invalid_coord, N).wait();
 
-            {
-                auto event = queue_ptr_->submit([&](sycl::handler& h) {
-                    // memory ptr
-                    const auto point_ptr = points.data();
-                    const auto bit_ptr = this->bit_ptr_->data();
-                    const auto voxel_size_inv = this->voxel_size_inv_;
-                    h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                        const size_t i = item.get_global_id(0);
-                        if (i >= N) return;
-
-                        bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], voxel_size_inv);
-                    });
-                });
-                event.wait();
-            }
-
-            std::unordered_map<uint64_t, PointType> voxel_map;
-            {
-                for (size_t i = 0; i < N; ++i) {
-                    const auto voxel_bit = (*this->bit_ptr_)[i];
-                    if (voxel_bit == VoxelConstants::invalid_coord) continue;
-                    const auto it = voxel_map.find(voxel_bit);
-                    if (it == voxel_map.end()) {
-                        voxel_map[voxel_bit] = points[i];
-                    } else {
-                        it->second += points[i];
-                    }
-                }
-            }
-
-            result.resize(voxel_map.size());
-            size_t idx = 0;
-            for (const auto& [_, point] : voxel_map) {
-                result[idx++] = point / point.w();
-            }
+        if (this->bit_ptr_->size() < N) {
+            this->bit_ptr_->resize(N);
         }
+        this->queue_ptr_->fill(this->bit_ptr_->data(), VoxelConstants::invalid_coord, N).wait();
+
+        // compute bit on device
+        auto event = this->compute_voxel_bit_async(points, 0, N);
+        event.wait();
+
+        const auto voxel_map = this->compute_voxel_map(points, 0, N);
+
+        this->voxel_map_to_cloud(voxel_map, result);
     }
 
     void downsampling(const PointCloudShared& cloud, PointCloudShared& result) {
@@ -121,6 +89,56 @@ private:
     float voxel_size_inv_;
 
     std::shared_ptr<shared_vector<uint64_t>> bit_ptr_ = nullptr;
+
+    sycl::event compute_voxel_bit_async(const PointContainerShared& points, uint32_t start, uint32_t end) {
+        const size_t N = points.size();
+
+        const uint32_t chunk_size = end - start + 1;
+        const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr_);
+        const size_t global_size = ((chunk_size + work_group_size - 1) / work_group_size) * work_group_size;
+        auto event = queue_ptr_->submit([&](sycl::handler& h) {
+            // memory ptr
+            const uint32_t start_index = start;
+            const auto point_ptr = points.data();
+            const auto bit_ptr = this->bit_ptr_->data();
+            const auto voxel_size_inv = this->voxel_size_inv_;
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const uint32_t i = item.get_global_id(0);
+                if (i >= chunk_size) return;
+
+                bit_ptr[start_index + i] = kernel::compute_voxel_bit(point_ptr[start_index + i], voxel_size_inv);
+            });
+        });
+        return event;
+    }
+
+    std::unordered_map<uint64_t, PointType> compute_voxel_map(const PointContainerShared& points, uint32_t start,
+                                                              uint32_t end) const {
+        std::unordered_map<uint64_t, PointType> voxel_map;
+        {
+            for (size_t i = start; i < end; ++i) {
+                const auto voxel_bit = (*this->bit_ptr_)[i];
+                if (voxel_bit == VoxelConstants::invalid_coord) continue;
+                const auto it = voxel_map.find(voxel_bit);
+                if (it == voxel_map.end()) {
+                    voxel_map[voxel_bit] = points[i];
+                } else {
+                    it->second += points[i];
+                }
+            }
+        }
+        return voxel_map;
+    }
+
+    void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
+                            PointContainerShared& result) const {
+        result.clear();
+        result.resize(voxel_map.size());
+        size_t idx = 0;
+        for (const auto& [_, point] : voxel_map) {
+            result[idx++] = point / point.w();
+        }
+    }
 };
 
 }  // namespace algorithms
