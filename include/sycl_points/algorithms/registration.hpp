@@ -34,7 +34,7 @@ struct RegistrationResult {
     float error = std::numeric_limits<float>::max();
 };
 
-template <typename PointCloud = PointCloudShared, factor::ICPType icp = factor::ICPType::GICP>
+template <factor::ICPType icp = factor::ICPType::GICP>
 class Registration {
 public:
     Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
@@ -53,16 +53,17 @@ public:
             1, factor::LinearlizedResult(), shared_allocator<factor::LinearlizedResult>(*this->queue_ptr_, {}));
     }
 
-    RegistrationResult optimize(const PointCloud& source, const PointCloud& target, const KDTreeSYCL& target_tree,
+    RegistrationResult optimize(const PointCloudShared& source, const PointCloudShared& target,
+                                const KDTreeSYCL& target_tree,
                                 const TransformMatrix& init_T = TransformMatrix::Identity()) {
-        const size_t N = traits::pointcloud::size(source);
+        const size_t N = source.size();
         RegistrationResult result;
         result.T.matrix() = init_T;
 
         if (N == 0) return result;
 
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
-        const auto transform_source = transform_sycl_copy(source, init_T);
+        auto transform_source = transform_sycl_copy(source, init_T);
 
         float lambda = this->params_.lambda;
         const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
@@ -100,9 +101,9 @@ public:
                 (*this->cur_T_)[0] = result.T.matrix();
 
                 // nearest neighbor search
-                auto knn_event = target_tree.knn_search_async<1>(traits::pointcloud::points_ptr(transform_source),
-                                                                 traits::pointcloud::size(transform_source), 1,
-                                                                 (*this->neighbors_)[0], transform_events.evs);
+                auto knn_event =
+                    target_tree.knn_search_async<1>(transform_source.points->data(), transform_source.size(), 1,
+                                                    (*this->neighbors_)[0], transform_events.evs);
 
                 // linearlize
                 factor::LinearlizedResult linearlized;
@@ -116,11 +117,11 @@ public:
                         const auto max_dist_ptr = this->max_distance_->data();
                         const auto cur_T_ptr = this->cur_T_->data();
 
-                        const auto source_ptr = traits::pointcloud::points_ptr(source);
-                        const auto transform_source_ptr = traits::pointcloud::points_ptr(transform_source);
-                        const auto transform_source_cov_ptr = traits::pointcloud::covs_ptr(transform_source);
-                        const auto target_ptr = traits::pointcloud::points_ptr(target);
-                        const auto target_cov_ptr = traits::pointcloud::covs_ptr(target);
+                        const auto source_ptr = source.points->data();
+                        const auto transform_source_ptr = transform_source.points_ptr();
+                        const auto transform_source_cov_ptr = transform_source.covs_ptr();
+                        const auto target_ptr = target.points_ptr();
+                        const auto target_cov_ptr = target.covs_ptr();
 
                         const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
                         const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();

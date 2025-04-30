@@ -2,9 +2,9 @@
 #include <iostream>
 #include <map>
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/algorithms/filter.hpp>
 #include <sycl_points/algorithms/registration.hpp>
+#include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/io/point_cloud_reader.hpp>
 
 int main() {
@@ -28,8 +28,7 @@ int main() {
     param.max_correspondence_distance = 1.0f;
     param.verbose = false;
     auto registration =
-        sycl_points::algorithms::Registration<sycl_points::PointCloudShared,
-                                              sycl_points::algorithms::factor::ICPType::GICP>(queue, param);
+        sycl_points::algorithms::Registration<sycl_points::algorithms::factor::ICPType::GICP>(queue, param);
 
     sycl_points::algorithms::VoxelGridSYCL voxel_grid(queue, voxel_size);
     sycl_points::algorithms::filter::PreprocessFilter preprocess_filter(queue);

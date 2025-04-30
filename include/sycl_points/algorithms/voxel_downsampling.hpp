@@ -21,6 +21,10 @@ namespace algorithms {
 namespace kernel {
 
 SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float voxel_size_inv) {
+    // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
+    // function: voxelgrid_sampling
+    // MIT License
+
     if (!sycl::isfinite(point.x()) || !sycl::isfinite(point.y()) || !sycl::isfinite(point.z())) {
         return VoxelConstants::invalid_coord;
     }
@@ -54,12 +58,8 @@ public:
     void set_voxel_size(const float voxel_size) { voxel_size_ = voxel_size; }
     float get_voxel_size() const { return voxel_size_; }
 
-    template <typename PointContainer = PointContainerShared>
-    void downsampling(const PointContainer& points, PointContainer& result) {
-        // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
-        // function: voxelgrid_sampling
-        // MIT License
-        const size_t N = traits::point::size(points);
+    void downsampling(const PointContainerShared& points, PointContainerShared& result) {
+        const size_t N = points.size();
         if (N == 0) {
             result.resize(0);
             return;
@@ -76,7 +76,7 @@ public:
             {
                 auto event = queue_ptr_->submit([&](sycl::handler& h) {
                     // memory ptr
-                    const auto point_ptr = traits::point::const_data_ptr(points);
+                    const auto point_ptr = points.data();
                     const auto bit_ptr = this->bit_ptr_->data();
                     const auto voxel_size_inv = this->voxel_size_inv_;
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {

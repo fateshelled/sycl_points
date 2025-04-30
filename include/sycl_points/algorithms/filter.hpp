@@ -156,42 +156,6 @@ public:
         flags_ = std::make_shared<shared_vector<uint8_t, sizeof(uint8_t)>>(*this->queue_ptr_);
     }
 
-    void crop_box(PointContainerShared& data, float min_distance = 1.0f,
-                  float max_distance = std::numeric_limits<float>::max()) {
-        const size_t N = data.size();
-        if (N == 0) return;
-
-        if (this->flags_->size() < N) {
-            this->flags_->resize(N);
-        }
-        this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
-
-        auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
-            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
-            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
-            // memory ptr
-            const auto point_ptr = traits::point::const_data_ptr(data);
-            auto flag_ptr = this->flags_->data();
-            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                const size_t i = item.get_global_id(0);
-                if (i >= N) return;
-                if (flag_ptr[i] == REMOVE_FLAG) return;
-                if (!kernel::is_finite(point_ptr[i])) {
-                    flag_ptr[i] = REMOVE_FLAG;
-                    return;
-                }
-                kernel::crop_box(point_ptr[i], flag_ptr[i], min_distance, max_distance);
-            });
-        });
-        event.wait();
-
-        if (sycl_utils::is_nvidia(*this->queue_ptr_)) {
-            filter_->filter_by_flags_async(data, *this->flags_).wait();
-        } else {
-            filter_->filter_by_flags(data, *this->flags_);
-        }
-    }
-
     void crop_box(PointCloudShared& data, float min_distance = 1.0f,
                   float max_distance = std::numeric_limits<float>::max()) {
         const size_t N = data.size();

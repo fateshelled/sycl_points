@@ -67,12 +67,12 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 /// @param points Point Container
 /// @param covs Covariance Container
 /// @return eventscd
-template <typename PointContainer = PointContainerShared, typename CovarianceContainer = CovarianceContainerShared>
 inline sycl_utils::events compute_covariances_sycl_async(const std::shared_ptr<sycl::queue>& queue_ptr,
-                                                         const KNNResultSYCL& neightbors, const PointContainer& points,
-                                                         CovarianceContainer& covs) {
-    const size_t N = traits::point::size(points);
-    traits::covariance::resize(covs, N);
+                                                         const KNNResultSYCL& neightbors,
+                                                         const PointContainerShared& points,
+                                                         CovarianceContainerShared& covs) {
+    const size_t N = points.size();
+    covs.resize(N);
     if (N == 0) return sycl_utils::events();
 
     // Optimize work group size
@@ -80,8 +80,8 @@ inline sycl_utils::events compute_covariances_sycl_async(const std::shared_ptr<s
     const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
 
     auto event = queue_ptr->submit([&](sycl::handler& h) {
-        const auto point_ptr = traits::point::const_data_ptr(points);
-        const auto cov_ptr = traits::covariance::data_ptr(covs);
+        const auto point_ptr = points.data();
+        const auto cov_ptr = covs.data();
         const auto index_ptr = neightbors.indices->data();
         const auto k_correspondences = neightbors.k;
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {

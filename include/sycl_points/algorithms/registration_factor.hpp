@@ -1,6 +1,6 @@
 #pragma once
 
-#include <sycl_points/points/container.hpp>
+#include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
 namespace sycl_points {
