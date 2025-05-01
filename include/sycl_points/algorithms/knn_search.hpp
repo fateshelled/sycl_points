@@ -353,9 +353,8 @@ public:
             fill_events.wait();
         }
 
-        // Optimize work group size
         const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_);
-        const size_t global_size = ((query_size + work_group_size - 1) / work_group_size) * work_group_size;
+        const size_t global_size = sycl_utils::get_global_size(query_size, work_group_size);
 
         auto event = this->queue_->submit([&](sycl::handler& h) {
             // Get pointers
@@ -540,9 +539,8 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointC
     KNNResultSYCL result;
     result.allocate(queue, q, k);
 
-    // Optimize work group size
     const size_t work_group_size = sycl_utils::get_work_group_size(queue);
-    const size_t global_size = ((q + work_group_size - 1) / work_group_size) * work_group_size;
+    const size_t global_size = sycl_utils::get_global_size(q, work_group_size);
 
     // memory ptr
     auto targets_ptr = (*targets.points).data();

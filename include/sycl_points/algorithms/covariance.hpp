@@ -75,9 +75,8 @@ inline sycl_utils::events compute_covariances_sycl_async(const std::shared_ptr<s
     covs.resize(N);
     if (N == 0) return sycl_utils::events();
 
-    // Optimize work group size
     const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);
-    const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+    const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
 
     auto event = queue_ptr->submit([&](sycl::handler& h) {
         const auto point_ptr = points.data();
@@ -179,7 +178,7 @@ inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_p
                                                              const PointCloudShared& points) {
     const size_t N = points.size();
     const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);
-    const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+    const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
 
     auto event = queue_ptr->submit([&](sycl::handler& h) {
         const auto cov_ptr = points.covs->data();

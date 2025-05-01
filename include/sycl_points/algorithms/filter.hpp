@@ -112,7 +112,8 @@ public:
 
         auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
             const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
-            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+            const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
+
             // memory ptr
             T* data_ptr = data.data();
             T* copy_ptr;
@@ -168,7 +169,7 @@ public:
 
         auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
             const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
-            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+            const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
             // memory ptr
             const auto point_ptr = data.points_ptr();
             auto flag_ptr = this->flags_->data();
