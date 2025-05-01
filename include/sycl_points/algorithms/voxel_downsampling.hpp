@@ -68,7 +68,6 @@ public:
         if (this->bit_ptr_->size() < N) {
             this->bit_ptr_->resize(N);
         }
-        this->queue_ptr_->fill(this->bit_ptr_->data(), VoxelConstants::invalid_coord, N).wait();
 
         // compute bit on device
         auto event = this->compute_voxel_bit_async(points, 0, N);
@@ -95,7 +94,7 @@ private:
 
         const uint32_t chunk_size = end - start + 1;
         const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr_);
-        const size_t global_size = ((chunk_size + work_group_size - 1) / work_group_size) * work_group_size;
+        const size_t global_size = sycl_utils::get_global_size(chunk_size, work_group_size);
         auto event = queue_ptr_->submit([&](sycl::handler& h) {
             // memory ptr
             const uint32_t start_index = start;
