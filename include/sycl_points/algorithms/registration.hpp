@@ -39,12 +39,6 @@ class Registration {
 public:
     Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_ptr_(queue_ptr) {
-        this->cur_T_ = std::make_shared<shared_vector<TransformMatrix>>(
-            1, TransformMatrix::Identity(), shared_allocator<TransformMatrix>(*this->queue_ptr_, {}));
-
-        this->max_distance_ = std::make_shared<shared_vector<float>>(1, params_.max_correspondence_distance,
-                                                                     shared_allocator<float>(*this->queue_ptr_, {}));
-
         this->neighbors_ = std::make_shared<shared_vector<KNNResultSYCL>>(
             1, KNNResultSYCL(), shared_allocator<KNNResultSYCL>(*this->queue_ptr_, {}));
         this->neighbors_->at(0).allocate(*this->queue_ptr_, 1, 1);
@@ -69,10 +63,6 @@ public:
         const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
         const auto verbose = this->params_.verbose;
 
-        // Optimize work group size
-        const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
-        const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
-
         sycl_utils::events transform_events;
 
         {
@@ -81,6 +71,9 @@ public:
                 this->linearlized_->resize(N);
             }
             auto fill_event = this->queue_ptr_->submit([&](sycl::handler& h) {
+                const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
+                const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
+
                 // get pointers
                 const auto linearlized_ptr = this->linearlized_->data();
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
@@ -93,12 +86,8 @@ public:
             });
             fill_event.wait();
 
-            this->cur_T_->data()[0] = result.T.matrix();
-            this->max_distance_->at(0) = max_dist_2;
-
             for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
                 prev_T = result.T;
-                (*this->cur_T_)[0] = result.T.matrix();
 
                 // nearest neighbor search
                 auto knn_event =
@@ -112,19 +101,22 @@ public:
                 linearlized.error = 0.0f;
                 {
                     auto linearlize_event = this->queue_ptr_->submit([&](sycl::handler& h) {
-                        // get pointers
-                        const auto linearlized_ptr = this->linearlized_->data();
-                        const auto max_dist_ptr = this->max_distance_->data();
-                        const auto cur_T_ptr = this->cur_T_->data();
+                        const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
+                        const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
 
+                        // convert to sycl::float4
+                        const auto cur_T = eigen_utils::to_sycl_vec(result.T.matrix());
+
+                        // get pointers
+                        // input
                         const auto source_ptr = source.points->data();
-                        const auto transform_source_ptr = transform_source.points_ptr();
                         const auto transform_source_cov_ptr = transform_source.covs_ptr();
                         const auto target_ptr = target.points_ptr();
                         const auto target_cov_ptr = target.covs_ptr();
-
                         const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
                         const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+                        // output
+                        const auto linearlized_ptr = this->linearlized_->data();
 
                         // wait for knn search
                         h.depends_on(knn_event.evs);
@@ -133,22 +125,18 @@ public:
                             const size_t i = item.get_global_id(0);
                             if (i >= N) return;
 
-                            if (neighbors_distances_ptr[i] > max_dist_ptr[0]) {
+                            if (neighbors_distances_ptr[i] > max_dist_2) {
                                 linearlized_ptr[i].H.setZero();
                                 linearlized_ptr[i].b.setZero();
                                 linearlized_ptr[i].error = 0.0f;
                             } else {
-                                if constexpr (icp == factor::ICPType::GICP) {
-                                    linearlized_ptr[i] = factor::linearlize_gicp(
-                                        cur_T_ptr[0], source_ptr[i], transform_source_ptr[i],
-                                        transform_source_cov_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                                        target_cov_ptr[neighbors_index_ptr[i]]);
-                                } else if constexpr (icp == factor::ICPType::POINT_TO_POINT) {
-                                    linearlized_ptr[i] = factor::linearlize_point_to_point(
-                                        cur_T_ptr[0], source_ptr[i], transform_source_ptr[i],
-                                        transform_source_cov_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                                        target_cov_ptr[neighbors_index_ptr[i]]);
-                                }
+                                PointType transformed_source;
+                                kernel::transform_point(source_ptr[i], transformed_source, cur_T.data());
+                                const auto cur_T_mat = eigen_utils::from_sycl_vec(cur_T);
+
+                                linearlized_ptr[i] = factor::linearlize<icp>(
+                                    cur_T_mat, source_ptr[i], transformed_source, transform_source_cov_ptr[i],
+                                    target_ptr[neighbors_index_ptr[i]], target_cov_ptr[neighbors_index_ptr[i]]);
                             }
                         });
                     });
@@ -202,8 +190,6 @@ private:
                delta.template tail<3>().norm() < this->params_.translation_eps;
     }
     std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
-    std::shared_ptr<shared_vector<TransformMatrix>> cur_T_ = nullptr;
-    std::shared_ptr<shared_vector<float>> max_distance_ = nullptr;
     std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
     std::shared_ptr<shared_vector<factor::LinearlizedResult>> linearlized_ = nullptr;
 };

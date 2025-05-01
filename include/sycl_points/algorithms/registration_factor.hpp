@@ -122,6 +122,20 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T,
     return ret;
 }
 
+template <factor::ICPType icp = factor::ICPType::GICP>
+SYCL_EXTERNAL inline LinearlizedResult linearlize(const TransformMatrix& T, const PointType& source,
+                                                  const PointType& transform_source,
+                                                  const Covariance& transform_source_cov, const PointType& target,
+                                                  const Covariance& target_cov) {
+    if constexpr (icp == factor::ICPType::POINT_TO_POINT) {
+        return linearlize_point_to_point(T, source, transform_source, transform_source_cov, target, target_cov);
+    } else if constexpr (icp == factor::ICPType::GICP) {
+        return linearlize_gicp(T, source, transform_source, transform_source_cov, target, target_cov);
+    } else {
+        static_assert("not support type");
+    }
+}
+
 }  // namespace factor
 
 }  // namespace algorithms

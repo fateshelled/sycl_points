@@ -451,6 +451,7 @@ inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::vec<float, 4>, 4>& v
     Eigen::Matrix4f mat;
 #pragma unroll 4
     for (size_t i = 0; i < 4; ++i) {
+#pragma unroll 4
         for (size_t j = 0; j < 4; ++j) {
             mat(i, j) = vecs[i][j];
         }
