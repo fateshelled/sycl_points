@@ -4,7 +4,7 @@ A C++ header-only point cloud processing library accelerated with SYCL for heter
 
 ## Overview
 
-sycl_points provides efficient implementations of common point cloud processing operations using Intel's SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on various hardware architectures including CPUs, GPUs, and other accelerators that support SYCL.
+sycl_points provides efficient implementations of common point cloud processing operations using Intel's SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on CPUs, iGPUs and dGPUs supported by SYCL.
 
 This project was developed with reference to small_gicp, a lightweight point cloud registration library.
 - https://github.com/koide3/small_gicp
@@ -12,7 +12,7 @@ This project was developed with reference to small_gicp, a lightweight point clo
 Key features:
 - Efficient point cloud data structures for CPU and accelerator memory
 - K-nearest neighbor search using KD-trees
-- Point cloud registration (ICP with GICP variant)
+- Point cloud registration (Point-to-Point and GICP)
 - Voxel downsampling for point cloud simplification
 - Covariance estimation
 - Point transformations (rotation, translation)
@@ -23,7 +23,6 @@ Future optimization work will include:
 - Memory access pattern improvements
 - Workgroup size tuning
 - Algorithm refinements for better parallelization
-- Specialized optimizations for different hardware targets
 
 ## Requirements
 
@@ -43,7 +42,6 @@ source /opt/intel/oneapi/setvars.sh
 mkdir build && cd build
 cmake ..
 make
-
 
 ./example_registration.cpp
 ```
