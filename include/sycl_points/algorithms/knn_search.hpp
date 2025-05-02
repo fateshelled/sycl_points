@@ -33,6 +33,12 @@ struct KNNResultSYCL {
         this->distances = std::make_shared<shared_vector<float>>(query_size * k, std::numeric_limits<float>::max(),
                                                                  shared_allocator<float>(queue, {}));
     }
+    void resize(size_t query_size = 0, size_t k = 0) {
+        this->query_size = query_size;
+        this->k = k;
+        this->indices->resize(query_size * k);
+        this->distances->resize(query_size * k);
+    }
 };
 
 // Node structure for KD-Tree (ignoring w component)
@@ -341,16 +347,7 @@ public:
         if (result.indices == nullptr || result.distances == nullptr) {
             result.allocate(*this->queue_, query_size, k);
         } else {
-            result.indices->resize(total_size);
-            result.distances->resize(total_size);
-            result.k = k;
-            result.query_size = query_size;
-        }
-        {
-            sycl_utils::events fill_events;
-            fill_events += this->queue_->fill(result.indices->data(), -1, total_size);
-            fill_events += this->queue_->fill(result.distances->data(), std::numeric_limits<float>::max(), total_size);
-            fill_events.wait();
+            result.resize(query_size, k);
         }
 
         const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_);
@@ -380,10 +377,9 @@ public:
                 std::fill(bestDists, bestDists + MAX_K, std::numeric_limits<float>::max());
                 std::fill(bestIdxs, bestIdxs + MAX_K, -1);
 
-                std::array<NodeEntry, MAX_DEPTH / 2> nearStack;
+                NodeEntry nearStack[MAX_DEPTH / 2];
+                NodeEntry farStack[MAX_DEPTH / 2];
                 size_t nearStackPtr = 0;
-
-                std::array<NodeEntry, MAX_DEPTH / 2> farStack;
                 size_t farStackPtr = 0;
 
                 // Start from root node
@@ -414,7 +410,7 @@ public:
                         while (insertPos > 0 && dist_sq < bestDists[insertPos - 1]) {
                             bestDists[insertPos] = bestDists[insertPos - 1];
                             bestIdxs[insertPos] = bestIdxs[insertPos - 1];
-                            insertPos--;
+                            --insertPos;
                         }
 
                         // Insert result
@@ -581,7 +577,7 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointC
                     while (insertPos > 0 && dist < kDistances[insertPos - 1]) {
                         kDistances[insertPos] = kDistances[insertPos - 1];
                         kIndices[insertPos] = kIndices[insertPos - 1];
-                        insertPos--;
+                        --insertPos;
                     }
 
                     // Insert new point
