@@ -52,6 +52,12 @@ inline size_t get_global_size(size_t N, size_t work_group_size) {
     return ((N + work_group_size - 1) / work_group_size) * work_group_size;
 }
 
+inline void free(void* data_ptr, const sycl::queue& queue) {
+    if (data_ptr != nullptr) {
+        sycl::free(data_ptr, queue);
+    }
+}
+
 inline void print_device_info(const sycl::device& device) {
     const auto platform = device.get_platform();
     std::cout << "Platform: " << platform.get_info<sycl::info::platform::name>() << std::endl;

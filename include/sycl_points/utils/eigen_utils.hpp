@@ -445,6 +445,21 @@ inline std::array<sycl::vec<float, 4>, 4> to_sycl_vec(const Eigen::Matrix4f& mat
     return vecs;
 }
 
+inline std::tuple<sycl::float16, sycl::float16, sycl::float4> to_sycl_vec(const Eigen::Matrix<float, 6, 6>& mat) {
+    const sycl::float16 a = {mat(0, 0), mat(0, 1), mat(0, 2), mat(0, 3), mat(0, 4), mat(0, 5), mat(1, 0), mat(1, 1),
+                             mat(1, 2), mat(1, 3), mat(1, 4), mat(1, 5), mat(2, 0), mat(2, 1), mat(2, 2), mat(2, 3)};
+    const sycl::float16 b = {mat(2, 4), mat(2, 5), mat(3, 0), mat(3, 1), mat(3, 2), mat(3, 3), mat(3, 4), mat(3, 5),
+                             mat(4, 0), mat(4, 1), mat(4, 2), mat(4, 3), mat(4, 4), mat(4, 5), mat(5, 0), mat(5, 1)};
+    const sycl::float4 c = {mat(5, 2), mat(5, 3), mat(5, 4), mat(5, 5)};
+    return {a, b, c};
+}
+
+inline std::array<sycl::float3, 2> to_sycl_vec(const Eigen::Vector<float, 6>& vec) {
+    const sycl::float3 a = {vec(0), vec(1), vec(2)};
+    const sycl::float3 b = {vec(3), vec(4), vec(5)};
+    return {a, b};
+}
+
 inline Eigen::Vector4f from_sycl_vec(const sycl::vec<float, 4>& vec) { return {vec.x(), vec.y(), vec.z(), vec.w()}; }
 
 inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::vec<float, 4>, 4>& vecs) {
@@ -457,6 +472,21 @@ inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::vec<float, 4>, 4>& v
         }
     }
     return mat;
+}
+
+inline Eigen::Matrix<float, 6, 6> from_sycl_vec(const std::tuple<sycl::float16, sycl::float16, sycl::float4>& vecs) {
+    Eigen::Matrix<float, 6, 6> mat;
+    const auto& [a, b, c] = vecs;
+    mat << a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15],  //
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],     //
+        c[0], c[1], c[2], c[3];
+    return mat;
+}
+
+inline Eigen::Vector<float, 6> from_sycl_vec(const std::array<sycl::float3, 2>& vecs) {
+    Eigen::Vector<float, 6> ret;
+    ret << vecs[0][0], vecs[0][1], vecs[0][2], vecs[1][0], vecs[1][1], vecs[1][2];
+    return ret;
 }
 
 namespace lie {

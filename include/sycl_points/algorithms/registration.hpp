@@ -43,8 +43,7 @@ public:
             1, KNNResultSYCL(), shared_allocator<KNNResultSYCL>(*this->queue_ptr_, {}));
         this->neighbors_->at(0).allocate(*this->queue_ptr_, 1, 1);
 
-        this->linearlized_ = std::make_shared<shared_vector<factor::LinearlizedResult>>(
-            1, factor::LinearlizedResult(), shared_allocator<factor::LinearlizedResult>(*this->queue_ptr_, {}));
+        this->linearlized_ = std::make_shared<LinearlizedDevice>(this->queue_ptr_);
     }
 
     RegistrationResult optimize(const PointCloudShared& source, const PointCloudShared& target,
@@ -66,26 +65,6 @@ public:
         sycl_utils::events transform_events;
 
         {
-            // memory allocation
-            if (this->linearlized_->size() < N) {
-                this->linearlized_->resize(N);
-            }
-            auto fill_event = this->queue_ptr_->submit([&](sycl::handler& h) {
-                const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
-                const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
-
-                // get pointers
-                const auto linearlized_ptr = this->linearlized_->data();
-                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                    const size_t i = item.get_global_id(0);
-                    if (i >= N) return;
-                    linearlized_ptr[i].b.setZero();
-                    linearlized_ptr[i].H.setZero();
-                    linearlized_ptr[i].error = 0.0f;
-                });
-            });
-            fill_event.wait();
-
             for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
                 prev_T = result.T;
 
@@ -95,10 +74,6 @@ public:
                                                     (*this->neighbors_)[0], transform_events.evs);
 
                 // linearlize
-                factor::LinearlizedResult linearlized;
-                linearlized.H.setZero();
-                linearlized.b.setZero();
-                linearlized.error = 0.0f;
                 {
                     auto linearlize_event = this->queue_ptr_->submit([&](sycl::handler& h) {
                         const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
@@ -115,58 +90,86 @@ public:
                         const auto target_cov_ptr = target.covs_ptr();
                         const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
                         const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+
                         // output
-                        const auto linearlized_ptr = this->linearlized_->data();
+                        this->linearlized_->setZero();
+                        const auto H0_ptr = this->linearlized_->H0;
+                        const auto H1_ptr = this->linearlized_->H1;
+                        const auto H2_ptr = this->linearlized_->H2;
+                        const auto b0_ptr = this->linearlized_->b0;
+                        const auto b1_ptr = this->linearlized_->b1;
+                        const auto error_ptr = this->linearlized_->error;
+
+                        // reduction
+                        auto sum_H0 = sycl::reduction(H0_ptr, sycl::plus<sycl::float16>());
+                        auto sum_H1 = sycl::reduction(H1_ptr, sycl::plus<sycl::float16>());
+                        auto sum_H2 = sycl::reduction(H2_ptr, sycl::plus<sycl::float4>());
+                        auto sum_b0 = sycl::reduction(b0_ptr, sycl::plus<sycl::float3>());
+                        auto sum_b1 = sycl::reduction(b1_ptr, sycl::plus<sycl::float3>());
+                        auto sum_error = sycl::reduction(error_ptr, sycl::plus<float>());
 
                         // wait for knn search
                         h.depends_on(knn_event.evs);
 
-                        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                            const size_t i = item.get_global_id(0);
-                            if (i >= N) return;
+                        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), sum_H0, sum_H1, sum_H2, sum_b0,
+                                       sum_b1, sum_error,
+                                       [=](sycl::nd_item<1> item, auto& sum_H0_arg, auto& sum_H1_arg, auto& sum_H2_arg,
+                                           auto& sum_b0_arg, auto& sum_b1_arg, auto& sum_error_arg) {
+                                           const size_t i = item.get_global_id(0);
+                                           if (i >= N) return;
 
-                            if (neighbors_distances_ptr[i] > max_dist_2) {
-                                linearlized_ptr[i].H.setZero();
-                                linearlized_ptr[i].b.setZero();
-                                linearlized_ptr[i].error = 0.0f;
-                            } else {
-                                PointType transformed_source;
-                                kernel::transform_point(source_ptr[i], transformed_source, cur_T.data());
-                                const auto cur_T_mat = eigen_utils::from_sycl_vec(cur_T);
+                                           if (neighbors_distances_ptr[i] > max_dist_2) {
+                                               return;
+                                           } else {
+                                               PointType transformed_source;
+                                               kernel::transform_point(source_ptr[i], transformed_source, cur_T.data());
+                                               const auto cur_T_mat = eigen_utils::from_sycl_vec(cur_T);
 
-                                linearlized_ptr[i] = factor::linearlize<icp>(
-                                    cur_T_mat, source_ptr[i], transformed_source, transform_source_cov_ptr[i],
-                                    target_ptr[neighbors_index_ptr[i]], target_cov_ptr[neighbors_index_ptr[i]]);
-                            }
-                        });
+                                               const factor::LinearlizedResult result = factor::linearlize<icp>(
+                                                   cur_T_mat, source_ptr[i], transformed_source,
+                                                   transform_source_cov_ptr[i], target_ptr[neighbors_index_ptr[i]],
+                                                   target_cov_ptr[neighbors_index_ptr[i]]);
+                                               // reduction
+                                               const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
+                                               const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
+                                               sum_H0_arg += H0;
+                                               sum_H1_arg += H1;
+                                               sum_H2_arg += H2;
+                                               sum_b0_arg += b0;
+                                               sum_b1_arg += b1;
+                                               sum_error_arg += result.error;
+                                           }
+                                       });
                     });
                     linearlize_event.wait();
-
-                    // reduction
-                    for (size_t i = 0; i < N; ++i) {
-                        linearlized.H += (*this->linearlized_)[i].H;
-                        linearlized.b += (*this->linearlized_)[i].b;
-                        linearlized.error += (*this->linearlized_)[i].error;
-                    }
                 }
 
+                factor::LinearlizedResult linearlized_result;
+                linearlized_result.H = eigen_utils::from_sycl_vec(
+                    {this->linearlized_->H0[0], this->linearlized_->H1[0], this->linearlized_->H2[0]});
+                linearlized_result.b =
+                    eigen_utils::from_sycl_vec({this->linearlized_->b0[0], this->linearlized_->b1[0]});
+                linearlized_result.error = this->linearlized_->error[0];
                 // if (this->params_.optimize_lm) {
                 // }
                 // else
                 {
                     const Eigen::Matrix<float, 6, 1> delta =
-                        (linearlized.H + lambda * Eigen::Matrix<float, 6, 6>::Identity()).ldlt().solve(-linearlized.b);
+                        (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
+                            .ldlt()
+                            .solve(-linearlized_result.b);
                     // const auto delta = eigen_utils::solve_system_6x6(
-                    //     linearlized.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), -linearlized.b);
+                    //     linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(),
+                    //     -linearlized_result.b);
                     result.converged = this->is_converged(delta);
                     result.T = result.T * eigen_utils::lie::se3_exp(delta);
                     result.iterations = iter;
-                    result.H = linearlized.H;
-                    result.b = linearlized.b;
-                    result.error = linearlized.error;
+                    result.H = linearlized_result.H;
+                    result.b = linearlized_result.b;
+                    result.error = linearlized_result.error;
                     if (verbose) {
                         std::cout << "iter [" << iter << "] ";
-                        std::cout << "error: " << linearlized.error << ", ";
+                        std::cout << "error: " << result.error << ", ";
                         std::cout << "dt: " << delta.tail<3>().norm() << ", ";
                         std::cout << "dr: " << delta.head<3>().norm() << std::endl;
                     }
@@ -184,6 +187,51 @@ public:
     }
 
 private:
+    struct LinearlizedDevice {
+        // H is 6x6
+        sycl::float16* H0 = nullptr;
+        sycl::float16* H1 = nullptr;
+        sycl::float4* H2 = nullptr;
+        // b is 6x1
+        sycl::float3* b0 = nullptr;
+        sycl::float3* b1 = nullptr;
+        // error is scalar
+        float* error = nullptr;
+
+        std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
+
+        LinearlizedDevice(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
+            H0 = sycl::malloc_shared<sycl::float16>(1, *queue_ptr_);
+            H1 = sycl::malloc_shared<sycl::float16>(1, *queue_ptr_);
+            H2 = sycl::malloc_shared<sycl::float4>(1, *queue_ptr_);
+            b0 = sycl::malloc_shared<sycl::float3>(1, *queue_ptr_);
+            b1 = sycl::malloc_shared<sycl::float3>(1, *queue_ptr_);
+            error = sycl::malloc_shared<float>(1, *queue_ptr_);
+        }
+        ~LinearlizedDevice() {
+            sycl_utils::free(H0, *queue_ptr_);
+            sycl_utils::free(H1, *queue_ptr_);
+            sycl_utils::free(H2, *queue_ptr_);
+            sycl_utils::free(b0, *queue_ptr_);
+            sycl_utils::free(b1, *queue_ptr_);
+            sycl_utils::free(error, *queue_ptr_);
+        }
+        void setZero() {
+            for (size_t i = 0; i < 16; ++i) {
+                H0[0][i] = 0.0f;
+                H1[0][i] = 0.0f;
+            }
+            for (size_t i = 0; i < 4; ++i) {
+                H2[0][i] = 0.0f;
+            }
+            for (size_t i = 0; i < 3; ++i) {
+                b0[0][i] = 0.0f;
+                b1[0][i] = 0.0f;
+            }
+            error[0] = 0.0f;
+        }
+    };
+
     RegistrationParams params_;
     bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
         return delta.template head<3>().norm() < this->params_.rotation_eps &&
@@ -191,7 +239,7 @@ private:
     }
     std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
     std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
-    std::shared_ptr<shared_vector<factor::LinearlizedResult>> linearlized_ = nullptr;
+    std::shared_ptr<LinearlizedDevice> linearlized_ = nullptr;
 };
 
 }  // namespace algorithms
