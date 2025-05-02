@@ -79,22 +79,40 @@ struct PointCloudShared {
         const PointAllocatorShared alloc_pc(*this->queue_ptr, this->propeties);
 
         const size_t N = cpu.size();
-        sycl_utils::events copy_events;
 
-        if (cpu.has_cov()) {
-            this->covs = std::make_shared<CovarianceContainerShared>(N, alloc_cov);
-            if (N > 0) {
-                copy_events += this->queue_ptr->memcpy(this->covs->data(), cpu.covs->data(), N * sizeof(Covariance));
+        if (sycl_utils::is_cpu(*this->queue_ptr)) {
+            sycl_utils::events copy_events;
+
+            if (cpu.has_cov()) {
+                this->covs = std::make_shared<CovarianceContainerShared>(N, alloc_cov);
+                if (N > 0) {
+                    copy_events +=
+                        this->queue_ptr->memcpy(this->covs->data(), cpu.covs->data(), N * sizeof(Covariance));
+                }
+            } else {
+                this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
             }
-        } else {
-            this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
-        }
 
-        this->points = std::make_shared<PointContainerShared>(N, alloc_pc);
-        if (N > 0) {
-            copy_events += this->queue_ptr->memcpy(this->points->data(), cpu.points->data(), N * sizeof(PointType));
+            this->points = std::make_shared<PointContainerShared>(N, alloc_pc);
+            if (N > 0) {
+                copy_events += this->queue_ptr->memcpy(this->points->data(), cpu.points->data(), N * sizeof(PointType));
+            }
+            copy_events.wait();
+        } else {
+            if (cpu.has_cov()) {
+                this->covs = std::make_shared<CovarianceContainerShared>(N, alloc_cov);
+                for (size_t i = 0; i < N; ++i) {
+                    this->covs->data()[i] = cpu.covs->data()[i];
+                }
+            } else {
+                this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
+            }
+
+            this->points = std::make_shared<PointContainerShared>(N, alloc_pc);
+            for (size_t i = 0; i < N; ++i) {
+                this->points->data()[i] = cpu.points->data()[i];
+            }
         }
-        copy_events.wait();
     }
 
     // copy constructor
@@ -103,23 +121,23 @@ struct PointCloudShared {
         const PointAllocatorShared alloc_pc(*this->queue_ptr, this->propeties);
 
         const size_t N = other.size();
-        sycl::event copy_cov_event;
+        sycl_utils::events copy_events;
+
         if (other.has_cov()) {
             this->covs = std::make_shared<CovarianceContainerShared>(N, alloc_cov);
             if (other.covs->size() > 0) {
-                copy_cov_event =
-                    this->queue_ptr->memcpy(this->covs->data(), other.covs->data(), N * sizeof(Covariance));
+                copy_events += this->queue_ptr->memcpy(this->covs->data(), other.covs->data(), N * sizeof(Covariance));
             }
         } else {
             this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
         }
+
         this->points = std::make_shared<PointContainerShared>(N, alloc_pc);
-        sycl::event copy_pt_event;
         if (N > 0) {
-            copy_pt_event = this->queue_ptr->memcpy(this->points->data(), other.points->data(), N * sizeof(PointType));
+            copy_events += this->queue_ptr->memcpy(this->points->data(), other.points->data(), N * sizeof(PointType));
         }
-        copy_cov_event.wait();
-        copy_pt_event.wait();
+
+        copy_events.wait();
     }
 
     ~PointCloudShared() {}
