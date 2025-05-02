@@ -47,11 +47,11 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        preprocess_filter.crop_box(source_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
+        preprocess_filter.box_filter(source_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
         sycl_points::PointCloudShared source_downsampled(queue);
         voxel_grid.downsampling(source_shared, source_downsampled);
 
-        preprocess_filter.crop_box(target_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
+        preprocess_filter.box_filter(target_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
         sycl_points::PointCloudShared target_downsampled(queue);
         voxel_grid.downsampling(target_shared, target_downsampled);
         auto dt_downsampled =

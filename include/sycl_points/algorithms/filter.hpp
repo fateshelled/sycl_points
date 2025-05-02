@@ -157,8 +157,12 @@ public:
         flags_ = std::make_shared<shared_vector<uint8_t, sizeof(uint8_t)>>(*this->queue_ptr_);
     }
 
-    void crop_box(PointCloudShared& data, float min_distance = 1.0f,
-                  float max_distance = std::numeric_limits<float>::max()) {
+    /// @brief L∞ distance (chebyshev distance) filter.
+    /// @param data Point Cloud
+    /// @param min_distance min distance
+    /// @param max_distance max distance
+    void box_filter(PointCloudShared& data, float min_distance = 1.0f,
+                    float max_distance = std::numeric_limits<float>::max()) {
         const size_t N = data.size();
         if (N == 0) return;
 
