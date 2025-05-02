@@ -89,12 +89,17 @@ public:
             1, KNNResultSYCL(), shared_allocator<KNNResultSYCL>(*this->queue_ptr_, {}));
         this->neighbors_->at(0).allocate(*this->queue_ptr_, 1, 1);
 
-        this->linearlized_ = std::make_shared<LinearlizedDevice>(this->queue_ptr_);
+        this->aligned_ = std::make_shared<PointCloudShared>(this->queue_ptr_);
+        this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_ptr_);
+        this->linearlized_on_host_ = std::make_shared<shared_vector<factor::LinearlizedResult>>(
+            1, factor::LinearlizedResult(), shared_allocator<factor::LinearlizedResult>(*this->queue_ptr_));
     }
 
-    RegistrationResult optimize(const PointCloudShared& source, const PointCloudShared& target,
-                                const KDTreeSYCL& target_tree,
-                                const TransformMatrix& init_T = TransformMatrix::Identity()) {
+    PointCloudShared::Ptr get_aligned_point_cloud() const { return this->aligned_; }
+
+    RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
+                             const KDTreeSYCL& target_tree,
+                             const TransformMatrix& init_T = TransformMatrix::Identity()) {
         const size_t N = source.size();
         RegistrationResult result;
         result.T.matrix() = init_T;
@@ -102,79 +107,122 @@ public:
         if (N == 0) return result;
 
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
-        auto transform_source = transform_sycl_copy(source, init_T);
+        aligned_ = std::make_shared<PointCloudShared>(source);
+        transform_sycl(*aligned_, init_T);
 
         float lambda = this->params_.lambda;
         const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
         const auto verbose = this->params_.verbose;
 
         sycl_utils::events transform_events;
+        for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
+            prev_T = result.T;
 
-        {
-            for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
-                prev_T = result.T;
+            // Nearest neighbor search
+            auto knn_event = target_tree.knn_search_async<1>(aligned_->points->data(), aligned_->size(), 1,
+                                                             (*this->neighbors_)[0], transform_events.evs);
 
-                // nearest neighbor search
-                auto knn_event =
-                    target_tree.knn_search_async<1>(transform_source.points->data(), transform_source.size(), 1,
-                                                    (*this->neighbors_)[0], transform_events.evs);
+            // Linearlize
+            const factor::LinearlizedResult linearlized_result =
+                this->linearlize(source, *aligned_, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
-                // linearlize
-                factor::LinearlizedResult linearlized_result = this->linearlize_parallel_reduction(
-                    source, transform_source, target, result.T.matrix(), max_dist_2, knn_event);
+            // Optimize
+            this->optimize_gauss_newton(result, linearlized_result, lambda, verbose, iter);
 
-                // if (this->params_.optimize_lm) {
-                // }
-                // else
-                {
-                    const Eigen::Matrix<float, 6, 1> delta =
-                        (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
-                            .ldlt()
-                            .solve(-linearlized_result.b);
-                    // const auto delta = eigen_utils::solve_system_6x6(
-                    //     linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(),
-                    //     -linearlized_result.b);
-                    result.converged = this->is_converged(delta);
-                    result.T = result.T * eigen_utils::lie::se3_exp(delta);
-                    result.iterations = iter;
-                    result.H = linearlized_result.H;
-                    result.b = linearlized_result.b;
-                    result.error = linearlized_result.error;
-                    if (verbose) {
-                        std::cout << "iter [" << iter << "] ";
-                        std::cout << "error: " << result.error << ", ";
-                        std::cout << "dt: " << delta.tail<3>().norm() << ", ";
-                        std::cout << "dr: " << delta.head<3>().norm() << std::endl;
-                    }
-                }
-                // transform source points
-                transform_events =
-                    transform_sycl_async(transform_source, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
-                if (result.converged) {
-                    break;
-                }
+            // Async transform source points
+            transform_events =
+                transform_sycl_async(*aligned_, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
+
+            if (result.converged) {
+                break;
             }
-            transform_events.wait();
         }
+        transform_events.wait();
         return result;
     }
 
 private:
     RegistrationParams params_;
+    std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
+    PointCloudShared::Ptr aligned_ = nullptr;
+    std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
+    std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
+    std::shared_ptr<shared_vector<factor::LinearlizedResult>> linearlized_on_host_ = nullptr;
+
     bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
         return delta.template head<3>().norm() < this->params_.rotation_eps &&
                delta.template tail<3>().norm() < this->params_.translation_eps;
     }
-    std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
-    std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
-    std::shared_ptr<LinearlizedDevice> linearlized_ = nullptr;
+
+    factor::LinearlizedResult linearlize_sequential_reduction(
+        const PointCloudShared& source, const PointCloudShared& transform_source, const PointCloudShared& target,
+        const Eigen::Matrix4f transT, float max_correspondence_distance_2, const std::vector<sycl::event>& depends) {
+        const size_t N = source.size();
+        sycl_utils::events events;
+        events += this->queue_ptr_->submit([&](sycl::handler& h) {
+            if (this->linearlized_on_host_->size()) {
+                this->linearlized_on_host_->resize(N);
+            }
+            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
+            const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
+
+            // convert to sycl::float4
+            const auto cur_T = eigen_utils::to_sycl_vec(transT);
+
+            // get pointers
+            // input
+            const auto source_ptr = source.points->data();
+            const auto transform_source_cov_ptr = transform_source.covs_ptr();
+            const auto target_ptr = target.points_ptr();
+            const auto target_cov_ptr = target.covs_ptr();
+            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+            // output
+            const auto linearlized_ptr = this->linearlized_on_host_->data();
+
+            // wait for knn search
+            h.depends_on(depends);
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) return;
+
+                if (neighbors_distances_ptr[i] > max_correspondence_distance_2) {
+                    linearlized_ptr[i].H.setZero();
+                    linearlized_ptr[i].b.setZero();
+                    linearlized_ptr[i].error = 0.0f;
+                } else {
+                    PointType transformed_source;
+                    kernel::transform_point(source_ptr[i], transformed_source, cur_T.data());
+                    const auto cur_T_mat = eigen_utils::from_sycl_vec(cur_T);
+
+                    linearlized_ptr[i] = factor::linearlize<icp>(
+                        cur_T_mat, source_ptr[i], transformed_source, transform_source_cov_ptr[i],
+                        target_ptr[neighbors_index_ptr[i]], target_cov_ptr[neighbors_index_ptr[i]]);
+                }
+            });
+        });
+        events.wait();
+
+        factor::LinearlizedResult linearlized_result;
+        linearlized_result.H.setZero();
+        linearlized_result.b.setZero();
+        linearlized_result.error = 0.0f;
+        // reduction on host
+        for (size_t i = 0; i < N; ++i) {
+            linearlized_result.H += (*this->linearlized_on_host_)[i].H;
+            linearlized_result.b += (*this->linearlized_on_host_)[i].b;
+            linearlized_result.error += (*this->linearlized_on_host_)[i].error;
+        }
+        return linearlized_result;
+    }
 
     factor::LinearlizedResult linearlize_parallel_reduction(
         const PointCloudShared& source, const PointCloudShared& transform_source, const PointCloudShared& target,
-        const Eigen::Matrix4f transT, float max_correspondence_distance_2, const sycl_utils::events& depends) {
+        const Eigen::Matrix4f transT, float max_correspondence_distance_2, const std::vector<sycl::event>& depends) {
+        const size_t N = source.size();
         sycl_utils::events events;
         events += this->queue_ptr_->submit([&](sycl::handler& h) {
-            const size_t N = source.size();
             const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
             const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
 
@@ -191,13 +239,13 @@ private:
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
             // output
-            this->linearlized_->setZero();
-            const auto H0_ptr = this->linearlized_->H0;
-            const auto H1_ptr = this->linearlized_->H1;
-            const auto H2_ptr = this->linearlized_->H2;
-            const auto b0_ptr = this->linearlized_->b0;
-            const auto b1_ptr = this->linearlized_->b1;
-            const auto error_ptr = this->linearlized_->error;
+            this->linearlized_on_device_->setZero();
+            const auto H0_ptr = this->linearlized_on_device_->H0;
+            const auto H1_ptr = this->linearlized_on_device_->H1;
+            const auto H2_ptr = this->linearlized_on_device_->H2;
+            const auto b0_ptr = this->linearlized_on_device_->b0;
+            const auto b1_ptr = this->linearlized_on_device_->b1;
+            const auto error_ptr = this->linearlized_on_device_->error;
 
             // reduction
             auto sum_H0 = sycl::reduction(H0_ptr, sycl::plus<sycl::float16>());
@@ -208,10 +256,10 @@ private:
             auto sum_error = sycl::reduction(error_ptr, sycl::plus<float>());
 
             // wait for knn search
-            h.depends_on(depends.evs);
+            h.depends_on(depends);
 
-            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), sum_H0, sum_H1, sum_H2, sum_b0, sum_b1,
-                           sum_error,
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size),    // range
+                           sum_H0, sum_H1, sum_H2, sum_b0, sum_b1, sum_error,  // reduction
                            [=](sycl::nd_item<1> item, auto& sum_H0_arg, auto& sum_H1_arg, auto& sum_H2_arg,
                                auto& sum_b0_arg, auto& sum_b1_arg, auto& sum_error_arg) {
                                const size_t i = item.get_global_id(0);
@@ -227,7 +275,7 @@ private:
                                    const factor::LinearlizedResult result = factor::linearlize<icp>(
                                        cur_T_mat, source_ptr[i], transformed_source, transform_source_cov_ptr[i],
                                        target_ptr[neighbors_index_ptr[i]], target_cov_ptr[neighbors_index_ptr[i]]);
-                                   // reduction
+                                   // reduction on device
                                    const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
                                    const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
                                    sum_H0_arg += H0;
@@ -242,11 +290,48 @@ private:
         events.wait();
 
         const factor::LinearlizedResult linearlized_result = {
-            .H = eigen_utils::from_sycl_vec(
-                {this->linearlized_->H0[0], this->linearlized_->H1[0], this->linearlized_->H2[0]}),
-            .b = eigen_utils::from_sycl_vec({this->linearlized_->b0[0], this->linearlized_->b1[0]}),
-            .error = this->linearlized_->error[0]};
+            .H = eigen_utils::from_sycl_vec({this->linearlized_on_device_->H0[0],  //
+                                             this->linearlized_on_device_->H1[0],  //
+                                             this->linearlized_on_device_->H2[0]}),
+            .b = eigen_utils::from_sycl_vec({this->linearlized_on_device_->b0[0],  //
+                                             this->linearlized_on_device_->b1[0]}),
+            .error = this->linearlized_on_device_->error[0]};
         return linearlized_result;
+    }
+
+    factor::LinearlizedResult linearlize(const PointCloudShared& source, const PointCloudShared& transform_source,
+                                         const PointCloudShared& target, const Eigen::Matrix4f transT,
+                                         float max_correspondence_distance_2, const std::vector<sycl::event>& depends) {
+        if (sycl_utils::is_nvidia(*this->queue_ptr_)) {
+            return this->linearlize_parallel_reduction(source, transform_source, target, transT,
+                                                       max_correspondence_distance_2, depends);
+        } else {
+            return this->linearlize_sequential_reduction(source, transform_source, target, transT,
+                                                         max_correspondence_distance_2, depends);
+        }
+    }
+
+    void optimize_gauss_newton(RegistrationResult& result, const factor::LinearlizedResult& linearlized_result,
+                               float lambda, bool verbose, size_t iter) {
+        const Eigen::Matrix<float, 6, 1> delta =
+            (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
+                .ldlt()
+                .solve(-linearlized_result.b);
+        // const auto delta = eigen_utils::solve_system_6x6(
+        //     linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(),
+        //     -linearlized_result.b);
+        result.converged = this->is_converged(delta);
+        result.T = result.T * eigen_utils::lie::se3_exp(delta);
+        result.iterations = iter;
+        result.H = linearlized_result.H;
+        result.b = linearlized_result.b;
+        result.error = linearlized_result.error;
+        if (verbose) {
+            std::cout << "iter [" << iter << "] ";
+            std::cout << "error: " << result.error << ", ";
+            std::cout << "dt: " << delta.tail<3>().norm() << ", ";
+            std::cout << "dr: " << delta.head<3>().norm() << std::endl;
+        }
     }
 };
 
