@@ -19,38 +19,6 @@ struct PointCloudCPU {
     size_t size() const { return this->points->size(); }
 
     bool has_cov() const { return this->covs != nullptr && this->covs->size() > 0; }
-
-    void transform(const TransformMatrix& trans) {
-        const size_t N = this->points->size();
-
-        for (size_t i = 0; i < N; ++i) {
-            (*this->points)[i] = trans * (*this->points)[i];
-        }
-        if (this->has_cov()) {
-            const TransformMatrix trans_T = trans.transpose();
-            for (size_t i = 0; i < N; ++i) {
-                (*this->covs)[i] = trans * (*this->covs)[i] * trans_T;
-            }
-        }
-    };
-
-    PointCloudCPU transform_copy(const TransformMatrix& trans) const {
-        const size_t N = this->points->size();
-
-        PointCloudCPU transformed;
-        transformed.points->resize(N);
-        for (size_t i = 0; i < N; ++i) {
-            (*transformed.points)[i] = trans * (*this->points)[i];
-        }
-        if (this->has_cov()) {
-            transformed.covs->resize(N);
-            for (size_t i = 0; i < N; ++i) {
-                (*transformed.covs)[i] = trans * (*this->covs)[i] * trans.transpose();
-            }
-        }
-
-        return transformed;
-    };
 };
 
 struct PointCloudShared {
@@ -80,39 +48,33 @@ struct PointCloudShared {
 
         const size_t N = cpu.size();
 
-        if (sycl_utils::is_cpu(*this->queue_ptr)) {
-            sycl_utils::events copy_events;
+        sycl_utils::events copy_events;
+        const bool is_cpu = sycl_utils::is_cpu(*this->queue_ptr);
 
-            if (cpu.has_cov()) {
-                this->covs = std::make_shared<CovarianceContainerShared>(N, alloc_cov);
-                if (N > 0) {
-                    copy_events +=
-                        this->queue_ptr->memcpy(this->covs->data(), cpu.covs->data(), N * sizeof(Covariance));
-                }
+        if (cpu.has_cov()) {
+            this->covs = std::make_shared<CovarianceContainerShared>(N, alloc_cov);
+            if (is_cpu) {
+                copy_events += this->queue_ptr->memcpy(this->covs->data(), cpu.covs->data(), N * sizeof(Covariance));
             } else {
-                this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
-            }
-
-            this->points = std::make_shared<PointContainerShared>(N, alloc_pc);
-            if (N > 0) {
-                copy_events += this->queue_ptr->memcpy(this->points->data(), cpu.points->data(), N * sizeof(PointType));
-            }
-            copy_events.wait();
-        } else {
-            if (cpu.has_cov()) {
-                this->covs = std::make_shared<CovarianceContainerShared>(N, alloc_cov);
                 for (size_t i = 0; i < N; ++i) {
                     this->covs->data()[i] = cpu.covs->data()[i];
                 }
-            } else {
-                this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
             }
+        } else {
+            this->covs = std::make_shared<CovarianceContainerShared>(0, alloc_cov);
+        }
 
-            this->points = std::make_shared<PointContainerShared>(N, alloc_pc);
-            for (size_t i = 0; i < N; ++i) {
-                this->points->data()[i] = cpu.points->data()[i];
+        this->points = std::make_shared<PointContainerShared>(N, alloc_pc);
+        if (N > 0) {
+            if (is_cpu) {
+                copy_events += this->queue_ptr->memcpy(this->points->data(), cpu.points->data(), N * sizeof(PointType));
+            } else {
+                for (size_t i = 0; i < N; ++i) {
+                    this->points->data()[i] = cpu.points->data()[i];
+                }
             }
         }
+        copy_events.wait();
     }
 
     // copy constructor

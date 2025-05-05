@@ -69,18 +69,6 @@ int main() {
         trans.block(0, 0, 3, 3) =
             Eigen::AngleAxisf(0.5 * M_PI, Eigen::Vector3f(0, 1, 0)).matrix();  // rotate 90 deg, y axis
         trans.block(0, 3, 3, 1) << 1.0, 2.0, 3.0;
-        s = std::chrono::high_resolution_clock::now();
-        const auto transformed_points = source_points.transform_copy(trans);  // GT
-        const auto dt_transform_cpu =
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
-                .count();
-
-        auto tmp = source_points;
-        s = std::chrono::high_resolution_clock::now();
-        tmp.transform(trans);
-        const auto dt_transform_cpu_zerocopy =
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
-                .count();
 
         // transform on device (shared to shared)
         double dt_transform_on_device_shared_to_shared = 0.0;
@@ -125,9 +113,6 @@ int main() {
                   << std::endl;
 
         std::cout << "memcpy cpu to shared: " << dt_memcpy_to_shared << " us" << std::endl;
-
-        std::cout << "transform on cpu (copy): " << dt_transform_cpu << " us" << std::endl;
-        std::cout << "transform on cpu (zero copy): " << dt_transform_cpu_zerocopy << " us" << std::endl;
         std::cout << "transform on device(shared_ptr): " << dt_transform_on_device_shared_to_shared << " us"
                   << std::endl;
         // std::cout << "transform on device(device_ptr): " << dt_transform_on_device_device_ptr << " us" << std::endl;
