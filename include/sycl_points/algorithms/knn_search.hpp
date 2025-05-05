@@ -13,12 +13,8 @@ namespace sycl_points {
 
 namespace algorithms {
 
+namespace knn_search {
 // Structure to store K nearest neighbors and their distances
-struct KNNResult {
-    std::vector<std::vector<int32_t>> indices;  // Indices of K nearest points for each query point
-    std::vector<std::vector<float>> distances;  // Squared distances to K nearest points for each query point
-};
-
 struct KNNResultSYCL {
     std::shared_ptr<shared_vector<int32_t>> indices = nullptr;
     std::shared_ptr<shared_vector<float>> distances = nullptr;
@@ -97,115 +93,6 @@ inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std
 
 }  // namespace
 
-class KDTree {
-public:
-    std::shared_ptr<std::vector<FlatKDNode>> tree_;
-
-    KDTree() { tree_ = std::make_shared<std::vector<FlatKDNode>>(); }
-
-    ~KDTree() {}
-
-    static KDTree build(const PointContainerCPU& points) {
-        const size_t n = points.size();
-
-        // Estimate tree size with some margin
-        const size_t estimatedSize = n * 2;
-        KDTree flatTree;
-
-        flatTree.tree_->resize(estimatedSize);
-
-        // Main index array
-        std::vector<uint32_t> indices(n);
-        std::iota(indices.begin(), indices.end(), 0);
-
-        // Reusable temporary array for sorting
-        std::vector<std::pair<float, uint32_t>> sortedValues(n);
-
-        std::vector<BuildTask> taskStack;
-        uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
-
-        // Add the first task to the stack
-        taskStack.push_back({indices, 0, 0});
-
-        // Process until task stack is empty
-        while (!taskStack.empty()) {
-            // Pop a task from the stack
-            BuildTask task = std::move(taskStack.back());
-            taskStack.pop_back();
-
-            std::vector<uint32_t>& subIndices = task.indices;
-            const auto nodeIdx = task.nodeIdx;
-            const auto depth = task.depth;
-
-            if (subIndices.empty()) continue;
-
-            // Split axis
-            const auto axis = find_best_axis(points, subIndices);
-
-            // Create pairs of values and indices for sorting along the axis
-            sortedValues.resize(subIndices.size());
-            for (size_t i = 0; i < subIndices.size(); ++i) {
-                const auto idx = subIndices[i];
-                sortedValues[i] = {points[idx](axis), idx};
-            }
-
-            // Partial sort to find median
-            const size_t medianPos = subIndices.size() / 2;
-#if __cplusplus >= 202002L
-            std::nth_element(std::execution::unseq, sortedValues.begin(), sortedValues.begin() + medianPos,
-                             sortedValues.end());
-#else
-            std::nth_element(sortedValues.begin(), sortedValues.begin() + medianPos, sortedValues.end());
-#endif
-            // Get the median point
-            const auto pointIdx = sortedValues[medianPos].second;
-
-            // Initialize flat node
-            auto& node = (*flatTree.tree_)[nodeIdx];
-            node.x = points[pointIdx].x();
-            node.y = points[pointIdx].y();
-            node.z = points[pointIdx].z();
-            node.idx = pointIdx;
-            node.axis = axis;
-            node.left = -1;
-            node.right = -1;
-
-            // Extract indices for left subtree
-            std::vector<uint32_t> leftIndices(medianPos);
-            for (size_t i = 0; i < medianPos; ++i) {
-                leftIndices[i] = sortedValues[i].second;
-            }
-
-            // Extract indices for right subtree
-            std::vector<uint32_t> rightIndices(subIndices.size() - medianPos - 1);
-            size_t counter = 0;
-            for (size_t i = medianPos + 1; i < sortedValues.size(); ++i) {
-                rightIndices[counter++] = sortedValues[i].second;
-            }
-
-            // Add left subtree to processing queue if not empty
-            if (!leftIndices.empty()) {
-                const auto leftNodeIdx = nextNodeIdx++;
-                node.left = leftNodeIdx;
-                taskStack.push_back({std::move(leftIndices), leftNodeIdx, depth + 1});
-            }
-
-            // Add right subtree to processing queue if not empty
-            if (!rightIndices.empty()) {
-                const auto rightNodeIdx = nextNodeIdx++;
-                node.right = rightNodeIdx;
-                taskStack.push_back({std::move(rightIndices), rightNodeIdx, depth + 1});
-            }
-        }
-
-        // Trim the tree to actual used size
-        flatTree.tree_->resize(nextNodeIdx);
-        return flatTree;
-    }
-
-    static KDTree build(const PointCloudCPU& points) { return build(*points.points); }
-};
-
 class KDTreeSYCL {
 public:
     using FlatKDNodeVector = shared_vector<FlatKDNode>;
@@ -215,13 +102,6 @@ public:
 
     KDTreeSYCL(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_(queue_ptr) {
         tree_ = std::make_shared<FlatKDNodeVector>(0, *this->queue_);
-    }
-
-    KDTreeSYCL(const std::shared_ptr<sycl::queue>& queue_ptr, const KDTree& kdtree) : queue_(queue_ptr) {
-        tree_ = std::make_shared<FlatKDNodeVector>(kdtree.tree_->size(), *this->queue_);
-        for (size_t i = 0; i < kdtree.tree_->size(); ++i) {
-            (*tree_)[i] = (*kdtree.tree_)[i];
-        }
     }
 
     ~KDTreeSYCL() {}
@@ -477,53 +357,6 @@ public:
     }
 };
 
-inline KNNResult knn_search_bruteforce(const PointCloudCPU& queries, const PointCloudCPU& targets, const size_t k,
-                                       const size_t num_threads = 8) {
-    const size_t n = targets.points->size();  // Number of dataset points
-    const size_t q = queries.points->size();  // Number of query points
-
-    // Initialize result structure
-    KNNResult result;
-    result.indices.resize(q);
-    result.distances.resize(q);
-
-    if (n == 0 || q == 0) return result;
-
-    for (size_t i = 0; i < q; ++i) {
-        result.indices[i].resize(k);
-        result.distances[i].resize(k);
-        std::fill(result.indices[i].begin(), result.indices[i].end(), -1);
-        std::fill(result.distances[i].begin(), result.distances[i].end(), std::numeric_limits<float>::max());
-    }
-
-// For each query point, find K nearest neighbors
-#pragma omp parallel for num_threads(num_threads)
-    for (size_t i = 0; i < q; ++i) {
-        const auto& query = (*queries.points)[i];
-
-        // Vector to store distances and indices of all points
-        std::vector<std::pair<float, int>> distances(n);
-
-        // Calculate distances to all dataset points
-        for (size_t j = 0; j < n; ++j) {
-            const auto dt = query - (*targets.points)[j];
-            const float dist = dt.dot(dt);
-            distances[j] = {dist, j};
-        }
-
-        // Sort to find K smallest distances
-        std::partial_sort(distances.begin(), distances.begin() + k, distances.end());
-
-        // Store the results
-        for (size_t j = 0; j < k; ++j) {
-            result.indices[i][j] = distances[j].second;
-            result.distances[i][j] = distances[j].first;
-        }
-    }
-
-    return result;
-}
-
 inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointCloudShared& queries,
                                                 const PointCloudShared& targets, const size_t k) {
     constexpr size_t MAX_K = 48;
@@ -597,6 +430,8 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointC
 
     return result;
 }
+
+}  // namespace knn_search
 
 }  // namespace algorithms
 

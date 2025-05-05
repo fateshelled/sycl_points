@@ -7,6 +7,8 @@ namespace sycl_points {
 
 namespace algorithms {
 
+namespace transform {
+
 namespace kernel {
 
 SYCL_EXTERNAL inline void transform_covs(const Covariance& cov, Covariance& result, const sycl::vec<float, 4>* trans) {
@@ -157,6 +159,8 @@ sycl_points::PointCloudShared transform_cpu_copy(sycl_points::PointCloudShared& 
     transform_cpu(ret, trans);
     return ret;
 }
+
+}  // namespace transform
 
 }  // namespace algorithms
 

@@ -9,6 +9,7 @@ namespace sycl_points {
 
 namespace algorithms {
 
+namespace registration {
 struct RegistrationParams {
     size_t max_iterations = 20;
     //   size_t max_inner_iterations = 10; // LM method
@@ -85,8 +86,8 @@ class Registration {
 public:
     Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_ptr_(queue_ptr) {
-        this->neighbors_ = std::make_shared<shared_vector<KNNResultSYCL>>(
-            1, KNNResultSYCL(), shared_allocator<KNNResultSYCL>(*this->queue_ptr_, {}));
+        this->neighbors_ = std::make_shared<shared_vector<knn_search::KNNResultSYCL>>(
+            1, knn_search::KNNResultSYCL(), shared_allocator<knn_search::KNNResultSYCL>(*this->queue_ptr_, {}));
         this->neighbors_->at(0).allocate(*this->queue_ptr_, 1, 1);
 
         this->aligned_ = std::make_shared<PointCloudShared>(this->queue_ptr_);
@@ -98,7 +99,7 @@ public:
     PointCloudShared::Ptr get_aligned_point_cloud() const { return this->aligned_; }
 
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
-                             const KDTreeSYCL& target_tree,
+                             const knn_search::KDTreeSYCL& target_tree,
                              const TransformMatrix& init_T = TransformMatrix::Identity()) {
         const size_t N = source.size();
         RegistrationResult result;
@@ -108,7 +109,7 @@ public:
 
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
         aligned_ = std::make_shared<PointCloudShared>(source);
-        transform_sycl(*aligned_, init_T);
+        transform::transform_sycl(*aligned_, init_T);
 
         float lambda = this->params_.lambda;
         const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
@@ -131,7 +132,7 @@ public:
 
             // Async transform source points
             transform_events =
-                transform_sycl_async(*aligned_, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
+                transform::transform_sycl_async(*aligned_, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
 
             if (result.converged) {
                 break;
@@ -145,7 +146,7 @@ private:
     RegistrationParams params_;
     std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
     PointCloudShared::Ptr aligned_ = nullptr;
-    std::shared_ptr<shared_vector<KNNResultSYCL>> neighbors_ = nullptr;
+    std::shared_ptr<shared_vector<knn_search::KNNResultSYCL>> neighbors_ = nullptr;
     std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
     std::shared_ptr<shared_vector<factor::LinearlizedResult>> linearlized_on_host_ = nullptr;
 
@@ -193,7 +194,7 @@ private:
                     linearlized_ptr[i].error = 0.0f;
                 } else {
                     PointType transformed_source;
-                    kernel::transform_point(source_ptr[i], transformed_source, cur_T.data());
+                    transform::kernel::transform_point(source_ptr[i], transformed_source, cur_T.data());
                     const auto cur_T_mat = eigen_utils::from_sycl_vec(cur_T);
 
                     linearlized_ptr[i] = factor::linearlize<icp>(
@@ -269,7 +270,7 @@ private:
                                    return;
                                } else {
                                    PointType transformed_source;
-                                   kernel::transform_point(source_ptr[i], transformed_source, cur_T.data());
+                                   transform::kernel::transform_point(source_ptr[i], transformed_source, cur_T.data());
                                    const auto cur_T_mat = eigen_utils::from_sycl_vec(cur_T);
 
                                    const factor::LinearlizedResult result = factor::linearlize<icp>(
@@ -334,6 +335,8 @@ private:
         }
     }
 };
+
+}  // namespace registration
 
 }  // namespace algorithms
 

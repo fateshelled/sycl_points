@@ -3,6 +3,12 @@
 #include <mutex>
 #include <sycl_points/points/point_cloud.hpp>
 
+namespace sycl_points {
+
+namespace algorithms {
+
+namespace voxel_downsampling {
+
 namespace {
 
 struct VoxelConstants {
@@ -13,11 +19,6 @@ struct VoxelConstants {
 };
 
 }  // namespace
-
-namespace sycl_points {
-
-namespace algorithms {
-
 namespace kernel {
 
 SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float voxel_size_inv) {
@@ -140,5 +141,6 @@ private:
     }
 };
 
+}  // namespace voxel_downsampling
 }  // namespace algorithms
 }  // namespace sycl_points
