@@ -34,8 +34,8 @@ int main() {
     sycl_points::algorithms::voxel_downsampling::VoxelGridSYCL voxel_grid(queue, voxel_size);
     sycl_points::algorithms::filter::PreprocessFilter preprocess_filter(queue);
 
-    const float CROP_BOX_MIN_DISTANCE = 0.5f;
-    const float CROP_BOX_MAX_DISTANCE = 50.0f;
+    const float BOX_FILTER_MIN_DISTANCE = 0.5f;
+    const float BOX_FILTER_MAX_DISTANCE = 50.0f;
     const size_t LOOP = 10;
     std::map<std::string, double> elapsed;
     for (size_t i = 0; i < LOOP + 1; ++i) {
@@ -48,11 +48,11 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        preprocess_filter.box_filter(source_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
+        preprocess_filter.box_filter(source_shared, BOX_FILTER_MIN_DISTANCE, BOX_FILTER_MAX_DISTANCE);
         sycl_points::PointCloudShared source_downsampled(queue);
         voxel_grid.downsampling(source_shared, source_downsampled);
 
-        preprocess_filter.box_filter(target_shared, CROP_BOX_MIN_DISTANCE, CROP_BOX_MAX_DISTANCE);
+        preprocess_filter.box_filter(target_shared, BOX_FILTER_MIN_DISTANCE, BOX_FILTER_MAX_DISTANCE);
         sycl_points::PointCloudShared target_downsampled(queue);
         voxel_grid.downsampling(target_shared, target_downsampled);
         auto dt_downsampled =

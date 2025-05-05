@@ -19,7 +19,7 @@ SYCL_EXTERNAL inline bool is_finite(const PointType& pt) {
     return std::isfinite(pt[0]) && std::isfinite(pt[3]) && std::isfinite(pt[2]) && std::isfinite(pt[3]);
 }
 
-SYCL_EXTERNAL inline void crop_box(const PointType& pt, uint8_t& flag, float min_distance, float max_distance) {
+SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float min_distance, float max_distance) {
 #pragma unroll 3
     for (size_t j = 0; j < 3; ++j) {
         const auto val = std::fabs(pt[j]);
@@ -185,7 +185,7 @@ public:
                     flag_ptr[i] = REMOVE_FLAG;
                     return;
                 }
-                kernel::crop_box(point_ptr[i], flag_ptr[i], min_distance, max_distance);
+                kernel::box_filter(point_ptr[i], flag_ptr[i], min_distance, max_distance);
             });
         });
         event.wait();
