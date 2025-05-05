@@ -1,14 +1,32 @@
+/**
+ * @file eigen_utils.hpp
+ * @brief Utility functions for Eigen matrix operations with SYCL compatibility
+ *
+ * This header provides SYCL-compatible implementations of common Eigen matrix operations,
+ * including basic arithmetic, linear algebra operations, and special matrix utilities.
+ * All functions marked with SYCL_EXTERNAL can be used in SYCL device code.
+ */
+
 #pragma once
 
 #include <Eigen/Dense>
 #include <sycl_points/utils/sycl_utils.hpp>
 
 namespace sycl_points {
-namespace eigen_utils {
-// Eigen::Matrix is column major
 
-// A + B = C
-// row: M, col: N
+/// @brief Utility functions for Eigen matrix operations with SYCL compatibility
+/// @note Eigen::Matrix is column major
+namespace eigen_utils {
+
+/// @brief PI
+constexpr float PI = 3.14159265358979323846f;
+
+/// @brief Computes the element-wise addition of two matrices.
+/// @tparam M number of rows
+/// @tparam N number of cols
+/// @param A 1st matrix
+/// @param B 2nd matrix
+/// @return Result of A + B
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> add(const Eigen::Matrix<float, M, N>& A,
                                                     const Eigen::Matrix<float, M, N>& B) {
@@ -23,9 +41,12 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> add(const Eigen::Matrix<float, M
     return ret;
 }
 
-// A += B
-// row: M, col: N
 template <size_t M, size_t N>
+/// @brief In-place Matrix Addition
+/// @tparam M number of rows
+/// @tparam N number of cols
+/// @param A Matrix to be modified (A += B)
+/// @param B Matrix to add
 SYCL_EXTERNAL inline void add_zerocopy(Eigen::Matrix<float, M, N>& A, const Eigen::Matrix<float, M, N>& B) {
 #pragma unroll M
     for (size_t i = 0; i < M; ++i) {
@@ -36,8 +57,12 @@ SYCL_EXTERNAL inline void add_zerocopy(Eigen::Matrix<float, M, N>& A, const Eige
     }
 }
 
-// A - B = C
-// row: M, col: N
+/// @brief Matrix Subtraction
+/// @tparam M number of rows
+/// @tparam N number of cols
+/// @param A 1st matrix
+/// @param B 2nd matrix
+/// @return Result of A - B
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> subtract(const Eigen::Matrix<float, M, N>& A,
                                                          const Eigen::Matrix<float, M, N>& B) {
@@ -52,8 +77,13 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> subtract(const Eigen::Matrix<flo
     return ret;
 }
 
-// A * B = C
-// row: M, col: N
+/// @brief Matrix-Matrix Multiplication (dot product)
+/// @tparam M Number of rows in result matrix
+/// @tparam K Shared dimension (columns of A, rows of B)
+/// @tparam N Number of columns in result matrix
+/// @param A  First matrix (M×K)
+/// @param B Second matrix (K×N)
+/// @return Result of A × B
 template <size_t M, size_t K, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<float, M, K>& A,
                                                          const Eigen::Matrix<float, K, N>& B) {
@@ -72,8 +102,12 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<flo
     return ret;
 }
 
-// A * v = r
-// row: M, col: N
+/// @brief Matrix-Vector Multiplication
+/// @tparam M Number of rows in matrix
+/// @tparam N Number of columns in matrix
+/// @param A Matrix (MxN)
+/// @param v Vector (Nx1)
+/// @return Result of A × v
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Vector<float, M> multiply(const Eigen::Matrix<float, M, N>& A,
                                                       const Eigen::Vector<float, N>& v) {
@@ -89,8 +123,12 @@ SYCL_EXTERNAL inline Eigen::Vector<float, M> multiply(const Eigen::Matrix<float,
     return ret;
 }
 
-// A * s = B
-// row: M, col: N
+/// @brief Scalar Matrix Multiplication
+/// @tparam M Number of rows
+/// @tparam N Number of columns
+/// @param A Matrix
+/// @param scalar Scalar valur
+/// @return Result of A x scalar
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<float, M, N>& A, float scalar) {
     Eigen::Matrix<float, M, N> ret;
@@ -104,7 +142,11 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<flo
     return ret;
 }
 
-// A * s = B
+/// @brief Scalar Vector Multiplication
+/// @tparam N Vector size
+/// @param a Vector
+/// @param scalar Scalar value
+/// @return Result of a x scalar
 template <size_t N>
 SYCL_EXTERNAL inline Eigen::Vector<float, N> multiply(const Eigen::Vector<float, N>& a, float scalar) {
     Eigen::Vector<float, N> ret;
@@ -115,9 +157,12 @@ SYCL_EXTERNAL inline Eigen::Vector<float, N> multiply(const Eigen::Vector<float,
     return ret;
 }
 
-// A *= s
-// row: M, col: N
 template <size_t M, size_t N>
+/// @brief In-place Scalar Matrix Multiplication
+/// @tparam M Number of rows
+/// @tparam N Number of columns
+/// @param A Matrix to be modified  (A *= scalar)
+/// @param scalar Scalar value
 SYCL_EXTERNAL inline void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float scalar) {
 #pragma unroll M
     for (size_t i = 0; i < M; ++i) {
@@ -128,6 +173,15 @@ SYCL_EXTERNAL inline void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float
     }
 }
 
+/// @brief Ensure Matrix Symmetry
+///
+/// Makes a matrix symmetric by averaging corresponding off-diagonal elements.
+/// Useful for numerical stability when the matrix should be symmetric but
+/// rounding errors have introduced asymmetry.
+///
+/// @tparam M Matrix dimension (must be square)
+/// @param A Square matrix to symmetrize
+/// @return Symmetric version of A
 template <size_t M>
 SYCL_EXTERNAL inline Eigen::Matrix<float, M, M> ensure_symmetric(const Eigen::Matrix<float, M, M>& A) {
     Eigen::Matrix<float, M, M> ret;
@@ -141,8 +195,11 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, M, M> ensure_symmetric(const Eigen::Ma
     return ret;
 }
 
-// trans(A) = B
-// row: M, col: N
+/// @brief Matrix Transpose
+/// @tparam M M Number of rows in original matrix
+/// @tparam N Number of columns in original matrix
+/// @param A Matrix to transpose (MxN)
+/// @return Transposed matrix (NxM)
 template <size_t M, size_t N>
 SYCL_EXTERNAL inline Eigen::Matrix<float, N, M> transpose(const Eigen::Matrix<float, M, N>& A) {
     Eigen::Matrix<float, N, M> ret;
@@ -156,8 +213,12 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, N, M> transpose(const Eigen::Matrix<fl
     return ret;
 }
 
-// dot: u·v
 template <size_t N>
+/// @brief Vector Dot Product
+/// @tparam N Vector size
+/// @param u 1st vector
+/// @param v 2nd vector
+/// @return Result of dot product
 SYCL_EXTERNAL inline float dot(const Eigen::Vector<float, N>& u, const Eigen::Vector<float, N>& v) {
     float result = 0.0f;
 #pragma unroll N
@@ -168,7 +229,10 @@ SYCL_EXTERNAL inline float dot(const Eigen::Vector<float, N>& u, const Eigen::Ve
     return result;
 }
 
-// cross: u × v = w
+/// @brief Vector Cross Product
+/// @param u 1st vector
+/// @param v 2nd vector
+/// @return Cross product result u × v
 SYCL_EXTERNAL inline Eigen::Vector3f cross(const Eigen::Vector3f& u, const Eigen::Vector3f& v) {
     Eigen::Vector3f ret;
     ret << u(1) * v(2) - u(2) * v(1),  // nolint
@@ -177,7 +241,10 @@ SYCL_EXTERNAL inline Eigen::Vector3f cross(const Eigen::Vector3f& u, const Eigen
     return ret;
 }
 
-// outer: u ⊗ v = w
+/// @brief Vector Outer Product
+/// @param u 1st vector
+/// @param v 2nd vector
+/// @return Outer product result u ⊗ v
 SYCL_EXTERNAL inline Eigen::Matrix4f outer(const Eigen::Vector4f& u, const Eigen::Vector4f& v) {
     Eigen::Matrix4f ret;
     ret << u(0) * v(0), u(0) * v(1), u(0) * v(2), u(0) * v(3),  // nolint
@@ -187,6 +254,9 @@ SYCL_EXTERNAL inline Eigen::Matrix4f outer(const Eigen::Vector4f& u, const Eigen
     return ret;
 }
 
+/// @brief Extract 3×3 Block from 4×4 Matrix
+/// @param src Source 4×4 matrix
+/// @return Upper-left 3×3 submatrix
 SYCL_EXTERNAL inline Eigen::Matrix3f block3x3(const Eigen::Matrix4f& src) {
     Eigen::Matrix3f ret;
     ret << src(0, 0), src(0, 1), src(0, 2),  // nolint
@@ -196,6 +266,10 @@ SYCL_EXTERNAL inline Eigen::Matrix3f block3x3(const Eigen::Matrix4f& src) {
 }
 
 template <size_t M>
+/// @brief Matrix Trace
+/// @tparam M Matrix dimension
+/// @param A Square matrix
+/// @return Trace of A
 SYCL_EXTERNAL inline float trace(const Eigen::Matrix<float, M, M>& A) {
     float ret = 0.0f;
 #pragma unroll M
@@ -205,12 +279,20 @@ SYCL_EXTERNAL inline float trace(const Eigen::Matrix<float, M, M>& A) {
     return ret;
 }
 
+/// @brief 3×3 Matrix Determinant
+/// @param A 3×3 matrix
+/// @return Determinant of A
 SYCL_EXTERNAL inline float determinant(const Eigen::Matrix3f& A) {
     return A(0, 0) * (A(1, 1) * A(2, 2) - A(1, 2) * A(2, 1)) - A(0, 1) * (A(1, 0) * A(2, 2) - A(1, 2) * A(2, 0)) +
            A(0, 2) * (A(1, 0) * A(2, 1) - A(1, 1) * A(2, 0));
 }
 
 template <size_t M, size_t N>
+/// @brief Matrix Frobenius Norm
+/// @tparam M Number of rows
+/// @tparam N Number of columns
+/// @param A Matrix
+/// @return Frobenius norm of A
 SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
     float ret = 0.0f;
 #pragma unroll M
@@ -225,16 +307,23 @@ SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
 }
 
 template <size_t M>
-SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Vector<float, M>& A) {
+/// @brief Vector Frobenius Norm
+/// @tparam M Vector size
+/// @param a vector
+/// @return Frobenius norm of a
+SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Vector<float, M>& a) {
     float ret = 0.0f;
 #pragma unroll M
     for (size_t i = 0; i < M; ++i) {
-        // ret += A(i) * A(i);
-        ret = sycl::fma(A(i), A(i), ret);
+        // ret += a(i) * a(i);
+        ret = sycl::fma(a(i), a(i), ret);
     }
     return sycl::sqrt(ret);
 }
 
+/// @brief 3×3 Matrix Inverse
+/// @param src 3×3 matrix to invert
+/// @return Inverse of src
 SYCL_EXTERNAL inline Eigen::Matrix3f inverse(const Eigen::Matrix3f& src) {
     const float det = determinant(src);
 
@@ -257,6 +346,10 @@ SYCL_EXTERNAL inline Eigen::Matrix3f inverse(const Eigen::Matrix3f& src) {
     return ret;
 }
 
+/// @brief Create Diagonal Matrix
+/// @tparam M Dimension of the diagonal matrix
+/// @param diag Vector of diagonal elements
+/// @return Diagonal matrix
 template <size_t M>
 SYCL_EXTERNAL inline Eigen::Matrix3f as_diagonal(const Eigen::Vector<float, M>& diag) {
     Eigen::Matrix<float, M, M> ret = Eigen::Matrix<float, M, M>::Zero();
@@ -267,10 +360,13 @@ SYCL_EXTERNAL inline Eigen::Matrix3f as_diagonal(const Eigen::Vector<float, M>& 
     return ret;
 }
 
+/// @brief Symmetric Eigen Decomposition for 3×3 Matrix
+/// @param A Symmetric 3×3 matrix
+/// @param eigenvalues eigen values (sorted in ascending order)
+/// @param eigenvectors eigen vectors
 SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3f& A, Eigen::Vector3f& eigenvalues,
                                                             Eigen::Matrix3f& eigenvectors) {
-    // symmetric matrix A
-    const float EPSILON = 1e-7f;
+    constexpr float EPSILON = 1e-7f;
 
     // Characteristic polynomial
     // det(A - λI) = -λ^3 + c2*λ^2 + c1*λ + c0
@@ -294,14 +390,12 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
         const float cos =
             sycl::max(-1.0f, sycl::min(1.0f, -q / (2.0f * sqrt_neg_p_over_3 * sqrt_neg_p_over_3 * sqrt_neg_p_over_3)));
         float phi = sycl::fabs(p) < EPSILON ? 0.0f : sycl::acos(cos);
-        if (phi < 0.0f) phi += 3.14159265358979323846f;
+        if (phi < 0.0f) phi += PI;
 
         // compute
         eigenvalues(0) = 2.0f * sqrt_neg_p_over_3 * sycl::cos(phi / 3.0f) - c2 / 3.0f;
-        eigenvalues(2) =
-            2.0f * sqrt_neg_p_over_3 * sycl::cos((phi + 4.0f * 3.14159265358979323846f) / 3.0f) - c2 / 3.0f;
-        eigenvalues(1) =
-            2.0f * sqrt_neg_p_over_3 * sycl::cos((phi + 2.0f * 3.14159265358979323846f) / 3.0f) - c2 / 3.0f;
+        eigenvalues(2) = 2.0f * sqrt_neg_p_over_3 * sycl::cos((phi + 4.0f * PI) / 3.0f) - c2 / 3.0f;
+        eigenvalues(1) = 2.0f * sqrt_neg_p_over_3 * sycl::cos((phi + 2.0f * PI) / 3.0f) - c2 / 3.0f;
     }
     // sort
     if (eigenvalues(0) > eigenvalues(1)) {
@@ -361,6 +455,13 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
     }
 }
 
+/// @brief Solve 6×6 Linear System
+///
+/// Solves the linear system Ax = b for a 6×6 matrix using Cholesky decomposition.
+///
+/// @param A 6×6 coefficient matrix
+/// @param b 6×1 right-hand side vector
+/// @return Solution vector x
 SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Matrix<float, 6, 6>& A,
                                                                  const Eigen::Matrix<float, 6, 1>& b) {
     // Cholesky decomposition
@@ -434,17 +535,26 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
     return x;
 }
 
-inline sycl::vec<float, 4> to_sycl_vec(const Eigen::Vector4f& vec) { return {vec[0], vec[1], vec[2], vec[3]}; }
+/// @brief Convert Eigen::Vector4f to sycl vector
+/// @param vec Eigen vector
+/// @return sycl vector
+inline sycl::float4 to_sycl_vec(const Eigen::Vector4f& vec) { return {vec[0], vec[1], vec[2], vec[3]}; }
 
-inline std::array<sycl::vec<float, 4>, 4> to_sycl_vec(const Eigen::Matrix4f& mat) {
-    std::array<sycl::vec<float, 4>, 4> vecs;
+/// @brief Convert Eigen::Matrix4f to sycl vectors
+/// @param mat Eigen matrix
+/// @return sycl vectors
+inline std::array<sycl::float4, 4> to_sycl_vec(const Eigen::Matrix4f& mat) {
+    std::array<sycl::float4, 4> vecs;
 #pragma unroll 4
     for (size_t i = 0; i < 4; ++i) {
-        vecs[i] = sycl::vec<float, 4>(mat(i, 0), mat(i, 1), mat(i, 2), mat(i, 3));
+        vecs[i] = sycl::float4(mat(i, 0), mat(i, 1), mat(i, 2), mat(i, 3));
     }
     return vecs;
 }
 
+/// @brief Convert Eigen::Matrix<float, 6, 6> to sycl vector
+/// @param mat Eigen matrix
+/// @return sycl vectors
 inline std::tuple<sycl::float16, sycl::float16, sycl::float4> to_sycl_vec(const Eigen::Matrix<float, 6, 6>& mat) {
     const sycl::float16 a = {mat(0, 0), mat(0, 1), mat(0, 2), mat(0, 3), mat(0, 4), mat(0, 5), mat(1, 0), mat(1, 1),
                              mat(1, 2), mat(1, 3), mat(1, 4), mat(1, 5), mat(2, 0), mat(2, 1), mat(2, 2), mat(2, 3)};
@@ -454,15 +564,24 @@ inline std::tuple<sycl::float16, sycl::float16, sycl::float4> to_sycl_vec(const 
     return {a, b, c};
 }
 
+/// @brief Convert Eigen::Vector<float, 6> to sycl vector
+/// @param vec Eigen vector
+/// @return sycl vectors
 inline std::array<sycl::float3, 2> to_sycl_vec(const Eigen::Vector<float, 6>& vec) {
     const sycl::float3 a = {vec(0), vec(1), vec(2)};
     const sycl::float3 b = {vec(3), vec(4), vec(5)};
     return {a, b};
 }
 
-inline Eigen::Vector4f from_sycl_vec(const sycl::vec<float, 4>& vec) { return {vec.x(), vec.y(), vec.z(), vec.w()}; }
+/// @brief Convert sycl vector to Eigen::Vector4f
+/// @param vec sycl vector
+/// @return Eigen vector
+inline Eigen::Vector4f from_sycl_vec(const sycl::float4& vec) { return {vec.x(), vec.y(), vec.z(), vec.w()}; }
 
-inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::vec<float, 4>, 4>& vecs) {
+/// @brief Convert sycl vector to Eigen::Matrix4f
+/// @param vec sycl vectors
+/// @return Eigen matrix
+inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::float4, 4>& vecs) {
     Eigen::Matrix4f mat;
 #pragma unroll 4
     for (size_t i = 0; i < 4; ++i) {
@@ -474,6 +593,9 @@ inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::vec<float, 4>, 4>& v
     return mat;
 }
 
+/// @brief Convert sycl vector to Eigen::Matrix<float, 6, 6>
+/// @param vec sycl vectors
+/// @return Eigen matrix
 inline Eigen::Matrix<float, 6, 6> from_sycl_vec(const std::tuple<sycl::float16, sycl::float16, sycl::float4>& vecs) {
     Eigen::Matrix<float, 6, 6> mat;
     const auto& [a, b, c] = vecs;
@@ -483,16 +605,23 @@ inline Eigen::Matrix<float, 6, 6> from_sycl_vec(const std::tuple<sycl::float16, 
     return mat;
 }
 
+/// @brief Convert sycl vector to Eigen::Vector<float, 6>
+/// @param vec sycl vectors
+/// @return Eigen vector
 inline Eigen::Vector<float, 6> from_sycl_vec(const std::array<sycl::float3, 2>& vecs) {
     Eigen::Vector<float, 6> ret;
     ret << vecs[0][0], vecs[0][1], vecs[0][2], vecs[1][0], vecs[1][1], vecs[1][2];
     return ret;
 }
 
+/// @brief Lie algebra and Lie group operations
 namespace lie {
-// (x, y, z) -> | 0, -z,  y |
-//              | z,  0, -x |
-//              |-y,  x,  0 |
+/// @brief Create skew-symmetric matrix
+/// @details (x, y, z) -> | 0, -z,  y |
+///                       | z,  0, -x |
+///                       |-y,  x,  0 |
+/// @param x vector
+/// @return skew-symmetric matrix
 SYCL_EXTERNAL inline Eigen::Matrix3f skew(const Eigen::Vector3f& x) {
     Eigen::Matrix3f ret;
     ret << 0.0f, -x[2], x[1],  // nolint
@@ -501,6 +630,12 @@ SYCL_EXTERNAL inline Eigen::Matrix3f skew(const Eigen::Vector3f& x) {
     return ret;
 }
 
+/// @brief Create skew-symmetric matrix
+/// @details (x, y, z) -> | 0, -z,  y |
+///                       | z,  0, -x |
+///                       |-y,  x,  0 |
+/// @param x vector
+/// @return skew-symmetric matrix
 SYCL_EXTERNAL inline Eigen::Matrix3f skew(const Eigen::Vector4f& x) {
     Eigen::Matrix3f ret;
     ret << 0.0f, -x[2], x[1],  // nolint
@@ -510,8 +645,8 @@ SYCL_EXTERNAL inline Eigen::Matrix3f skew(const Eigen::Vector4f& x) {
 }
 
 /// @brief SO3 expmap.
-/// @param omega  [rx, ry, rz]
-/// @return       Quaternion
+/// @param omega Rotation vector [rx, ry, rz]
+/// @return Quaternion
 /// https://github.com/koide3/small_gicp/blob/master/include/small_gicp/util/lie.hpp
 inline Eigen::Quaternionf so3_exp(const Eigen::Vector3f& omega) {
     const float theta_sq = omega.dot(omega);
@@ -534,8 +669,8 @@ inline Eigen::Quaternionf so3_exp(const Eigen::Vector3f& omega) {
 
 // Rotation-first
 /// @brief SE3 expmap (Rotation-first).
-/// @param a  Twist vector [rx, ry, rz, tx, ty, tz]
-/// @return   SE3 matrix
+/// @param a Twist vector [rx, ry, rz, tx, ty, tz]
+/// @return SE3 matrix
 /// https://github.com/koide3/small_gicp/blob/master/include/small_gicp/util/lie.hpp
 inline Eigen::Isometry3f se3_exp(const Eigen::Matrix<float, 6, 1>& a) {
     const Eigen::Vector3f omega = a.head<3>();
