@@ -2,7 +2,7 @@
 #include <iostream>
 #include <map>
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/filter.hpp>
+#include <sycl_points/algorithms/preprocess_filter.hpp>
 #include <sycl_points/algorithms/registration.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/io/point_cloud_reader.hpp>
