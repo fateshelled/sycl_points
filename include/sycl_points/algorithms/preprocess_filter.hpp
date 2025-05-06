@@ -57,11 +57,13 @@ public:
     }
 
     template <typename T, size_t AllocSize = 0>
-    static void filter_by_flags(shared_vector<T, AllocSize>& data,
-                                const shared_vector<uint8_t, sizeof(uint8_t)>& flags) {
+    void filter_by_flags(shared_vector<T, AllocSize>& data,
+                         const shared_vector<uint8_t, sizeof(uint8_t)>& flags) const {
         const size_t N = data.size();
         if (N == 0) return;
 
+        sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, data.data(), N);
+        sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, flags.data(), N);
         size_t new_size = 0;
         for (size_t i = 0; i < N; ++i) {
             if (flags[i] == INCLUDE_FLAG) {
@@ -70,6 +72,8 @@ public:
             }
         }
         data.resize(new_size);
+        sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, data.data(), N);
+        sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, flags.data(), N);
     }
 
     template <typename T, size_t AllocSize = 0>
@@ -83,17 +87,19 @@ public:
         const size_t N = data.size();
         if (N == 0) return events;
 
-        // allocate memory
+        // copy original vector data
         sycl::event copy_event;
         if constexpr (std::is_same<T, PointType>::value) {
             if (this->points_copy_ptr_->size() < N) {
                 this->points_copy_ptr_->resize(N);
             }
+            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->points_copy_ptr_->data(), N);
             copy_event = this->queue_ptr_->memcpy(this->points_copy_ptr_->data(), data.data(), N * sizeof(T));
         } else if constexpr (std::is_same<T, Covariance>::value) {
             if (this->covs_copy_ptr_->size() < N) {
                 this->covs_copy_ptr_->resize(N);
             }
+            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->covs_copy_ptr_->data(), N);
             copy_event = this->queue_ptr_->memcpy(this->covs_copy_ptr_->data(), data.data(), N * sizeof(T));
         }
 
@@ -102,14 +108,26 @@ public:
         }
 
         // calc prefix sum
+        sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, flags.data(), N);
+        sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, this->prefix_sum_ptr_->data(), N);
+#if __cplusplus >= 202002L
         std::transform_inclusive_scan(
             std::execution::unseq, flags.begin(), flags.begin() + N, this->prefix_sum_ptr_->begin(),
             [](uint32_t a, uint32_t b) { return a + b; }, [](uint8_t a) { return static_cast<uint32_t>(a); });
+#else
+        std::transform_inclusive_scan(
+            flags.begin(), flags.begin() + N, this->prefix_sum_ptr_->begin(),
+            [](uint32_t a, uint32_t b) { return a + b; }, [](uint8_t a) { return static_cast<uint32_t>(a); });
+#endif
+        sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, flags.data(), N);
+        sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, this->prefix_sum_ptr_->data(), N);
         const size_t new_size = this->prefix_sum_ptr_->at(N - 1);
 
         copy_event.wait();
         data.resize(new_size);
 
+        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, flags.data(), N);
+        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->prefix_sum_ptr_->data(), N);
         auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
             const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
             const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
@@ -169,7 +187,12 @@ public:
         if (this->flags_->size() < N) {
             this->flags_->resize(N);
         }
+        // initialize flags
         this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
+
+        // mem_advise set to device
+        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->flags_->data(), N);
+        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, data.points_ptr(), N);
 
         auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
             const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
@@ -189,6 +212,8 @@ public:
             });
         });
         event.wait();
+        sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, this->flags_->data(), N);
+        sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, data.points_ptr(), N);
 
         if (sycl_utils::is_nvidia(*this->queue_ptr_)) {
             auto events = filter_->filter_by_flags_async(*data.points, *this->flags_);
