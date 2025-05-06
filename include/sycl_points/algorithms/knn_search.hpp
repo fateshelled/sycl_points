@@ -216,6 +216,7 @@ public:
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         // constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
         // constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
+        constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;
         if (MAX_K < k) {
             throw std::runtime_error("template arg `MAX_K` must be larger than `k`.");
         }
@@ -250,15 +251,13 @@ public:
                 const auto query = query_ptr[queryIdx];
 
                 // Arrays to store K nearest points
-                float bestDists[MAX_K];
-                int32_t bestIdxs[MAX_K];
-
+                NodeEntry bestK[MAX_K];
                 // Initialize
-                std::fill(bestDists, bestDists + MAX_K, std::numeric_limits<float>::max());
-                std::fill(bestIdxs, bestIdxs + MAX_K, -1);
+                std::fill(bestK, bestK + MAX_K, NodeEntry{-1, std::numeric_limits<float>::max()});
 
-                NodeEntry nearStack[MAX_DEPTH / 2];
-                NodeEntry farStack[MAX_DEPTH / 2];
+                // Stack
+                NodeEntry nearStack[MAX_DEPTH_HALF];
+                NodeEntry farStack[MAX_DEPTH_HALF];
                 size_t nearStackPtr = 0;
                 size_t farStackPtr = 0;
 
@@ -272,7 +271,7 @@ public:
                     const auto nodeIdx = current.nodeIdx;
 
                     // Skip condition: nodes farther than current kth distance
-                    if (current.dist_sq > bestDists[k - 1]) continue;
+                    if (current.dist_sq > bestK[k - 1].dist_sq) continue;
 
                     // Skip invalid nodes
                     if (nodeIdx == -1 || nodeIdx >= treeSize) continue;
@@ -284,18 +283,16 @@ public:
                     const float dist_sq = sycl::dot(diff, diff);
 
                     // Check if this point should be included in K nearest
-                    if (dist_sq < bestDists[k - 1]) {
+                    if (dist_sq < bestK[k - 1].dist_sq) {
                         // Find insertion position in K-nearest list (insertion sort)
                         int32_t insertPos = k - 1;
-                        while (insertPos > 0 && dist_sq < bestDists[insertPos - 1]) {
-                            bestDists[insertPos] = bestDists[insertPos - 1];
-                            bestIdxs[insertPos] = bestIdxs[insertPos - 1];
+                        while (insertPos > 0 && dist_sq < bestK[insertPos - 1].dist_sq) {
+                            bestK[insertPos] = bestK[insertPos - 1];
                             --insertPos;
                         }
 
                         // Insert result
-                        bestDists[insertPos] = dist_sq;
-                        bestIdxs[insertPos] = node.idx;
+                        bestK[insertPos] = {node.idx, dist_sq};
                     }
 
                     // Calculate distance along split axis
@@ -309,23 +306,23 @@ public:
                     const float splitDistSq = axisDistance * axisDistance;
 
                     // Check if further subtree needs to be explored
-                    const bool searchFurther = (splitDistSq < bestDists[k - 1]);
+                    const bool searchFurther = (splitDistSq < bestK[k - 1].dist_sq);
 
                     // Push further subtree to stack (conditional)
-                    if (searchFurther && furtherNode != -1 && farStackPtr < MAX_DEPTH / 2) {
+                    if (searchFurther && furtherNode != -1 && farStackPtr < MAX_DEPTH_HALF) {
                         farStack[farStackPtr++] = {furtherNode, splitDistSq};
                     }
 
                     // Push nearer subtree to stack (always explore)
-                    if (nearerNode != -1 && nearStackPtr < MAX_DEPTH / 2) {
+                    if (nearerNode != -1 && nearStackPtr < MAX_DEPTH_HALF) {
                         nearStack[nearStackPtr++] = {nearerNode, 0.0f};  // Prioritize near side with distance 0
                     }
                 }
 
                 // Write final results to global memory
                 for (size_t i = 0; i < k; ++i) {
-                    distance_ptr[queryIdx * k + i] = bestDists[i];
-                    index_ptr[queryIdx * k + i] = bestIdxs[i];
+                    distance_ptr[queryIdx * k + i] = bestK[i].dist_sq;
+                    index_ptr[queryIdx * k + i] = bestK[i].nodeIdx;
                 }
             });
         });
