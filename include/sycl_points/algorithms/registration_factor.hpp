@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sycl_points/algorithms/registration_result.hpp>
 #include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
@@ -7,18 +8,11 @@ namespace sycl_points {
 
 namespace algorithms {
 
-namespace factor {
-
-struct LinearlizedResult {
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-    Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
-    Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
-    float error = 0.0f;
-};
+namespace registration {
 
 enum class ICPType { POINT_TO_POINT, GICP };
 
+namespace kernel {
 SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
                                                                  const PointType& transform_source,
                                                                  const Covariance& transform_source_cov,
@@ -122,21 +116,23 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T,
     return ret;
 }
 
-template <factor::ICPType icp = factor::ICPType::GICP>
+template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline LinearlizedResult linearlize(const TransformMatrix& T, const PointType& source,
                                                   const PointType& transform_source,
                                                   const Covariance& transform_source_cov, const PointType& target,
                                                   const Covariance& target_cov) {
-    if constexpr (icp == factor::ICPType::POINT_TO_POINT) {
+    if constexpr (icp == ICPType::POINT_TO_POINT) {
         return linearlize_point_to_point(T, source, transform_source, transform_source_cov, target, target_cov);
-    } else if constexpr (icp == factor::ICPType::GICP) {
+    } else if constexpr (icp == ICPType::GICP) {
         return linearlize_gicp(T, source, transform_source, transform_source_cov, target, target_cov);
     } else {
         static_assert("not support type");
     }
 }
 
-}  // namespace factor
+}  // namespace kernel
+
+}  // namespace registration
 
 }  // namespace algorithms
 

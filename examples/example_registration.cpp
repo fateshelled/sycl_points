@@ -27,9 +27,7 @@ int main() {
     param.max_iterations = 10;
     param.max_correspondence_distance = 1.0f;
     param.verbose = false;
-    auto registration =
-        sycl_points::algorithms::registration::Registration<sycl_points::algorithms::factor::ICPType::GICP>(queue,
-                                                                                                            param);
+    auto registration = sycl_points::algorithms::registration::RegistrationGICP(queue, param);
 
     sycl_points::algorithms::voxel_downsampling::VoxelGridSYCL voxel_grid(queue, voxel_size);
     sycl_points::algorithms::filter::PreprocessFilter preprocess_filter(queue);
