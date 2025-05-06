@@ -173,6 +173,29 @@ struct events {
     void operator+=(const events& e) { std::copy(e.evs.begin(), e.evs.end(), std::back_inserter(this->evs)); }
 };
 
+namespace mem_advise {
+template <typename T>
+void set_accessed_by_device(sycl::queue& queue, T* ptr, size_t N) {
+    queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE);
+}
+
+template <typename T>
+void clear_accessed_by_device(sycl::queue& queue, T* ptr, size_t N) {
+    queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_DEVICE);
+}
+
+template <typename T>
+void set_accessed_by_host(sycl::queue& queue, T* ptr, size_t N) {
+    queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_HOST);
+}
+
+template <typename T>
+void clear_accessed_by_host(sycl::queue& queue, T* ptr, size_t N) {
+    queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_HOST);
+}
+
+}  // namespace mem_advise
+
 namespace device_selector {
 
 inline int intel_cpu_selector_v(const sycl::device& dev) {
