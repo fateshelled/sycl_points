@@ -321,26 +321,26 @@ TEST_F(EigenUtilsTest, symmetric_eigen_decomposition_3x3) {
     }
 }
 
-// TEST_F(EigenUtilsTest, solve_system_6x6) {
-//     // Create a 6x6 SPD matrix
-//     Eigen::Matrix<float, 6, 6> A = Eigen::Matrix<float, 6, 6>::Random();
-//     A = A.transpose() * A + Eigen::Matrix<float, 6, 6>::Identity();  // Ensure positive definiteness
+TEST_F(EigenUtilsTest, solve_system_6x6) {
+    // Create a 6x6 SPD matrix
+    Eigen::Matrix<float, 6, 6> A = Eigen::Matrix<float, 6, 6>::Random();
+    A = A.transpose() * A + Eigen::Matrix<float, 6, 6>::Identity();  // Ensure positive definiteness
 
-//     const Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Random();
+    const Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Random();
 
-//     // Use Eigen's solver as reference
-//     const Eigen::Matrix<float, 6, 1> expected_x = A.ldlt().solve(b);
+    // Use Eigen's solver as reference
+    const Eigen::Matrix<float, 6, 1> expected_x = A.ldlt().solve(b);
 
-//     // Use our implementation
-//     const Eigen::Matrix<float, 6, 1> computed_x = solve_system_6x6(A, b);
+    // Use our implementation
+    const Eigen::Matrix<float, 6, 1> computed_x = solve_system_6x6(A, b);
 
-//     // Compare results
-//     expectVectorNear(expected_x, computed_x);
+    // Compare results
+    expectVectorNear(expected_x, computed_x);
 
-//     // Also verify solution by checking A*x ≈ b
-//     const Eigen::Matrix<float, 6, 1> computed_b = A * computed_x;
-//     expectVectorNear(b, computed_b);
-// }
+    // Also verify solution by checking A*x ≈ b
+    const Eigen::Matrix<float, 6, 1> computed_b = A * computed_x;
+    expectVectorNear(b, computed_b);
+}
 
 // trace test
 TEST_F(EigenUtilsTest, trace) {
