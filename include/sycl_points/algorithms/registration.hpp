@@ -111,8 +111,13 @@ public:
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
         // copy
         aligned_ = std::make_shared<PointCloudShared>(source);
+
         // mem_advise to device
-        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
+        {
+            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
+            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, source.points->data(), N);
+            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, target.points->data(), TARGET_SIZE);
+        }
         // transform
         transform::transform_sycl(*aligned_, init_T);
 
@@ -124,39 +129,16 @@ public:
         for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
             prev_T = result.T;
 
-            // mem_advise to device
-            {
-                sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
-            }
-
             // Nearest neighbor search on device
             auto knn_event = target_tree.knn_search_async<1>(aligned_->points->data(), N, 1, (*this->neighbors_)[0],
                                                              transform_events.evs);
-
-            // mem_advise to device
-            {
-                sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, source.points->data(), N);
-                sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, target.points->data(), TARGET_SIZE);
-            }
 
             // Linearlize on device
             const LinearlizedResult linearlized_result =
                 this->linearlize_sycl(source, *aligned_, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
-            // mem_advise clear
-            {
-                sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, source.points->data(), N);
-                sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, target.points->data(), TARGET_SIZE);
-                sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
-            }
-
             // Optimize on Host
             this->optimize_gauss_newton(result, linearlized_result, lambda, verbose, iter);
-
-            // mem_advise to device
-            {
-                sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
-            }
 
             // Async transform source points on device
             transform_events =
@@ -167,8 +149,12 @@ public:
             }
         }
         transform_events.wait();
-        // mem_advise to device
-        sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
+        // mem_advise clear
+        {
+            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
+            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, source.points->data(), N);
+            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, target.points->data(), TARGET_SIZE);
+        }
 
         return result;
     }
