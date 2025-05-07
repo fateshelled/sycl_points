@@ -95,8 +95,10 @@ private:
         const size_t N = points.size();
 
         // mem_advise set to device
-        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->bit_ptr_->data(), N);
-        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, points.data(), N);
+        {
+            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->bit_ptr_->data(), N);
+            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, points.data(), N);
+        }
 
         const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr_);
         const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
@@ -115,16 +117,20 @@ private:
         event.wait();
 
         // mem_advise clear
-        sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, this->bit_ptr_->data(), N);
-        sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, points.data(), N);
+        {
+            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, this->bit_ptr_->data(), N);
+            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, points.data(), N);
+        }
     }
 
     std::unordered_map<uint64_t, PointType> compute_voxel_map(const PointContainerShared& points) const {
         const size_t N = points.size();
 
         // mem_advise set to host
-        sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, this->bit_ptr_->data(), N);
-        sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, points.data(), N);
+        {
+            sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, this->bit_ptr_->data(), N);
+            sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, points.data(), N);
+        }
 
         std::unordered_map<uint64_t, PointType> voxel_map;
         {
@@ -140,8 +146,10 @@ private:
             }
         }
         // mem_advise clear
-        sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, this->bit_ptr_->data(), N);
-        sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, points.data(), N);
+        {
+            sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, this->bit_ptr_->data(), N);
+            sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, points.data(), N);
+        }
 
         return voxel_map;
     }
