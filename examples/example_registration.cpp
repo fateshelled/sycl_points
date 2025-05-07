@@ -34,7 +34,7 @@ int main() {
 
     const float BOX_FILTER_MIN_DISTANCE = 0.5f;
     const float BOX_FILTER_MAX_DISTANCE = 50.0f;
-    const size_t LOOP = 10;
+    const size_t LOOP = 100;
     std::map<std::string, double> elapsed;
     for (size_t i = 0; i < LOOP + 1; ++i) {
         auto t0 = std::chrono::high_resolution_clock::now();
