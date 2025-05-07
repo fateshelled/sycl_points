@@ -35,8 +35,9 @@ int main() {
     const float BOX_FILTER_MIN_DISTANCE = 0.5f;
     const float BOX_FILTER_MAX_DISTANCE = 50.0f;
     const size_t LOOP = 100;
+    const size_t WARM_UP = 10;
     std::map<std::string, double> elapsed;
-    for (size_t i = 0; i < LOOP + 1; ++i) {
+    for (size_t i = 0; i < LOOP + WARM_UP; ++i) {
         auto t0 = std::chrono::high_resolution_clock::now();
 
         sycl_points::PointCloudShared source_shared(queue, source_points);
@@ -92,7 +93,7 @@ int main() {
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
-        if (i > 0) {
+        if (i > WARM_UP) {
             if (elapsed.count("to PointCloudShared") == 0) elapsed["to PointCloudShared"] = 0.0;
             elapsed["to PointCloudShared"] += dt_to_shared;
 
