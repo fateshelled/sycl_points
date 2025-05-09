@@ -531,6 +531,21 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
     return x;
 }
 
+
+template <size_t M, size_t N>
+/// @brief copy matrix
+/// @param src source matrix
+/// @param dst destination matrix
+SYCL_EXTERNAL inline void copy(const Eigen::Matrix<float, M, N>& src, Eigen::Matrix<float, M, N>& dst) {
+#pragma unroll M
+    for (size_t i = 0; i < M; ++i) {
+#pragma unroll N
+        for (size_t j = 0; j < N; ++j) {
+            dst(i, j) = src(i, j);
+        }
+    }
+}
+
 /// @brief Convert Eigen::Vector4f to sycl vector
 /// @param vec Eigen vector
 /// @return sycl vector

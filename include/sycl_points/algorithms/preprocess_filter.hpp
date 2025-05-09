@@ -30,22 +30,6 @@ SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float m
     }
 }
 
-SYCL_EXTERNAL inline void copy_point(const PointType& src, PointType& dst) {
-    dst(0) = src(0);
-    dst(1) = src(1);
-    dst(2) = src(2);
-    dst(3) = src(3);
-}
-
-SYCL_EXTERNAL inline void copy_covariance(const Covariance& src, Covariance& dst) {
-#pragma unroll 4
-    for (size_t j = 0; j < 4; ++j) {
-#pragma unroll 4
-        for (size_t k = 0; k < 4; ++k) {
-            dst(j, k) = src(j, k);
-        }
-    }
-}
 }  // namespace kernel
 
 class FilterByFlags {
@@ -154,6 +138,8 @@ public:
                 copy_ptr = this->points_copy_ptr_->data();
             } else if constexpr (std::is_same<T, Covariance>::value) {
                 copy_ptr = this->covs_copy_ptr_->data();
+            } else {
+                std::runtime_error("Invalid Type [T]");
             }
 
             const auto flag_ptr = flags.data();
@@ -164,10 +150,10 @@ public:
                 if (flag_ptr[i] == INCLUDE_FLAG) {
                     if constexpr (std::is_same<T, PointType>::value) {
                         const PointType pt = copy_ptr[i];
-                        kernel::copy_point(pt, data_ptr[prefix_sum_ptr[i]]);
+                        eigen_utils::copy<4, 1>(pt, data_ptr[prefix_sum_ptr[i]]);
                     } else if constexpr (std::is_same<T, Covariance>::value) {
                         const Covariance cov = copy_ptr[i];
-                        kernel::copy_covariance(cov, data_ptr[prefix_sum_ptr[i]]);
+                        eigen_utils::copy<4, 4>(cov, data_ptr[prefix_sum_ptr[i]]);
                     }
                 }
             });
@@ -183,8 +169,11 @@ private:
     std::shared_ptr<shared_vector<uint32_t, sizeof(uint32_t)>> prefix_sum_ptr_;
 };
 
+/// @brief Preprocessing filter
 class PreprocessFilter {
 public:
+    /// @brief Constructor
+    /// @param queue_ptr queue
     PreprocessFilter(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
         filter_ = std::make_shared<FilterByFlags>(this->queue_ptr_);
         flags_ = std::make_shared<shared_vector<uint8_t, sizeof(uint8_t)>>(*this->queue_ptr_);
