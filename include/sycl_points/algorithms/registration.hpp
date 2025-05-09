@@ -10,31 +10,22 @@ namespace sycl_points {
 namespace algorithms {
 
 namespace registration {
+
 struct RegistrationParams {
-    size_t max_iterations = 20;
-    //   size_t max_inner_iterations = 10; // LM method
-    float lambda = 1e-6f;
-    //   float lambda_factor = 10.0f; // LM method
-    // bool optimize_lm = false;
-    float max_correspondence_distance = 1.0f;
-    float translation_eps = 1e-3f;
-    float rotation_eps = 1e-3f;
-    bool verbose = false;
-};
-
-struct RegistrationResult {
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-    bool converged = false;
-    size_t iterations = 0;
-    Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
-    Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
-    float error = std::numeric_limits<float>::max();
+    size_t max_iterations = 20;                // max iteration
+    float lambda = 1e-6f;                      // initial damping factor
+    float max_correspondence_distance = 1.0f;  // max correspondence distance
+    float translation_eps = 1e-3f;             // translation tolerance
+    float rotation_eps = 1e-3f;                // rotation tolerance [rad]
+    bool verbose = false;                      // If true, print debug messages
+    // bool optimize_lm = false; // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
+    // size_t max_inner_iterations = 10; // (for LM method)
+    // float lambda_factor = 10.0f; // lambda increase factor (for LM method)
 };
 
 namespace {
 
+/// @brief Device copyable linealized result
 struct LinearlizedDevice {
     // H is 6x6 -> 16 + 16 + 4
     sycl::float16* H0 = nullptr;  // H(0, 0) ~ H(2, 3)
@@ -81,9 +72,14 @@ struct LinearlizedDevice {
 };
 }  // namespace
 
+/// @brief Point cloud registration
+/// @tparam icp icp type
 template <ICPType icp = ICPType::GICP>
 class Registration {
 public:
+    /// @brief Constructor
+    /// @param queue_ptr queue
+    /// @param params Registration parameters
     Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_ptr_(queue_ptr) {
         this->neighbors_ = std::make_shared<shared_vector<knn_search::KNNResultSYCL>>(
@@ -96,8 +92,16 @@ public:
             1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_ptr_));
     }
 
+    /// @brief Get aligned point cloud
+    /// @return aligned point cloud pointer
     PointCloudShared::Ptr get_aligned_point_cloud() const { return this->aligned_; }
 
+    /// @brief do registration
+    /// @param source Source point cloud
+    /// @param target Target point cloud
+    /// @param target_tree Target KDTree
+    /// @param init_T Initial transformation matrix
+    /// @return Registration result
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn_search::KDTreeSYCL& target_tree,
                              const TransformMatrix& init_T = TransformMatrix::Identity()) {
@@ -339,9 +343,6 @@ private:
             (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
                 .ldlt()
                 .solve(-linearlized_result.b);
-        // const auto delta = eigen_utils::solve_system_6x6(
-        //     linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(),
-        //     -linearlized_result.b);
         result.converged = this->is_converged(delta);
         result.T = result.T * eigen_utils::lie::se3_exp(delta);
         result.iterations = iter;

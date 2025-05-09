@@ -12,7 +12,27 @@ namespace registration {
 
 enum class ICPType { POINT_TO_POINT, GICP };
 
+/// @brief Registration Linearlized Result
+struct LinearlizedResult {
+    /// @brief Hessian, Information Matrix
+    Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
+    /// @brief Gradient, Information Vector
+    Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
+    /// @brief Error value
+    float error = std::numeric_limits<float>::max();
+
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};
+
 namespace kernel {
+/// @brief Iterative Closest Point (ICP Point to Point)
+/// @param T transform matrix
+/// @param source Source Point
+/// @param transform_source Transformed source point
+/// @param transform_source_cov Transformed source covariance
+/// @param target Target point
+/// @param target_cov Target covariance
+/// @return linearlized result
 SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
                                                                  const PointType& transform_source,
                                                                  const Covariance& transform_source_cov,
@@ -53,6 +73,14 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const Transform
     return ret;
 }
 
+/// @brief Generalized Iterative Closest Point (GICP)
+/// @param T transform matrix
+/// @param source Source Point
+/// @param transform_source Transformed source point
+/// @param transform_source_cov Transformed source covariance
+/// @param target Target point
+/// @param target_cov Target covariance
+/// @return linearlized result
 SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T, const PointType& source,
                                                        const PointType& transform_source,
                                                        const Covariance& transform_source_cov, const PointType& target,
@@ -116,6 +144,15 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T,
     return ret;
 }
 
+/// @brief Linearlization
+/// @tparam icp icp type
+/// @param T transform matrix
+/// @param source Source Point
+/// @param transform_source Transformed source point
+/// @param transform_source_cov Transformed source covariance
+/// @param target Target point
+/// @param target_cov Target covariance
+/// @return linearlized result
 template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline LinearlizedResult linearlize(const TransformMatrix& T, const PointType& source,
                                                   const PointType& transform_source,
