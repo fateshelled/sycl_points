@@ -19,6 +19,7 @@ struct VoxelConstants {
 };
 
 }  // namespace
+
 namespace kernel {
 
 SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float voxel_size_inv) {
@@ -47,8 +48,12 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
 
 }  // namespace kernel
 
+/// @brief Voxel grid downsampling with SYCL implementation
 class VoxelGridSYCL {
 public:
+    /// @brief constructor
+    /// @param queue_ptr queue
+    /// @param voxel_size voxel size
     VoxelGridSYCL(const std::shared_ptr<sycl::queue>& queue_ptr, const float voxel_size)
         : queue_ptr_(queue_ptr), voxel_size_(voxel_size) {
         this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, VoxelConstants::invalid_coord,
@@ -56,9 +61,16 @@ public:
         this->voxel_size_inv_ = 1.0f / this->voxel_size_;
     }
 
+    /// @brief Set voxel size
+    /// @param voxel_size voxel size
     void set_voxel_size(const float voxel_size) { voxel_size_ = voxel_size; }
+    /// @brief Get voxel size
+    /// @param voxel_size voxel size
     float get_voxel_size() const { return voxel_size_; }
 
+    /// @brief Voxel downsampling
+    /// @param points Point Cloud
+    /// @param result Voxel downsampled
     void downsampling(const PointContainerShared& points, PointContainerShared& result) {
         const size_t N = points.size();
         if (N == 0) {
@@ -80,6 +92,9 @@ public:
         this->voxel_map_to_cloud(voxel_map, result);
     }
 
+    /// @brief Voxel downsampling
+    /// @param points Point Cloud
+    /// @param result Voxel downsampled
     void downsampling(const PointCloudShared& cloud, PointCloudShared& result) {
         this->downsampling(*cloud.points, *result.points);
     }

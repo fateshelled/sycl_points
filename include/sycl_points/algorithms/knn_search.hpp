@@ -14,7 +14,8 @@ namespace sycl_points {
 namespace algorithms {
 
 namespace knn_search {
-// Structure to store K nearest neighbors and their distances
+
+/// @brief Structure to store K nearest neighbors and their distances
 struct KNNResultSYCL {
     std::shared_ptr<shared_vector<int32_t>> indices = nullptr;
     std::shared_ptr<shared_vector<float>> distances = nullptr;
@@ -37,6 +38,8 @@ struct KNNResultSYCL {
     }
 };
 
+namespace {
+
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode {
     float x, y, z;
@@ -46,8 +49,6 @@ struct FlatKDNode {
     uint8_t axis;    // Split axis (0=x, 1=y, 2=z)
     uint8_t pad[3];  // Padding for alignment (3 bytes)
 };  // Total: 28 bytes, aligned to 4-byte boundary
-
-namespace {
 
 // Data structure for non-recursive KD-tree construction
 struct BuildTask {
@@ -93,6 +94,7 @@ inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std
 
 }  // namespace
 
+/// @brief KDTree with SYCL implementation
 class KDTreeSYCL {
 public:
     using FlatKDNodeVector = shared_vector<FlatKDNode>;
@@ -100,12 +102,19 @@ public:
     std::shared_ptr<FlatKDNodeVector> tree_;
     std::shared_ptr<sycl::queue> queue_ = nullptr;
 
+    /// @brief Constructor
+    /// @param queue_ptr queue
     KDTreeSYCL(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_(queue_ptr) {
         tree_ = std::make_shared<FlatKDNodeVector>(0, *this->queue_);
     }
 
+    /// @brief Destructor
     ~KDTreeSYCL() {}
 
+    /// @brief Build KDTree
+    /// @param queue_ptr queue
+    /// @param points Point Cloud
+    /// @return KDTree
     static KDTreeSYCL build(const std::shared_ptr<sycl::queue>& queue_ptr, const PointContainerShared& points) {
         const size_t n = points.size();
 
@@ -206,10 +215,23 @@ public:
         return flatTree;
     }
 
+    /// @brief Build KDTree
+    /// @param queue_ptr queue
+    /// @param cloud Point Cloud
+    /// @return KDTree
     static KDTreeSYCL build(const std::shared_ptr<sycl::queue>& queue_ptr, const PointCloudShared& cloud) {
         return KDTreeSYCL::build(queue_ptr, *cloud.points);
     }
 
+    /// @brief async kNN search
+    /// @tparam MAX_K maximum of k
+    /// @tparam MAX_DEPTH maximum of search depth
+    /// @param queries query points
+    /// @param query_size query num
+    /// @param k number of search nearrest neightbor
+    /// @param result Search result
+    /// @param depends depends sycl events
+    /// @return knn search event
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointType* queries, const size_t query_size, const size_t k,
                                         KNNResultSYCL& result,
@@ -331,12 +353,27 @@ public:
         return events;
     }
 
+    /// @brief async kNN search
+    /// @tparam MAX_K maximum of k
+    /// @tparam MAX_DEPTH maximum of search depth
+    /// @param queries query points
+    /// @param k number of search nearrest neightbor
+    /// @param result Search result
+    /// @param depends depends sycl events
+    /// @return knn search event
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResultSYCL& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         return knn_search_async<MAX_K, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
     }
 
+    /// @brief kNN search
+    /// @tparam MAX_K maximum of k
+    /// @tparam MAX_DEPTH maximum of search depth
+    /// @param queries query points
+    /// @param k number of search nearrest neightbor
+    /// @param depends depends sycl events
+    /// @return knn search result
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     KNNResultSYCL knn_search(const PointCloudShared& queries, const size_t k,
                              const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
@@ -345,6 +382,13 @@ public:
         return result;
     }
 
+    /// @brief kNN search
+    /// @tparam MAX_K maximum of k
+    /// @tparam MAX_DEPTH maximum of search depth
+    /// @param queries query points
+    /// @param k number of search nearrest neightbor
+    /// @param depends depends sycl events
+    /// @return knn search result
     template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
     KNNResultSYCL knn_search(const PointContainerShared& queries, const size_t k,
                              const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
@@ -354,6 +398,12 @@ public:
     }
 };
 
+/// @brief kNN search by brute force
+/// @param queue queue
+/// @param queries query points
+/// @param targets target points
+/// @param k number of search nearrest neightbor
+/// @return knn search result
 inline KNNResultSYCL knn_search_bruteforce_sycl(sycl::queue& queue, const PointCloudShared& queries,
                                                 const PointCloudShared& targets, const size_t k) {
     constexpr size_t MAX_K = 48;

@@ -61,6 +61,10 @@ SYCL_EXTERNAL inline void transform_point(const PointType& point, PointType& res
 
 }  // namespace kernel
 
+/// @brief Async transform point cloud
+/// @param cloud Point Cloud
+/// @param trans transform matrix
+/// @return events
 inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const TransformMatrix& trans) {
     const size_t N = cloud.size();
     if (N == 0) return sycl_utils::events();
@@ -112,11 +116,17 @@ inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const Tr
     return events;
 }
 
-// transform on device
+/// @brief Transform point cloud
+/// @param cloud Point Cloud
+/// @param trans transform matrix
 inline void transform_sycl(PointCloudShared& cloud, const TransformMatrix& trans) {
     transform_sycl_async(cloud, trans).wait();
 }
 
+/// @brief Transform point cloud
+/// @param cloud Point Cloud
+/// @param trans transform matrix
+/// @return Transformed Point Cloud
 PointCloudShared transform_sycl_copy(const PointCloudShared& cloud, const TransformMatrix& trans) {
     const auto queue_ptr = cloud.queue_ptr;
 
@@ -139,6 +149,9 @@ PointCloudShared transform_sycl_copy(const PointCloudShared& cloud, const Transf
     return *ret;
 }
 
+/// @brief Transform on CPU
+/// @param cloud Point Cloud
+/// @param trans transform matrix
 inline void transform_cpu(PointCloudShared& cloud, const TransformMatrix& trans) {
     const size_t N = cloud.size();
     if (N == 0) return;
@@ -154,6 +167,10 @@ inline void transform_cpu(PointCloudShared& cloud, const TransformMatrix& trans)
     }
 }
 
+/// @brief Transform on CPU
+/// @param cloud Point Cloud
+/// @param trans transform matrix
+/// @return Transformed Point Cloud
 sycl_points::PointCloudShared transform_cpu_copy(sycl_points::PointCloudShared& cloud, const TransformMatrix& trans) {
     sycl_points::PointCloudShared ret(cloud);  // copy
     transform_cpu(ret, trans);

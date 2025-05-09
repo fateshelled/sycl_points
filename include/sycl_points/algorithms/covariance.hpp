@@ -180,6 +180,10 @@ inline void covariance_update_plane(const PointCloudShared& points) {
     }
 }
 
+/// @brief Async update covariance matrix to a plane
+/// @param queue_ptr SYCL queue
+/// @param points Point Cloud with covatiance
+/// @return events
 inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_ptr<sycl::queue>& queue_ptr,
                                                              const PointCloudShared& points) {
     const size_t N = points.size();
@@ -201,6 +205,9 @@ inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_p
     return events;
 }
 
+/// @brief Update covariance matrix to a plane
+/// @param queue_ptr SYCL queue
+/// @param points Point Cloud with covatiance
 inline void covariance_update_plane_sycl(const std::shared_ptr<sycl::queue>& queue_ptr,
                                          const PointCloudShared& points) {
     covariance_update_plane_sycl_async(queue_ptr, points).wait();
