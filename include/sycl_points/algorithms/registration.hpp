@@ -78,7 +78,7 @@ template <ICPType icp = ICPType::GICP>
 class Registration {
 public:
     /// @brief Constructor
-    /// @param queue_ptr queue
+    /// @param queue_ptr SYCL queue shared_ptr
     /// @param params Registration parameters
     Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_ptr_(queue_ptr) {

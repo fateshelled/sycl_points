@@ -173,7 +173,7 @@ private:
 class PreprocessFilter {
 public:
     /// @brief Constructor
-    /// @param queue_ptr queue
+    /// @param queue_ptr SYCL queue shared_ptr
     PreprocessFilter(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
         filter_ = std::make_shared<FilterByFlags>(this->queue_ptr_);
         flags_ = std::make_shared<shared_vector<uint8_t, sizeof(uint8_t)>>(*this->queue_ptr_);

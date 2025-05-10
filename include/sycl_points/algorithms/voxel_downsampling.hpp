@@ -51,8 +51,8 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
 /// @brief Voxel grid downsampling with SYCL implementation
 class VoxelGridSYCL {
 public:
-    /// @brief constructor
-    /// @param queue_ptr queue
+    /// @brief Constructor
+    /// @param queue_ptr SYCL queue shared_ptr
     /// @param voxel_size voxel size
     VoxelGridSYCL(const std::shared_ptr<sycl::queue>& queue_ptr, const float voxel_size)
         : queue_ptr_(queue_ptr), voxel_size_(voxel_size) {

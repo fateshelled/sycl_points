@@ -65,7 +65,7 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 }  // namespace kernel
 
 /// @brief Async compute covariance using SYCL
-/// @param queue SYCL queue
+/// @param queue_ptr SYCL queue shared_ptr
 /// @param neightbors KNN search result
 /// @param points Point Container
 /// @param covs Covariance Container
@@ -123,7 +123,7 @@ inline sycl_utils::events compute_covariances_sycl_async(const knn_search::KDTre
 }
 
 /// @brief Compute covariance using SYCL
-/// @param queue SYCL queue
+/// @param queue_ptr SYCL queue shared_ptr
 /// @param neightbors KNN search result
 /// @param points Point Container
 inline void compute_covariances_sycl(const std::shared_ptr<sycl::queue>& queue_ptr,
@@ -133,7 +133,7 @@ inline void compute_covariances_sycl(const std::shared_ptr<sycl::queue>& queue_p
 }
 
 /// @brief Compute covariance using SYCL
-/// @param queue SYCL queue
+/// @param queue_ptr SYCL queue shared_ptr
 /// @param neightbors KNN search result
 /// @param points Point Container
 /// @return Covariances
@@ -181,7 +181,7 @@ inline void covariance_update_plane(const PointCloudShared& points) {
 }
 
 /// @brief Async update covariance matrix to a plane
-/// @param queue_ptr SYCL queue
+/// @param queue_ptr SYCL queue shared_ptr
 /// @param points Point Cloud with covatiance
 /// @return events
 inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_ptr<sycl::queue>& queue_ptr,
@@ -206,7 +206,7 @@ inline sycl_utils::events covariance_update_plane_sycl_async(const std::shared_p
 }
 
 /// @brief Update covariance matrix to a plane
-/// @param queue_ptr SYCL queue
+/// @param queue_ptr SYCL queue shared_ptr
 /// @param points Point Cloud with covatiance
 inline void covariance_update_plane_sycl(const std::shared_ptr<sycl::queue>& queue_ptr,
                                          const PointCloudShared& points) {
