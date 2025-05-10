@@ -133,11 +133,30 @@ sycl-ls
 #       Intel Arc GPU is worked but too slow.
 
 # run example with OpenCL device (iGPU)
-ONEAPI_DEVICE_SELECTOR=opencl:1 ./example_registration.cpp
+ONEAPI_DEVICE_SELECTOR=opencl:1 ./example_registration
 
 # run example with CUDA device
-ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration.cpp
+ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 ```
+
+### Benchmark
+
+#### example_registration
+
+- `CPU`: Intel Core-i5 11500 (Power Mode: Performance)
+- `iGPU`: Intel UHD Graphics 750
+
+| process                       |        CPU |       iGPU |   RTX 3060 |
+| ----------------------------- | ---------: | ---------: | ---------: |
+| 1. to PointCloudShared        |  280.19 us |  760.13 us |  329.13 us |
+| 2. Downsampling               | 2299.59 us | 1549.92 us | 2010.68 us |
+| 3. KDTree build               | 1502.83 us | 1384.85 us | 1299.35 us |
+| 4. KDTree kNN Search          | 2164.06 us | 2498.48 us | 1595.03 us |
+| 5. compute Covariances        |  176.15 us |  458.46 us |   89.69 us |
+| 6. update Covariance to plane |   86.12 us |  124.07 us |   27.88 us |
+| 7. Registration               | 1707.72 us | 2729.66 us | 1484.16 us |
+| Total                         | 8216.66 us | 9505.57 us | 6835.92 us |
+
 
 ## License
 This library is released under Apache License

@@ -95,26 +95,26 @@ int main() {
                 .count();
 
         if (i > WARM_UP) {
-            if (elapsed.count("to PointCloudShared") == 0) elapsed["to PointCloudShared"] = 0.0;
-            elapsed["to PointCloudShared"] += dt_to_shared;
+            if (elapsed.count("1. to PointCloudShared") == 0) elapsed["1. to PointCloudShared"] = 0.0;
+            elapsed["1. to PointCloudShared"] += dt_to_shared;
 
-            if (elapsed.count("Downsampling") == 0) elapsed["Downsampling"] = 0.0;
-            elapsed["Downsampling"] += dt_downsampled;
+            if (elapsed.count("2. Downsampling") == 0) elapsed["2. Downsampling"] = 0.0;
+            elapsed["2. Downsampling"] += dt_downsampled;
 
-            if (elapsed.count("build KDTree") == 0) elapsed["build KDTree"] = 0.0;
-            elapsed["build KDTree"] += dt_build_kdtree;
+            if (elapsed.count("3. KDTree build") == 0) elapsed["3. KDTree build"] = 0.0;
+            elapsed["3. KDTree build"] += dt_build_kdtree;
 
-            if (elapsed.count("KNN Search kdtree") == 0) elapsed["KNN Search kdtree"] = 0.0;
-            elapsed["KNN Search kdtree"] += dt_knn_search_for_covs;
+            if (elapsed.count("4. KDTree kNN Search") == 0) elapsed["4. KDTree kNN Search"] = 0.0;
+            elapsed["4. KDTree kNN Search"] += dt_knn_search_for_covs;
 
-            if (elapsed.count("compute Covariances") == 0) elapsed["compute Covariances"] = 0.0;
-            elapsed["compute Covariances"] += dt_covariance;
+            if (elapsed.count("5. compute Covariances") == 0) elapsed["5. compute Covariances"] = 0.0;
+            elapsed["5. compute Covariances"] += dt_covariance;
 
-            if (elapsed.count("update Covariance to plane") == 0) elapsed["update Covariance to plane"] = 0.0;
-            elapsed["update Covariance to plane"] += dt_to_plane;
+            if (elapsed.count("6. update Covariance to plane") == 0) elapsed["6. update Covariance to plane"] = 0.0;
+            elapsed["6. update Covariance to plane"] += dt_to_plane;
 
-            if (elapsed.count("Registration") == 0) elapsed["Registration"] = 0.0;
-            elapsed["Registration"] += dt_registration;
+            if (elapsed.count("7. Registration") == 0) elapsed["7. Registration"] = 0.0;
+            elapsed["7. Registration"] += dt_registration;
         }
         if (i == LOOP) {
             std::cout << ret.T.matrix() << std::endl;
