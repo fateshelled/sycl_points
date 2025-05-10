@@ -26,11 +26,14 @@ This project was developed with reference to small_gicp, a lightweight point clo
 - Algorithm refinements for better parallelization
 
 ### Supported Device
-- Intel and AMD CPU (OpenCL)
-- Intel iGPU (OpenCL)
-- NVIDIA GPU (CUDA)
+- Intel CPU (OpenCL backend)
+- Intel iGPU (OpenCL backend)
+- NVIDIA GPU (CUDA backend)
 
-note: `level_zero` backend is not supported.
+note:
+- `level_zero` backend is not supported.
+- AMD CPU is worked fine but not optimized.
+- Intel Arc GPU is worked but too slow.
 
 ## Requirements
 
@@ -146,17 +149,16 @@ ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 - `CPU`: Intel Core-i5 11500 (Power Mode: Performance)
 - `iGPU`: Intel UHD Graphics 750
 
-| process                       |        CPU |       iGPU |   RTX 3060 |
-| ----------------------------- | ---------: | ---------: | ---------: |
-| 1. to PointCloudShared        |  280.19 us |  760.13 us |  329.13 us |
-| 2. Downsampling               | 2299.59 us | 1549.92 us | 2010.68 us |
-| 3. KDTree build               | 1502.83 us | 1384.85 us | 1299.35 us |
-| 4. KDTree kNN Search          | 2164.06 us | 2498.48 us | 1595.03 us |
-| 5. compute Covariances        |  176.15 us |  458.46 us |   89.69 us |
-| 6. update Covariance to plane |   86.12 us |  124.07 us |   27.88 us |
-| 7. Registration               | 1707.72 us | 2729.66 us | 1484.16 us |
-| Total                         | 8216.66 us | 9505.57 us | 6835.92 us |
-
+| process                |        CPU |       iGPU |   RTX 3060 |
+| ---------------------- | ---------: | ---------: | ---------: |
+| 1. to PointCloudShared |  262.54 us |  713.59 us |  314.91 us |
+| 2. Downsampling        | 2233.76 us | 1558.17 us | 1942.60 us |
+| 3. KDTree build        | 1465.28 us | 1367.76 us | 1296.50 us |
+| 4. KDTree kNN Search   | 1175.28 us | 2468.82 us | 1552.91 us |
+| 5. compute Covariances |  147.04 us |  418.48 us |   88.70 us |
+| 6. update Covariance   |  159.40 us |  116.78 us |   25.63 us |
+| 7. Registration        | 1276.92 us | 2730.83 us | 1465.20 us |
+| Total                  | 6720.22 us | 9374.43 us | 6686.45 us |
 
 ## License
 This library is released under Apache License

@@ -26,24 +26,28 @@ constexpr uint32_t AMD = 0x1002;     // 4098
 /// @param work_group_size if greater than 0, return this value clamped at upper limit.
 /// @return optimized work_group_size
 inline size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 0) {
+    const size_t max_work_group_size = device.get_info<sycl::info::device::max_work_group_size>();
     if (work_group_size > 0) {
-        return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
+        return std::min(work_group_size, max_work_group_size);
+    }
+
+    const size_t max_compute_unit = static_cast<size_t>(device.get_info<sycl::info::device::max_compute_units>());
+    if (device.is_cpu()) {
+        // CPU's max_compute_units is number of total thread.
+        return std::min(max_compute_unit, max_work_group_size);
     }
 
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
     switch (vendor_id) {
-        case 32902:  // Intel
-            if (device.is_cpu()) {
-                return std::min((size_t)16, device.get_info<sycl::info::device::max_work_group_size>());
-            } else {
-                return std::min((size_t)32, device.get_info<sycl::info::device::max_work_group_size>());
-            }
+        case VENDOR_ID::INTEL:
+            // optimize for iGPU
+            return std::min(max_compute_unit * 2, max_work_group_size);
             break;
-        case 4318:  // NVIDIA
-            return std::min((size_t)256, device.get_info<sycl::info::device::max_work_group_size>());
+        case VENDOR_ID::NVIDIA:
+            return std::min(max_compute_unit * 4, max_work_group_size);
             break;
     }
-    return std::min((size_t)128, device.get_info<sycl::info::device::max_work_group_size>());
+    return std::min(max_compute_unit * 3, max_work_group_size);
 }
 
 /// @brief get device optimized work_group_size
@@ -52,6 +56,22 @@ inline size_t get_work_group_size(const sycl::device& device, size_t work_group_
 /// @return optimized work_group_size
 inline size_t get_work_group_size(const sycl::queue& queue, size_t work_group_size = 0) {
     return get_work_group_size(queue.get_device(), work_group_size);
+}
+
+/// @brief get device optimized work_group_size for parallel reduction
+/// @param device SYCL device
+/// @return optimized work_group_size
+inline size_t get_work_group_size_for_parallel_reduction(const sycl::device& device) {
+    constexpr size_t max_work_group_size = 281;
+    const size_t work_group_size = get_work_group_size(device);
+    return std::min(work_group_size, max_work_group_size);
+}
+
+/// @brief get device optimized work_group_size for parallel reduction
+/// @param queue SYCL queue
+/// @return optimized work_group_size
+inline size_t get_work_group_size_for_parallel_reduction(const sycl::queue& queue) {
+    return get_work_group_size_for_parallel_reduction(queue.get_device());
 }
 
 /// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.

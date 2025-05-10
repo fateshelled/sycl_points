@@ -249,7 +249,7 @@ private:
         const size_t N = source.size();
         sycl_utils::events events;
         events += this->queue_ptr_->submit([&](sycl::handler& h) {
-            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
+            const size_t work_group_size = sycl_utils::get_work_group_size_for_parallel_reduction(*this->queue_ptr_);
             const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
 
             // convert to sycl::float4

@@ -1,4 +1,5 @@
 #include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <sycl_points/algorithms/covariance.hpp>
@@ -110,8 +111,8 @@ int main() {
             if (elapsed.count("5. compute Covariances") == 0) elapsed["5. compute Covariances"] = 0.0;
             elapsed["5. compute Covariances"] += dt_covariance;
 
-            if (elapsed.count("6. update Covariance to plane") == 0) elapsed["6. update Covariance to plane"] = 0.0;
-            elapsed["6. update Covariance to plane"] += dt_to_plane;
+            if (elapsed.count("6. update Covariance") == 0) elapsed["6. update Covariance"] = 0.0;
+            elapsed["6. update Covariance"] += dt_to_plane;
 
             if (elapsed.count("7. Registration") == 0) elapsed["7. Registration"] = 0.0;
             elapsed["7. Registration"] += dt_registration;
@@ -121,10 +122,13 @@ int main() {
         }
     }
 
+    std::cout << std::endl;
     double total_elapsed = 0.0;
     for (auto [key, dt] : elapsed) {
-        std::cout << key << ": " << dt / LOOP << " us" << std::endl;
+        std::cout << std::setw(24) << std::fixed << key + ": ";
+        std::cout << std::setw(7) << std::fixed << std::setprecision(2) << dt / LOOP << " us" << std::endl;
         total_elapsed += dt / LOOP;
     }
-    std::cout << "TOTAL: " << total_elapsed << " us" << std::endl;
+    std::cout << std::setw(24) << std::fixed << "TOTAL: ";
+    std::cout << std::setw(7) << std::fixed << std::setprecision(2) << total_elapsed << " us" << std::endl << std::endl;
 }
