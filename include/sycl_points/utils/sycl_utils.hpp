@@ -23,6 +23,10 @@ constexpr uint32_t AMD = 0x1002;     // 4098
 
 inline constexpr bool is_not_power_of_two(size_t alignment) { return (alignment & (alignment - 1)) != 0; }
 
+/// @brief get device optimized work_group_size
+/// @param device SYCL device
+/// @param work_group_size if greater than 0, return this value clamped at upper limit.
+/// @return optimized work_group_size
 inline size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 0) {
     if (work_group_size > 0) {
         return std::min(work_group_size, device.get_info<sycl::info::device::max_work_group_size>());
@@ -44,20 +48,33 @@ inline size_t get_work_group_size(const sycl::device& device, size_t work_group_
     return std::min((size_t)128, device.get_info<sycl::info::device::max_work_group_size>());
 }
 
+/// @brief get device optimized work_group_size
+/// @param queue SYCL queue
+/// @param work_group_size if greater than 0, return this value clamped at upper limit.
+/// @return optimized work_group_size
 inline size_t get_work_group_size(const sycl::queue& queue, size_t work_group_size = 0) {
     return get_work_group_size(queue.get_device(), work_group_size);
 }
 
+/// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.
+/// @param N total number of elements to process.
+/// @param work_group_size size of each work group.
+/// @return global_size
 inline size_t get_global_size(size_t N, size_t work_group_size) {
     return ((N + work_group_size - 1) / work_group_size) * work_group_size;
 }
 
+/// @brief free with nullptr check
+/// @param data_ptr pointer of data
+/// @param queue SYCL queue
 inline void free(void* data_ptr, const sycl::queue& queue) {
     if (data_ptr != nullptr) {
         sycl::free(data_ptr, queue);
     }
 }
 
+/// @brief Print device info
+/// @param device SYCL device
 inline void print_device_info(const sycl::device& device) {
     const auto platform = device.get_platform();
     std::cout << "Platform: " << platform.get_info<sycl::info::platform::name>() << std::endl;
@@ -117,6 +134,8 @@ inline void print_device_info(const sycl::device& device) {
     }
 }
 
+/// @brief Print selected device info
+/// @param queue SYCL queue
 inline void print_device_info(const sycl::queue& queue) { print_device_info(queue.get_device()); }
 
 /// @brief device is CPU or not
@@ -157,10 +176,16 @@ inline bool enable_atomic_shared_allocations(const sycl::queue& queue) {
     return queue.get_device().has(sycl::aspect::usm_atomic_shared_allocations);
 }
 
+/// @brief sycl::event container
 struct events {
+    /// @brief events
     std::vector<sycl::event> evs;
 
+    /// @brief add event
+    /// @param event event
     void push_back(const sycl::event& event) { this->evs.push_back(event); }
+
+    /// @brief wait all events
     void wait() {
         while (evs.size() > 0) {
             auto& event = this->evs.back();
@@ -168,27 +193,55 @@ struct events {
             evs.pop_back();
         }
     }
+
+    /// @brief clear all events
     void clear() { this->evs.clear(); }
+    /// @brief add event
+    /// @param event event
     void operator+=(const sycl::event& event) { this->evs.push_back(event); }
+    /// @brief add events
+    /// @param e events
     void operator+=(const events& e) { std::copy(e.evs.begin(), e.evs.end(), std::back_inserter(this->evs)); }
 };
 
+/// @brief shared memory location advise to underlying runtime
 namespace mem_advise {
+
+/// @brief Hints that data will be accessed from the device. set flag UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE.
+/// @tparam T data type
+/// @param queue SYCL queue
+/// @param ptr shared memory pointer of data
+/// @param N number of data
 template <typename T>
 void set_accessed_by_device(sycl::queue& queue, T* ptr, size_t N) {
     queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE);
 }
 
+/// @brief Remove affects of `set_accessed_by_device`. set flag UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_DEVICE
+/// @tparam T data type
+/// @param queue SYCL queue
+/// @param ptr shared memory pointer of data
+/// @param N number of data
 template <typename T>
 void clear_accessed_by_device(sycl::queue& queue, T* ptr, size_t N) {
     queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_DEVICE);
 }
 
+/// @brief Hints that data will be accessed from the host. set flag UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_HOST
+/// @tparam T data type
+/// @param queue SYCL queue
+/// @param ptr shared memory pointer of data
+/// @param N number of data
 template <typename T>
 void set_accessed_by_host(sycl::queue& queue, T* ptr, size_t N) {
     queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_HOST);
 }
 
+/// @brief Remove affects of `set_accessed_by_host`. set flag UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_HOST
+/// @tparam T data type
+/// @param queue SYCL queue
+/// @param ptr shared memory pointer of data
+/// @param N number of data
 template <typename T>
 void clear_accessed_by_host(sycl::queue& queue, T* ptr, size_t N) {
     queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_HOST);
@@ -218,102 +271,8 @@ inline int nvidia_gpu_selector_v(const sycl::device& dev) {
 }  // namespace sycl_utils
 
 template <typename T, size_t Alignment = 0>
-using host_allocator = sycl::usm_allocator<T, sycl::usm::alloc::host, Alignment>;
-
-template <typename T, size_t Alignment = 0>
 using shared_allocator = sycl::usm_allocator<T, sycl::usm::alloc::shared, Alignment>;
-
-// template <typename T, size_t Alignment = 0>
-// using device_allocator = sycl::usm_allocator<T, sycl::usm::alloc::device, Alignment>;
-
-template <typename T, size_t Alignment = 0>
-using host_vector = std::vector<T, host_allocator<T, Alignment>>;
-
 template <typename T, size_t Alignment = 0>
 using shared_vector = std::vector<T, shared_allocator<T, Alignment>>;
-
-// template <typename T, size_t Alignment = 0>
-// using device_vector = std::vector<T, device_allocator<T, Alignment>>;
-
-template <typename T, size_t Alignment = 0>
-struct ContainerDevice {
-    T* data = nullptr;
-    size_t size = 0;
-    std::shared_ptr<sycl::queue> queue_ptr = nullptr;
-    const sycl::property_list propeties = {
-        // sycl::property::no_init()
-    };
-
-    ContainerDevice(const std::shared_ptr<sycl::queue>& q) : queue_ptr(q) {
-        if constexpr (sycl_utils::is_not_power_of_two(Alignment)) {
-            static_assert("Alignment must be power of two");
-        }
-    }
-    ~ContainerDevice() { free(); }
-
-    // copy
-    ContainerDevice(const ContainerDevice&) = delete;
-    ContainerDevice& operator=(const ContainerDevice&) = delete;
-
-    // move
-    ContainerDevice(ContainerDevice&& other) noexcept
-        : data(other.data), size(other.size), queue_ptr(std::move(other.queue_ptr)) {
-        other.data = nullptr;
-        other.size = 0;
-    }
-
-    // move
-    ContainerDevice& operator=(ContainerDevice&& other) noexcept {
-        if (this != &other) {
-            free();
-            data = other.data;
-            size = other.size;
-            queue_ptr = std::move(other.queue_ptr);
-            other.data = nullptr;
-            other.size = 0;
-        }
-        return *this;
-    }
-
-    void resize(size_t N) {
-        if (this->size == N) return;
-        this->free();
-        this->size = N;
-        this->data = sycl::aligned_alloc_device<T>(Alignment, N, *this->queue_ptr, this->propeties);
-    }
-
-    void free() {
-        if (this->data != nullptr) {
-            sycl::free(this->data, *this->queue_ptr);
-            this->data = nullptr;
-            this->size = 0;
-        }
-    }
-
-    sycl_utils::events memset_async(const T& value, size_t start_index = 0, size_t count = 0) {
-        sycl_utils::events events;
-        if (this->data == nullptr || this->size == 0 || start_index >= this->size) return events;
-
-        const size_t actual_count =
-            (count == 0 || start_index + count > this->size) ? (this->size - start_index) : count;
-
-        events += this->queue_ptr->memset(this->data + start_index, value, actual_count * sizeof(T));
-        return events;
-    }
-
-    // copy to device memory
-    sycl_utils::events memcpy_async(const T* ptr, size_t src_size, size_t src_start = 0, size_t dst_start = 0,
-                                    size_t count = 0) {
-        sycl_utils::events events;
-        if (src_size == 0 || src_start >= src_size) return events;
-        if (this->data == nullptr || this->size == 0 || dst_start >= this->size) return events;
-
-        const size_t max_copy_size = src_size - src_start;
-        const size_t actual_count = (count == 0 || count > max_copy_size) ? max_copy_size : count;
-
-        events += this->queue_ptr->memcpy(this->data + dst_start, ptr, actual_count * sizeof(T));
-        return events;
-    }
-};
 
 }  // namespace sycl_points
