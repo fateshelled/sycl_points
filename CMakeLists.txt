@@ -13,7 +13,6 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
-option(BUILD_WITH_MARCH_NATIVE "Build with -march=native" ON)
 option(BUILD_TEST "Build test" ON)
 
 find_package(IntelSYCL REQUIRED)
@@ -68,12 +67,6 @@ function(add_example_exec EXEC_NAME)
     -fsycl-targets=${SYCL_TARGET_FLAGS}
   )
 
-  if(BUILD_WITH_MARCH_NATIVE)
-    target_compile_options(${EXEC_NAME} PRIVATE
-      -march=native
-    )
-  endif()
-
   target_link_options(${EXEC_NAME} PRIVATE
     -fsycl
     -fsycl-targets=${SYCL_TARGET_FLAGS}
@@ -107,12 +100,6 @@ if (BUILD_TEST)
       -fsycl
       -fsycl-targets=${SYCL_TARGET_FLAGS}
     )
-
-    if(BUILD_WITH_MARCH_NATIVE)
-      target_compile_options(${EXEC_NAME} PRIVATE
-        -march=native
-      )
-    endif()
 
     target_link_options(${EXEC_NAME} PRIVATE
       -fsycl

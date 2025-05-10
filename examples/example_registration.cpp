@@ -15,7 +15,8 @@ int main() {
     const sycl_points::PointCloudCPU target_points = sycl_points::PointCloudReader::readFile(target_filename);
 
     /* Specity device */
-    sycl::device dev;  // set from Environments variable `ONEAPI_DEVICE_SELECTOR`
+    const auto device_selector = sycl_points::sycl_utils::device_selector::supported_selector_v;
+    sycl::device dev(device_selector);  // set from Environments variable `ONEAPI_DEVICE_SELECTOR`
     std::shared_ptr<sycl::queue> queue = std::make_shared<sycl::queue>(dev);
 
     sycl_points::sycl_utils::print_device_info(*queue);

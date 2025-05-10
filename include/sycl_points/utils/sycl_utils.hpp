@@ -21,8 +21,6 @@ constexpr uint32_t NVIDIA = 0x10de;  // 4318
 constexpr uint32_t AMD = 0x1002;     // 4098
 };  // namespace VENDOR_ID
 
-inline constexpr bool is_not_power_of_two(size_t alignment) { return (alignment & (alignment - 1)) != 0; }
-
 /// @brief get device optimized work_group_size
 /// @param device SYCL device
 /// @param work_group_size if greater than 0, return this value clamped at upper limit.
@@ -84,6 +82,7 @@ inline void print_device_info(const sycl::device& device) {
         std::cout << "\ttype: " << (device.is_cpu() ? "CPU" : "GPU") << std::endl;
         std::cout << "\tVendor: " << device.get_info<sycl::info::device::vendor>() << std::endl;
         std::cout << "\tVendorID: " << device.get_info<sycl::info::device::vendor_id>() << std::endl;
+        std::cout << "\tBackend name: " << device.get_backend() << std::endl;
         std::cout << "\tBackend version: " << device.get_info<sycl::info::device::backend_version>() << std::endl;
         std::cout << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << std::endl;
         std::cout << "\tGlobal Memory Size: "
@@ -168,12 +167,8 @@ inline bool is_amd(const sycl::queue& queue) {
     return vendor_id == VENDOR_ID::AMD;
 }
 
-inline bool enable_shared_allications(const sycl::queue& queue) {
-    return queue.get_device().has(sycl::aspect::usm_shared_allocations);
-}
-
-inline bool enable_atomic_shared_allocations(const sycl::queue& queue) {
-    return queue.get_device().has(sycl::aspect::usm_atomic_shared_allocations);
+inline bool enable_shared_allocations(const sycl::device& device) {
+    return device.has(sycl::aspect::usm_shared_allocations);
 }
 
 /// @brief sycl::event container
@@ -251,17 +246,38 @@ void clear_accessed_by_host(sycl::queue& queue, T* ptr, size_t N) {
 
 namespace device_selector {
 
+inline int supported_selector_v(const sycl::device& dev) {
+    const auto backend = dev.get_backend();
+    bool supported = true;
+    supported &= (backend == sycl::backend::opencl) || (backend == sycl::backend::ext_oneapi_cuda);
+    supported &= enable_shared_allocations(dev);
+    if (supported) {
+        return 1;
+    } else {
+        return -1;
+    }
+}
+
 inline int intel_cpu_selector_v(const sycl::device& dev) {
+    if (supported_selector_v(dev) < 0) {
+        return -1;
+    }
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
     return dev.is_cpu() && (vendor_id == VENDOR_ID::INTEL);
 }
 
 inline int intel_gpu_selector_v(const sycl::device& dev) {
+    if (supported_selector_v(dev) < 0) {
+        return -1;
+    }
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
     return dev.is_gpu() && (vendor_id == VENDOR_ID::INTEL);
 }
 
 inline int nvidia_gpu_selector_v(const sycl::device& dev) {
+    if (supported_selector_v(dev) < 0) {
+        return -1;
+    }
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
     return dev.is_gpu() && (vendor_id == VENDOR_ID::NVIDIA);
 }
