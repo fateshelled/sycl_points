@@ -36,7 +36,7 @@ SYCL_EXTERNAL inline bool quick_sort(T* arr, int32_t start, int32_t end) {
     const int32_t size = end - start;
     if (size <= 1) return true;
 
-    if (MAX_STACK_SIZE < 2 * static_cast<size_t>(std::log2f(static_cast<float>(size))) + 1) {
+    if (MAX_STACK_SIZE < 2 * static_cast<size_t>(sycl::log2(static_cast<float>(size))) + 1) {
         return false;
     }
 
@@ -99,7 +99,7 @@ SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int32_t start, int32_t e
     const int32_t size = end - start;
     if (size <= 1) return true;
 
-    if (MAX_STACK_SIZE < 2 * static_cast<size_t>(std::log2f(static_cast<float>(size))) + 1) {
+    if (MAX_STACK_SIZE < 2 * static_cast<size_t>(sycl::log2(static_cast<float>(size))) + 1) {
         return false;
     }
 
