@@ -104,8 +104,8 @@ public:
 
 private:
     std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
-    std::shared_ptr<shared_vector<T, Alignment>> padded_data_ = nullptr;
-    std::shared_ptr<shared_vector<uint64_t>> padded_data_indices_ = nullptr;
+    shared_vector_ptr<T, Alignment> padded_data_ = nullptr;
+    shared_vector_ptr<uint64_t> padded_data_indices_ = nullptr;
     size_t last_N_ = 0;
 };
 

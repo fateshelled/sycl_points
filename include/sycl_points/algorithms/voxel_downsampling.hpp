@@ -104,7 +104,7 @@ private:
     float voxel_size_;
     float voxel_size_inv_;
 
-    std::shared_ptr<shared_vector<uint64_t>> bit_ptr_ = nullptr;
+    shared_vector_ptr<uint64_t> bit_ptr_ = nullptr;
 
     void compute_voxel_bit(const PointContainerShared& points) {
         const size_t N = points.size();

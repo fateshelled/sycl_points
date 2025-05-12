@@ -310,5 +310,7 @@ template <typename T, size_t Alignment = 0>
 using shared_allocator = sycl::usm_allocator<T, sycl::usm::alloc::shared, Alignment>;
 template <typename T, size_t Alignment = 0>
 using shared_vector = std::vector<T, shared_allocator<T, Alignment>>;
+template <typename T, size_t Alignment = 0>
+using shared_vector_ptr = std::shared_ptr<shared_vector<T, Alignment>>;
 
 }  // namespace sycl_points

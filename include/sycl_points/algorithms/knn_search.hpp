@@ -17,8 +17,8 @@ namespace knn_search {
 
 /// @brief Structure to store K nearest neighbors and their distances
 struct KNNResultSYCL {
-    std::shared_ptr<shared_vector<int32_t>> indices = nullptr;
-    std::shared_ptr<shared_vector<float>> distances = nullptr;
+    shared_vector_ptr<int32_t> indices = nullptr;
+    shared_vector_ptr<float> distances = nullptr;
     size_t query_size;
     size_t k;
     KNNResultSYCL() : query_size(0), k(0) {}

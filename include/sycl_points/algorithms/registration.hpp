@@ -167,9 +167,9 @@ private:
     RegistrationParams params_;
     std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
     PointCloudShared::Ptr aligned_ = nullptr;
-    std::shared_ptr<shared_vector<knn_search::KNNResultSYCL>> neighbors_ = nullptr;
+    shared_vector_ptr<knn_search::KNNResultSYCL> neighbors_ = nullptr;
     std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
-    std::shared_ptr<shared_vector<LinearlizedResult>> linearlized_on_host_ = nullptr;
+    shared_vector_ptr<LinearlizedResult> linearlized_on_host_ = nullptr;
 
     bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
         return delta.template head<3>().norm() < this->params_.rotation_eps &&

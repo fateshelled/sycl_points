@@ -37,12 +37,11 @@ public:
     FilterByFlags(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
         points_copy_ptr_ = std::make_shared<sycl_points::PointContainerShared>(*this->queue_ptr_);
         covs_copy_ptr_ = std::make_shared<sycl_points::CovarianceContainerShared>(*this->queue_ptr_);
-        prefix_sum_ptr_ = std::make_shared<shared_vector<uint32_t, sizeof(uint32_t)>>(*this->queue_ptr_);
+        prefix_sum_ptr_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_ptr_);
     }
 
     template <typename T, size_t AllocSize = 0>
-    void filter_by_flags(shared_vector<T, AllocSize>& data,
-                         const shared_vector<uint8_t, sizeof(uint8_t)>& flags) const {
+    void filter_by_flags(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) const {
         const size_t N = data.size();
         if (N == 0) return;
 
@@ -67,8 +66,7 @@ public:
     }
 
     template <typename T, size_t AllocSize = 0>
-    sycl_utils::events filter_by_flags_async(shared_vector<T, AllocSize>& data,
-                                             const shared_vector<uint8_t, sizeof(uint8_t)>& flags) {
+    sycl_utils::events filter_by_flags_async(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) {
         static_assert(std::is_same<T, PointType>::value || std::is_same<T, Covariance>::value,
                       "T is not supported type.");
 
@@ -166,7 +164,7 @@ private:
     std::shared_ptr<sycl::queue> queue_ptr_;
     std::shared_ptr<sycl_points::PointContainerShared> points_copy_ptr_;
     std::shared_ptr<sycl_points::CovarianceContainerShared> covs_copy_ptr_;
-    std::shared_ptr<shared_vector<uint32_t, sizeof(uint32_t)>> prefix_sum_ptr_;
+    shared_vector_ptr<uint32_t> prefix_sum_ptr_;
 };
 
 /// @brief Preprocessing filter
@@ -176,7 +174,7 @@ public:
     /// @param queue_ptr SYCL queue shared_ptr
     PreprocessFilter(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
         filter_ = std::make_shared<FilterByFlags>(this->queue_ptr_);
-        flags_ = std::make_shared<shared_vector<uint8_t, sizeof(uint8_t)>>(*this->queue_ptr_);
+        flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_ptr_);
     }
 
     /// @brief L∞ distance (chebyshev distance) filter.
@@ -236,7 +234,7 @@ public:
 private:
     std::shared_ptr<sycl::queue> queue_ptr_;
     std::shared_ptr<FilterByFlags> filter_;
-    std::shared_ptr<shared_vector<uint8_t, sizeof(uint8_t)>> flags_;
+    shared_vector_ptr<uint8_t> flags_;
 };
 }  // namespace filter
 
