@@ -83,8 +83,8 @@ public:
     Registration(const sycl_utils::DeviceQueue& queue, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_(queue) {
         this->neighbors_ = std::make_shared<shared_vector<knn_search::KNNResultSYCL>>(
-            1, knn_search::KNNResultSYCL(), shared_allocator<knn_search::KNNResultSYCL>(*this->queue_.ptr, {}));
-        this->neighbors_->at(0).allocate(*this->queue_.ptr, 1, 1);
+            1, knn_search::KNNResultSYCL(), shared_allocator<knn_search::KNNResultSYCL>(*this->queue_.ptr));
+        this->neighbors_->at(0).allocate(this->queue_, 1, 1);
 
         this->aligned_ = std::make_shared<PointCloudShared>(this->queue_);
         this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_);
