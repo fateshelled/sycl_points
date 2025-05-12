@@ -211,6 +211,15 @@ struct events {
         }
     }
 
+    /// @brief wait_and_throw all events
+    void wait_and_throw() {
+        while (evs.size() > 0) {
+            auto& event = this->evs.back();
+            event.wait_and_throw();
+            evs.pop_back();
+        }
+    }
+
     /// @brief clear all events
     void clear() { this->evs.clear(); }
     /// @brief add event
@@ -308,6 +317,8 @@ inline int nvidia_gpu_selector_v(const sycl::device& dev) {
 
 /// @brief Represents a SYCL queue with device-specific optimizations and management capabilities
 struct DeviceQueue {
+    using Ptr = std::shared_ptr<DeviceQueue>;
+
     std::shared_ptr<sycl::queue> ptr = nullptr;  // sycl::queue pointer
     size_t work_group_size;
     size_t work_group_size_for_parallel_reduction;

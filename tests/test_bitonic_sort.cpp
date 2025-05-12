@@ -12,13 +12,13 @@
 // Setup for the SYCL environment
 class BitonicSortTest : public ::testing::Test {
 protected:
-    std::shared_ptr<sycl::queue> queue_ptr;
+    sycl_points::sycl_utils::DeviceQueue::Ptr queue;
 
     void SetUp() override {
         // Setup for SYCL device and queue
         try {
-            sycl::device device = sycl::device(sycl::default_selector_v);
-            queue_ptr = std::make_shared<sycl::queue>(device);
+            sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::supported_selector_v);
+            queue = std::make_shared<sycl_points::sycl_utils::DeviceQueue>(device);
             std::cout << "Using device: " << device.get_info<sycl::info::device::name>() << std::endl;
         } catch (const sycl::exception& e) {
             std::cerr << "SYCL exception caught: " << e.what() << std::endl;
@@ -26,10 +26,7 @@ protected:
         }
     }
 
-    void TearDown() override {
-        // Cleanup after the test
-        queue_ptr = nullptr;
-    }
+    void TearDown() override {}
 
     // Helper function to generate random integer array (for int32_t)
     std::vector<int32_t> generateRandomInt32(size_t size, int32_t min = -1000, int32_t max = 1000) {
@@ -81,7 +78,7 @@ TEST_F(BitonicSortTest, SortInt32Ascending) {
         std::vector<int32_t> expected = data;
         std::sort(expected.begin(), expected.end());
 
-        sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(queue_ptr);
+        sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(*queue);
         sorter.sort(data);
 
         EXPECT_EQ(data, expected) << "Failed to sort int32_t array of size " << size;
@@ -98,7 +95,7 @@ TEST_F(BitonicSortTest, SortUInt64Ascending) {
         std::vector<uint64_t> expected = data;
         std::sort(expected.begin(), expected.end());
 
-        sycl_points::algorithms::core::BitonicSortShared<uint64_t> sorter(queue_ptr);
+        sycl_points::algorithms::core::BitonicSortShared<uint64_t> sorter(*queue);
         sorter.sort(data);
 
         EXPECT_EQ(data, expected) << "Failed to sort uint64_t array of size " << size;
@@ -125,7 +122,7 @@ TEST_F(BitonicSortTest, SortFloats) {
     std::vector<float> expected = data;
     std::sort(expected.begin(), expected.end());
 
-    sycl_points::algorithms::core::BitonicSortShared<float> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<float> sorter(*queue);
     sorter.sort(data);
 
     for (size_t i = 0; i < size; ++i) {
@@ -154,7 +151,7 @@ TEST_F(BitonicSortTest, SortEmptyArray) {
     std::vector<int32_t> data;
     std::vector<int32_t> expected;
 
-    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(*queue);
     sorter.sort(data);
 
     EXPECT_EQ(data, expected) << "Failed to handle empty array";
@@ -165,7 +162,7 @@ TEST_F(BitonicSortTest, SortSingleElementArray) {
     std::vector<int32_t> data = {42};
     std::vector<int32_t> expected = {42};
 
-    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(*queue);
     sorter.sort(data);
 
     EXPECT_EQ(data, expected) << "Failed to handle single element array";
@@ -177,7 +174,7 @@ TEST_F(BitonicSortTest, SortAllSameElements) {
     std::vector<int32_t> data(size, 7);  // Array with all elements set to 7
     std::vector<int32_t> expected(size, 7);
 
-    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(*queue);
     sorter.sort(data);
 
     EXPECT_EQ(data, expected) << "Failed to handle array with all same elements";
@@ -189,7 +186,7 @@ TEST_F(BitonicSortTest, SortWithExtremeValues) {
     std::vector<int32_t> expected = data;
     std::sort(expected.begin(), expected.end());
 
-    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(*queue);
     sorter.sort(data);
 
     EXPECT_EQ(data, expected) << "Failed to sort array with extreme values";
@@ -204,7 +201,7 @@ TEST_F(BitonicSortTest, SortNonPowerOfTwoSizeUInt64) {
         std::vector<uint64_t> expected = data;
         std::sort(expected.begin(), expected.end());
 
-        sycl_points::algorithms::core::BitonicSortShared<uint64_t> sorter(queue_ptr);
+        sycl_points::algorithms::core::BitonicSortShared<uint64_t> sorter(*queue);
         sorter.sort(data);
 
         EXPECT_EQ(data, expected) << "Failed to sort uint64_t array of non-power-of-2 size " << size;
@@ -218,7 +215,7 @@ TEST_F(BitonicSortTest, SortAlreadySortedArray) {
     std::sort(data.begin(), data.end());
     std::vector<int32_t> expected = data;
 
-    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(*queue);
     sorter.sort(data);
 
     EXPECT_EQ(data, expected) << "Failed to sort already sorted array";
@@ -232,7 +229,7 @@ TEST_F(BitonicSortTest, SortReverseOrderArray) {
     std::vector<uint64_t> expected = data;
     std::sort(expected.begin(), expected.end());
 
-    sycl_points::algorithms::core::BitonicSortShared<uint64_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<uint64_t> sorter(*queue);
     sorter.sort(data);
 
     EXPECT_EQ(data, expected) << "Failed to sort reverse-ordered uint64_t array";
@@ -264,7 +261,7 @@ TEST_F(BitonicSortTest, GetSortedIndices) {
         expected_indices[i] = pairs[i].second;
     }
 
-    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(*queue);
     sorter.sort(data);
     std::vector<size_t> indices = sorter.get_sorted_indices();
 
@@ -286,7 +283,7 @@ TEST_F(BitonicSortTest, SortLargeArray) {
     std::vector<uint64_t> expected = data;
     std::sort(expected.begin(), expected.end());
 
-    sycl_points::algorithms::core::BitonicSortShared<uint64_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<uint64_t> sorter(*queue);
     sorter.sort(data);
 
     EXPECT_EQ(data, expected) << "Failed to sort large uint64_t array";
@@ -294,7 +291,7 @@ TEST_F(BitonicSortTest, SortLargeArray) {
 
 // Test reusing the same sorter multiple times
 TEST_F(BitonicSortTest, ReuseSorterMultipleTimes) {
-    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(queue_ptr);
+    sycl_points::algorithms::core::BitonicSortShared<int32_t> sorter(*queue);
 
     // Sort in order: small array, large array, then small array again
     {

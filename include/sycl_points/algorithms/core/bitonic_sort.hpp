@@ -13,17 +13,17 @@ namespace core {
 template <typename T, size_t Alignment = 0>
 class BitonicSortShared {
 public:
-    BitonicSortShared(const std::shared_ptr<sycl::queue> &queue_ptr) : queue_ptr_(queue_ptr) {
+    BitonicSortShared(const sycl_utils::DeviceQueue &queue) : queue_(queue) {
         constexpr size_t INITIAL_SIZE = 32768;
         this->padded_data_ = std::make_shared<shared_vector<T, Alignment>>(
-            INITIAL_SIZE, shared_allocator<T, Alignment>(*this->queue_ptr_, {}));
+            INITIAL_SIZE, shared_allocator<T, Alignment>(*this->queue_.ptr, {}));
         this->padded_data_indices_ =
-            std::make_shared<shared_vector<uint64_t>>(INITIAL_SIZE, shared_allocator<uint64_t>(*this->queue_ptr_));
+            std::make_shared<shared_vector<uint64_t>>(INITIAL_SIZE, shared_allocator<uint64_t>(*this->queue_.ptr));
     }
 
     std::vector<uint64_t> get_sorted_indices() {
         std::vector<uint64_t> indices(this->last_N_);
-        this->queue_ptr_->memcpy(indices.data(), this->padded_data_indices_->data(), this->last_N_ * sizeof(uint64_t))
+        this->queue_.ptr->memcpy(indices.data(), this->padded_data_indices_->data(), this->last_N_ * sizeof(uint64_t))
             .wait();
         return indices;
     }
@@ -48,14 +48,16 @@ public:
         std::vector<uint64_t> series(pow2_size);
         std::iota(series.begin(), series.end(), 0);
         events +=
-            this->queue_ptr_->memcpy(this->padded_data_indices_->data(), series.data(), pow2_size * sizeof(uint64_t));
-
-        events += this->queue_ptr_->fill(this->padded_data_->data() + N, std::numeric_limits<T>::max(), pow2_size - N);
-        events += this->queue_ptr_->memcpy(this->padded_data_->data(), input.data(), N * sizeof(T));
-        events.wait();
+            this->queue_.ptr->memcpy(this->padded_data_indices_->data(), series.data(), pow2_size * sizeof(uint64_t));
+        if (pow2_size - N > 0) {
+            events +=
+                this->queue_.ptr->fill(this->padded_data_->data() + N, std::numeric_limits<T>::max(), pow2_size - N);
+        }
+        events += this->queue_.ptr->memcpy(this->padded_data_->data(), input.data(), N * sizeof(T));
+        events.wait_and_throw();
 
         // work group size
-        const size_t max_local_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
+        const size_t max_local_size = this->queue_.work_group_size;
 
         const auto data_ptr = this->padded_data_->data();
         const auto indices_ptr = this->padded_data_indices_->data();
@@ -64,7 +66,7 @@ public:
             for (size_t j = k / 2; j > 0; j /= 2) {
                 const size_t local_size = std::min(max_local_size, pow2_size / 2);
 
-                auto event = this->queue_ptr_->submit([&](sycl::handler &h) {
+                auto event = this->queue_.ptr->submit([&](sycl::handler &h) {
                     h.parallel_for(sycl::nd_range<1>(sycl::range<1>(pow2_size / 2), sycl::range<1>(local_size)),
                                    [=](sycl::nd_item<1> item) {
                                        const auto gid = item.get_global_id(0);
@@ -95,15 +97,15 @@ public:
                                        }
                                    });
                 });
-                event.wait();
+                event.wait_and_throw();
             }
         }
 
-        this->queue_ptr_->memcpy(input.data(), this->padded_data_->data(), N * sizeof(T)).wait();
+        this->queue_.ptr->memcpy(input.data(), this->padded_data_->data(), N * sizeof(T)).wait_and_throw();
     }
 
 private:
-    std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
+    sycl_utils::DeviceQueue queue_;
     shared_vector_ptr<T, Alignment> padded_data_ = nullptr;
     shared_vector_ptr<uint64_t> padded_data_indices_ = nullptr;
     size_t last_N_ = 0;
