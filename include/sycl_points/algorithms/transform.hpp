@@ -129,6 +129,9 @@ PointCloudShared transform_sycl_copy(const PointCloudShared& cloud, const Transf
 
     std::shared_ptr<PointCloudShared> ret = std::make_shared<PointCloudShared>(cloud.queue);
     ret->resize_points(cloud.size());
+    if (cloud.size() == 0) {
+        return *ret;
+    }
 
     sycl_utils::events events;
     if (cloud.has_cov()) {
