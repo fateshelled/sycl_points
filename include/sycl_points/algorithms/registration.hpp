@@ -37,23 +37,23 @@ struct LinearlizedDevice {
     // error is scalar
     float* error = nullptr;
 
-    std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
+    sycl_utils::DeviceQueue queue;
 
-    LinearlizedDevice(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
-        H0 = sycl::malloc_shared<sycl::float16>(1, *queue_ptr_);
-        H1 = sycl::malloc_shared<sycl::float16>(1, *queue_ptr_);
-        H2 = sycl::malloc_shared<sycl::float4>(1, *queue_ptr_);
-        b0 = sycl::malloc_shared<sycl::float3>(1, *queue_ptr_);
-        b1 = sycl::malloc_shared<sycl::float3>(1, *queue_ptr_);
-        error = sycl::malloc_shared<float>(1, *queue_ptr_);
+    LinearlizedDevice(const sycl_utils::DeviceQueue& q) : queue(q) {
+        H0 = sycl::malloc_shared<sycl::float16>(1, *this->queue.ptr);
+        H1 = sycl::malloc_shared<sycl::float16>(1, *this->queue.ptr);
+        H2 = sycl::malloc_shared<sycl::float4>(1, *this->queue.ptr);
+        b0 = sycl::malloc_shared<sycl::float3>(1, *this->queue.ptr);
+        b1 = sycl::malloc_shared<sycl::float3>(1, *this->queue.ptr);
+        error = sycl::malloc_shared<float>(1, *this->queue.ptr);
     }
     ~LinearlizedDevice() {
-        sycl_utils::free(H0, *queue_ptr_);
-        sycl_utils::free(H1, *queue_ptr_);
-        sycl_utils::free(H2, *queue_ptr_);
-        sycl_utils::free(b0, *queue_ptr_);
-        sycl_utils::free(b1, *queue_ptr_);
-        sycl_utils::free(error, *queue_ptr_);
+        sycl_utils::free(H0, *this->queue.ptr);
+        sycl_utils::free(H1, *this->queue.ptr);
+        sycl_utils::free(H2, *this->queue.ptr);
+        sycl_utils::free(b0, *this->queue.ptr);
+        sycl_utils::free(b1, *this->queue.ptr);
+        sycl_utils::free(error, *this->queue.ptr);
     }
     void setZero() {
         for (size_t i = 0; i < 16; ++i) {
@@ -78,18 +78,18 @@ template <ICPType icp = ICPType::GICP>
 class Registration {
 public:
     /// @brief Constructor
-    /// @param queue_ptr SYCL queue shared_ptr
+    /// @param queue SYCL queue
     /// @param params Registration parameters
-    Registration(const std::shared_ptr<sycl::queue>& queue_ptr, const RegistrationParams& params = RegistrationParams())
-        : params_(params), queue_ptr_(queue_ptr) {
+    Registration(const sycl_utils::DeviceQueue& queue, const RegistrationParams& params = RegistrationParams())
+        : params_(params), queue_(queue) {
         this->neighbors_ = std::make_shared<shared_vector<knn_search::KNNResultSYCL>>(
-            1, knn_search::KNNResultSYCL(), shared_allocator<knn_search::KNNResultSYCL>(*this->queue_ptr_, {}));
-        this->neighbors_->at(0).allocate(*this->queue_ptr_, 1, 1);
+            1, knn_search::KNNResultSYCL(), shared_allocator<knn_search::KNNResultSYCL>(*this->queue_.ptr, {}));
+        this->neighbors_->at(0).allocate(*this->queue_.ptr, 1, 1);
 
-        this->aligned_ = std::make_shared<PointCloudShared>(this->queue_ptr_);
-        this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_ptr_);
+        this->aligned_ = std::make_shared<PointCloudShared>(this->queue_);
+        this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_);
         this->linearlized_on_host_ = std::make_shared<shared_vector<LinearlizedResult>>(
-            1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_ptr_));
+            1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_.ptr));
     }
 
     /// @brief Get aligned point cloud
@@ -118,9 +118,9 @@ public:
 
         // mem_advise to device
         {
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, source.points->data(), N);
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, target.points->data(), TARGET_SIZE);
+            this->queue_.set_accessed_by_device(aligned_->points->data(), N);
+            this->queue_.set_accessed_by_device(source.points->data(), N);
+            this->queue_.set_accessed_by_device(target.points->data(), TARGET_SIZE);
         }
         // transform
         transform::transform_sycl(*aligned_, init_T);
@@ -155,9 +155,9 @@ public:
         transform_events.wait();
         // mem_advise clear
         {
-            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, aligned_->points->data(), N);
-            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, source.points->data(), N);
-            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, target.points->data(), TARGET_SIZE);
+            this->queue_.clear_accessed_by_device(aligned_->points->data(), N);
+            this->queue_.clear_accessed_by_device(source.points->data(), N);
+            this->queue_.clear_accessed_by_device(target.points->data(), TARGET_SIZE);
         }
 
         return result;
@@ -165,7 +165,7 @@ public:
 
 private:
     RegistrationParams params_;
-    std::shared_ptr<sycl::queue> queue_ptr_ = nullptr;
+    sycl_utils::DeviceQueue queue_;
     PointCloudShared::Ptr aligned_ = nullptr;
     shared_vector_ptr<knn_search::KNNResultSYCL> neighbors_ = nullptr;
     std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
@@ -183,12 +183,12 @@ private:
                                                       const std::vector<sycl::event>& depends) {
         const size_t N = source.size();
         sycl_utils::events events;
-        events += this->queue_ptr_->submit([&](sycl::handler& h) {
+        events += this->queue_.ptr->submit([&](sycl::handler& h) {
             if (this->linearlized_on_host_->size()) {
                 this->linearlized_on_host_->resize(N);
             }
-            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
-            const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
+            const size_t work_group_size = queue_.work_group_size;
+            const size_t global_size = queue_.get_global_size(N);
 
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
@@ -248,9 +248,9 @@ private:
                                                     const std::vector<sycl::event>& depends) {
         const size_t N = source.size();
         sycl_utils::events events;
-        events += this->queue_ptr_->submit([&](sycl::handler& h) {
-            const size_t work_group_size = sycl_utils::get_work_group_size_for_parallel_reduction(*this->queue_ptr_);
-            const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
+        events += this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.work_group_size_for_parallel_reduction;
+            const size_t global_size = this->queue_.get_global_size_for_parallel_reduction(N);
 
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
@@ -328,7 +328,7 @@ private:
     LinearlizedResult linearlize_sycl(const PointCloudShared& source, const PointCloudShared& transform_source,
                                       const PointCloudShared& target, const Eigen::Matrix4f transT,
                                       float max_correspondence_distance_2, const std::vector<sycl::event>& depends) {
-        if (sycl_utils::is_nvidia(*this->queue_ptr_)) {
+        if (this->queue_.is_nvidia()) {
             return this->linearlize_parallel_reduction(source, transform_source, target, transT,
                                                        max_correspondence_distance_2, depends);
         } else {

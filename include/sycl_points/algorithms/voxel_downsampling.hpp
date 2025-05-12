@@ -52,12 +52,12 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
 class VoxelGridSYCL {
 public:
     /// @brief Constructor
-    /// @param queue_ptr SYCL queue shared_ptr
+    /// @param queue SYCL queue
     /// @param voxel_size voxel size
-    VoxelGridSYCL(const std::shared_ptr<sycl::queue>& queue_ptr, const float voxel_size)
-        : queue_ptr_(queue_ptr), voxel_size_(voxel_size) {
+    VoxelGridSYCL(const sycl_points::sycl_utils::DeviceQueue& queue, const float voxel_size)
+        : queue_(queue), voxel_size_(voxel_size) {
         this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, VoxelConstants::invalid_coord,
-                                                                   shared_allocator<uint64_t>(*queue_ptr_));
+                                                                   shared_allocator<uint64_t>(*this->queue_.ptr));
         this->voxel_size_inv_ = 1.0f / this->voxel_size_;
     }
 
@@ -100,7 +100,7 @@ public:
     }
 
 private:
-    std::shared_ptr<sycl::queue> queue_ptr_;
+    sycl_points::sycl_utils::DeviceQueue queue_;
     float voxel_size_;
     float voxel_size_inv_;
 
@@ -111,13 +111,13 @@ private:
 
         // mem_advise set to device
         {
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->bit_ptr_->data(), N);
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, points.data(), N);
+            this->queue_.set_accessed_by_device(this->bit_ptr_->data(), N);
+            this->queue_.set_accessed_by_device(points.data(), N);
         }
 
-        const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr_);
-        const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
-        auto event = queue_ptr_->submit([&](sycl::handler& h) {
+        const size_t work_group_size = this->queue_.work_group_size;
+        const size_t global_size = this->queue_.get_global_size(N);
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             // memory ptr
             const auto point_ptr = points.data();
             const auto bit_ptr = this->bit_ptr_->data();
@@ -133,8 +133,8 @@ private:
 
         // mem_advise clear
         {
-            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, this->bit_ptr_->data(), N);
-            sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, points.data(), N);
+            this->queue_.clear_accessed_by_device(this->bit_ptr_->data(), N);
+            this->queue_.clear_accessed_by_device(points.data(), N);
         }
     }
 
@@ -143,8 +143,8 @@ private:
 
         // mem_advise set to host
         {
-            sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, this->bit_ptr_->data(), N);
-            sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, points.data(), N);
+            this->queue_.set_accessed_by_host(this->bit_ptr_->data(), N);
+            this->queue_.set_accessed_by_host(points.data(), N);
         }
 
         std::unordered_map<uint64_t, PointType> voxel_map;
@@ -162,8 +162,8 @@ private:
         }
         // mem_advise clear
         {
-            sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, this->bit_ptr_->data(), N);
-            sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, points.data(), N);
+            this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), N);
+            this->queue_.clear_accessed_by_host(points.data(), N);
         }
 
         return voxel_map;
@@ -175,14 +175,14 @@ private:
         result.clear();
         result.resize(N);
         // mem_advise set to host
-        sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, result.data(), N);
+        this->queue_.set_accessed_by_host(result.data(), N);
         // to point cloud
         size_t idx = 0;
         for (const auto& [_, point] : voxel_map) {
             result[idx++] = point / point.w();
         }
         // mem_advise clear
-        sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, result.data(), N);
+        this->queue_.clear_accessed_by_host(result.data(), N);
     }
 };
 

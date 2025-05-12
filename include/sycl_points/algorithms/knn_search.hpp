@@ -100,27 +100,27 @@ public:
     using FlatKDNodeVector = shared_vector<FlatKDNode>;
 
     std::shared_ptr<FlatKDNodeVector> tree_;
-    std::shared_ptr<sycl::queue> queue_ = nullptr;
+    sycl_utils::DeviceQueue queue;
 
     /// @brief Constructor
-    /// @param queue_ptr SYCL queue shared_ptr
-    KDTreeSYCL(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_(queue_ptr) {
-        tree_ = std::make_shared<FlatKDNodeVector>(0, *this->queue_);
+    /// @param q SYCL queue
+    KDTreeSYCL(const sycl_utils::DeviceQueue& q) : queue(q) {
+        tree_ = std::make_shared<FlatKDNodeVector>(0, *this->queue.ptr);
     }
 
     /// @brief Destructor
     ~KDTreeSYCL() {}
 
     /// @brief Build KDTree
-    /// @param queue_ptr SYCL queue shared_ptr
+    /// @param quqeue SYCL queue
     /// @param points Point Cloud
     /// @return KDTree
-    static KDTreeSYCL build(const std::shared_ptr<sycl::queue>& queue_ptr, const PointContainerShared& points) {
+    static KDTreeSYCL build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
         const size_t n = points.size();
 
         // Estimate tree size with some margin
         const size_t estimatedSize = n * 2;
-        KDTreeSYCL flatTree(queue_ptr);
+        KDTreeSYCL flatTree(q);
 
         flatTree.tree_->resize(estimatedSize);
 
@@ -216,11 +216,11 @@ public:
     }
 
     /// @brief Build KDTree
-    /// @param queue_ptr SYCL queue shared_ptr
+    /// @param queue SYCL queue
     /// @param cloud Point Cloud
     /// @return KDTree
-    static KDTreeSYCL build(const std::shared_ptr<sycl::queue>& queue_ptr, const PointCloudShared& cloud) {
-        return KDTreeSYCL::build(queue_ptr, *cloud.points);
+    static KDTreeSYCL build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud) {
+        return KDTreeSYCL::build(queue, *cloud.points);
     }
 
     /// @brief async kNN search
@@ -248,15 +248,15 @@ public:
         // Initialize result structure
         const size_t total_size = query_size * k;
         if (result.indices == nullptr || result.distances == nullptr) {
-            result.allocate(*this->queue_, query_size, k);
+            result.allocate(*this->queue.ptr, query_size, k);
         } else {
             result.resize(query_size, k);
         }
 
-        const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_);
-        const size_t global_size = sycl_utils::get_global_size(query_size, work_group_size);
+        const size_t work_group_size = this->queue.work_group_size;
+        const size_t global_size = this->queue.get_global_size(query_size);
 
-        auto event = this->queue_->submit([&](sycl::handler& h) {
+        auto event = this->queue.ptr->submit([&](sycl::handler& h) {
             // Get pointers
             const auto query_ptr = queries;
             const auto distance_ptr = result.distances->data();
@@ -399,12 +399,12 @@ public:
 };
 
 /// @brief kNN search by brute force
-/// @param queue_ptr SYCL queue shared_ptr
+/// @param queue SYCL queue
 /// @param queries query points
 /// @param targets target points
 /// @param k number of search nearrest neightbor
 /// @return knn search result
-inline KNNResultSYCL knn_search_bruteforce_sycl(const std::shared_ptr<sycl::queue>& queue_ptr,
+inline KNNResultSYCL knn_search_bruteforce_sycl(const sycl_utils::DeviceQueue& queue,
                                                 const PointCloudShared& queries, const PointCloudShared& targets,
                                                 const size_t k) {
     constexpr size_t MAX_K = 48;
@@ -414,10 +414,10 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(const std::shared_ptr<sycl::queu
 
     // Initialize result structure
     KNNResultSYCL result;
-    result.allocate(*queue_ptr, q, k);
+    result.allocate(*queue.ptr, q, k);
 
-    const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);
-    const size_t global_size = sycl_utils::get_global_size(q, work_group_size);
+    const size_t work_group_size = queue.work_group_size;
+    const size_t global_size = queue.get_global_size(q);
 
     // memory ptr
     auto targets_ptr = (*targets.points).data();
@@ -427,7 +427,7 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(const std::shared_ptr<sycl::queu
     auto* index_ptr = result.indices->data();
 
     // KNN search kernel BruteForce
-    auto event = queue_ptr->submit([&](sycl::handler& h) {
+    auto event = queue.ptr->submit([&](sycl::handler& h) {
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t queryIdx = item.get_global_id(0);
             if (queryIdx >= q) return;

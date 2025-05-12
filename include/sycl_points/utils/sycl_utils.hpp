@@ -61,17 +61,19 @@ inline size_t get_work_group_size(const sycl::queue& queue, size_t work_group_si
 /// @brief get device optimized work_group_size for parallel reduction
 /// @param device SYCL device
 /// @return optimized work_group_size
-inline size_t get_work_group_size_for_parallel_reduction(const sycl::device& device) {
+inline size_t get_work_group_size_for_parallel_reduction(const sycl::device& device, size_t work_group_size = 0) {
     constexpr size_t max_work_group_size = 281;
-    const size_t work_group_size = get_work_group_size(device);
-    return std::min(work_group_size, max_work_group_size);
+    if (work_group_size > 0) {
+        return std::min(work_group_size, max_work_group_size);
+    }
+    return std::min(get_work_group_size(device), max_work_group_size);
 }
 
 /// @brief get device optimized work_group_size for parallel reduction
 /// @param queue SYCL queue
 /// @return optimized work_group_size
-inline size_t get_work_group_size_for_parallel_reduction(const sycl::queue& queue) {
-    return get_work_group_size_for_parallel_reduction(queue.get_device());
+inline size_t get_work_group_size_for_parallel_reduction(const sycl::queue& queue, size_t work_group_size = 0) {
+    return get_work_group_size_for_parallel_reduction(queue.get_device(), work_group_size);
 }
 
 /// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.
@@ -166,21 +168,21 @@ inline bool is_gpu(const sycl::queue& queue) { return queue.get_device().is_gpu(
 /// @brief device is FPGA or not
 inline bool is_accelerator(const sycl::queue& queue) { return queue.get_device().is_accelerator(); }
 
-/// @brief device is NVIDIA or not
+/// @brief device vendor is NVIDIA or not
 inline bool is_nvidia(const sycl::queue& queue) {
     const auto device = queue.get_device();
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
     return vendor_id == VENDOR_ID::NVIDIA;
 }
 
-/// @brief device is INTEL or not
+/// @brief device vendor is Intel or not
 inline bool is_intel(const sycl::queue& queue) {
     const auto device = queue.get_device();
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
     return vendor_id == VENDOR_ID::INTEL;
 }
 
-/// @brief device is AMD or not
+/// @brief device vendor is AMD or not
 inline bool is_amd(const sycl::queue& queue) {
     const auto device = queue.get_device();
     const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
@@ -225,41 +227,41 @@ namespace mem_advise {
 /// @brief Hints that data will be accessed from the device. set flag UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE.
 /// @tparam T data type
 /// @param queue SYCL queue
-/// @param ptr shared memory pointer of data
+/// @param data_ptr shared memory pointer of data
 /// @param N number of data
 template <typename T>
-void set_accessed_by_device(sycl::queue& queue, T* ptr, size_t N) {
-    queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE);
+void set_accessed_by_device(sycl::queue& queue, T* data_ptr, size_t N) {
+    queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE);
 }
 
 /// @brief Remove affects of `set_accessed_by_device`. set flag UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_DEVICE
 /// @tparam T data type
 /// @param queue SYCL queue
-/// @param ptr shared memory pointer of data
+/// @param data_ptr shared memory pointer of data
 /// @param N number of data
 template <typename T>
-void clear_accessed_by_device(sycl::queue& queue, T* ptr, size_t N) {
-    queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_DEVICE);
+void clear_accessed_by_device(sycl::queue& queue, T* data_ptr, size_t N) {
+    queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_DEVICE);
 }
 
 /// @brief Hints that data will be accessed from the host. set flag UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_HOST
 /// @tparam T data type
 /// @param queue SYCL queue
-/// @param ptr shared memory pointer of data
+/// @param data_ptr shared memory pointer of data
 /// @param N number of data
 template <typename T>
-void set_accessed_by_host(sycl::queue& queue, T* ptr, size_t N) {
-    queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_HOST);
+void set_accessed_by_host(sycl::queue& queue, T* data_ptr, size_t N) {
+    queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_HOST);
 }
 
 /// @brief Remove affects of `set_accessed_by_host`. set flag UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_HOST
 /// @tparam T data type
 /// @param queue SYCL queue
-/// @param ptr shared memory pointer of data
+/// @param data_ptr shared memory pointer of data
 /// @param N number of data
 template <typename T>
-void clear_accessed_by_host(sycl::queue& queue, T* ptr, size_t N) {
-    queue.mem_advise(ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_HOST);
+void clear_accessed_by_host(sycl::queue& queue, T* data_ptr, size_t N) {
+    queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_HOST);
 }
 
 }  // namespace mem_advise
@@ -303,6 +305,91 @@ inline int nvidia_gpu_selector_v(const sycl::device& dev) {
 }
 
 }  // namespace device_selector
+
+/// @brief Represents a SYCL queue with device-specific optimizations and management capabilities
+struct DeviceQueue {
+    std::shared_ptr<sycl::queue> ptr = nullptr;  // sycl::queue pointer
+    size_t work_group_size;
+    size_t work_group_size_for_parallel_reduction;
+
+    /// @brief constructor
+    /// @param device sycl::device class
+    DeviceQueue(const sycl::device& device) : ptr(std::make_shared<sycl::queue>(device)) {
+        this->work_group_size = get_work_group_size(device);
+        this->work_group_size_for_parallel_reduction = get_work_group_size_for_parallel_reduction(device);
+    }
+
+    /// @brief Print device info
+    void print_device_info() const { sycl_utils::print_device_info(*this->ptr); }
+    /// @brief SYCL device this queue was constructed with.
+    sycl::device get_device() const { return this->ptr->get_device(); }
+    /// @brief device is CPU or not
+    bool is_cpu() const { return sycl_utils::is_cpu(*this->ptr); }
+    /// @brief device is GPU or not
+    bool is_gpu() const { return sycl_utils::is_gpu(*this->ptr); }
+    /// @brief device vendor is Intel or not
+    bool is_intel() const { return sycl_utils::is_intel(*this->ptr); }
+    /// @brief device vendor is NVIDIA or not
+    bool is_nvidia() const { return sycl_utils::is_nvidia(*this->ptr); }
+
+    /// @brief set work group size
+    /// @param wg_size work group size
+    void set_work_group_size(size_t wg_size) { this->work_group_size = get_work_group_size(*this->ptr, wg_size); }
+
+    /// @brief set work group size for parallel reduction
+    /// @param wg_size work group size
+    void set_work_group_size_for_parallel_reduction(size_t wg_size) {
+        this->work_group_size_for_parallel_reduction = get_work_group_size_for_parallel_reduction(*this->ptr, wg_size);
+    }
+
+    /// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.
+    /// @param N total number of elements to process.
+    /// @return global size
+    size_t get_global_size(size_t N) const { return sycl_utils::get_global_size(N, this->work_group_size); }
+
+    /// @brief Calculate global_size for parallel reduction.
+    /// @param N total number of elements to process.
+    /// @return global size for parallel reduction
+    size_t get_global_size_for_parallel_reduction(size_t N) const {
+        return sycl_utils::get_global_size(N, this->work_group_size_for_parallel_reduction);
+    }
+
+    /// @brief Hints that data will be accessed from the device. set flag UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE.
+    /// @tparam T data type
+    /// @param data_ptr shared memory pointer of data
+    /// @param N number of data
+    template <typename T>
+    void set_accessed_by_device(T* data_ptr, size_t N) const {
+        sycl_utils::mem_advise::set_accessed_by_device<T>(*this->ptr, data_ptr, N);
+    }
+
+    /// @brief Remove affects of `set_accessed_by_device`. set flag UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_DEVICE
+    /// @tparam T data type
+    /// @param data_ptr shared memory pointer of data
+    /// @param N number of data
+    template <typename T>
+    void clear_accessed_by_device(T* data_ptr, size_t N) const {
+        sycl_utils::mem_advise::clear_accessed_by_device<T>(*this->ptr, data_ptr, N);
+    }
+
+    /// @brief Hints that data will be accessed from the host. set flag UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_HOST
+    /// @tparam T data type
+    /// @param data_ptr shared memory pointer of data
+    /// @param N number of data
+    template <typename T>
+    void set_accessed_by_host(T* data_ptr, size_t N) const {
+        sycl_utils::mem_advise::set_accessed_by_host<T>(*this->ptr, data_ptr, N);
+    }
+
+    /// @brief Remove affects of `set_accessed_by_host`. set flag UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_HOST
+    /// @tparam T data type
+    /// @param data_ptr shared memory pointer of data
+    /// @param N number of data
+    template <typename T>
+    void clear_accessed_by_host(T* data_ptr, size_t N) const {
+        sycl_utils::mem_advise::clear_accessed_by_host<T>(*this->ptr, data_ptr, N);
+    }
+};
 
 }  // namespace sycl_utils
 

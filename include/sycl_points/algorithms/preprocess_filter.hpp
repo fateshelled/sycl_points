@@ -34,10 +34,10 @@ SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float m
 
 class FilterByFlags {
 public:
-    FilterByFlags(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
-        points_copy_ptr_ = std::make_shared<sycl_points::PointContainerShared>(*this->queue_ptr_);
-        covs_copy_ptr_ = std::make_shared<sycl_points::CovarianceContainerShared>(*this->queue_ptr_);
-        prefix_sum_ptr_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_ptr_);
+    FilterByFlags(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
+        points_copy_ptr_ = std::make_shared<sycl_points::PointContainerShared>(*this->queue_.ptr);
+        covs_copy_ptr_ = std::make_shared<sycl_points::CovarianceContainerShared>(*this->queue_.ptr);
+        prefix_sum_ptr_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
     }
 
     template <typename T, size_t AllocSize = 0>
@@ -47,8 +47,8 @@ public:
 
         // mem_advise to host
         {
-            sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, data.data(), N);
-            sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, flags.data(), N);
+            this->queue_.set_accessed_by_host(data.data(), N);
+            this->queue_.set_accessed_by_host(flags.data(), N);
         }
         size_t new_size = 0;
         for (size_t i = 0; i < N; ++i) {
@@ -60,8 +60,8 @@ public:
         data.resize(new_size);
         // mem_advise clear
         {
-            sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, data.data(), N);
-            sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, flags.data(), N);
+            this->queue_.clear_accessed_by_host(data.data(), N);
+            this->queue_.clear_accessed_by_host(flags.data(), N);
         }
     }
 
@@ -81,14 +81,14 @@ public:
             if (this->points_copy_ptr_->size() < N) {
                 this->points_copy_ptr_->resize(N);
             }
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->points_copy_ptr_->data(), N);
-            copy_event = this->queue_ptr_->memcpy(this->points_copy_ptr_->data(), data.data(), N * sizeof(T));
+            this->queue_.set_accessed_by_device(this->points_copy_ptr_->data(), N);
+            copy_event = this->queue_.ptr->memcpy(this->points_copy_ptr_->data(), data.data(), N * sizeof(T));
         } else if constexpr (std::is_same<T, Covariance>::value) {
             if (this->covs_copy_ptr_->size() < N) {
                 this->covs_copy_ptr_->resize(N);
             }
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->covs_copy_ptr_->data(), N);
-            copy_event = this->queue_ptr_->memcpy(this->covs_copy_ptr_->data(), data.data(), N * sizeof(T));
+            this->queue_.set_accessed_by_device(this->covs_copy_ptr_->data(), N);
+            copy_event = this->queue_.ptr->memcpy(this->covs_copy_ptr_->data(), data.data(), N * sizeof(T));
         }
 
         if (this->prefix_sum_ptr_->size() < N) {
@@ -97,8 +97,8 @@ public:
 
         // mem_advise to host
         {
-            sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, flags.data(), N);
-            sycl_utils::mem_advise::set_accessed_by_host(*this->queue_ptr_, this->prefix_sum_ptr_->data(), N);
+            this->queue_.set_accessed_by_host(flags.data(), N);
+            this->queue_.set_accessed_by_host(this->prefix_sum_ptr_->data(), N);
         }
         // calc prefix sum
 #if __cplusplus >= 202002L
@@ -112,8 +112,8 @@ public:
 #endif
         // mem_advise clear
         {
-            sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, flags.data(), N);
-            sycl_utils::mem_advise::clear_accessed_by_host(*this->queue_ptr_, this->prefix_sum_ptr_->data(), N);
+            this->queue_.clear_accessed_by_host(flags.data(), N);
+            this->queue_.clear_accessed_by_host(this->prefix_sum_ptr_->data(), N);
         }
         const size_t new_size = this->prefix_sum_ptr_->at(N - 1);
 
@@ -122,12 +122,12 @@ public:
 
         // mem_advise to device
         {
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, flags.data(), N);
-            sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->prefix_sum_ptr_->data(), N);
+            this->queue_.set_accessed_by_device(flags.data(), N);
+            this->queue_.set_accessed_by_device(this->prefix_sum_ptr_->data(), N);
         }
-        auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
-            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
-            const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.work_group_size;
+            const size_t global_size = this->queue_.get_global_size(N);
 
             // memory ptr
             T* data_ptr = data.data();
@@ -161,7 +161,7 @@ public:
     }
 
 private:
-    std::shared_ptr<sycl::queue> queue_ptr_;
+    sycl_utils::DeviceQueue queue_;
     std::shared_ptr<sycl_points::PointContainerShared> points_copy_ptr_;
     std::shared_ptr<sycl_points::CovarianceContainerShared> covs_copy_ptr_;
     shared_vector_ptr<uint32_t> prefix_sum_ptr_;
@@ -171,10 +171,10 @@ private:
 class PreprocessFilter {
 public:
     /// @brief Constructor
-    /// @param queue_ptr SYCL queue shared_ptr
-    PreprocessFilter(const std::shared_ptr<sycl::queue>& queue_ptr) : queue_ptr_(queue_ptr) {
-        filter_ = std::make_shared<FilterByFlags>(this->queue_ptr_);
-        flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_ptr_);
+    /// @param queue SYCL queue
+    PreprocessFilter(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
+        filter_ = std::make_shared<FilterByFlags>(this->queue_);
+        flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
     }
 
     /// @brief L∞ distance (chebyshev distance) filter.
@@ -190,15 +190,15 @@ public:
             this->flags_->resize(N);
         }
         // initialize flags
-        this->queue_ptr_->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
+        this->queue_.ptr->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
 
         // mem_advise set to device
-        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, this->flags_->data(), N);
-        sycl_utils::mem_advise::set_accessed_by_device(*this->queue_ptr_, data.points_ptr(), N);
+        this->queue_.set_accessed_by_device(this->flags_->data(), N);
+        this->queue_.set_accessed_by_device(data.points_ptr(), N);
 
-        auto event = this->queue_ptr_->submit([&](sycl::handler& h) {
-            const size_t work_group_size = sycl_utils::get_work_group_size(*this->queue_ptr_);
-            const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.work_group_size;
+            const size_t global_size = this->queue_.get_global_size(N);
             // memory ptr
             const auto point_ptr = data.points_ptr();
             auto flag_ptr = this->flags_->data();
@@ -214,10 +214,10 @@ public:
             });
         });
         event.wait();
-        sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, this->flags_->data(), N);
-        sycl_utils::mem_advise::clear_accessed_by_device(*this->queue_ptr_, data.points_ptr(), N);
+        this->queue_.clear_accessed_by_device(this->flags_->data(), N);
+        this->queue_.clear_accessed_by_device(data.points_ptr(), N);
 
-        if (sycl_utils::is_nvidia(*this->queue_ptr_)) {
+        if (this->queue_.is_nvidia()) {
             auto events = filter_->filter_by_flags_async(*data.points, *this->flags_);
             if (data.has_cov()) {
                 events += filter_->filter_by_flags_async(*data.covs, *this->flags_);
@@ -232,7 +232,7 @@ public:
     }
 
 private:
-    std::shared_ptr<sycl::queue> queue_ptr_;
+    sycl_utils::DeviceQueue queue_;
     std::shared_ptr<FilterByFlags> filter_;
     shared_vector_ptr<uint8_t> flags_;
 };

@@ -18,9 +18,9 @@ int main() {
     /* Specity device */
     const auto device_selector = sycl_points::sycl_utils::device_selector::supported_selector_v;
     sycl::device dev(device_selector);  // set from Environments variable `ONEAPI_DEVICE_SELECTOR`
-    std::shared_ptr<sycl::queue> queue = std::make_shared<sycl::queue>(dev);
+    sycl_points::sycl_utils::DeviceQueue queue(dev);
 
-    sycl_points::sycl_utils::print_device_info(*queue);
+    queue.print_device_info();
 
     const float voxel_size = 0.25f;
     const size_t num_neighbors = 10;

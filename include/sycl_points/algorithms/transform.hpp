@@ -69,9 +69,7 @@ inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const Tr
     const size_t N = cloud.size();
     if (N == 0) return sycl_utils::events();
 
-    const auto queue_ptr = cloud.queue_ptr;
-
-    shared_vector<sycl::vec<float, 4>> trans_vec_shared(4, shared_allocator<TransformMatrix>(*queue_ptr));
+    shared_vector<sycl::vec<float, 4>> trans_vec_shared(4, shared_allocator<TransformMatrix>(*cloud.queue.ptr));
 
 #pragma unroll 4
     for (size_t i = 0; i < 4; ++i) {
@@ -81,8 +79,8 @@ inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const Tr
         }
     }
 
-    const size_t work_group_size = sycl_utils::get_work_group_size(*queue_ptr);
-    const size_t global_size = sycl_utils::get_global_size(N, work_group_size);
+    const size_t work_group_size = cloud.queue.work_group_size;
+    const size_t global_size = cloud.queue.get_global_size(N);
 
     sycl_utils::events events;
     if (cloud.has_cov()) {
@@ -90,7 +88,7 @@ inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const Tr
         const auto trans_vec_ptr = trans_vec_shared.data();
 
         /* Transform Covariance */
-        events += queue_ptr->submit([&](sycl::handler& h) {
+        events += cloud.queue.ptr->submit([&](sycl::handler& h) {
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
                 if (i >= N) return;
@@ -104,7 +102,7 @@ inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const Tr
         const auto trans_vec_ptr = trans_vec_shared.data();
 
         /* Transform Points*/
-        events += queue_ptr->submit([&](sycl::handler& h) {
+        events += cloud.queue.ptr->submit([&](sycl::handler& h) {
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
                 if (i >= N) return;
@@ -128,21 +126,20 @@ inline void transform_sycl(PointCloudShared& cloud, const TransformMatrix& trans
 /// @param trans transform matrix
 /// @return Transformed Point Cloud
 PointCloudShared transform_sycl_copy(const PointCloudShared& cloud, const TransformMatrix& trans) {
-    const auto queue_ptr = cloud.queue_ptr;
 
-    std::shared_ptr<PointCloudShared> ret = std::make_shared<PointCloudShared>(queue_ptr);
+    std::shared_ptr<PointCloudShared> ret = std::make_shared<PointCloudShared>(cloud.queue);
     ret->resize_points(cloud.size());
 
     sycl_utils::events events;
     if (cloud.has_cov()) {
         ret->resize_covs(cloud.size());
-        events += queue_ptr->submit([&](sycl::handler& h) {
+        events += cloud.queue.ptr->submit([&](sycl::handler& h) {
             const auto covs = cloud.covs_ptr();
             const auto output_covs = ret->covs_ptr();
             h.memcpy(output_covs, covs, cloud.size() * sizeof(Covariance));
         });
     }
-    events += queue_ptr->memcpy(ret->points_ptr(), cloud.points_ptr(), cloud.size() * sizeof(PointType));
+    events += cloud.queue.ptr->memcpy(ret->points_ptr(), cloud.points_ptr(), cloud.size() * sizeof(PointType));
     events.wait();
 
     transform_sycl(*ret, trans);
