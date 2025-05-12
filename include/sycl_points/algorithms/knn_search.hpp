@@ -404,9 +404,8 @@ public:
 /// @param targets target points
 /// @param k number of search nearrest neightbor
 /// @return knn search result
-inline KNNResultSYCL knn_search_bruteforce_sycl(const sycl_utils::DeviceQueue& queue,
-                                                const PointCloudShared& queries, const PointCloudShared& targets,
-                                                const size_t k) {
+inline KNNResultSYCL knn_search_bruteforce_sycl(const sycl_utils::DeviceQueue& queue, const PointCloudShared& queries,
+                                                const PointCloudShared& targets, const size_t k) {
     constexpr size_t MAX_K = 48;
 
     const size_t n = targets.points->size();  // Number of dataset points

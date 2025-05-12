@@ -126,7 +126,6 @@ inline void transform_sycl(PointCloudShared& cloud, const TransformMatrix& trans
 /// @param trans transform matrix
 /// @return Transformed Point Cloud
 PointCloudShared transform_sycl_copy(const PointCloudShared& cloud, const TransformMatrix& trans) {
-
     std::shared_ptr<PointCloudShared> ret = std::make_shared<PointCloudShared>(cloud.queue);
     ret->resize_points(cloud.size());
     if (cloud.size() == 0) {

@@ -277,40 +277,32 @@ void clear_accessed_by_host(sycl::queue& queue, T* data_ptr, size_t N) {
 
 namespace device_selector {
 
-inline int supported_selector_v(const sycl::device& dev) {
+bool is_supported_device(const sycl::device& dev) {
     const auto backend = dev.get_backend();
     bool supported = true;
     supported &= (backend == sycl::backend::opencl) || (backend == sycl::backend::ext_oneapi_cuda);
     supported &= enable_shared_allocations(dev);
-    if (supported) {
-        return 1;
-    } else {
-        return -1;
-    }
+    return supported;
+}
+
+inline int default_selector_v(const sycl::device& dev) {
+    const auto backend = dev.get_backend();
+    return is_supported_device(dev);
 }
 
 inline int intel_cpu_selector_v(const sycl::device& dev) {
-    if (supported_selector_v(dev) < 0) {
-        return -1;
-    }
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
-    return dev.is_cpu() && (vendor_id == VENDOR_ID::INTEL);
+    return dev.is_cpu() && (vendor_id == VENDOR_ID::INTEL) && is_supported_device(dev);
 }
 
 inline int intel_gpu_selector_v(const sycl::device& dev) {
-    if (supported_selector_v(dev) < 0) {
-        return -1;
-    }
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
-    return dev.is_gpu() && (vendor_id == VENDOR_ID::INTEL);
+    return dev.is_gpu() && (vendor_id == VENDOR_ID::INTEL) && is_supported_device(dev);
 }
 
 inline int nvidia_gpu_selector_v(const sycl::device& dev) {
-    if (supported_selector_v(dev) < 0) {
-        return -1;
-    }
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
-    return dev.is_gpu() && (vendor_id == VENDOR_ID::NVIDIA);
+    return dev.is_gpu() && (vendor_id == VENDOR_ID::NVIDIA) && is_supported_device(dev);
 }
 
 }  // namespace device_selector
@@ -326,6 +318,12 @@ struct DeviceQueue {
     /// @brief constructor
     /// @param device sycl::device class
     DeviceQueue(const sycl::device& device) : ptr(std::make_shared<sycl::queue>(device)) {
+        if (!sycl_utils::device_selector::is_supported_device(device)) {
+            const std::string device_name = device.get_info<sycl::info::device::name>();
+            const std::string backend_name = sycl::detail::get_backend_name_no_vendor(device.get_backend()).data();
+            const std::string error_msg = device_name + " [" + backend_name + "]" + " is not supported.";
+            throw std::runtime_error(error_msg);
+        }
         this->work_group_size = get_work_group_size(device);
         this->work_group_size_for_parallel_reduction = get_work_group_size_for_parallel_reduction(device);
     }

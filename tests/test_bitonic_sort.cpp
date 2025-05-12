@@ -17,7 +17,7 @@ protected:
     void SetUp() override {
         // Setup for SYCL device and queue
         try {
-            sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::supported_selector_v);
+            sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
             queue = std::make_shared<sycl_points::sycl_utils::DeviceQueue>(device);
             std::cout << "Using device: " << device.get_info<sycl::info::device::name>() << std::endl;
         } catch (const sycl::exception& e) {

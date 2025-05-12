@@ -531,7 +531,6 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
     return x;
 }
 
-
 template <size_t M, size_t N>
 /// @brief copy matrix
 /// @param src source matrix
