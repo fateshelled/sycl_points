@@ -58,24 +58,6 @@ inline size_t get_work_group_size(const sycl::queue& queue, size_t work_group_si
     return get_work_group_size(queue.get_device(), work_group_size);
 }
 
-/// @brief get device optimized work_group_size for parallel reduction
-/// @param device SYCL device
-/// @return optimized work_group_size
-inline size_t get_work_group_size_for_parallel_reduction(const sycl::device& device, size_t work_group_size = 0) {
-    constexpr size_t max_work_group_size = 281;
-    if (work_group_size > 0) {
-        return std::min(work_group_size, max_work_group_size);
-    }
-    return std::min(get_work_group_size(device), max_work_group_size);
-}
-
-/// @brief get device optimized work_group_size for parallel reduction
-/// @param queue SYCL queue
-/// @return optimized work_group_size
-inline size_t get_work_group_size_for_parallel_reduction(const sycl::queue& queue, size_t work_group_size = 0) {
-    return get_work_group_size_for_parallel_reduction(queue.get_device(), work_group_size);
-}
-
 /// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.
 /// @param N total number of elements to process.
 /// @param work_group_size size of each work group.
@@ -117,6 +99,8 @@ inline void print_device_info(const sycl::device& device) {
                   << std::endl;
 
         std::cout << "\tMax Work Group Size: " << device.get_info<sycl::info::device::max_work_group_size>()
+                  << std::endl;
+        std::cout << "\tMax Work Item Dimensions: " << device.get_info<sycl::info::device::max_work_item_dimensions>()
                   << std::endl;
         std::cout << "\tMax Work Item Sizes: [";
         std::cout << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << ", ";
@@ -328,7 +312,7 @@ public:
             throw std::runtime_error(error_msg);
         }
         this->work_group_size = sycl_utils::get_work_group_size(device);
-        this->work_group_size_for_parallel_reduction = sycl_utils::get_work_group_size_for_parallel_reduction(device);
+        this->work_group_size_for_parallel_reduction = sycl_utils::get_work_group_size(device);
     }
 
     /// @brief Print device info
@@ -347,6 +331,7 @@ public:
     /// @brief get work group size
     /// @return work group size
     size_t get_work_group_size() const { return this->work_group_size; }
+
     /// @brief set work group size
     /// @param wg_size work group size
     void set_work_group_size(size_t wg_size) {
@@ -356,11 +341,11 @@ public:
     /// @brief get work group size for parallel reduction
     /// @return work group size for parallel reduction
     size_t get_work_group_size_for_parallel_reduction() const { return this->work_group_size_for_parallel_reduction; }
+
     /// @brief set work group size for parallel reduction
     /// @param wg_size work group size
     void set_work_group_size_for_parallel_reduction(size_t wg_size) {
-        this->work_group_size_for_parallel_reduction =
-            sycl_utils::get_work_group_size_for_parallel_reduction(*this->ptr, wg_size);
+        this->work_group_size_for_parallel_reduction = sycl_utils::get_work_group_size(*this->ptr, wg_size);
     }
 
     /// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.
