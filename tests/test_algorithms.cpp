@@ -2,7 +2,7 @@
 
 #include <cmath>
 #include <random>
-#include <sycl_points/algorithms/core/sort.hpp>
+#include <sycl_points/algorithms/sort/sort.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
 
 class SortTest : public ::testing::Test {
@@ -31,7 +31,7 @@ protected:
 };
 
 TEST_F(SortTest, AscendingHeapSortTest) {
-    using namespace sycl_points::algorithms::core::kernel;
+    using namespace sycl_points::algorithms::sort::kernel;
     // 空の配列
     heap_sort(emptyArray.data(), emptyArray.size());
     EXPECT_TRUE(emptyArray.empty());
@@ -63,7 +63,7 @@ TEST_F(SortTest, AscendingHeapSortTest) {
 }
 
 TEST_F(SortTest, AscendingHeapSortOnDeviceTest) {
-    using namespace sycl_points::algorithms::core::kernel;
+    using namespace sycl_points::algorithms::sort::kernel;
 
     sycl_points::shared_vector<uint64_t> sharedRandom(randomData.size(), *queue_ptr);
     for (size_t i = 0; i < randomData.size(); ++i) {
@@ -83,7 +83,7 @@ TEST_F(SortTest, AscendingHeapSortOnDeviceTest) {
 }
 
 TEST_F(SortTest, DescendingHeapSortTest) {
-    using namespace sycl_points::algorithms::core::kernel;
+    using namespace sycl_points::algorithms::sort::kernel;
     // 空の配列
     heap_sort_descending(emptyArray.data(), emptyArray.size());
     EXPECT_TRUE(emptyArray.empty());
@@ -114,7 +114,7 @@ TEST_F(SortTest, DescendingHeapSortTest) {
 }
 
 TEST_F(SortTest, AscendingQuickSortTest) {
-    using namespace sycl_points::algorithms::core::kernel;
+    using namespace sycl_points::algorithms::sort::kernel;
 
     bool success;
     // 空の配列
@@ -157,7 +157,7 @@ TEST_F(SortTest, AscendingQuickSortTest) {
 }
 
 TEST_F(SortTest, DescendingQuickSortTest) {
-    using namespace sycl_points::algorithms::core::kernel;
+    using namespace sycl_points::algorithms::sort::kernel;
 
     bool success;
     // 空の配列
@@ -200,8 +200,8 @@ TEST_F(SortTest, DescendingQuickSortTest) {
 }
 
 TEST_F(SortTest, AscendingQuickSortOnDeviceTest) {
-    using namespace sycl_points::algorithms::core;
-    using namespace sycl_points::algorithms::core::kernel;
+    using namespace sycl_points::algorithms::sort;
+    using namespace sycl_points::algorithms::sort::kernel;
 
     sycl_points::shared_vector<uint64_t> sharedRandom(randomData.size(), *queue_ptr);
     for (size_t i = 0; i < randomData.size(); ++i) {
@@ -224,8 +224,8 @@ TEST_F(SortTest, AscendingQuickSortOnDeviceTest) {
 }
 
 TEST_F(SortTest, DescendingQuickSortOnDeviceTest) {
-    using namespace sycl_points::algorithms::core;
-    using namespace sycl_points::algorithms::core::kernel;
+    using namespace sycl_points::algorithms::sort;
+    using namespace sycl_points::algorithms::sort::kernel;
 
     sycl_points::shared_vector<uint64_t> sharedRandom(randomData.size(), *queue_ptr);
     for (size_t i = 0; i < randomData.size(); ++i) {

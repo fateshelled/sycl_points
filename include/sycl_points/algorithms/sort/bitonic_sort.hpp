@@ -8,7 +8,7 @@ namespace sycl_points {
 
 namespace algorithms {
 
-namespace core {
+namespace sort {
 
 template <typename T, size_t Alignment = 0>
 class BitonicSortShared {
@@ -111,7 +111,7 @@ private:
     size_t last_N_ = 0;
 };
 
-}  // namespace core
+}  // namespace sort
 
 }  // namespace algorithms
 

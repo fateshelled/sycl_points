@@ -6,7 +6,7 @@ namespace sycl_points {
 
 namespace algorithms {
 
-namespace core {
+namespace sort {
 
 namespace kernel {
 template <typename T>
@@ -159,7 +159,7 @@ SYCL_EXTERNAL inline bool quick_sort_descending(T* arr, int32_t start, int32_t e
 
 }  // namespace kernel
 
-}  // namespace core
+}  // namespace sort
 
 }  // namespace algorithms
 
