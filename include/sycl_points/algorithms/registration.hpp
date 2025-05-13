@@ -187,7 +187,7 @@ private:
             if (this->linearlized_on_host_->size()) {
                 this->linearlized_on_host_->resize(N);
             }
-            const size_t work_group_size = queue_.work_group_size;
+            const size_t work_group_size = queue_.get_work_group_size();
             const size_t global_size = queue_.get_global_size(N);
 
             // convert to sycl::float4
@@ -249,7 +249,7 @@ private:
         const size_t N = source.size();
         sycl_utils::events events;
         events += this->queue_.ptr->submit([&](sycl::handler& h) {
-            const size_t work_group_size = this->queue_.work_group_size_for_parallel_reduction;
+            const size_t work_group_size = this->queue_.get_work_group_size_for_parallel_reduction();
             const size_t global_size = this->queue_.get_global_size_for_parallel_reduction(N);
 
             // convert to sycl::float4

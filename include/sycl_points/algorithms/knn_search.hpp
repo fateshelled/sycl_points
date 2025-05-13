@@ -253,7 +253,7 @@ public:
             result.resize(query_size, k);
         }
 
-        const size_t work_group_size = this->queue.work_group_size;
+        const size_t work_group_size = this->queue.get_work_group_size();
         const size_t global_size = this->queue.get_global_size(query_size);
 
         auto event = this->queue.ptr->submit([&](sycl::handler& h) {
@@ -415,7 +415,7 @@ inline KNNResultSYCL knn_search_bruteforce_sycl(const sycl_utils::DeviceQueue& q
     KNNResultSYCL result;
     result.allocate(queue, q, k);
 
-    const size_t work_group_size = queue.work_group_size;
+    const size_t work_group_size = queue.get_work_group_size();
     const size_t global_size = queue.get_global_size(q);
 
     // memory ptr

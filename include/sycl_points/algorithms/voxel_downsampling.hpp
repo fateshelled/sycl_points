@@ -115,7 +115,7 @@ private:
             this->queue_.set_accessed_by_device(points.data(), N);
         }
 
-        const size_t work_group_size = this->queue_.work_group_size;
+        const size_t work_group_size = this->queue_.get_work_group_size();
         const size_t global_size = this->queue_.get_global_size(N);
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             // memory ptr

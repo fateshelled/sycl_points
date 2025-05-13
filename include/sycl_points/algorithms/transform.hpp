@@ -79,7 +79,7 @@ inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const Tr
         }
     }
 
-    const size_t work_group_size = cloud.queue.work_group_size;
+    const size_t work_group_size = cloud.queue.get_work_group_size();
     const size_t global_size = cloud.queue.get_global_size(N);
 
     sycl_utils::events events;

@@ -126,7 +126,7 @@ public:
             this->queue_.set_accessed_by_device(this->prefix_sum_ptr_->data(), N);
         }
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            const size_t work_group_size = this->queue_.work_group_size;
+            const size_t work_group_size = this->queue_.get_work_group_size();
             const size_t global_size = this->queue_.get_global_size(N);
 
             // memory ptr
@@ -197,7 +197,7 @@ public:
         this->queue_.set_accessed_by_device(data.points_ptr(), N);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            const size_t work_group_size = this->queue_.work_group_size;
+            const size_t work_group_size = this->queue_.get_work_group_size();
             const size_t global_size = this->queue_.get_global_size(N);
             // memory ptr
             const auto point_ptr = data.points_ptr();

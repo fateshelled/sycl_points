@@ -308,12 +308,15 @@ inline int nvidia_gpu_selector_v(const sycl::device& dev) {
 }  // namespace device_selector
 
 /// @brief Represents a SYCL queue with device-specific optimizations and management capabilities
-struct DeviceQueue {
+class DeviceQueue {
+private:
+    size_t work_group_size;
+    size_t work_group_size_for_parallel_reduction;
+
+public:
     using Ptr = std::shared_ptr<DeviceQueue>;
 
     std::shared_ptr<sycl::queue> ptr = nullptr;  // sycl::queue pointer
-    size_t work_group_size;
-    size_t work_group_size_for_parallel_reduction;
 
     /// @brief constructor
     /// @param device sycl::device class
@@ -324,8 +327,8 @@ struct DeviceQueue {
             const std::string error_msg = device_name + " [" + backend_name + "]" + " is not supported.";
             throw std::runtime_error(error_msg);
         }
-        this->work_group_size = get_work_group_size(device);
-        this->work_group_size_for_parallel_reduction = get_work_group_size_for_parallel_reduction(device);
+        this->work_group_size = sycl_utils::get_work_group_size(device);
+        this->work_group_size_for_parallel_reduction = sycl_utils::get_work_group_size_for_parallel_reduction(device);
     }
 
     /// @brief Print device info
@@ -341,14 +344,23 @@ struct DeviceQueue {
     /// @brief device vendor is NVIDIA or not
     bool is_nvidia() const { return sycl_utils::is_nvidia(*this->ptr); }
 
+    /// @brief get work group size
+    /// @return work group size
+    size_t get_work_group_size() const { return this->work_group_size; }
     /// @brief set work group size
     /// @param wg_size work group size
-    void set_work_group_size(size_t wg_size) { this->work_group_size = get_work_group_size(*this->ptr, wg_size); }
+    void set_work_group_size(size_t wg_size) {
+        this->work_group_size = sycl_utils::get_work_group_size(*this->ptr, wg_size);
+    }
 
+    /// @brief get work group size for parallel reduction
+    /// @return work group size for parallel reduction
+    size_t get_work_group_size_for_parallel_reduction() const { return this->work_group_size_for_parallel_reduction; }
     /// @brief set work group size for parallel reduction
     /// @param wg_size work group size
     void set_work_group_size_for_parallel_reduction(size_t wg_size) {
-        this->work_group_size_for_parallel_reduction = get_work_group_size_for_parallel_reduction(*this->ptr, wg_size);
+        this->work_group_size_for_parallel_reduction =
+            sycl_utils::get_work_group_size_for_parallel_reduction(*this->ptr, wg_size);
     }
 
     /// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.

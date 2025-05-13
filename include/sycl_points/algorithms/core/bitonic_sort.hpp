@@ -57,7 +57,7 @@ public:
         events.wait_and_throw();
 
         // work group size
-        const size_t max_local_size = this->queue_.work_group_size;
+        const size_t max_local_size = this->queue_.get_work_group_size();
 
         const auto data_ptr = this->padded_data_->data();
         const auto indices_ptr = this->padded_data_indices_->data();
