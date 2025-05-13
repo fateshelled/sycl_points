@@ -76,24 +76,52 @@ public:
         if (N == 0) return events;
 
         // copy original vector data
-        sycl::event copy_event;
+        sycl::event copy_event = this->copy_data(data);
+
+        if (this->prefix_sum_ptr_->size() < N) {
+            this->prefix_sum_ptr_->resize(N);
+        }
+
+        // calc prefix sum on host
+        this->prefix_sum_flags(flags);
+
+        const size_t new_size = this->prefix_sum_ptr_->at(N - 1);
+
+        copy_event.wait();
+        data.resize(new_size);
+
+        // apply filter on device
+        events += this->filter<T, AllocSize>(data, flags);
+        return events;
+    }
+
+private:
+    sycl_utils::DeviceQueue queue_;
+    std::shared_ptr<sycl_points::PointContainerShared> points_copy_ptr_;
+    std::shared_ptr<sycl_points::CovarianceContainerShared> covs_copy_ptr_;
+    shared_vector_ptr<uint32_t> prefix_sum_ptr_;
+
+    template <typename T, size_t AllocSize = 0>
+    sycl::event copy_data(shared_vector<T, AllocSize>& data) {
+        const size_t N = data.size();
         if constexpr (std::is_same<T, PointType>::value) {
             if (this->points_copy_ptr_->size() < N) {
                 this->points_copy_ptr_->resize(N);
             }
             this->queue_.set_accessed_by_device(this->points_copy_ptr_->data(), N);
-            copy_event = this->queue_.ptr->memcpy(this->points_copy_ptr_->data(), data.data(), N * sizeof(T));
+            return this->queue_.ptr->memcpy(this->points_copy_ptr_->data(), data.data(), N * sizeof(T));
         } else if constexpr (std::is_same<T, Covariance>::value) {
             if (this->covs_copy_ptr_->size() < N) {
                 this->covs_copy_ptr_->resize(N);
             }
             this->queue_.set_accessed_by_device(this->covs_copy_ptr_->data(), N);
-            copy_event = this->queue_.ptr->memcpy(this->covs_copy_ptr_->data(), data.data(), N * sizeof(T));
+            return this->queue_.ptr->memcpy(this->covs_copy_ptr_->data(), data.data(), N * sizeof(T));
         }
+        throw std::runtime_error("Not supported type T");
+    }
 
-        if (this->prefix_sum_ptr_->size() < N) {
-            this->prefix_sum_ptr_->resize(N);
-        }
+    void prefix_sum_flags(const shared_vector<uint8_t>& flags) {
+        const size_t N = flags.size();
 
         // mem_advise to host
         {
@@ -102,23 +130,23 @@ public:
         }
         // calc prefix sum
 #if __cplusplus >= 202002L
-        std::transform_inclusive_scan(
-            std::execution::unseq, flags.begin(), flags.begin() + N, this->prefix_sum_ptr_->begin(),
-            [](uint32_t a, uint32_t b) { return a + b; }, [](uint8_t a) { return static_cast<uint32_t>(a); });
+        std::transform_inclusive_scan(std::execution::unseq, flags.begin(), flags.begin() + N,
+                                      this->prefix_sum_ptr_->begin(), std::plus<uint32_t>(),
+                                      [](uint8_t a) { return static_cast<uint32_t>(a); });
 #else
-        std::transform_inclusive_scan(
-            flags.begin(), flags.begin() + N, this->prefix_sum_ptr_->begin(),
-            [](uint32_t a, uint32_t b) { return a + b; }, [](uint8_t a) { return static_cast<uint32_t>(a); });
+        std::transform_inclusive_scan(flags.begin(), flags.begin() + N, this->prefix_sum_ptr_->begin(),
+                                      std::plus<uint32_t>(), [](uint8_t a) { return static_cast<uint32_t>(a); });
 #endif
         // mem_advise clear
         {
             this->queue_.clear_accessed_by_host(flags.data(), N);
             this->queue_.clear_accessed_by_host(this->prefix_sum_ptr_->data(), N);
         }
-        const size_t new_size = this->prefix_sum_ptr_->at(N - 1);
+    }
 
-        copy_event.wait();
-        data.resize(new_size);
+    template <typename T, size_t AllocSize = 0>
+    sycl::event filter(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) {
+        const size_t N = flags.size();
 
         // mem_advise to device
         {
@@ -156,15 +184,8 @@ public:
                 }
             });
         });
-        events += event;
-        return events;
+        return event;
     }
-
-private:
-    sycl_utils::DeviceQueue queue_;
-    std::shared_ptr<sycl_points::PointContainerShared> points_copy_ptr_;
-    std::shared_ptr<sycl_points::CovarianceContainerShared> covs_copy_ptr_;
-    shared_vector_ptr<uint32_t> prefix_sum_ptr_;
 };
 
 /// @brief Preprocessing filter
