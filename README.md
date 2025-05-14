@@ -151,14 +151,14 @@ ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 
 | process                |        CPU |       iGPU |   RTX 3060 |
 | ---------------------- | ---------: | ---------: | ---------: |
-| 1. to PointCloudShared |  262.54 us |  713.59 us |  314.91 us |
-| 2. Downsampling        | 2233.76 us | 1558.17 us | 1942.60 us |
-| 3. KDTree build        | 1465.28 us | 1367.76 us | 1296.50 us |
-| 4. KDTree kNN Search   | 1175.28 us | 2468.82 us | 1552.91 us |
-| 5. compute Covariances |  147.04 us |  418.48 us |   88.70 us |
-| 6. update Covariance   |  159.40 us |  116.78 us |   25.63 us |
-| 7. Registration        | 1276.92 us | 2730.83 us | 1465.20 us |
-| Total                  | 6720.22 us | 9374.43 us | 6686.45 us |
+| 1. to PointCloudShared |  262.54 us |  713.59 us |  169.72 us |
+| 2. Downsampling        | 2233.76 us | 1558.17 us | 1967.80 us |
+| 3. KDTree build        | 1465.28 us | 1367.76 us | 1363.46 us |
+| 4. KDTree kNN Search   | 1175.28 us | 2468.82 us | 1360.50 us |
+| 5. compute Covariances |  147.04 us |  418.48 us |   42.35 us |
+| 6. update Covariance   |  159.40 us |  116.78 us |   21.49 us |
+| 7. Registration        | 1276.92 us | 2730.83 us | 1411.37 us |
+| Total                  | 6720.22 us | 9374.43 us | 6336.69 us |
 
 ## License
 This library is released under Apache License
