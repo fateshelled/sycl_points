@@ -2,6 +2,7 @@
 
 #include <execution>
 #include <numeric>
+#include <random>
 #include <sycl_points/utils/sycl_utils.hpp>
 
 namespace sycl_points {
@@ -339,7 +340,7 @@ private:
     }
 };
 
-/// @brief Preprocessing filter
+/// @brief Preprocessing filter for point cloud data
 class PreprocessFilter {
 public:
     /// @brief Constructor
@@ -347,26 +348,30 @@ public:
     PreprocessFilter(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
         filter_ = std::make_shared<FilterByFlags>(this->queue_);
         flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
+
+        this->mt_.seed(1234);  // Default seed for reproducibility
     }
 
-    /// @brief L∞ distance (chebyshev distance) filter.
-    /// @param data Point Cloud
-    /// @param min_distance min distance
-    /// @param max_distance max distance
+    /// @brief Sets the seed for the random number generator
+    /// @param seed Seed value to initialize the Mersenne Twister random generator
+    void set_random_seed(uint_fast32_t seed) { this->mt_.seed(seed); }
+
+    /// @brief L∞ distance (chebyshev distance) to the point cloud
+    /// @param data Point cloud to be filtered (modified in-place)
+    /// @param min_distance Minimum distance threshold (points closer than this are removed)
+    /// @param max_distance Maximum distance threshold (points farther than this are removed)
     void box_filter(PointCloudShared& data, float min_distance = 1.0f,
                     float max_distance = std::numeric_limits<float>::max()) {
         const size_t N = data.size();
         if (N == 0) return;
 
-        if (this->flags_->size() < N) {
-            this->flags_->resize(N);
-        }
-        // initialize flags
-        this->queue_.ptr->fill(this->flags_->data(), INCLUDE_FLAG, N).wait();
+        this->initialize_flags(N);
 
         // mem_advise set to device
-        this->queue_.set_accessed_by_device(this->flags_->data(), N);
-        this->queue_.set_accessed_by_device(data.points_ptr(), N);
+        {
+            this->queue_.set_accessed_by_device(this->flags_->data(), N);
+            this->queue_.set_accessed_by_device(data.points_ptr(), N);
+        }
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t work_group_size = this->queue_.get_work_group_size();
@@ -377,7 +382,6 @@ public:
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
                 if (i >= N) return;
-                if (flag_ptr[i] == REMOVE_FLAG) return;
                 if (!kernel::is_finite(point_ptr[i])) {
                     flag_ptr[i] = REMOVE_FLAG;
                     return;
@@ -386,9 +390,70 @@ public:
             });
         });
         event.wait();
-        this->queue_.clear_accessed_by_device(this->flags_->data(), N);
-        this->queue_.clear_accessed_by_device(data.points_ptr(), N);
 
+        // mem_advise clear
+        {
+            this->queue_.clear_accessed_by_device(this->flags_->data(), N);
+            this->queue_.clear_accessed_by_device(data.points_ptr(), N);
+        }
+
+        this->filter_by_flags(data);
+    }
+
+    /// @brief Randomly samples a specified number of points from the point cloud
+    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param sampling_num Number of points to retain after sampling
+    void random_sampling(PointCloudShared& data, size_t sampling_num) {
+        const size_t N = data.size();
+        if (N == 0) return;
+        if (N < sampling_num) return;
+
+        this->initialize_flags(N, REMOVE_FLAG);
+
+        // mem_advise to host
+        this->queue_.set_accessed_by_host(this->flags_->data(), N);
+
+        // Generate indices and perform Fisher-Yates shuffle for the first sampling_num elements
+        std::vector<size_t> indices(N);
+        {
+            std::iota(indices.begin(), indices.end(), 0);
+            for (size_t i = 0; i < sampling_num; ++i) {
+                std::uniform_int_distribution<size_t> dist(i, N - 1);
+                const size_t j = dist(this->mt_);
+                std::swap(indices[i], indices[j]);
+            }
+        }
+
+        // Mark the selected indices for inclusion
+        for (size_t i = 0; i < sampling_num; ++i) {
+            (*this->flags_)[indices[i]] = INCLUDE_FLAG;
+        }
+
+        // mem_advise clear
+        this->queue_.clear_accessed_by_host(this->flags_->data(), N);
+
+        this->filter_by_flags(data);
+    }
+
+private:
+    sycl_utils::DeviceQueue queue_;
+    std::shared_ptr<FilterByFlags> filter_;
+    shared_vector_ptr<uint8_t> flags_;
+    std::mt19937 mt_;
+
+    /// @brief Initializes the flags vector with a specified value
+    /// @param data_size Size needed for the flags vector
+    /// @param initial_flag Initial value to fill the flags with (INCLUDE_FLAG or REMOVE_FLAG)
+    void initialize_flags(size_t data_size, uint8_t initial_flag = INCLUDE_FLAG) {
+        if (this->flags_->size() < data_size) {
+            this->flags_->resize(data_size);
+        }
+        this->queue_.ptr->fill(this->flags_->data(), initial_flag, data_size).wait();
+    }
+
+    /// @brief Applies filtering based on the current flags
+    /// @param data Point cloud to be filtered (modified in-place)
+    void filter_by_flags(PointCloudShared& data) {
         if (this->queue_.is_nvidia()) {
             auto events = filter_->filter_by_flags_async(*data.points, *this->flags_);
             if (data.has_cov()) {
@@ -402,13 +467,8 @@ public:
             }
         }
     }
-
-private:
-    sycl_utils::DeviceQueue queue_;
-    std::shared_ptr<FilterByFlags> filter_;
-    shared_vector_ptr<uint8_t> flags_;
 };
-}  // namespace filter
 
+}  // namespace filter
 }  // namespace algorithms
 }  // namespace sycl_points
