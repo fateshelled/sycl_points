@@ -24,30 +24,30 @@ int main() {
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s).count();
 
     // KDTree
-    auto kdtree_sycl = sycl_points::algorithms::knn_search::KDTreeSYCL::build(queue, shared_points);
-    double dt_build_kdtree_sycl = 0.0;
+    double dt_build_kdtree = 0.0;
     for (size_t i = 0; i < 10; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto tmp = sycl_points::algorithms::knn_search::KDTreeSYCL::build(queue, shared_points);
-        dt_build_kdtree_sycl +=
+        auto tmp = sycl_points::algorithms::knn_search::KDTree::build(queue, shared_points);
+        dt_build_kdtree +=
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
     }
-    dt_build_kdtree_sycl /= 10;
+    dt_build_kdtree /= 10;
 
     // Covariance
-    double dt_covariances_sycl = 0.0;
+    double dt_covariances = 0.0;
     const size_t k_correspondence_covariance = 10;
+    auto kdtree = sycl_points::algorithms::knn_search::KDTree::build(queue, shared_points);
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_covariances_sycl(kdtree_sycl, shared_points, k_correspondence_covariance);
+        sycl_points::algorithms::covariance::compute_covariances(kdtree, shared_points, k_correspondence_covariance);
         if (i > 0) {
-            dt_covariances_sycl +=
+            dt_covariances +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                     .count();
         }
     }
-    dt_covariances_sycl /= 10;
+    dt_covariances /= 10;
 
     // Downsampling
     double dt_voxel_downsampling = 0.0;
@@ -111,7 +111,7 @@ int main() {
     double dt_transform_zerocopy = 0.0;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::transform::transform_sycl(shared_points, Eigen::Matrix4f::Identity());
+        sycl_points::algorithms::transform::transform(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
             dt_transform_zerocopy +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
@@ -138,8 +138,8 @@ int main() {
 
         std::cout << "Source: " << source_points.size() << " points" << std::endl;
         std::cout << "to PointCloudShared: " << dt_to_pointcloud_shared << " us" << std::endl;
-        std::cout << "Build KDTree (shared_ptr): " << dt_build_kdtree_sycl << " us" << std::endl;
-        std::cout << "Compute covariances on device (shared_ptr): " << dt_covariances_sycl << " us" << std::endl;
+        std::cout << "Build KDTree on cpu (shared_ptr): " << dt_build_kdtree << " us" << std::endl;
+        std::cout << "Compute covariances on device (shared_ptr): " << dt_covariances << " us" << std::endl;
         std::cout << "Voxel downsampling (shared_ptr): " << dt_voxel_downsampling << " us" << std::endl;
         std::cout << "transform on cpu (shared_ptr, copy): " << dt_transform_cpu_copy << " us" << std::endl;
         std::cout << "transform on cpu (shared_ptr, zero copy): " << dt_transform_cpu_zerocopy << " us" << std::endl;

@@ -65,7 +65,7 @@ SYCL_EXTERNAL inline void transform_point(const PointType& point, PointType& res
 /// @param cloud Point Cloud
 /// @param trans transform matrix
 /// @return events
-inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const TransformMatrix& trans) {
+inline sycl_utils::events transform_async(PointCloudShared& cloud, const TransformMatrix& trans) {
     const size_t N = cloud.size();
     if (N == 0) return sycl_utils::events();
 
@@ -117,15 +117,13 @@ inline sycl_utils::events transform_sycl_async(PointCloudShared& cloud, const Tr
 /// @brief Transform point cloud
 /// @param cloud Point Cloud
 /// @param trans transform matrix
-inline void transform_sycl(PointCloudShared& cloud, const TransformMatrix& trans) {
-    transform_sycl_async(cloud, trans).wait();
-}
+inline void transform(PointCloudShared& cloud, const TransformMatrix& trans) { transform_async(cloud, trans).wait(); }
 
 /// @brief Transform point cloud
 /// @param cloud Point Cloud
 /// @param trans transform matrix
 /// @return Transformed Point Cloud
-PointCloudShared transform_sycl_copy(const PointCloudShared& cloud, const TransformMatrix& trans) {
+PointCloudShared transform_copy(const PointCloudShared& cloud, const TransformMatrix& trans) {
     std::shared_ptr<PointCloudShared> ret = std::make_shared<PointCloudShared>(cloud.queue);
     ret->resize_points(cloud.size());
     if (cloud.size() == 0) {
@@ -144,7 +142,7 @@ PointCloudShared transform_sycl_copy(const PointCloudShared& cloud, const Transf
     events += cloud.queue.ptr->memcpy(ret->points_ptr(), cloud.points_ptr(), cloud.size() * sizeof(PointType));
     events.wait();
 
-    transform_sycl(*ret, trans);
+    transform(*ret, trans);
     return *ret;
 }
 

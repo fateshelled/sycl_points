@@ -4,7 +4,6 @@
 #include <cassert>
 #include <cstdint>
 #include <iostream>
-
 #include <sycl/sycl.hpp>
 
 namespace sycl_points {
@@ -253,6 +252,26 @@ void clear_accessed_by_host(sycl::queue& queue, T* data_ptr, size_t N) {
     queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_ACCESSED_BY_HOST);
 }
 
+/// @brief Hint that memory will be read from frequently and written to rarely
+/// @tparam T data type
+/// @param queue SYCL queue
+/// @param data_ptr shared memory pointer of data
+/// @param N number of data
+template <typename T>
+void set_read_mostly(sycl::queue& queue, T* data_ptr, size_t N) {
+    queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_SET_READ_MOSTLY);
+}
+
+/// @brief Remove affects of `set_read_mostly`. set flag UR_USM_ADVICE_FLAG_CLEAR_READ_MOSTLY
+/// @tparam T data type
+/// @param queue SYCL queue
+/// @param data_ptr shared memory pointer of data
+/// @param N number of data
+template <typename T>
+void clear_read_mostly(sycl::queue& queue, T* data_ptr, size_t N) {
+    queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_READ_MOSTLY);
+}
+
 }  // namespace mem_advise
 
 namespace device_selector {
@@ -390,6 +409,25 @@ public:
     template <typename T>
     void clear_accessed_by_host(T* data_ptr, size_t N) const {
         sycl_utils::mem_advise::clear_accessed_by_host<T>(*this->ptr, data_ptr, N);
+    }
+
+    /// @brief Hint that memory will be read from frequently and written to rarely
+    /// @tparam T data type
+    /// @param queue SYCL queue
+    /// @param data_ptr shared memory pointer of data
+    /// @param N number of data
+    template <typename T>
+    void set_read_mostly(T* data_ptr, size_t N) const {
+        sycl_utils::mem_advise::set_read_mostly<T>(*this->ptr, data_ptr, N);
+    }
+
+    /// @brief Remove affects of `set_read_mostly`. set flag UR_USM_ADVICE_FLAG_CLEAR_READ_MOSTLY
+    /// @tparam T data type
+    /// @param data_ptr shared memory pointer of data
+    /// @param N number of data
+    template <typename T>
+    void clear_read_mostly(T* data_ptr, size_t N) const {
+        sycl_utils::mem_advise::clear_read_mostly<T>(*this->ptr, data_ptr, N);
     }
 };
 

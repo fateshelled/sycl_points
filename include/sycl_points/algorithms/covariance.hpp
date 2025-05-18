@@ -70,10 +70,10 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 /// @param points Point Container
 /// @param covs Covariance Container
 /// @return eventscd
-inline sycl_utils::events compute_covariances_sycl_async(const sycl_utils::DeviceQueue& queue,
-                                                         const knn_search::KNNResultSYCL& neightbors,
-                                                         const PointContainerShared& points,
-                                                         CovarianceContainerShared& covs) {
+inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueue& queue,
+                                                    const knn_search::KNNResultSYCL& neightbors,
+                                                    const PointContainerShared& points,
+                                                    CovarianceContainerShared& covs) {
     const size_t N = points.size();
     covs.resize(N);
     if (N == 0) return sycl_utils::events();
@@ -103,12 +103,11 @@ inline sycl_utils::events compute_covariances_sycl_async(const sycl_utils::Devic
 /// @param k_correspondences Number of neighbor points
 /// @param covs Covariance Container
 /// @return events
-inline sycl_utils::events compute_covariances_sycl_async(const knn_search::KDTreeSYCL& kdtree,
-                                                         const PointContainerShared& points,
-                                                         const size_t k_correspondences,
-                                                         CovarianceContainerShared& covs) {
+inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kdtree,
+                                                    const PointContainerShared& points, const size_t k_correspondences,
+                                                    CovarianceContainerShared& covs) {
     const auto neightbors = kdtree.knn_search(points, k_correspondences);
-    return compute_covariances_sycl_async(kdtree.queue, neightbors, points, covs);
+    return compute_covariances_async(kdtree.queue, neightbors, points, covs);
 }
 
 /// @brief Async compute covariance using SYCL
@@ -116,20 +115,19 @@ inline sycl_utils::events compute_covariances_sycl_async(const knn_search::KDTre
 /// @param points Point Cloud
 /// @param k_correspondences Number of neighbor points
 /// @return events
-inline sycl_utils::events compute_covariances_sycl_async(const knn_search::KDTreeSYCL& kdtree,
-                                                         const PointCloudShared& points,
-                                                         const size_t k_correspondences) {
-    return compute_covariances_sycl_async(kdtree, *points.points, k_correspondences, *points.covs);
+inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kdtree, const PointCloudShared& points,
+                                                    const size_t k_correspondences) {
+    return compute_covariances_async(kdtree, *points.points, k_correspondences, *points.covs);
 }
 
 /// @brief Compute covariance using SYCL
 /// @param queue SYCL queue
 /// @param neightbors KNN search result
 /// @param points Point Container
-inline void compute_covariances_sycl(const sycl_utils::DeviceQueue& queue, const knn_search::KNNResultSYCL& neightbors,
-                                     const PointCloudShared& points) {
+inline void compute_covariances(const sycl_utils::DeviceQueue& queue, const knn_search::KNNResultSYCL& neightbors,
+                                const PointCloudShared& points) {
     const size_t N = points.size();
-    compute_covariances_sycl_async(queue, neightbors, *points.points, *points.covs).wait();
+    compute_covariances_async(queue, neightbors, *points.points, *points.covs).wait();
 }
 
 /// @brief Compute covariance using SYCL
@@ -137,12 +135,12 @@ inline void compute_covariances_sycl(const sycl_utils::DeviceQueue& queue, const
 /// @param neightbors KNN search result
 /// @param points Point Container
 /// @return Covariances
-inline CovarianceContainerShared compute_covariances_sycl(const sycl_utils::DeviceQueue& queue,
-                                                          const knn_search::KNNResultSYCL& neightbors,
-                                                          const PointContainerShared& points) {
+inline CovarianceContainerShared compute_covariances(const sycl_utils::DeviceQueue& queue,
+                                                     const knn_search::KNNResultSYCL& neightbors,
+                                                     const PointContainerShared& points) {
     const size_t N = points.size();
     CovarianceContainerShared covs(N, Covariance::Zero(), CovarianceAllocatorShared(*queue.ptr));
-    compute_covariances_sycl_async(queue, neightbors, points, covs).wait();
+    compute_covariances_async(queue, neightbors, points, covs).wait();
     return covs;
 }
 
@@ -151,26 +149,26 @@ inline CovarianceContainerShared compute_covariances_sycl(const sycl_utils::Devi
 /// @param points Point Container
 /// @param k_correspondences Number of neighbor points
 /// @return Covariances
-inline CovarianceContainerShared compute_covariances_sycl(const knn_search::KDTreeSYCL& kdtree,
-                                                          const PointContainerShared& points,
-                                                          const size_t k_correspondences) {
+inline CovarianceContainerShared compute_covariances(const knn_search::KDTree& kdtree,
+                                                     const PointContainerShared& points,
+                                                     const size_t k_correspondences) {
     const knn_search::KNNResultSYCL neightbors = kdtree.knn_search(points, k_correspondences);
-    return compute_covariances_sycl(kdtree.queue, neightbors, points);
+    return compute_covariances(kdtree.queue, neightbors, points);
 }
 
 /// @brief Compute covariance using SYCL
 /// @param kdtree KDTree
 /// @param points Point Cloud
 /// @param k_correspondences Number of neighbor points
-inline void compute_covariances_sycl(const knn_search::KDTreeSYCL& kdtree, const PointCloudShared& points,
-                                     const size_t k_correspondences) {
-    *points.covs = compute_covariances_sycl(kdtree, *points.points, k_correspondences);
+inline void compute_covariances(const knn_search::KDTree& kdtree, const PointCloudShared& points,
+                                const size_t k_correspondences) {
+    *points.covs = compute_covariances(kdtree, *points.points, k_correspondences);
 }
 
 /// @brief Update covariance matrix to a plane
 /// @param points Point Cloud with covatiance
 /// @return Covariances
-inline void covariance_update_plane(const PointCloudShared& points) {
+inline void covariance_update_plane_cpu(const PointCloudShared& points) {
     const Eigen::Vector3f values = {1e-3f, 1.0f, 1.0f};
 
     for (auto& cov : *points.covs) {
@@ -184,8 +182,8 @@ inline void covariance_update_plane(const PointCloudShared& points) {
 /// @param queue SYCL queue
 /// @param points Point Cloud with covatiance
 /// @return events
-inline sycl_utils::events covariance_update_plane_sycl_async(const sycl_utils::DeviceQueue& queue,
-                                                             const PointCloudShared& points) {
+inline sycl_utils::events covariance_update_plane_async(const sycl_utils::DeviceQueue& queue,
+                                                        const PointCloudShared& points) {
     const size_t N = points.size();
     const size_t work_group_size = queue.get_work_group_size();
     const size_t global_size = queue.get_global_size(N);
@@ -208,8 +206,8 @@ inline sycl_utils::events covariance_update_plane_sycl_async(const sycl_utils::D
 /// @brief Update covariance matrix to a plane
 /// @param queue SYCL queue
 /// @param points Point Cloud with covatiance
-inline void covariance_update_plane_sycl(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points) {
-    covariance_update_plane_sycl_async(queue, points).wait();
+inline void covariance_update_plane(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points) {
+    covariance_update_plane_async(queue, points).wait();
 }
 
 }  // namespace covariance

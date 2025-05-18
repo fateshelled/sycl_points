@@ -95,7 +95,7 @@ inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std
 }  // namespace
 
 /// @brief KDTree with SYCL implementation
-class KDTreeSYCL {
+class KDTree {
 public:
     using FlatKDNodeVector = shared_vector<FlatKDNode>;
 
@@ -104,23 +104,23 @@ public:
 
     /// @brief Constructor
     /// @param q SYCL queue
-    KDTreeSYCL(const sycl_utils::DeviceQueue& q) : queue(q) {
+    KDTree(const sycl_utils::DeviceQueue& q) : queue(q) {
         tree_ = std::make_shared<FlatKDNodeVector>(0, *this->queue.ptr);
     }
 
     /// @brief Destructor
-    ~KDTreeSYCL() {}
+    ~KDTree() {}
 
     /// @brief Build KDTree
     /// @param quqeue SYCL queue
     /// @param points Point Cloud
     /// @return KDTree
-    static KDTreeSYCL build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
+    static KDTree build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
         const size_t n = points.size();
 
         // Estimate tree size with some margin
         const size_t estimatedSize = n * 2;
-        KDTreeSYCL flatTree(q);
+        KDTree flatTree(q);
 
         flatTree.tree_->resize(estimatedSize);
 
@@ -212,6 +212,7 @@ public:
 
         // Trim the tree to actual used size
         flatTree.tree_->resize(nextNodeIdx);
+        // flatTree.queue.set_read_mostly(flatTree.tree_->data(), flatTree.tree_->size());
         return flatTree;
     }
 
@@ -219,8 +220,8 @@ public:
     /// @param queue SYCL queue
     /// @param cloud Point Cloud
     /// @return KDTree
-    static KDTreeSYCL build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud) {
-        return KDTreeSYCL::build(queue, *cloud.points);
+    static KDTree build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud) {
+        return KDTree::build(queue, *cloud.points);
     }
 
     /// @brief async kNN search
@@ -404,8 +405,8 @@ public:
 /// @param targets target points
 /// @param k number of search nearrest neightbor
 /// @return knn search result
-inline KNNResultSYCL knn_search_bruteforce_sycl(const sycl_utils::DeviceQueue& queue, const PointCloudShared& queries,
-                                                const PointCloudShared& targets, const size_t k) {
+inline KNNResultSYCL knn_search_bruteforce(const sycl_utils::DeviceQueue& queue, const PointCloudShared& queries,
+                                           const PointCloudShared& targets, const size_t k) {
     constexpr size_t MAX_K = 48;
 
     const size_t n = targets.points->size();  // Number of dataset points

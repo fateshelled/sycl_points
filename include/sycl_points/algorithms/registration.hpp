@@ -103,7 +103,7 @@ public:
     /// @param init_T Initial transformation matrix
     /// @return Registration result
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
-                             const knn_search::KDTreeSYCL& target_tree,
+                             const knn_search::KDTree& target_tree,
                              const TransformMatrix& init_T = TransformMatrix::Identity()) {
         const size_t N = source.size();
         const size_t TARGET_SIZE = target.size();
@@ -123,7 +123,7 @@ public:
             this->queue_.set_accessed_by_device(target.points->data(), TARGET_SIZE);
         }
         // transform
-        transform::transform_sycl(*aligned_, init_T);
+        transform::transform(*aligned_, init_T);
 
         float lambda = this->params_.lambda;
         const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
@@ -139,14 +139,14 @@ public:
 
             // Linearlize on device
             const LinearlizedResult linearlized_result =
-                this->linearlize_sycl(source, *aligned_, target, result.T.matrix(), max_dist_2, knn_event.evs);
+                this->linearlize(source, *aligned_, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
             // Optimize on Host
             this->optimize_gauss_newton(result, linearlized_result, lambda, verbose, iter);
 
             // Async transform source points on device
             transform_events =
-                transform::transform_sycl_async(*aligned_, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
+                transform::transform_async(*aligned_, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
 
             if (result.converged) {
                 break;
@@ -325,9 +325,9 @@ private:
         return linearlized_result;
     }
 
-    LinearlizedResult linearlize_sycl(const PointCloudShared& source, const PointCloudShared& transform_source,
-                                      const PointCloudShared& target, const Eigen::Matrix4f transT,
-                                      float max_correspondence_distance_2, const std::vector<sycl::event>& depends) {
+    LinearlizedResult linearlize(const PointCloudShared& source, const PointCloudShared& transform_source,
+                                 const PointCloudShared& target, const Eigen::Matrix4f transT,
+                                 float max_correspondence_distance_2, const std::vector<sycl::event>& depends) {
         if (this->queue_.is_nvidia()) {
             return this->linearlize_parallel_reduction(source, transform_source, target, transT,
                                                        max_correspondence_distance_2, depends);

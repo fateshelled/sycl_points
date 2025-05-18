@@ -61,8 +61,8 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        const auto source_tree = sycl_points::algorithms::knn_search::KDTreeSYCL::build(queue, source_downsampled);
-        const auto target_tree = sycl_points::algorithms::knn_search::KDTreeSYCL::build(queue, target_downsampled);
+        const auto source_tree = sycl_points::algorithms::knn_search::KDTree::build(queue, source_downsampled);
+        const auto target_tree = sycl_points::algorithms::knn_search::KDTree::build(queue, target_downsampled);
         auto dt_build_kdtree =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
@@ -75,15 +75,15 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_covariances_sycl(queue, source_neighbors, source_downsampled);
-        sycl_points::algorithms::covariance::compute_covariances_sycl(queue, target_neighbors, target_downsampled);
+        sycl_points::algorithms::covariance::compute_covariances(queue, source_neighbors, source_downsampled);
+        sycl_points::algorithms::covariance::compute_covariances(queue, target_neighbors, target_downsampled);
         auto dt_covariance =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::covariance_update_plane_sycl(queue, source_downsampled);
-        sycl_points::algorithms::covariance::covariance_update_plane_sycl(queue, target_downsampled);
+        sycl_points::algorithms::covariance::covariance_update_plane(queue, source_downsampled);
+        sycl_points::algorithms::covariance::covariance_update_plane(queue, target_downsampled);
         auto dt_to_plane =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
