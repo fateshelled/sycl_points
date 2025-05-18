@@ -20,6 +20,7 @@ This project was developed with reference to small_gicp, a lightweight point clo
     - Generalized Iterative Closest Point (GICP)
 - Preprocessing filter
     - L∞ distance (chebyshev distance) filter
+    - Random sampling
     - Voxel downsampling
 
 ### Future optimization work will include
