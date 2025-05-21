@@ -13,17 +13,12 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
-option(BUILD_TEST "Build test" ON)
+option(BUILD_EXAMPLES "Build examples" ON)
+option(BUILD_TESTS   "Build tests"     ON)
 
 find_package(IntelSYCL REQUIRED)
 find_package(Eigen3 REQUIRED)
-
-# For OpenMP
-find_package(OpenMP REQUIRED)
-if(OpenMP_FOUND)
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-endif()
+find_package(ament_cmake)
 
 set(SYCL_TARGET_FLAGS "spir64")
 
@@ -50,36 +45,53 @@ else()
   message(STATUS "Intel oneAPI for NVIDIA GPU support not available")
 endif()
 
-# add example
-function(add_example_exec EXEC_NAME)
-  add_executable(${EXEC_NAME}
-    examples/${EXEC_NAME}.cpp
-  )
-  target_include_directories(${EXEC_NAME} PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-  )
-  target_link_libraries(${EXEC_NAME} PRIVATE
-    sycl
-    Eigen3::Eigen
-  )
-  target_compile_options(${EXEC_NAME} PRIVATE
-    -fsycl
-    -fsycl-targets=${SYCL_TARGET_FLAGS}
-  )
+# Install ROS 2
+if (ament_cmake_FOUND)
+  set(BUILD_EXAMPLES OFF)
+  set(BUILD_TESTS    OFF)
 
-  target_link_options(${EXEC_NAME} PRIVATE
-    -fsycl
-    -fsycl-targets=${SYCL_TARGET_FLAGS}
-  )
-endfunction()
+  ament_export_include_directories(include)
+  ament_export_libraries(sycl_points)
+  ament_package()
 
-add_example_exec(example_memcpy)
-add_example_exec(example_point_cloud)
-add_example_exec(example_registration)
-add_example_exec(device_query)
+  install(
+      DIRECTORY "include/"
+      DESTINATION include
+    )
+endif()
 
-# add test
-if (BUILD_TEST)
+# Build example
+if(BUILD_EXAMPLES)
+  function(add_example_exec EXEC_NAME)
+    add_executable(${EXEC_NAME}
+      examples/${EXEC_NAME}.cpp
+    )
+    target_include_directories(${EXEC_NAME} PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(${EXEC_NAME} PRIVATE
+      sycl
+      Eigen3::Eigen
+    )
+    target_compile_options(${EXEC_NAME} PRIVATE
+      -fsycl
+      -fsycl-targets=${SYCL_TARGET_FLAGS}
+    )
+
+    target_link_options(${EXEC_NAME} PRIVATE
+      -fsycl
+      -fsycl-targets=${SYCL_TARGET_FLAGS}
+    )
+  endfunction()
+
+  add_example_exec(example_memcpy)
+  add_example_exec(example_point_cloud)
+  add_example_exec(example_registration)
+  add_example_exec(device_query)
+endif()
+
+# Build test
+if (BUILD_TESTS)
   find_package(GTest REQUIRED)
   include(CTest)
   enable_testing()
