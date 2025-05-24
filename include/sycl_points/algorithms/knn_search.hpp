@@ -96,10 +96,12 @@ inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std
 
 /// @brief KDTree with SYCL implementation
 class KDTree {
-public:
+private:
     using FlatKDNodeVector = shared_vector<FlatKDNode>;
-
     std::shared_ptr<FlatKDNodeVector> tree_;
+
+public:
+    using Ptr = std::shared_ptr<KDTree>;
     sycl_utils::DeviceQueue queue;
 
     /// @brief Constructor
@@ -114,15 +116,15 @@ public:
     /// @brief Build KDTree
     /// @param quqeue SYCL queue
     /// @param points Point Cloud
-    /// @return KDTree
-    static KDTree build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
+    /// @return KDTree shared_ptr
+    static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
         const size_t n = points.size();
 
         // Estimate tree size with some margin
         const size_t estimatedSize = n * 2;
-        KDTree flatTree(q);
+        KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
 
-        flatTree.tree_->resize(estimatedSize);
+        flatTree->tree_->resize(estimatedSize);
 
         // Main index array
         std::vector<uint32_t> indices(n);
@@ -173,7 +175,7 @@ public:
             const auto pointIdx = sortedValues[medianPos].second;
 
             // Initialize flat node
-            auto& node = (*flatTree.tree_)[nodeIdx];
+            auto& node = (*flatTree->tree_)[nodeIdx];
             node.x = points[pointIdx].x();
             node.y = points[pointIdx].y();
             node.z = points[pointIdx].z();
@@ -211,7 +213,7 @@ public:
         }
 
         // Trim the tree to actual used size
-        flatTree.tree_->resize(nextNodeIdx);
+        flatTree->tree_->resize(nextNodeIdx);
         // flatTree.queue.set_read_mostly(flatTree.tree_->data(), flatTree.tree_->size());
         return flatTree;
     }
@@ -219,8 +221,8 @@ public:
     /// @brief Build KDTree
     /// @param queue SYCL queue
     /// @param cloud Point Cloud
-    /// @return KDTree
-    static KDTree build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud) {
+    /// @return KDTree shared_ptr
+    static KDTree::Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud) {
         return KDTree::build(queue, *cloud.points);
     }
 

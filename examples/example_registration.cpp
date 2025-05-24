@@ -68,8 +68,8 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        const auto source_neighbors = source_tree.knn_search(source_downsampled, num_neighbors);
-        const auto target_neighbors = target_tree.knn_search(target_downsampled, num_neighbors);
+        const auto source_neighbors = source_tree->knn_search(source_downsampled, num_neighbors);
+        const auto target_neighbors = target_tree->knn_search(target_downsampled, num_neighbors);
         auto dt_knn_search_for_covs =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
@@ -90,7 +90,7 @@ int main() {
 
         t0 = std::chrono::high_resolution_clock::now();
         sycl_points::TransformMatrix init_T = sycl_points::TransformMatrix::Identity();
-        const auto ret = registration.align(source_downsampled, target_downsampled, target_tree, init_T);
+        const auto ret = registration.align(source_downsampled, target_downsampled, *target_tree, init_T);
         auto dt_registration =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();

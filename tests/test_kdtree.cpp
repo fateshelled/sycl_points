@@ -43,8 +43,7 @@ protected:
             *query_cloud = sycl_points::PointCloudShared(*queue, query_cpu);
 
             // Build KDTree
-            kdtree = std::make_shared<sycl_points::algorithms::knn_search::KDTree>(
-                sycl_points::algorithms::knn_search::KDTree::build(*queue, *target_cloud));
+            kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, *target_cloud);
 
         } catch (const sycl::exception& e) {
             std::cerr << "SYCL exception caught: " << e.what() << std::endl;
@@ -179,7 +178,7 @@ TEST_F(KDTreeTest, VariousSizePointClouds) {
             auto test_kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, test_target);
 
             // Run kNN search with KDTree
-            auto kdtree_result = test_kdtree.knn_search(test_query, k);
+            auto kdtree_result = test_kdtree->knn_search(test_query, k);
 
             // Run kNN search with brute force
             auto bruteforce_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(
@@ -213,7 +212,7 @@ TEST_F(KDTreeTest, SinglePoint) {
     auto single_kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, single_target);
 
     // Run kNN search with KDTree
-    auto kdtree_result = single_kdtree.knn_search(single_query, k);
+    auto kdtree_result = single_kdtree->knn_search(single_query, k);
 
     // Run kNN search with brute force
     auto bruteforce_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(
@@ -273,7 +272,7 @@ TEST_F(KDTreeTest, PerformanceLargeDataset) {
 
     // Time measurement - KDTree search
     auto kdtree_start = std::chrono::high_resolution_clock::now();
-    auto kdtree_result = large_kdtree.knn_search(large_query, k);
+    auto kdtree_result = large_kdtree->knn_search(large_query, k);
     auto kdtree_end = std::chrono::high_resolution_clock::now();
     auto kdtree_duration = std::chrono::duration_cast<std::chrono::milliseconds>(kdtree_end - kdtree_start);
 
