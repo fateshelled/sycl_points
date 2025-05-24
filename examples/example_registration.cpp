@@ -29,10 +29,10 @@ int main() {
     param.max_iterations = 10;
     param.max_correspondence_distance = 1.0f;
     param.verbose = false;
-    auto registration = sycl_points::algorithms::registration::RegistrationGICP(queue, param);
 
-    sycl_points::algorithms::filter::VoxelGrid voxel_grid(queue, voxel_size);
-    sycl_points::algorithms::filter::PreprocessFilter preprocess_filter(queue);
+    const auto registration = std::make_shared<sycl_points::algorithms::registration::RegistrationGICP>(queue, param);
+    const auto voxel_grid = std::make_shared<sycl_points::algorithms::filter::VoxelGrid>(queue, voxel_size);
+    const auto preprocess_filter = std::make_shared<sycl_points::algorithms::filter::PreprocessFilter>(queue);
 
     const float BOX_FILTER_MIN_DISTANCE = 0.5f;
     const float BOX_FILTER_MAX_DISTANCE = 50.0f;
@@ -49,13 +49,13 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        preprocess_filter.box_filter(source_shared, BOX_FILTER_MIN_DISTANCE, BOX_FILTER_MAX_DISTANCE);
+        preprocess_filter->box_filter(source_shared, BOX_FILTER_MIN_DISTANCE, BOX_FILTER_MAX_DISTANCE);
         sycl_points::PointCloudShared source_downsampled(queue);
-        voxel_grid.downsampling(source_shared, source_downsampled);
+        voxel_grid->downsampling(source_shared, source_downsampled);
 
-        preprocess_filter.box_filter(target_shared, BOX_FILTER_MIN_DISTANCE, BOX_FILTER_MAX_DISTANCE);
+        preprocess_filter->box_filter(target_shared, BOX_FILTER_MIN_DISTANCE, BOX_FILTER_MAX_DISTANCE);
         sycl_points::PointCloudShared target_downsampled(queue);
-        voxel_grid.downsampling(target_shared, target_downsampled);
+        voxel_grid->downsampling(target_shared, target_downsampled);
         auto dt_downsampled =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
@@ -90,7 +90,7 @@ int main() {
 
         t0 = std::chrono::high_resolution_clock::now();
         sycl_points::TransformMatrix init_T = sycl_points::TransformMatrix::Identity();
-        const auto ret = registration.align(source_downsampled, target_downsampled, *target_tree, init_T);
+        const auto ret = registration->align(source_downsampled, target_downsampled, *target_tree, init_T);
         auto dt_registration =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
