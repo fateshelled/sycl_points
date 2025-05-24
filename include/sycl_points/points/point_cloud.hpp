@@ -121,6 +121,12 @@ struct PointCloudShared {
     /// @brief resize covariance container
     /// @param N size
     void resize_covs(size_t N) const { this->covs->resize(N); }
+
+    /// @brief Erase all points and covariances data.
+    void clear() {
+        this->points->clear();
+        this->covs->clear();
+    }
 };
 
 }  // namespace sycl_points

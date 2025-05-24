@@ -6,8 +6,8 @@
 namespace sycl_points {
 namespace ros2 {
 
-inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue,
-                                         const sensor_msgs::msg::PointCloud2& msg) {
+inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const sensor_msgs::msg::PointCloud2& msg,
+                        PointCloudShared::Ptr& cloud) {
     uint8_t x_type = 0;
     uint8_t y_type = 0;
     uint8_t z_type = 0;
@@ -29,32 +29,36 @@ inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQu
     }
     if (x_offset < 0 || y_offset < 0 || z_offset < 0) {
         std::cerr << "Not found point cloud field" << std::endl;
-        return nullptr;
+        return false;
     }
     if ((x_type != sensor_msgs::msg::PointField::FLOAT32 && x_type != sensor_msgs::msg::PointField::FLOAT64)) {
         std::cerr << "Not supported point field type" << std::endl;
-        return nullptr;
+        return false;
     }
     if (x_type != y_type || x_type != z_type) {
         std::cerr << "Not supported point field type" << std::endl;
-        return nullptr;
+        return false;
     }
 
-    PointCloudShared::Ptr ret = std::make_shared<PointCloudShared>(queue);
+    if (cloud == nullptr || *cloud->queue.ptr != *queue.ptr) {
+        cloud = std::make_shared<PointCloudShared>(queue);
+    }
+
     const size_t point_step = msg.point_step;
     const size_t point_size = msg.width * msg.height;
 
     if (x_type == sensor_msgs::msg::PointField::FLOAT32) {
         uint8_t* msg_data = sycl::malloc_device<uint8_t>(msg.data.size(), *queue.ptr);
         auto copy_event = queue.ptr->memcpy(msg_data, msg.data.data(), sizeof(uint8_t) * msg.data.size());
-        ret->resize_points(point_size);
+        cloud->covs->clear();
+        cloud->resize_points(point_size);
         queue.ptr
             ->submit([&](sycl::handler& h) {
                 const size_t work_group_size = queue.get_work_group_size();
                 const size_t global_size = queue.get_global_size(point_size);
 
                 const uint8_t* msg_data_ptr = msg_data;
-                PointType* ret_data_ptr = ret->points->data();
+                PointType* ret_data_ptr = cloud->points->data();
                 h.depends_on(copy_event);
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                     const size_t i = item.get_global_id(0);
@@ -71,14 +75,15 @@ inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQu
         if (queue.is_supported_double()) {
             uint8_t* msg_data = sycl::malloc_device<uint8_t>(msg.data.size(), *queue.ptr);
             auto copy_event = queue.ptr->memcpy(msg_data, msg.data.data(), sizeof(uint8_t) * msg.data.size());
-            ret->resize_points(point_size);
+            cloud->covs->clear();
+            cloud->resize_points(point_size);
             queue.ptr
                 ->submit([&](sycl::handler& h) {
                     const size_t work_group_size = queue.get_work_group_size();
                     const size_t global_size = queue.get_global_size(point_size);
 
                     const uint8_t* msg_data_ptr = msg_data;
-                    PointType* ret_data_ptr = ret->points->data();
+                    PointType* ret_data_ptr = cloud->points->data();
                     h.depends_on(copy_event);
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                         const size_t i = item.get_global_id(0);
@@ -95,7 +100,8 @@ inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQu
                 .wait();
             sycl::free(msg_data, *queue.ptr);
         } else {
-            ret->points->reserve(point_size);
+            cloud->clear();
+            cloud->points->reserve(point_size);
             for (size_t i = 0; i < point_size; ++i) {
                 const auto x =
                     static_cast<float>(reinterpret_cast<const double*>(&msg.data[point_step * i + x_offset])[0]);
@@ -103,10 +109,16 @@ inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQu
                     static_cast<float>(reinterpret_cast<const double*>(&msg.data[point_step * i + y_offset])[0]);
                 const auto z =
                     static_cast<float>(reinterpret_cast<const double*>(&msg.data[point_step * i + z_offset])[0]);
-                ret->points->emplace_back(x, y, z, 1.0f);
+                cloud->points->emplace_back(x, y, z, 1.0f);
             }
         }
     }
+    return true;
+}
+inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue,
+                                         const sensor_msgs::msg::PointCloud2& msg) {
+    PointCloudShared::Ptr ret = nullptr;
+    fromROS2msg(queue, msg, ret);
     return ret;
 }
 
