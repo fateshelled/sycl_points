@@ -342,6 +342,8 @@ public:
     bool is_intel() const { return sycl_utils::is_intel(*this->ptr); }
     /// @brief device vendor is NVIDIA or not
     bool is_nvidia() const { return sycl_utils::is_nvidia(*this->ptr); }
+    /// @brief device support double precision or not
+    bool is_supported_double() const {return this->ptr->get_device().has(sycl::aspect::fp64); }
 
     /// @brief get work group size
     /// @return work group size
