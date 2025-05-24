@@ -77,13 +77,15 @@ struct LinearlizedDevice {
 template <ICPType icp = ICPType::GICP>
 class Registration {
 public:
+    using Ptr = std::shared_ptr<Registration<icp>>;
+
     /// @brief Constructor
     /// @param queue SYCL queue
     /// @param params Registration parameters
     Registration(const sycl_utils::DeviceQueue& queue, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_(queue) {
-        this->neighbors_ = std::make_shared<shared_vector<knn_search::KNNResultSYCL>>(
-            1, knn_search::KNNResultSYCL(), shared_allocator<knn_search::KNNResultSYCL>(*this->queue_.ptr));
+        this->neighbors_ = std::make_shared<shared_vector<knn_search::KNNResult>>(
+            1, knn_search::KNNResult(), shared_allocator<knn_search::KNNResult>(*this->queue_.ptr));
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
 
         this->aligned_ = std::make_shared<PointCloudShared>(this->queue_);
@@ -167,7 +169,7 @@ private:
     RegistrationParams params_;
     sycl_utils::DeviceQueue queue_;
     PointCloudShared::Ptr aligned_ = nullptr;
-    shared_vector_ptr<knn_search::KNNResultSYCL> neighbors_ = nullptr;
+    shared_vector_ptr<knn_search::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
     shared_vector_ptr<LinearlizedResult> linearlized_on_host_ = nullptr;
 

@@ -343,6 +343,8 @@ private:
 /// @brief Preprocessing filter for point cloud data
 class PreprocessFilter {
 public:
+    using Ptr = std::shared_ptr<PreprocessFilter>;
+
     /// @brief Constructor
     /// @param queue SYCL queue
     PreprocessFilter(const sycl_utils::DeviceQueue& queue) : queue_(queue) {

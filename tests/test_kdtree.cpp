@@ -69,8 +69,8 @@ protected:
     }
 
     // Helper function to compare KNN search results
-    void compareKNNResults(const sycl_points::algorithms::knn_search::KNNResultSYCL& result1,
-                         const sycl_points::algorithms::knn_search::KNNResultSYCL& result2,
+    void compareKNNResults(const sycl_points::algorithms::knn_search::KNNResult& result1,
+                         const sycl_points::algorithms::knn_search::KNNResult& result2,
                          size_t k, float epsilon = 1e-4f) {
         ASSERT_EQ(result1.query_size, result2.query_size);
         ASSERT_EQ(result1.k, result2.k);

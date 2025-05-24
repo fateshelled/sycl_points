@@ -31,7 +31,7 @@ int main() {
     param.verbose = false;
     auto registration = sycl_points::algorithms::registration::RegistrationGICP(queue, param);
 
-    sycl_points::algorithms::voxel_downsampling::VoxelGridSYCL voxel_grid(queue, voxel_size);
+    sycl_points::algorithms::filter::VoxelGrid voxel_grid(queue, voxel_size);
     sycl_points::algorithms::filter::PreprocessFilter preprocess_filter(queue);
 
     const float BOX_FILTER_MIN_DISTANCE = 0.5f;

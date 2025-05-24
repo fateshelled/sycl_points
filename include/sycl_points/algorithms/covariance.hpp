@@ -71,7 +71,7 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 /// @param covs Covariance Container
 /// @return eventscd
 inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueue& queue,
-                                                    const knn_search::KNNResultSYCL& neightbors,
+                                                    const knn_search::KNNResult& neightbors,
                                                     const PointContainerShared& points,
                                                     CovarianceContainerShared& covs) {
     const size_t N = points.size();
@@ -124,7 +124,7 @@ inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kd
 /// @param queue SYCL queue
 /// @param neightbors KNN search result
 /// @param points Point Container
-inline void compute_covariances(const sycl_utils::DeviceQueue& queue, const knn_search::KNNResultSYCL& neightbors,
+inline void compute_covariances(const sycl_utils::DeviceQueue& queue, const knn_search::KNNResult& neightbors,
                                 const PointCloudShared& points) {
     const size_t N = points.size();
     compute_covariances_async(queue, neightbors, *points.points, *points.covs).wait();
@@ -136,7 +136,7 @@ inline void compute_covariances(const sycl_utils::DeviceQueue& queue, const knn_
 /// @param points Point Container
 /// @return Covariances
 inline CovarianceContainerShared compute_covariances(const sycl_utils::DeviceQueue& queue,
-                                                     const knn_search::KNNResultSYCL& neightbors,
+                                                     const knn_search::KNNResult& neightbors,
                                                      const PointContainerShared& points) {
     const size_t N = points.size();
     CovarianceContainerShared covs(N, Covariance::Zero(), CovarianceAllocatorShared(*queue.ptr));
@@ -152,7 +152,7 @@ inline CovarianceContainerShared compute_covariances(const sycl_utils::DeviceQue
 inline CovarianceContainerShared compute_covariances(const knn_search::KDTree& kdtree,
                                                      const PointContainerShared& points,
                                                      const size_t k_correspondences) {
-    const knn_search::KNNResultSYCL neightbors = kdtree.knn_search(points, k_correspondences);
+    const knn_search::KNNResult neightbors = kdtree.knn_search(points, k_correspondences);
     return compute_covariances(kdtree.queue, neightbors, points);
 }
 

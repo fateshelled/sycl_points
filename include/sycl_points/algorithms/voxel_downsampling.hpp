@@ -7,7 +7,7 @@ namespace sycl_points {
 
 namespace algorithms {
 
-namespace voxel_downsampling {
+namespace filter {
 
 namespace {
 
@@ -49,12 +49,14 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
 }  // namespace kernel
 
 /// @brief Voxel grid downsampling with SYCL implementation
-class VoxelGridSYCL {
+class VoxelGrid {
 public:
+    using Ptr = std::shared_ptr<VoxelGrid>;
+
     /// @brief Constructor
     /// @param queue SYCL queue
     /// @param voxel_size voxel size
-    VoxelGridSYCL(const sycl_points::sycl_utils::DeviceQueue& queue, const float voxel_size)
+    VoxelGrid(const sycl_points::sycl_utils::DeviceQueue& queue, const float voxel_size)
         : queue_(queue), voxel_size_(voxel_size) {
         this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, VoxelConstants::invalid_coord,
                                                                    shared_allocator<uint64_t>(*this->queue_.ptr));

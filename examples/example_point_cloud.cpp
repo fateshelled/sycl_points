@@ -52,7 +52,7 @@ int main() {
     // Downsampling
     double dt_voxel_downsampling = 0.0;
     const float voxel_size = 1.0;
-    sycl_points::algorithms::voxel_downsampling::VoxelGridSYCL voxel_grid(queue, voxel_size);
+    sycl_points::algorithms::filter::VoxelGrid voxel_grid(queue, voxel_size);
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::PointCloudShared downsampled(queue);
