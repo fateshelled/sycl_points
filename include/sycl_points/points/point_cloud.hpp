@@ -109,7 +109,7 @@ struct PointCloudShared {
     /// @brief number of points
     size_t size() const { return this->points->size(); }
     /// @brief has covariance or not
-    bool has_cov() const { return this->covs->size() > 0; }
+    bool has_cov() const { return this->covs->size() > 0 && this->covs->size() == this->points->size(); }
     /// @brief pointer of points
     PointType* points_ptr() const { return this->points->data(); }
     /// @brief pointer of covariances
@@ -126,6 +126,27 @@ struct PointCloudShared {
     void clear() {
         this->points->clear();
         this->covs->clear();
+    }
+
+    void extend(const PointCloudShared& pc) {
+        const size_t org_size = this->size();
+
+        this->points->reserve(org_size + pc.size());
+        if (this->has_cov() && pc.has_cov()) {
+            this->covs->insert(this->covs->end(), pc.covs->begin(), pc.covs->end());
+        }
+        this->points->insert(this->points->end(), pc.points->begin(), pc.points->end());
+    }
+
+    void erase(size_t start_idx, size_t end_idx) {
+        if (this->has_cov()) {
+            this->covs->erase(this->covs->begin() + start_idx, this->covs->begin() + end_idx);
+        }
+        this->points->erase(this->points->begin() + start_idx, this->points->begin() + end_idx);
+    }
+
+    void operator+=(const PointCloudShared& pc) {
+        this->extend(pc);
     }
 };
 
