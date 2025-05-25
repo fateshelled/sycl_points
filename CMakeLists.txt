@@ -50,14 +50,29 @@ if (ament_cmake_FOUND)
   set(BUILD_EXAMPLES OFF)
   set(BUILD_TESTS    OFF)
 
-  ament_export_include_directories(include)
-  ament_export_libraries(sycl_points)
+  add_library(${PROJECT_NAME} INTERFACE)
+  target_include_directories(${PROJECT_NAME} INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+
+  ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
   ament_package()
 
   install(
       DIRECTORY "include/"
       DESTINATION include
     )
+
+  install(
+    TARGETS ${PROJECT_NAME}
+    EXPORT export_${PROJECT_NAME}
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
+  )
+
 endif()
 
 # Build example
