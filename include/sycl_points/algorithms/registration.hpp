@@ -116,16 +116,16 @@ public:
 
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
         // copy
-        aligned_ = std::make_shared<PointCloudShared>(source);
+        this->aligned_ = std::make_shared<PointCloudShared>(source);
 
         // mem_advise to device
         {
-            this->queue_.set_accessed_by_device(aligned_->points->data(), N);
+            this->queue_.set_accessed_by_device(this->aligned_->points->data(), N);
             this->queue_.set_accessed_by_device(source.points->data(), N);
             this->queue_.set_accessed_by_device(target.points->data(), TARGET_SIZE);
         }
         // transform
-        transform::transform(*aligned_, init_T);
+        transform::transform(*this->aligned_, init_T);
 
         float lambda = this->params_.lambda;
         const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
@@ -136,19 +136,19 @@ public:
             prev_T = result.T;
 
             // Nearest neighbor search on device
-            auto knn_event = target_tree.knn_search_async<1>(aligned_->points->data(), N, 1, (*this->neighbors_)[0],
+            auto knn_event = target_tree.knn_search_async<1>(this->aligned_->points->data(), N, 1, (*this->neighbors_)[0],
                                                              transform_events.evs);
 
             // Linearlize on device
             const LinearlizedResult linearlized_result =
-                this->linearlize(source, *aligned_, target, result.T.matrix(), max_dist_2, knn_event.evs);
+                this->linearlize(source, *this->aligned_, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
             // Optimize on Host
             this->optimize_gauss_newton(result, linearlized_result, lambda, verbose, iter);
 
             // Async transform source points on device
             transform_events =
-                transform::transform_async(*aligned_, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
+                transform::transform_async(*this->aligned_, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
 
             if (result.converged) {
                 break;
@@ -157,7 +157,7 @@ public:
         transform_events.wait();
         // mem_advise clear
         {
-            this->queue_.clear_accessed_by_device(aligned_->points->data(), N);
+            this->queue_.clear_accessed_by_device(this->aligned_->points->data(), N);
             this->queue_.clear_accessed_by_device(source.points->data(), N);
             this->queue_.clear_accessed_by_device(target.points->data(), TARGET_SIZE);
         }
