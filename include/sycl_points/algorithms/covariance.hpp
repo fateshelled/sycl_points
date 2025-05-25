@@ -121,13 +121,12 @@ inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kd
 }
 
 /// @brief Compute covariance using SYCL
-/// @param queue SYCL queue
 /// @param neightbors KNN search result
 /// @param points Point Container
-inline void compute_covariances(const sycl_utils::DeviceQueue& queue, const knn_search::KNNResult& neightbors,
+inline void compute_covariances(const knn_search::KNNResult& neightbors,
                                 const PointCloudShared& points) {
     const size_t N = points.size();
-    compute_covariances_async(queue, neightbors, *points.points, *points.covs).wait();
+    compute_covariances_async(points.queue, neightbors, *points.points, *points.covs).wait();
 }
 
 /// @brief Compute covariance using SYCL
@@ -179,16 +178,14 @@ inline void covariance_update_plane_cpu(const PointCloudShared& points) {
 }
 
 /// @brief Async update covariance matrix to a plane
-/// @param queue SYCL queue
 /// @param points Point Cloud with covatiance
 /// @return events
-inline sycl_utils::events covariance_update_plane_async(const sycl_utils::DeviceQueue& queue,
-                                                        const PointCloudShared& points) {
+inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& points) {
     const size_t N = points.size();
-    const size_t work_group_size = queue.get_work_group_size();
-    const size_t global_size = queue.get_global_size(N);
+    const size_t work_group_size = points.queue.get_work_group_size();
+    const size_t global_size = points.queue.get_global_size(N);
 
-    auto event = queue.ptr->submit([&](sycl::handler& h) {
+    auto event = points.queue.ptr->submit([&](sycl::handler& h) {
         const auto cov_ptr = points.covs->data();
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
@@ -204,10 +201,9 @@ inline sycl_utils::events covariance_update_plane_async(const sycl_utils::Device
 }
 
 /// @brief Update covariance matrix to a plane
-/// @param queue SYCL queue
 /// @param points Point Cloud with covatiance
-inline void covariance_update_plane(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points) {
-    covariance_update_plane_async(queue, points).wait();
+inline void covariance_update_plane(const PointCloudShared& points) {
+    covariance_update_plane_async(points).wait();
 }
 
 }  // namespace covariance

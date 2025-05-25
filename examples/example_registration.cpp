@@ -75,15 +75,15 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_covariances(queue, source_neighbors, source_downsampled);
-        sycl_points::algorithms::covariance::compute_covariances(queue, target_neighbors, target_downsampled);
+        sycl_points::algorithms::covariance::compute_covariances(source_neighbors, source_downsampled);
+        sycl_points::algorithms::covariance::compute_covariances(target_neighbors, target_downsampled);
         auto dt_covariance =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::covariance_update_plane(queue, source_downsampled);
-        sycl_points::algorithms::covariance::covariance_update_plane(queue, target_downsampled);
+        sycl_points::algorithms::covariance::covariance_update_plane(source_downsampled);
+        sycl_points::algorithms::covariance::covariance_update_plane(target_downsampled);
         auto dt_to_plane =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
