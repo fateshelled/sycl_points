@@ -1,4 +1,5 @@
 # sycl_points
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/fateshelled/sycl_points)
 
 A C++ header-only point cloud processing library accelerated with SYCL for heterogeneous computing systems.
 
