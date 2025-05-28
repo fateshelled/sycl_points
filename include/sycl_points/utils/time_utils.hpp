@@ -53,5 +53,5 @@ auto measure_execution(Func&& func, TimeType& elapsed_time, Args&&... args)
     }
 }
 
-}  // namespace time_measurement
+}  // namespace time_utils
 }  // namespace sycl_points

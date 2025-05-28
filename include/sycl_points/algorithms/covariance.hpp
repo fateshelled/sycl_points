@@ -123,8 +123,7 @@ inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kd
 /// @brief Compute covariance using SYCL
 /// @param neightbors KNN search result
 /// @param points Point Container
-inline void compute_covariances(const knn_search::KNNResult& neightbors,
-                                const PointCloudShared& points) {
+inline void compute_covariances(const knn_search::KNNResult& neightbors, const PointCloudShared& points) {
     const size_t N = points.size();
     compute_covariances_async(points.queue, neightbors, *points.points, *points.covs).wait();
 }
@@ -202,9 +201,7 @@ inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& 
 
 /// @brief Update covariance matrix to a plane
 /// @param points Point Cloud with covatiance
-inline void covariance_update_plane(const PointCloudShared& points) {
-    covariance_update_plane_async(points).wait();
-}
+inline void covariance_update_plane(const PointCloudShared& points) { covariance_update_plane_async(points).wait(); }
 
 }  // namespace covariance
 }  // namespace algorithms

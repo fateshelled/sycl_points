@@ -188,6 +188,6 @@ private:
     }
 };
 
-}  // namespace voxel_downsampling
+}  // namespace filter
 }  // namespace algorithms
 }  // namespace sycl_points

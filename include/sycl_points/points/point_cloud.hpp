@@ -145,9 +145,7 @@ struct PointCloudShared {
         this->points->erase(this->points->begin() + start_idx, this->points->begin() + end_idx);
     }
 
-    void operator+=(const PointCloudShared& pc) {
-        this->extend(pc);
-    }
+    void operator+=(const PointCloudShared& pc) { this->extend(pc); }
 };
 
 }  // namespace sycl_points
