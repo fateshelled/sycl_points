@@ -72,6 +72,21 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::arra
     return ret;
 }
 
+/// @brief Error for Iterative Closest Point (ICP Point to Point)
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @param target_pt Target point
+/// @return error
+SYCL_EXTERNAL inline float calculate_error_point_to_point(const std::array<sycl::float4, 4>& T,
+                                                          const PointType& source_pt, const PointType& target_pt) {
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T.data());
+
+    const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
+                             target_pt.z() - transform_source.z(), 0.0f);
+    return 0.5f * eigen_utils::frobenius_norm<4>(residual);
+}
+
 /// @brief Generalized Iterative Closest Point (GICP)
 /// @param T transform matrix
 /// @param source_pt Source Point
@@ -146,6 +161,43 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::fl
     return ret;
 }
 
+/// @brief Error for Generalized Iterative Closest Point (GICP)
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @param source_cov Source covariance
+/// @param target_pt Target point
+/// @param target_cov Target covariance
+/// @return error
+SYCL_EXTERNAL inline float calculate_error_gicp(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+                                                const Covariance& source_cov, const PointType& target_pt,
+                                                const Covariance& target_cov) {
+    PointType transform_source_pt;
+    Covariance transform_source_cov;
+    transform::kernel::transform_point(source_pt, transform_source_pt, T.data());
+    transform::kernel::transform_covs(source_cov, transform_source_cov, T.data());
+
+    Covariance mahalanobis = Covariance::Zero();
+    {
+        const Eigen::Matrix3f RCR =
+            eigen_utils::add<3, 3>(eigen_utils::block3x3(transform_source_cov), eigen_utils::block3x3(target_cov));
+        const Eigen::Matrix3f RCR_inv = eigen_utils::inverse(RCR);
+
+        mahalanobis(0, 0) = RCR_inv(0, 0);
+        mahalanobis(0, 1) = RCR_inv(0, 1);
+        mahalanobis(0, 2) = RCR_inv(0, 2);
+        mahalanobis(1, 0) = RCR_inv(1, 0);
+        mahalanobis(1, 1) = RCR_inv(1, 1);
+        mahalanobis(1, 2) = RCR_inv(1, 2);
+        mahalanobis(2, 0) = RCR_inv(2, 0);
+        mahalanobis(2, 1) = RCR_inv(2, 1);
+        mahalanobis(2, 2) = RCR_inv(2, 2);
+    }
+
+    const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
+                             target_pt.z() - transform_source_pt.z(), 0.0f);
+    return 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
+}
+
 /// @brief Linearlization
 /// @tparam icp icp type
 /// @param T transform matrix
@@ -162,6 +214,27 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
         return linearlize_point_to_point(T, source_pt, target_pt);
     } else if constexpr (icp == ICPType::GICP) {
         return linearlize_gicp(T, source_pt, source_cov, target_pt, target_cov);
+    } else {
+        static_assert("not support type");
+    }
+}
+
+/// @brief Compute Error
+/// @tparam icp icp type
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @param source_cov Source covariance
+/// @param target_pt Target point
+/// @param target_cov Target covariance
+/// @return error
+template <ICPType icp = ICPType::GICP>
+SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+                                           const Covariance& source_cov, const PointType& target_pt,
+                                           const Covariance& target_cov) {
+    if constexpr (icp == ICPType::POINT_TO_POINT) {
+        return calculate_error_point_to_point(T, source_pt, target_pt);
+    } else if constexpr (icp == ICPType::GICP) {
+        return calculate_error_gicp(T, source_pt, source_cov, target_pt, target_cov);
     } else {
         static_assert("not support type");
     }
