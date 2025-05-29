@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sycl_points/algorithms/registration_result.hpp>
+#include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
@@ -27,23 +28,21 @@ struct LinearlizedResult {
 namespace kernel {
 /// @brief Iterative Closest Point (ICP Point to Point)
 /// @param T transform matrix
-/// @param source Source Point
-/// @param transform_source Transformed source point
-/// @param transform_source_cov Transformed source covariance
-/// @param target Target point
-/// @param target_cov Target covariance
+/// @param source_pt Source Point
+/// @param target_pt Target point
 /// @return linearlized result
-SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const TransformMatrix& T, const PointType& source,
-                                                                 const PointType& transform_source,
-                                                                 const Covariance& transform_source_cov,
-                                                                 const PointType& target,
-                                                                 const Covariance& target_cov) {
-    const PointType residual(target.x() - transform_source.x(), target.y() - transform_source.y(),
-                             target.z() - transform_source.z(), 0.0f);
+SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::array<sycl::float4, 4>& T,
+                                                                 const PointType& source_pt,
+                                                                 const PointType& target_pt) {
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T.data());
+
+    const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
+                             target_pt.z() - transform_source.z(), 0.0f);
     Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
     {
-        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source);
-        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(T);
+        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source_pt);
+        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(eigen_utils::from_sycl_vec(T));
         const Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
         J(0, 0) = T_skewed(0, 0);
         J(0, 1) = T_skewed(0, 1);
@@ -55,15 +54,15 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const Transform
         J(2, 1) = T_skewed(2, 1);
         J(2, 2) = T_skewed(2, 2);
 
-        J(0, 3) = -T(0, 0);
-        J(0, 4) = -T(0, 1);
-        J(0, 5) = -T(0, 2);
-        J(1, 3) = -T(1, 0);
-        J(1, 4) = -T(1, 1);
-        J(1, 5) = -T(1, 2);
-        J(2, 3) = -T(2, 0);
-        J(2, 4) = -T(2, 1);
-        J(2, 5) = -T(2, 2);
+        J(0, 3) = -T[0][0];
+        J(0, 4) = -T[0][1];
+        J(0, 5) = -T[0][2];
+        J(1, 3) = -T[1][0];
+        J(1, 4) = -T[1][1];
+        J(1, 5) = -T[1][2];
+        J(2, 3) = -T[2][0];
+        J(2, 4) = -T[2][1];
+        J(2, 5) = -T[2][2];
     }
     LinearlizedResult ret;
     const auto J_T = eigen_utils::transpose<4, 6>(J);
@@ -75,16 +74,19 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const Transform
 
 /// @brief Generalized Iterative Closest Point (GICP)
 /// @param T transform matrix
-/// @param source Source Point
-/// @param transform_source Transformed source point
-/// @param transform_source_cov Transformed source covariance
-/// @param target Target point
+/// @param source_pt Source Point
+/// @param source_cov Source covariance
+/// @param target_pt Target point
 /// @param target_cov Target covariance
 /// @return linearlized result
-SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T, const PointType& source,
-                                                       const PointType& transform_source,
-                                                       const Covariance& transform_source_cov, const PointType& target,
+SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+                                                       const Covariance& source_cov, const PointType& target_pt,
                                                        const Covariance& target_cov) {
+    PointType transform_source_pt;
+    Covariance transform_source_cov;
+    transform::kernel::transform_point(source_pt, transform_source_pt, T.data());
+    transform::kernel::transform_covs(source_cov, transform_source_cov, T.data());
+
     Covariance mahalanobis = Covariance::Zero();
     {
         const Eigen::Matrix3f RCR =
@@ -102,13 +104,13 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T,
         mahalanobis(2, 2) = RCR_inv(2, 2);
     }
 
-    const PointType residual(target.x() - transform_source.x(), target.y() - transform_source.y(),
-                             target.z() - transform_source.z(), 0.0f);
+    const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
+                             target_pt.z() - transform_source_pt.z(), 0.0f);
 
     Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
     {
-        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source);
-        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(T);
+        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source_pt);
+        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(eigen_utils::from_sycl_vec(T));
         const Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
         J(0, 0) = T_skewed(0, 0);
         J(0, 1) = T_skewed(0, 1);
@@ -120,15 +122,15 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T,
         J(2, 1) = T_skewed(2, 1);
         J(2, 2) = T_skewed(2, 2);
 
-        J(0, 3) = -T(0, 0);
-        J(0, 4) = -T(0, 1);
-        J(0, 5) = -T(0, 2);
-        J(1, 3) = -T(1, 0);
-        J(1, 4) = -T(1, 1);
-        J(1, 5) = -T(1, 2);
-        J(2, 3) = -T(2, 0);
-        J(2, 4) = -T(2, 1);
-        J(2, 5) = -T(2, 2);
+        J(0, 3) = -T[0][0];
+        J(0, 4) = -T[0][1];
+        J(0, 5) = -T[0][2];
+        J(1, 3) = -T[1][0];
+        J(1, 4) = -T[1][1];
+        J(1, 5) = -T[1][2];
+        J(2, 3) = -T[2][0];
+        J(2, 4) = -T[2][1];
+        J(2, 5) = -T[2][2];
     }
 
     const Eigen::Matrix<float, 6, 4> J_T_mah =
@@ -147,21 +149,19 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const TransformMatrix& T,
 /// @brief Linearlization
 /// @tparam icp icp type
 /// @param T transform matrix
-/// @param source Source Point
-/// @param transform_source Transformed source point
-/// @param transform_source_cov Transformed source covariance
-/// @param target Target point
+/// @param source_pt Source Point
+/// @param source_cov Source covariance
+/// @param target_pt Target point
 /// @param target_cov Target covariance
 /// @return linearlized result
 template <ICPType icp = ICPType::GICP>
-SYCL_EXTERNAL inline LinearlizedResult linearlize(const TransformMatrix& T, const PointType& source,
-                                                  const PointType& transform_source,
-                                                  const Covariance& transform_source_cov, const PointType& target,
+SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+                                                  const Covariance& source_cov, const PointType& target_pt,
                                                   const Covariance& target_cov) {
     if constexpr (icp == ICPType::POINT_TO_POINT) {
-        return linearlize_point_to_point(T, source, transform_source, transform_source_cov, target, target_cov);
+        return linearlize_point_to_point(T, source_pt, target_pt);
     } else if constexpr (icp == ICPType::GICP) {
-        return linearlize_gicp(T, source, transform_source, transform_source_cov, target, target_cov);
+        return linearlize_gicp(T, source_pt, source_cov, target_pt, target_cov);
     } else {
         static_assert("not support type");
     }
