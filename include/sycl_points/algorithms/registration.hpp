@@ -12,20 +12,12 @@ namespace algorithms {
 
 namespace registration {
 
-enum class RANSACMethod {
-    NONE = 0,
-    RANSAC = 1,
-};
-
 struct RegistrationParams {
     size_t max_iterations = 20;                // max iteration
     float lambda = 1e-6f;                      // initial damping factor
     float max_correspondence_distance = 1.0f;  // max correspondence distance
     float translation_eps = 1e-3f;             // translation tolerance
     float rotation_eps = 1e-3f;                // rotation tolerance [rad]
-    RANSACMethod ransac = RANSACMethod::NONE;  // RANSAC method
-    size_t ransac_point_num = 300;             // RANSAC sampling point num
-    uint32_t seed = 1234;                      // Random Seed
     bool verbose = false;                      // If true, print debug messages
     // bool optimize_lm = false; // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
     // size_t max_inner_iterations = 10; // (for LM method)
@@ -110,9 +102,6 @@ public:
         this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_);
         this->linearlized_on_host_ = std::make_shared<shared_vector<LinearlizedResult>>(
             1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_.ptr));
-        this->ransac_indices_ = std::make_shared<shared_vector<size_t>>(*this->queue_.ptr);
-
-        this->mt_.seed(this->params_.seed);
     }
 
     /// @brief Get aligned point cloud
@@ -152,13 +141,6 @@ public:
         const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
         const auto verbose = this->params_.verbose;
 
-        if (this->params_.ransac != RANSACMethod::NONE) {
-            if (this->ransac_indices_->size() < N) {
-                this->ransac_indices_->resize(N);
-            }
-            std::iota(this->ransac_indices_->begin(), this->ransac_indices_->begin() + N, 0);
-            std::shuffle(this->ransac_indices_->begin(), this->ransac_indices_->begin() + N, this->mt_);
-        }
         sycl_utils::events transform_events;
         for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
             prev_T = result.T;
@@ -167,16 +149,12 @@ public:
             auto knn_event = target_tree.knn_search_async<1>(this->aligned_->points->data(), N, 1,
                                                              (*this->neighbors_)[0], transform_events.evs);
 
-            if (this->params_.ransac == RANSACMethod::NONE) {
-                // Linearlize on device
-                const LinearlizedResult linearlized_result =
-                    this->linearlize(source, target, result.T.matrix(), max_dist_2, knn_event.evs);
+            // Linearlize on device
+            const LinearlizedResult linearlized_result =
+                this->linearlize(source, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
-                // Optimize on Host
-                this->optimize_gauss_newton(result, linearlized_result, lambda, verbose, iter);
-            } else {
-                // TODO
-            }
+            // Optimize on Host
+            this->optimize_gauss_newton(result, linearlized_result, lambda, verbose, iter);
 
             // Async transform source points on device
             transform_events = transform::transform_async(*this->aligned_,
@@ -204,8 +182,6 @@ private:
     shared_vector_ptr<knn_search::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
     shared_vector_ptr<LinearlizedResult> linearlized_on_host_ = nullptr;
-    std::shared_ptr<shared_vector<size_t>> ransac_indices_ = nullptr;
-    std::mt19937 mt_;
 
     bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
         return delta.template head<3>().norm() < this->params_.rotation_eps &&
