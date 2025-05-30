@@ -17,10 +17,9 @@ sycl_utils::events shuffle_async(sycl::queue& queue, shared_vector<T, Alignment>
         auto data_ptr = input.data();
         h.single_task([=]() {
             oneapi::dpl::minstd_rand engine(s);
-            for (int32_t i = end; i > begin; --i) {
-                oneapi::dpl::uniform_int_distribution<size_t> dist(0, i);
-                const size_t j = dist(engine);
-
+            for (auto i = begin; i < end; ++i) {
+                oneapi::dpl::uniform_int_distribution<size_t> dist(i, end - 1);
+                const auto j = dist(engine);
                 std::swap(data_ptr[i], data_ptr[j]);
             }
         });
