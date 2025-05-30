@@ -19,7 +19,7 @@ constexpr uint8_t INCLUDE_FLAG = 1;
 namespace kernel {
 
 SYCL_EXTERNAL inline bool is_finite(const PointType& pt) {
-    return std::isfinite(pt[0]) && std::isfinite(pt[3]) && std::isfinite(pt[2]) && std::isfinite(pt[3]);
+    return std::isfinite(pt[0]) && std::isfinite(pt[1]) && std::isfinite(pt[2]) && std::isfinite(pt[3]);
 }
 
 SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float min_distance, float max_distance) {
@@ -72,12 +72,12 @@ public:
                 ++new_size;
             }
         }
-        data.resize(new_size);
         // mem_advise clear
         {
             this->queue_.clear_accessed_by_host(data.data(), N);
             this->queue_.clear_accessed_by_host(flags.data(), N);
         }
+        data.resize(new_size);
     }
 
     /// @brief Filter data asynchronously on device
@@ -87,31 +87,29 @@ public:
     /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove
     /// @return Events representing the asynchronous operations
     template <typename T, size_t AllocSize = 0>
-    sycl_utils::events filter_by_flags_async(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) {
+    void filter_by_flags_on_device(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) {
         static_assert(std::is_same<T, PointType>::value || std::is_same<T, Covariance>::value,
                       "T is not supported type.");
 
-        sycl_utils::events events;
-
         const size_t N = data.size();
-        if (N == 0) return events;
+        if (N == 0) return;
 
         // Copy original data to preserve it during filtering
-        auto copy_event = this->copy_data(data);
+        auto copy_event = this->copy_data_async(data);
 
         // Calculate inclusive prefix sum of flags
         this->prefix_sum_flags(flags);
 
         // Get new size from last element of prefix sum (total count of INCLUDE_FLAG elements)
         const size_t new_size = this->prefix_sum_ptr_->at(N - 1);
+        const size_t original_size = data.size();
 
         // Wait for copy to complete before resizing
         copy_event.wait();
-        data.resize(new_size);
 
         // Apply filter using prefix sum for destination indices
-        events += this->filter<T, AllocSize>(data, flags);
-        return events;
+        this->apply_filter<T, AllocSize>(data, flags, original_size, new_size);
+        data.resize(new_size);
     }
 
 private:
@@ -128,7 +126,7 @@ private:
     /// @param data Data to copy
     /// @return Events representing the copy operation
     template <typename T, size_t AllocSize = 0>
-    sycl_utils::events copy_data(shared_vector<T, AllocSize>& data) {
+    sycl_utils::events copy_data_async(shared_vector<T, AllocSize>& data) {
         const size_t N = data.size();
         sycl_utils::events events;
 
@@ -136,13 +134,11 @@ private:
             if (this->points_copy_ptr_->size() < N) {
                 this->points_copy_ptr_->resize(N);
             }
-            this->queue_.set_accessed_by_device(this->points_copy_ptr_->data(), N);
             events += this->queue_.ptr->memcpy(this->points_copy_ptr_->data(), data.data(), N * sizeof(T));
         } else if constexpr (std::is_same<T, Covariance>::value) {
             if (this->covs_copy_ptr_->size() < N) {
                 this->covs_copy_ptr_->resize(N);
             }
-            this->queue_.set_accessed_by_device(this->covs_copy_ptr_->data(), N);
             events += this->queue_.ptr->memcpy(this->covs_copy_ptr_->data(), data.data(), N * sizeof(T));
         } else {
             throw std::runtime_error("Not supported type T");
@@ -293,20 +289,18 @@ private:
     /// @tparam AllocSize Optional allocator size
     /// @param data Output data buffer (already resized)
     /// @param flags Flags indicating which elements to keep
-    /// @return Event representing the filter operation
     template <typename T, size_t AllocSize = 0>
-    sycl::event filter(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) {
-        const size_t N = flags.size();
-
+    void apply_filter(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags,
+                             size_t original_size, size_t new_size) {
         // mem_advise to device
         {
-            this->queue_.set_accessed_by_device(flags.data(), N);
-            this->queue_.set_accessed_by_device(this->prefix_sum_ptr_->data(), N);
+            this->queue_.set_accessed_by_device(flags.data(), original_size);
+            this->queue_.set_accessed_by_device(this->prefix_sum_ptr_->data(), original_size);
         }
 
-        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+        this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t work_group_size = this->queue_.get_work_group_size();
-            const size_t global_size = this->queue_.get_global_size(N);
+            const size_t global_size = this->queue_.get_global_size(original_size);
 
             // memory ptr
             T* data_ptr = data.data();
@@ -316,7 +310,7 @@ private:
             } else if constexpr (std::is_same<T, Covariance>::value) {
                 copy_ptr = this->covs_copy_ptr_->data();
             } else {
-                std::runtime_error("Invalid Type [T]");
+                throw std::runtime_error("Invalid Type [T]");
             }
 
             const auto flag_ptr = flags.data();
@@ -324,21 +318,27 @@ private:
 
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
-                if (i >= N) return;
+                if (i >= original_size) return;
 
                 // Only process elements with INCLUDE_FLAG
                 if (flag_ptr[i] == INCLUDE_FLAG) {
+                    const size_t dest_index = prefix_sum_ptr[i] - 1;
                     if constexpr (std::is_same<T, PointType>::value) {
                         const PointType pt = copy_ptr[i];
-                        eigen_utils::copy<4, 1>(pt, data_ptr[prefix_sum_ptr[i]]);
+                        eigen_utils::copy<4, 1>(pt, data_ptr[dest_index]);
                     } else if constexpr (std::is_same<T, Covariance>::value) {
                         const Covariance cov = copy_ptr[i];
-                        eigen_utils::copy<4, 4>(cov, data_ptr[prefix_sum_ptr[i]]);
+                        eigen_utils::copy<4, 4>(cov, data_ptr[dest_index]);
                     }
                 }
             });
-        });
-        return event;
+        }).wait();
+
+        // mem_advise clear
+        {
+            this->queue_.clear_accessed_by_device(flags.data(), original_size);
+            this->queue_.clear_accessed_by_device(this->prefix_sum_ptr_->data(), original_size);
+        }
     }
 };
 
@@ -382,7 +382,7 @@ public:
             const size_t global_size = this->queue_.get_global_size(N);
             // memory ptr
             const auto point_ptr = data.points_ptr();
-            auto flag_ptr = this->flags_->data();
+            const auto flag_ptr = this->flags_->data();
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
                 if (i >= N) return;
@@ -410,7 +410,7 @@ public:
     void random_sampling(PointCloudShared& data, size_t sampling_num) {
         const size_t N = data.size();
         if (N == 0) return;
-        if (N < sampling_num) return;
+        if (N <= sampling_num) return;
 
         this->initialize_flags(N, REMOVE_FLAG);
 
@@ -459,16 +459,15 @@ private:
     /// @param data Point cloud to be filtered (modified in-place)
     void filter_by_flags(PointCloudShared& data) {
         if (this->queue_.is_nvidia()) {
-            auto events = filter_->filter_by_flags_async(*data.points, *this->flags_);
             if (data.has_cov()) {
-                events += filter_->filter_by_flags_async(*data.covs, *this->flags_);
+                filter_->filter_by_flags_on_device(*data.covs, *this->flags_);
             }
-            events.wait();
+            filter_->filter_by_flags_on_device(*data.points, *this->flags_);
         } else {
-            filter_->filter_by_flags(*data.points, *this->flags_);
             if (data.has_cov()) {
                 filter_->filter_by_flags(*data.covs, *this->flags_);
             }
+            filter_->filter_by_flags(*data.points, *this->flags_);
         }
     }
 };

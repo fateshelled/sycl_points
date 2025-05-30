@@ -88,6 +88,11 @@ int main() {
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
+        /* NOTE:
+            Random downsampling after covariance computation maintains GICP accuracy
+            while reducing processing time */
+        // preprocess_filter->random_sampling(source_downsampled, 1000);
+
         t0 = std::chrono::high_resolution_clock::now();
         sycl_points::TransformMatrix init_T = sycl_points::TransformMatrix::Identity();
         const auto ret = registration->align(source_downsampled, target_downsampled, *target_tree, init_T);
