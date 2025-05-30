@@ -37,17 +37,18 @@ namespace time_utils {
 template <typename TimeType = double, typename Func, typename... Args>
 auto measure_execution(Func&& func, TimeType& elapsed_time, Args&&... args)
     -> decltype(func(std::forward<Args>(args)...)) {
-    auto start = std::chrono::steady_clock::now();
+    const auto start = std::chrono::steady_clock::now();
 
     if constexpr (std::is_void_v<decltype(func(std::forward<Args>(args)...))>) {
         func(std::forward<Args>(args)...);
-        auto end = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration<TimeType, std::micro>(end - start);
+        const auto end = std::chrono::steady_clock::now();
+        const auto duration = std::chrono::duration<TimeType, std::micro>(end - start);
         elapsed_time = duration.count();
+        return;
     } else {
         auto result = func(std::forward<Args>(args)...);
-        auto end = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration<TimeType, std::micro>(end - start);
+        const auto end = std::chrono::steady_clock::now();
+        const auto duration = std::chrono::duration<TimeType, std::micro>(end - start);
         elapsed_time = duration.count();
         return result;
     }
