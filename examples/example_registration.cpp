@@ -117,7 +117,7 @@ int main() {
             if (elapsed.count("7. Registration") == 0) elapsed["7. Registration"] = 0.0;
             elapsed["7. Registration"] += dt_registration;
         }
-        if (i == LOOP) {
+        if (i == LOOP + WARM_UP - 1) {
             std::cout << ret.T.matrix() << std::endl;
         }
     }
