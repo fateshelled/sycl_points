@@ -21,6 +21,8 @@ struct LinearlizedResult {
     Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
     /// @brief Error value
     float error = std::numeric_limits<float>::max();
+    /// @brief inlier point num
+    uint32_t inlier = 0;
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
@@ -69,6 +71,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::arra
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
     ret.b = eigen_utils::multiply<6, 4>(J_T, residual);
     ret.error = 0.5f * eigen_utils::frobenius_norm<4>(residual);
+    ret.inlier = 1;
     return ret;
 }
 
@@ -158,6 +161,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::fl
     ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
     // 0.5 * residual.transpose() * mahalanobis * residual;
     ret.error = 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
+    ret.inlier = 1;
     return ret;
 }
 

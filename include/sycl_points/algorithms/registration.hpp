@@ -37,6 +37,8 @@ struct LinearlizedDevice {
     sycl::float3* b1 = nullptr;  // b(3) ~ b(5)
     // error is scalar
     float* error = nullptr;
+    // inlier point num
+    uint32_t* inlier = nullptr;
     size_t size;
 
     sycl_utils::DeviceQueue queue;
@@ -48,6 +50,7 @@ struct LinearlizedDevice {
         b0 = sycl::malloc_shared<sycl::float3>(size, *this->queue.ptr);
         b1 = sycl::malloc_shared<sycl::float3>(size, *this->queue.ptr);
         error = sycl::malloc_shared<float>(size, *this->queue.ptr);
+        inlier = sycl::malloc_shared<uint32_t>(size, *this->queue.ptr);
     }
     ~LinearlizedDevice() {
         sycl_utils::free(H0, *this->queue.ptr);
@@ -56,6 +59,7 @@ struct LinearlizedDevice {
         sycl_utils::free(b0, *this->queue.ptr);
         sycl_utils::free(b1, *this->queue.ptr);
         sycl_utils::free(error, *this->queue.ptr);
+        sycl_utils::free(inlier, *this->queue.ptr);
     }
     void setZero() {
         for (size_t n = 0; n < size; ++n) {
@@ -71,12 +75,14 @@ struct LinearlizedDevice {
                 b1[n][i] = 0.0f;
             }
             error[n] = 0.0f;
+            inlier[n] = 0;
         }
     }
     LinearlizedResult toCPU(size_t i = 0) {
         const LinearlizedResult result = {.H = eigen_utils::from_sycl_vec({this->H0[i], this->H1[i], this->H2[i]}),
                                           .b = eigen_utils::from_sycl_vec({this->b0[i], this->b1[i]}),
-                                          .error = this->error[i]};
+                                          .error = this->error[i],
+                                          .inlier = this->inlier[i]};
         return result;
     }
 };
@@ -225,6 +231,7 @@ private:
                     linearlized_ptr[i].H.setZero();
                     linearlized_ptr[i].b.setZero();
                     linearlized_ptr[i].error = 0.0f;
+                    linearlized_ptr[i].inlier = 0;
                 } else {
                     linearlized_ptr[i] = kernel::linearlize<icp>(cur_T, source_ptr[i], source_cov_ptr[i],
                                                                  target_ptr[neighbors_index_ptr[i]],
@@ -238,11 +245,15 @@ private:
         linearlized_result.H.setZero();
         linearlized_result.b.setZero();
         linearlized_result.error = 0.0f;
+        linearlized_result.inlier = 0;
         // reduction on host
         for (size_t i = 0; i < N; ++i) {
-            linearlized_result.H += (*this->linearlized_on_host_)[i].H;
-            linearlized_result.b += (*this->linearlized_on_host_)[i].b;
-            linearlized_result.error += (*this->linearlized_on_host_)[i].error;
+            if ((*this->linearlized_on_host_)[i].inlier > 0) {
+                linearlized_result.H += (*this->linearlized_on_host_)[i].H;
+                linearlized_result.b += (*this->linearlized_on_host_)[i].b;
+                linearlized_result.error += (*this->linearlized_on_host_)[i].error;
+                ++linearlized_result.inlier;
+            }
         }
         return linearlized_result;
     }
@@ -272,12 +283,13 @@ private:
 
             // output
             this->linearlized_on_device_->setZero();
-            const auto H0_ptr = this->linearlized_on_device_->H0 + 0;
-            const auto H1_ptr = this->linearlized_on_device_->H1 + 0;
-            const auto H2_ptr = this->linearlized_on_device_->H2 + 0;
-            const auto b0_ptr = this->linearlized_on_device_->b0 + 0;
-            const auto b1_ptr = this->linearlized_on_device_->b1 + 0;
-            const auto error_ptr = this->linearlized_on_device_->error + 0;
+            const auto H0_ptr = this->linearlized_on_device_->H0;
+            const auto H1_ptr = this->linearlized_on_device_->H1;
+            const auto H2_ptr = this->linearlized_on_device_->H2;
+            const auto b0_ptr = this->linearlized_on_device_->b0;
+            const auto b1_ptr = this->linearlized_on_device_->b1;
+            const auto error_ptr = this->linearlized_on_device_->error;
+            const auto inlier_ptr = this->linearlized_on_device_->inlier;
 
             // reduction
             auto sum_H0 = sycl::reduction(H0_ptr, sycl::plus<sycl::float16>());
@@ -286,114 +298,35 @@ private:
             auto sum_b0 = sycl::reduction(b0_ptr, sycl::plus<sycl::float3>());
             auto sum_b1 = sycl::reduction(b1_ptr, sycl::plus<sycl::float3>());
             auto sum_error = sycl::reduction(error_ptr, sycl::plus<float>());
+            auto sum_inlier = sycl::reduction(inlier_ptr, sycl::plus<uint32_t>());
 
             // wait for knn search
             h.depends_on(depends);
 
-            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size),    // range
-                           sum_H0, sum_H1, sum_H2, sum_b0, sum_b1, sum_error,  // reduction
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size),                // range
+                           sum_H0, sum_H1, sum_H2, sum_b0, sum_b1, sum_error, sum_inlier,  // reduction
                            [=](sycl::nd_item<1> item, auto& sum_H0_arg, auto& sum_H1_arg, auto& sum_H2_arg,
-                               auto& sum_b0_arg, auto& sum_b1_arg, auto& sum_error_arg) {
+                               auto& sum_b0_arg, auto& sum_b1_arg, auto& sum_error_arg, auto& sum_inlier_arg) {
                                const size_t index = item.get_global_id(0);
                                if (index >= N) return;
 
                                if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
                                    return;
-                               } else {
-                                   const LinearlizedResult result =
-                                       kernel::linearlize<icp>(cur_T, source_ptr[index], source_cov_ptr[index],
-                                                               target_ptr[neighbors_index_ptr[index]],
-                                                               target_cov_ptr[neighbors_index_ptr[index]]);
-                                   // reduction on device
-                                   const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
-                                   const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
-                                   sum_H0_arg += H0;
-                                   sum_H1_arg += H1;
-                                   sum_H2_arg += H2;
-                                   sum_b0_arg += b0;
-                                   sum_b1_arg += b1;
-                                   sum_error_arg += result.error;
                                }
-                           });
-        });
-        return events;
-    }
 
-    sycl_utils::events linearlize_parallel_reduction_async(const PointCloudShared& source,
-                                                           const PointCloudShared& target, const Eigen::Matrix4f transT,
-                                                           float max_correspondence_distance_2, const size_t* indices,
-                                                           size_t indices_num, size_t linearlized_on_device_index,
-                                                           const std::vector<sycl::event>& depends) {
-        sycl_utils::events events;
-        events += this->queue_.ptr->submit([&](sycl::handler& h) {
-            const size_t N = indices_num;
-            const size_t point_num = source.size();
-
-            const size_t work_group_size = this->queue_.get_work_group_size_for_parallel_reduction();
-            const size_t global_size = this->queue_.get_global_size_for_parallel_reduction(N);
-
-            // convert to sycl::float4
-            const auto cur_T = eigen_utils::to_sycl_vec(transT);
-
-            // get pointers
-            // input
-            const auto source_ptr = source.points_ptr();
-            const auto source_cov_ptr = source.covs_ptr();
-            const auto target_ptr = target.points_ptr();
-            const auto target_cov_ptr = target.covs_ptr();
-            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
-            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
-            const auto indices_ptr = indices;
-
-            // output
-            this->linearlized_on_device_->setZero();
-            const auto H0_ptr = this->linearlized_on_device_->H0 + linearlized_on_device_index;
-            const auto H1_ptr = this->linearlized_on_device_->H1 + linearlized_on_device_index;
-            const auto H2_ptr = this->linearlized_on_device_->H2 + linearlized_on_device_index;
-            const auto b0_ptr = this->linearlized_on_device_->b0 + linearlized_on_device_index;
-            const auto b1_ptr = this->linearlized_on_device_->b1 + linearlized_on_device_index;
-            const auto error_ptr = this->linearlized_on_device_->error + linearlized_on_device_index;
-
-            // reduction
-            auto sum_H0 = sycl::reduction(H0_ptr, sycl::plus<sycl::float16>());
-            auto sum_H1 = sycl::reduction(H1_ptr, sycl::plus<sycl::float16>());
-            auto sum_H2 = sycl::reduction(H2_ptr, sycl::plus<sycl::float4>());
-            auto sum_b0 = sycl::reduction(b0_ptr, sycl::plus<sycl::float3>());
-            auto sum_b1 = sycl::reduction(b1_ptr, sycl::plus<sycl::float3>());
-            auto sum_error = sycl::reduction(error_ptr, sycl::plus<float>());
-
-            // wait for knn search
-            h.depends_on(depends);
-
-            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size),    // range
-                           sum_H0, sum_H1, sum_H2, sum_b0, sum_b1, sum_error,  // reduction
-                           [=](sycl::nd_item<1> item, auto& sum_H0_arg, auto& sum_H1_arg, auto& sum_H2_arg,
-                               auto& sum_b0_arg, auto& sum_b1_arg, auto& sum_error_arg) {
-                               const size_t i = item.get_global_id(0);
-                               if (i >= N) return;
-                               const size_t index = indices_ptr[i];
-                               if (index >= point_num) return;
-
-                               // const size_t index = item.get_global_id(0);
-                               // if (index >= N) return;
-
-                               if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
-                                   return;
-                               } else {
-                                   const LinearlizedResult result =
-                                       kernel::linearlize<icp>(cur_T, source_ptr[index], source_ptr[index],
-                                                               target_ptr[neighbors_index_ptr[index]],
-                                                               target_cov_ptr[neighbors_index_ptr[index]]);
-                                   // reduction on device
-                                   const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
-                                   const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
-                                   sum_H0_arg += H0;
-                                   sum_H1_arg += H1;
-                                   sum_H2_arg += H2;
-                                   sum_b0_arg += b0;
-                                   sum_b1_arg += b1;
-                                   sum_error_arg += result.error;
-                               }
+                               const LinearlizedResult result = kernel::linearlize<icp>(
+                                   cur_T, source_ptr[index], source_cov_ptr[index],
+                                   target_ptr[neighbors_index_ptr[index]], target_cov_ptr[neighbors_index_ptr[index]]);
+                               // reduction on device
+                               const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
+                               const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
+                               sum_H0_arg += H0;
+                               sum_H1_arg += H1;
+                               sum_H2_arg += H2;
+                               sum_b0_arg += b0;
+                               sum_b1_arg += b1;
+                               sum_error_arg += result.error;
+                               sum_inlier_arg += (uint32_t)1;
                            });
         });
         return events;
@@ -425,9 +358,11 @@ private:
         result.H = linearlized_result.H;
         result.b = linearlized_result.b;
         result.error = linearlized_result.error;
+        result.inlier = linearlized_result.inlier;
         if (verbose) {
             std::cout << "iter [" << iter << "] ";
             std::cout << "error: " << result.error << ", ";
+            std::cout << "inlier: " << result.inlier << ", ";
             std::cout << "dt: " << delta.tail<3>().norm() << ", ";
             std::cout << "dr: " << delta.head<3>().norm() << std::endl;
         }

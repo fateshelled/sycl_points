@@ -16,6 +16,7 @@ struct RegistrationResult {
     Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();  // Final hessian
     Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();  // Final gradient
     float error = std::numeric_limits<float>::max();                    // Final error
+    size_t inlier = 0;                                                  // Inlier point num;
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
