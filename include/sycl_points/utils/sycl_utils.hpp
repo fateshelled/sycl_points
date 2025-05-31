@@ -284,10 +284,7 @@ bool is_supported_device(const sycl::device& dev) {
     return supported;
 }
 
-inline int default_selector_v(const sycl::device& dev) {
-    const auto backend = dev.get_backend();
-    return is_supported_device(dev);
-}
+inline int default_selector_v(const sycl::device& dev) { return is_supported_device(dev); }
 
 inline int intel_cpu_selector_v(const sycl::device& dev) {
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
@@ -302,6 +299,50 @@ inline int intel_gpu_selector_v(const sycl::device& dev) {
 inline int nvidia_gpu_selector_v(const sycl::device& dev) {
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
     return dev.is_gpu() && (vendor_id == VENDOR_ID::NVIDIA) && is_supported_device(dev);
+}
+
+sycl::device select_device(const std::string& device_vendor, const std::string& device_type) {
+    std::string device_vendor_lower = device_vendor;
+    std::transform(device_vendor_lower.begin(), device_vendor_lower.end(), device_vendor_lower.begin(),
+                   [](char c) { return std::tolower(c); });
+    std::string device_type_lower = device_type;
+    std::transform(device_type_lower.begin(), device_type_lower.end(), device_type_lower.begin(),
+                   [](char c) { return std::tolower(c); });
+
+    uint32_t vendor_id = 0;
+    if (device_vendor_lower == "intel") {
+        vendor_id = VENDOR_ID::INTEL;
+    } else if (device_vendor_lower == "nvidia") {
+        vendor_id = VENDOR_ID::NVIDIA;
+    } else if (device_vendor_lower == "amd") {
+        vendor_id = VENDOR_ID::AMD;
+    } else {
+        throw std::runtime_error("invalid device vendor: " + device_vendor);
+    }
+
+    const bool select_cpu = device_type_lower == "cpu" ? true : false;
+    const bool select_gpu = device_type_lower == "gpu" ? true : false;
+    if (!select_cpu && !select_gpu) {
+        throw std::runtime_error("not support device type: " + device_type);
+    }
+
+    for (auto platform : sycl::platform::get_platforms()) {
+        for (auto device : platform.get_devices()) {
+            if (vendor_id == device.get_info<sycl::info::device::vendor_id>()) {
+                if (device.get_backend() == sycl::backend::ext_oneapi_level_zero) {
+                    // level_zero is not support
+                    continue;
+                }
+                if (select_cpu && device.is_cpu()) {
+                    return device;
+                }
+                if (select_gpu && device.is_gpu()) {
+                    return device;
+                }
+            }
+        }
+    }
+    throw std::runtime_error("not found device: " + device_vendor + "/" + device_type);
 }
 
 }  // namespace device_selector
