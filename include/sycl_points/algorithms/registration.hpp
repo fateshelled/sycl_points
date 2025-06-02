@@ -13,12 +13,14 @@ namespace algorithms {
 namespace registration {
 
 struct RegistrationParams {
-    size_t max_iterations = 20;                // max iteration
-    float lambda = 1e-6f;                      // initial damping factor
-    float max_correspondence_distance = 1.0f;  // max correspondence distance
-    float translation_eps = 1e-3f;             // translation tolerance
-    float rotation_eps = 1e-3f;                // rotation tolerance [rad]
-    bool verbose = false;                      // If true, print debug messages
+    size_t max_iterations = 20;                     // max iteration
+    float lambda = 1e-6f;                           // initial damping factor
+    float max_correspondence_distance = 2.0f;       // max correspondence distance
+    bool adaptive_correspondence_distance = false;  // use adaptive max correspondence distance
+    float inlier_ratio = 0.7f;                      // adaptive max correspondence distance by inlier point ratio
+    float translation_eps = 1e-3f;                  // translation tolerance
+    float rotation_eps = 1e-3f;                     // rotation tolerance [rad]
+    bool verbose = false;                           // If true, print debug messages
     // bool optimize_lm = false; // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
     // size_t max_inner_iterations = 10; // (for LM method)
     // float lambda_factor = 10.0f; // lambda increase factor (for LM method)
@@ -144,8 +146,9 @@ public:
         transform::transform(*this->aligned_, init_T);
 
         float lambda = this->params_.lambda;
-        const float max_dist_2 = this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+        float max_dist = this->params_.max_correspondence_distance;
         const auto verbose = this->params_.verbose;
+        const size_t inlier_threshold = this->params_.inlier_ratio * N;
 
         sycl_utils::events transform_events;
         for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
@@ -156,6 +159,7 @@ public:
                                                              (*this->neighbors_)[0], transform_events.evs);
 
             // Linearlize on device
+            const float max_dist_2 = max_dist * max_dist;
             const LinearlizedResult linearlized_result =
                 this->linearlize(source, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
@@ -168,6 +172,17 @@ public:
 
             if (result.converged) {
                 break;
+            }
+            // adaptive max correspondence distance
+            if (this->params_.adaptive_correspondence_distance) {
+                // if (result.inlier > inlier_threshold) {
+                if (static_cast<float>(result.inlier) / N > this->params_.inlier_ratio){
+                    max_dist *= 0.95f;
+                } else {
+                    max_dist *= 1.05f;
+                }
+                max_dist = std::min(std::max(max_dist, this->params_.max_correspondence_distance * 0.5f),
+                                    this->params_.max_correspondence_distance * 2.0f);
             }
         }
         transform_events.wait();
