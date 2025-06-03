@@ -123,58 +123,12 @@ inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kd
 /// @brief Compute covariance using SYCL
 /// @param neightbors KNN search result
 /// @param points Point Container
-inline void compute_covariances(const knn_search::KNNResult& neightbors, const PointCloudShared& points) {
+/// @return events
+inline sycl_utils::events compute_covariances_async(const knn_search::KNNResult& neightbors, const PointCloudShared& points) {
     const size_t N = points.size();
-    compute_covariances_async(points.queue, neightbors, *points.points, *points.covs).wait();
+    return compute_covariances_async(points.queue, neightbors, *points.points, *points.covs);
 }
 
-/// @brief Compute covariance using SYCL
-/// @param queue SYCL queue
-/// @param neightbors KNN search result
-/// @param points Point Container
-/// @return Covariances
-inline CovarianceContainerShared compute_covariances(const sycl_utils::DeviceQueue& queue,
-                                                     const knn_search::KNNResult& neightbors,
-                                                     const PointContainerShared& points) {
-    const size_t N = points.size();
-    CovarianceContainerShared covs(N, Covariance::Zero(), CovarianceAllocatorShared(*queue.ptr));
-    compute_covariances_async(queue, neightbors, points, covs).wait();
-    return covs;
-}
-
-/// @brief Compute covariance using SYCL
-/// @param kdtree KDTree
-/// @param points Point Container
-/// @param k_correspondences Number of neighbor points
-/// @return Covariances
-inline CovarianceContainerShared compute_covariances(const knn_search::KDTree& kdtree,
-                                                     const PointContainerShared& points,
-                                                     const size_t k_correspondences) {
-    const knn_search::KNNResult neightbors = kdtree.knn_search(points, k_correspondences);
-    return compute_covariances(kdtree.queue, neightbors, points);
-}
-
-/// @brief Compute covariance using SYCL
-/// @param kdtree KDTree
-/// @param points Point Cloud
-/// @param k_correspondences Number of neighbor points
-inline void compute_covariances(const knn_search::KDTree& kdtree, const PointCloudShared& points,
-                                const size_t k_correspondences) {
-    *points.covs = compute_covariances(kdtree, *points.points, k_correspondences);
-}
-
-/// @brief Update covariance matrix to a plane
-/// @param points Point Cloud with covatiance
-/// @return Covariances
-inline void covariance_update_plane_cpu(const PointCloudShared& points) {
-    const Eigen::Vector3f values = {1e-3f, 1.0f, 1.0f};
-
-    for (auto& cov : *points.covs) {
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> eig;
-        eig.computeDirect(cov.block<3, 3>(0, 0));
-        cov.block<3, 3>(0, 0) = eig.eigenvectors() * values.asDiagonal() * eig.eigenvectors().transpose();
-    }
-}
 
 /// @brief Async update covariance matrix to a plane
 /// @param points Point Cloud with covatiance

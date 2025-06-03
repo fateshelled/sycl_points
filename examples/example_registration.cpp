@@ -75,8 +75,8 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_covariances(source_neighbors, source_downsampled);
-        sycl_points::algorithms::covariance::compute_covariances(target_neighbors, target_downsampled);
+        sycl_points::algorithms::covariance::compute_covariances_async(source_neighbors, source_downsampled).wait();
+        sycl_points::algorithms::covariance::compute_covariances_async(target_neighbors, target_downsampled).wait();
         auto dt_covariance =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
