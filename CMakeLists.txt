@@ -18,7 +18,7 @@ option(BUILD_TESTS   "Build tests"     ON)
 
 find_package(IntelSYCL REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(ament_cmake)
+find_package(ament_cmake QUIET)
 
 set(SYCL_TARGET_FLAGS "spir64")
 
