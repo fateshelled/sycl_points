@@ -51,6 +51,20 @@ SYCL_EXTERNAL inline void transform_covs(const Covariance& cov, Covariance& resu
     }
 }
 
+SYCL_EXTERNAL inline void transform_normal(const Normal& normal, Normal& result, const sycl::vec<float, 4>* trans) {
+    const auto n = eigen_utils::to_sycl_vec(normal);
+    sycl::float3 ret(
+        sycl::dot(trans[0], n),
+        sycl::dot(trans[1], n),
+        sycl::dot(trans[2], n)
+    );
+    ret = sycl::normalize(ret);
+    result[0] = ret[0];
+    result[1] = ret[1];
+    result[2] = ret[2];
+    result[3] = 0.0f;
+}
+
 SYCL_EXTERNAL inline void transform_point(const PointType& point, PointType& result, const sycl::vec<float, 4>* trans) {
     const auto pt = eigen_utils::to_sycl_vec(point);
     result[0] = sycl::dot(trans[0], pt);
@@ -93,6 +107,20 @@ inline sycl_utils::events transform_async(PointCloudShared& cloud, const Transfo
                 const size_t i = item.get_global_id(0);
                 if (i >= N) return;
                 kernel::transform_covs(covs[i], covs[i], trans_vec_ptr);
+            });
+        });
+    }
+
+    if (cloud.has_normal()) {
+        const auto normals = cloud.normals_ptr();
+        const auto trans_vec_ptr = trans_vec_shared.data();
+
+        /* Transform Normals */
+        events += cloud.queue.ptr->submit([&](sycl::handler& h) {
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) return;
+                kernel::transform_normal(normals[i], normals[i], trans_vec_ptr);
             });
         });
     }

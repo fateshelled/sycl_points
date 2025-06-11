@@ -290,49 +290,51 @@ private:
     /// @param data Output data buffer (already resized)
     /// @param flags Flags indicating which elements to keep
     template <typename T, size_t AllocSize = 0>
-    void apply_filter(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags,
-                             size_t original_size, size_t new_size) {
+    void apply_filter(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags, size_t original_size,
+                      size_t new_size) {
         // mem_advise to device
         {
             this->queue_.set_accessed_by_device(flags.data(), original_size);
             this->queue_.set_accessed_by_device(this->prefix_sum_ptr_->data(), original_size);
         }
 
-        this->queue_.ptr->submit([&](sycl::handler& h) {
-            const size_t work_group_size = this->queue_.get_work_group_size();
-            const size_t global_size = this->queue_.get_global_size(original_size);
+        this->queue_.ptr
+            ->submit([&](sycl::handler& h) {
+                const size_t work_group_size = this->queue_.get_work_group_size();
+                const size_t global_size = this->queue_.get_global_size(original_size);
 
-            // memory ptr
-            T* data_ptr = data.data();
-            T* copy_ptr;
-            if constexpr (std::is_same<T, PointType>::value) {
-                copy_ptr = this->points_copy_ptr_->data();
-            } else if constexpr (std::is_same<T, Covariance>::value) {
-                copy_ptr = this->covs_copy_ptr_->data();
-            } else {
-                throw std::runtime_error("Invalid Type [T]");
-            }
-
-            const auto flag_ptr = flags.data();
-            const auto prefix_sum_ptr = this->prefix_sum_ptr_->data();
-
-            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                const size_t i = item.get_global_id(0);
-                if (i >= original_size) return;
-
-                // Only process elements with INCLUDE_FLAG
-                if (flag_ptr[i] == INCLUDE_FLAG) {
-                    const size_t dest_index = prefix_sum_ptr[i] - 1;
-                    if constexpr (std::is_same<T, PointType>::value) {
-                        const PointType pt = copy_ptr[i];
-                        eigen_utils::copy<4, 1>(pt, data_ptr[dest_index]);
-                    } else if constexpr (std::is_same<T, Covariance>::value) {
-                        const Covariance cov = copy_ptr[i];
-                        eigen_utils::copy<4, 4>(cov, data_ptr[dest_index]);
-                    }
+                // memory ptr
+                T* data_ptr = data.data();
+                T* copy_ptr;
+                if constexpr (std::is_same<T, PointType>::value) {
+                    copy_ptr = this->points_copy_ptr_->data();
+                } else if constexpr (std::is_same<T, Covariance>::value) {
+                    copy_ptr = this->covs_copy_ptr_->data();
+                } else {
+                    throw std::runtime_error("Invalid Type [T]");
                 }
-            });
-        }).wait();
+
+                const auto flag_ptr = flags.data();
+                const auto prefix_sum_ptr = this->prefix_sum_ptr_->data();
+
+                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                    const size_t i = item.get_global_id(0);
+                    if (i >= original_size) return;
+
+                    // Only process elements with INCLUDE_FLAG
+                    if (flag_ptr[i] == INCLUDE_FLAG) {
+                        const size_t dest_index = prefix_sum_ptr[i] - 1;
+                        if constexpr (std::is_same<T, PointType>::value) {
+                            const PointType pt = copy_ptr[i];
+                            eigen_utils::copy<4, 1>(pt, data_ptr[dest_index]);
+                        } else if constexpr (std::is_same<T, Covariance>::value) {
+                            const Covariance cov = copy_ptr[i];
+                            eigen_utils::copy<4, 4>(cov, data_ptr[dest_index]);
+                        }
+                    }
+                });
+            })
+            .wait();
 
         // mem_advise clear
         {
@@ -462,10 +464,16 @@ private:
             if (data.has_cov()) {
                 filter_->filter_by_flags_on_device(*data.covs, *this->flags_);
             }
+            if (data.has_normal()) {
+                filter_->filter_by_flags_on_device(*data.normals, *this->flags_);
+            }
             filter_->filter_by_flags_on_device(*data.points, *this->flags_);
         } else {
             if (data.has_cov()) {
                 filter_->filter_by_flags(*data.covs, *this->flags_);
+            }
+            if (data.has_normal()) {
+                filter_->filter_by_flags(*data.normals, *this->flags_);
             }
             filter_->filter_by_flags(*data.points, *this->flags_);
         }

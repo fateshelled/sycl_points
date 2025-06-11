@@ -16,16 +16,9 @@ int main() {
     sycl_points::sycl_utils::print_device_info(queue);
 
     {
-        // make allocator
-        auto s = std::chrono::high_resolution_clock::now();
-        sycl_points::PointAllocatorShared shared_alloc(queue);
-        const auto dt_make_allocate =
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
-                .count();
-
         // copy from cpu to shared container
-        s = std::chrono::high_resolution_clock::now();
-        sycl_points::PointContainerShared shared_points(source_points.size(), shared_alloc);
+        auto s = std::chrono::high_resolution_clock::now();
+        sycl_points::PointContainerShared shared_points(source_points.size(), queue);
         for (size_t i = 0; i < source_points.size(); ++i) {
             shared_points[i] = (*source_points.points)[i];
         }
@@ -73,7 +66,7 @@ int main() {
 
         // transform on device (shared to shared)
         double dt_transform_on_device_shared_to_shared = 0.0;
-        sycl_points::PointContainerShared shared_results(0, shared_alloc);
+        sycl_points::PointContainerShared shared_results(0, queue);
         for (size_t _ = 0; _ < 11; ++_) {
             shared_results.clear();
             s = std::chrono::high_resolution_clock::now();
@@ -107,7 +100,6 @@ int main() {
         }
         dt_transform_on_device_shared_to_shared /= 10;
 
-        std::cout << "make allocator: " << dt_make_allocate << " us" << std::endl;
         std::cout << "copy from cpu to shared container: " << dt_copy_to_shared << " us" << std::endl;
         std::cout << "memcpy from cpu to device ptr: " << dt_memcpy_to_device << " us" << std::endl;
         std::cout << "memcpy from device ptr to shared container: " << dt_memcpy_from_device_to_shared << " us"

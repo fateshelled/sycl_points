@@ -44,6 +44,17 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
     ret(2, 2) = cov3x3(2, 2);
 }
 
+SYCL_EXTERNAL inline void compute_normal_from_covariance(const Covariance& cov, Normal& normal) {
+    Eigen::Vector3f eigenvalues;
+    Eigen::Matrix3f eigenvectors;
+    eigen_utils::symmetric_eigen_decomposition_3x3(eigen_utils::block3x3(cov), eigenvalues, eigenvectors);
+
+    normal[0] = eigenvectors(0, 0);
+    normal[1] = eigenvectors(1, 0);
+    normal[2] = eigenvectors(2, 0);
+    normal[3] = 0.0f;
+}
+
 SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
     Eigen::Vector3f eigenvalues;
     Eigen::Matrix3f eigenvectors;
@@ -75,13 +86,16 @@ inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueu
                                                     const PointContainerShared& points,
                                                     CovarianceContainerShared& covs) {
     const size_t N = points.size();
-    covs.resize(N);
+    if (covs.size() != N) {
+        covs.resize(N);
+    }
     if (N == 0) return sycl_utils::events();
 
     const size_t work_group_size = queue.get_work_group_size();
     const size_t global_size = queue.get_global_size(N);
 
-    auto event = queue.ptr->submit([&](sycl::handler& h) {
+    sycl_utils::events events;
+    events += queue.ptr->submit([&](sycl::handler& h) {
         const auto point_ptr = points.data();
         const auto cov_ptr = covs.data();
         const auto index_ptr = neightbors.indices->data();
@@ -92,8 +106,6 @@ inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueu
             kernel::compute_covariance(cov_ptr[i], point_ptr, k_correspondences, index_ptr, i);
         });
     });
-    sycl_utils::events events;
-    events.push_back(event);
     return events;
 }
 
@@ -124,11 +136,46 @@ inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kd
 /// @param neightbors KNN search result
 /// @param points Point Container
 /// @return events
-inline sycl_utils::events compute_covariances_async(const knn_search::KNNResult& neightbors, const PointCloudShared& points) {
-    const size_t N = points.size();
+inline sycl_utils::events compute_covariances_async(const knn_search::KNNResult& neightbors,
+                                                    const PointCloudShared& points) {
     return compute_covariances_async(points.queue, neightbors, *points.points, *points.covs);
 }
 
+inline sycl_utils::events compute_normals_from_covariances_async(const PointCloudShared& points) {
+    const size_t N = points.size();
+    const size_t work_group_size = points.queue.get_work_group_size();
+    const size_t global_size = points.queue.get_global_size(N);
+
+    if (points.normals->size() != N) {
+        points.resize_normals(N);
+    }
+
+    sycl_utils::events events;
+    events += points.queue.ptr->submit([&](sycl::handler& h) {
+        const auto cov_ptr = points.covs_ptr();
+        const auto normal_ptr = points.normals_ptr();
+        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+            const size_t i = item.get_global_id(0);
+            if (i >= N) return;
+
+            kernel::compute_normal_from_covariance(cov_ptr[i], normal_ptr[i]);
+        });
+    });
+
+    return events;
+}
+
+inline void compute_normals_from_covariances(const PointCloudShared& points) {
+    const size_t N = points.size();
+    points.resize_normals(N);
+    // points.queue.set_accessed_by_device(points.covs_ptr(), N);
+    // points.queue.set_accessed_by_device(points.normals_ptr(), N);
+
+    compute_normals_from_covariances_async(points).wait();
+    
+    // points.queue.clear_accessed_by_device(points.covs_ptr(), N);
+    // points.queue.clear_accessed_by_device(points.normals_ptr(), N);
+}
 
 /// @brief Async update covariance matrix to a plane
 /// @param points Point Cloud with covatiance
@@ -138,7 +185,8 @@ inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& 
     const size_t work_group_size = points.queue.get_work_group_size();
     const size_t global_size = points.queue.get_global_size(N);
 
-    auto event = points.queue.ptr->submit([&](sycl::handler& h) {
+    sycl_utils::events events;
+    events += points.queue.ptr->submit([&](sycl::handler& h) {
         const auto cov_ptr = points.covs->data();
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
@@ -148,14 +196,20 @@ inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& 
         });
     });
 
-    sycl_utils::events events;
-    events.push_back(event);
     return events;
 }
 
 /// @brief Update covariance matrix to a plane
 /// @param points Point Cloud with covatiance
-inline void covariance_update_plane(const PointCloudShared& points) { covariance_update_plane_async(points).wait(); }
+inline void covariance_update_plane(const PointCloudShared& points) { 
+    const size_t N = points.size();
+    // points.queue.set_accessed_by_device(points.covs_ptr(), N);
+    
+    covariance_update_plane_async(points).wait();
+    
+    // points.queue.clear_accessed_by_device(points.covs_ptr(), N);
+
+}
 
 }  // namespace covariance
 }  // namespace algorithms

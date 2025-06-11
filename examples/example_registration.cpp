@@ -82,6 +82,13 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
+        sycl_points::algorithms::covariance::compute_normals_from_covariances(source_downsampled);
+        sycl_points::algorithms::covariance::compute_normals_from_covariances(target_downsampled);
+        auto dt_normal =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
+                .count();
+
+        t0 = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::covariance::covariance_update_plane(source_downsampled);
         sycl_points::algorithms::covariance::covariance_update_plane(target_downsampled);
         auto dt_to_plane =
@@ -116,11 +123,14 @@ int main() {
             if (elapsed.count("5. compute Covariances") == 0) elapsed["5. compute Covariances"] = 0.0;
             elapsed["5. compute Covariances"] += dt_covariance;
 
-            if (elapsed.count("6. update Covariance") == 0) elapsed["6. update Covariance"] = 0.0;
-            elapsed["6. update Covariance"] += dt_to_plane;
+            if (elapsed.count("6. compute Normals") == 0) elapsed["6. compute Normals"] = 0.0;
+            elapsed["6. compute Normals"] += dt_normal;
 
-            if (elapsed.count("7. Registration") == 0) elapsed["7. Registration"] = 0.0;
-            elapsed["7. Registration"] += dt_registration;
+            if (elapsed.count("7. update Covariance") == 0) elapsed["7. update Covariance"] = 0.0;
+            elapsed["7. update Covariance"] += dt_to_plane;
+
+            if (elapsed.count("8. Registration") == 0) elapsed["8. Registration"] = 0.0;
+            elapsed["8. Registration"] += dt_registration;
         }
         if (i == LOOP + WARM_UP - 1) {
             std::cout << ret.T.matrix() << std::endl;
