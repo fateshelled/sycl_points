@@ -43,18 +43,17 @@ namespace {
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode {
     float x, y, z;
-    int32_t idx;     // Index of the point in the original dataset
-    int32_t left;    // Index of left child node (-1 if none)
-    int32_t right;   // Index of right child node (-1 if none)
-    uint8_t axis;    // Split axis (0=x, 1=y, 2=z)
-    uint8_t pad[3];  // Padding for alignment (3 bytes)
+    int32_t idx;         // Index of the point in the original dataset
+    int32_t left = -1;   // Index of left child node (-1 if none)
+    int32_t right = -1;  // Index of right child node (-1 if none)
+    uint8_t axis;        // Split axis (0=x, 1=y, 2=z)
+    uint8_t pad[3];      // Padding for alignment (3 bytes)
 };  // Total: 28 bytes, aligned to 4-byte boundary
 
 // Data structure for non-recursive KD-tree construction
 struct BuildTask {
     std::vector<uint32_t> indices;  // Indices corresponding to this node
     uint32_t nodeIdx;               // Node index in the tree
-    uint32_t depth;                 // Depth in the tree
 };
 
 // Stack to track nodes that need to be explored
@@ -126,19 +125,19 @@ public:
 
         flatTree->tree_->resize(estimatedSize);
 
-        // Main index array
-        std::vector<uint32_t> indices(n);
-        std::iota(indices.begin(), indices.end(), 0);
-
         // Reusable temporary array for sorting
         std::vector<std::pair<float, uint32_t>> sortedValues(n);
 
         std::vector<BuildTask> taskStack;
         taskStack.reserve(n);
-        uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
-
         // Add the first task to the stack
-        taskStack.push_back({indices, 0, 0});
+        {
+            std::vector<uint32_t> indices(n);
+            std::iota(indices.begin(), indices.end(), 0);
+            taskStack.push_back({indices, 0});
+        }
+
+        uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
 
         // Process until task stack is empty
         while (!taskStack.empty()) {
@@ -147,8 +146,8 @@ public:
             taskStack.pop_back();
 
             auto& subIndices = task.indices;
+            const auto subIndices_size = subIndices.size();
             const auto nodeIdx = task.nodeIdx;
-            const auto depth = task.depth;
 
             if (subIndices.empty()) continue;
 
@@ -156,14 +155,14 @@ public:
             const auto axis = find_best_axis(points, subIndices);
 
             // Create pairs of values and indices for sorting along the axis
-            sortedValues.resize(subIndices.size());
-            for (size_t i = 0; i < subIndices.size(); ++i) {
+            sortedValues.resize(subIndices_size);
+            for (size_t i = 0; i < subIndices_size; ++i) {
                 const auto idx = subIndices[i];
                 sortedValues[i] = {points[idx](axis), idx};
             }
 
             // Partial sort to find median
-            const size_t medianPos = subIndices.size() / 2;
+            const auto medianPos = subIndices_size / 2;
 #if __cplusplus >= 202002L
             std::nth_element(std::execution::unseq, sortedValues.begin(), sortedValues.begin() + medianPos,
                              sortedValues.end());
@@ -181,8 +180,6 @@ public:
             node.z = points[pointIdx].z();
             node.idx = pointIdx;
             node.axis = axis;
-            node.left = -1;
-            node.right = -1;
 
             // Extract indices for left subtree
             std::vector<uint32_t> leftIndices(medianPos);
@@ -191,9 +188,9 @@ public:
             }
 
             // Extract indices for right subtree
-            std::vector<uint32_t> rightIndices(subIndices.size() - medianPos - 1);
+            std::vector<uint32_t> rightIndices(subIndices_size - medianPos - 1);
             size_t counter = 0;
-            for (size_t i = medianPos + 1; i < sortedValues.size(); ++i) {
+            for (size_t i = medianPos + 1; i < subIndices_size; ++i) {
                 rightIndices[counter++] = sortedValues[i].second;
             }
 
@@ -201,14 +198,14 @@ public:
             if (!leftIndices.empty()) {
                 const auto leftNodeIdx = nextNodeIdx++;
                 node.left = leftNodeIdx;
-                taskStack.push_back({std::move(leftIndices), leftNodeIdx, depth + 1});
+                taskStack.push_back({std::move(leftIndices), leftNodeIdx});
             }
 
             // Add right subtree to processing queue if not empty
             if (!rightIndices.empty()) {
                 const auto rightNodeIdx = nextNodeIdx++;
                 node.right = rightNodeIdx;
-                taskStack.push_back({std::move(rightIndices), rightNodeIdx, depth + 1});
+                taskStack.push_back({std::move(rightIndices), rightNodeIdx});
             }
         }
 
