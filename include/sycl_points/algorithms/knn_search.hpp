@@ -63,18 +63,19 @@ struct NodeEntry {
 };
 
 // Helper function to find best split axis based on range
-template <typename T, typename ALLOCATOR>
-inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std::vector<uint32_t>& indices) {
+template <typename ALLOCATOR>
+inline uint8_t find_axis_range(const std::vector<PointType, ALLOCATOR>& points, const std::vector<uint32_t>& indices) {
     if (indices.size() <= 1) return 0;
 
-    // Find min/max for each axis
-    std::array<float, 3> min_vals = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
-                                     std::numeric_limits<float>::max()};
-    std::array<float, 3> max_vals = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
-                                     std::numeric_limits<float>::lowest()};
+    // Find approximate min/max for each axis
+    sycl::float3 min_vals = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                             std::numeric_limits<float>::max()};
+    sycl::float3 max_vals = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                             std::numeric_limits<float>::lowest()};
 
-    // Find the range of each axis
-    for (const auto& idx : indices) {
+    const size_t step = std::max(indices.size() / 100, (size_t)1);
+    for (size_t i = 0; i < indices.size(); i += step) {
+        const auto idx = indices[i];
 #pragma unroll 3
         for (size_t axis = 0; axis < 3; ++axis) {
             min_vals[axis] = std::min(min_vals[axis], points[idx](axis));
@@ -83,11 +84,35 @@ inline uint8_t find_best_axis(const std::vector<T, ALLOCATOR>& points, const std
     }
 
     // Find the axis with largest range
-    std::array<float, 3> ranges = {max_vals[0] - min_vals[0], max_vals[1] - min_vals[1], max_vals[2] - min_vals[2]};
+    const sycl::float3 ranges = max_vals - min_vals;
 
     // Return the axis with the largest range
     if (ranges[0] >= ranges[1] && ranges[0] >= ranges[2]) return 0;
     if (ranges[1] >= ranges[0] && ranges[1] >= ranges[2]) return 1;
+    return 2;
+}
+
+// Helper function to find best split axis based on variance
+template <typename ALLOCATOR>
+inline uint8_t find_axis_variance(const std::vector<PointType, ALLOCATOR>& points, const std::vector<uint32_t>& indices) {
+    if (indices.size() <= 1) return 0;
+
+    // Find approximate min/max for each axis
+    PointType sum = PointType::Zero();
+    PointType sum_sq = PointType::Zero();
+
+    const size_t step = std::max(indices.size() / 100, (size_t)1);
+    for (size_t i = 0; i < indices.size(); i += step) {
+        const PointType& pt = points[indices[i]];
+        sum += pt;
+        sum_sq += pt.cwiseProduct(pt);
+    }
+
+    const PointType variance = (sum_sq - (sum / sum.w()).cwiseProduct(sum));
+
+    // Return the axis with the largest variance
+    if (variance[0] >= variance[1] && variance[0] >= variance[2]) return 0;
+    if (variance[1] >= variance[0] && variance[1] >= variance[2]) return 1;
     return 2;
 }
 
@@ -152,7 +177,8 @@ public:
             if (subIndices.empty()) continue;
 
             // Split axis
-            const auto axis = find_best_axis(points, subIndices);
+            const auto axis = find_axis_range(points, subIndices);
+            // const auto axis = find_axis_variance(points, subIndices);
 
             // Create pairs of values and indices for sorting along the axis
             sortedValues.resize(subIndices_size);
