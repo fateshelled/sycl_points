@@ -128,10 +128,10 @@ make
 sycl-ls
 
 # # example output
-# [level_zero:gpu][level_zero:0] Intel(R) oneAPI Unified Runtime over Level-Zero, Intel(R) UHD Graphics 750 12.1.0 [1.6.32567+19]
-# [opencl:cpu][opencl:0] Intel(R) OpenCL, 11th Gen Intel(R) Core(TM) i5-11500 @ 2.70GHz OpenCL 3.0 (Build 0) [2025.19.4.0.18_160000.xmain-hotfix]
-# [opencl:gpu][opencl:1] Intel(R) OpenCL Graphics, Intel(R) UHD Graphics 750 OpenCL 3.0 NEO  [25.05.32567]
-# [cuda:gpu][cuda:0] NVIDIA CUDA BACKEND, NVIDIA GeForce RTX 3060 8.6 [CUDA 12.8]
+# [level_zero:gpu][level_zero:0] Intel(R) oneAPI Unified Runtime over Level-Zero, Intel(R) Graphics 12.70.4 [1.6.33276+22]
+# [opencl:cpu][opencl:0] Intel(R) OpenCL, Intel(R) Core(TM) Ultra 7 265K OpenCL 3.0 (Build 0) [2025.19.4.0.18_160000.xmain-hotfix]
+# [opencl:gpu][opencl:1] Intel(R) OpenCL Graphics, Intel(R) Graphics OpenCL 3.0 NEO  [25.13.33276]
+# [cuda:gpu][cuda:0] NVIDIA CUDA BACKEND, NVIDIA GeForce RTX 3060 8.6 [CUDA 12.9]
 
 # specify the device to be used with `ONEAPI_DEVICE_SELECTOR`
 # note: level_zero is not supported.
@@ -148,19 +148,20 @@ ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 
 #### example_registration
 
-- `CPU`: Intel Core-i5 11500 (Power Mode: Performance)
-- `iGPU`: Intel UHD Graphics 750
+- `CPU`: Intel Core Ultra 7 265K (Power Mode: Performance)
+- `iGPU`: Intel Graphics
 
 | process                |        CPU |       iGPU |   RTX 3060 |
 | ---------------------- | ---------: | ---------: | ---------: |
-| 1. to PointCloudShared |  262.54 us |  713.59 us |  169.72 us |
-| 2. Downsampling        | 2233.76 us | 1558.17 us | 1967.80 us |
-| 3. KDTree build        | 1465.28 us | 1367.76 us | 1363.46 us |
-| 4. KDTree kNN Search   | 1175.28 us | 2468.82 us | 1360.50 us |
-| 5. compute Covariances |  147.04 us |  418.48 us |   42.35 us |
-| 6. update Covariance   |  159.40 us |  116.78 us |   21.49 us |
-| 7. Registration        | 1276.92 us | 2730.83 us | 1411.37 us |
-| Total                  | 6720.22 us | 9374.43 us | 6336.69 us |
+| 1. to PointCloudShared |  229.85 us |  982.98 us |  296.26 us |
+| 2. Downsampling        | 1136.21 us | 1662.89 us | 1769.61 us |
+| 3. KDTree build        | 1026.72 us | 1010.99 us | 1012.56 us |
+| 4. KDTree kNN Search   | 1121.59 us | 1651.67 us |  865.65 us |
+| 5. compute Covariances |  105.05 us |  214.01 us |   87.51 us |
+| 6. compute Normals     |   93.06 us |  193.18 us |   61.66 us |
+| 7. update Covariance   |   88.56 us |  176.38 us |   20.54 us |
+| 8. Registration        |  898.55 us | 2612.08 us |  821.15 us |
+| Total                  | 4699.59 us | 8504.18 us | 4934.94 us |
 
 ## License
 This library is released under Apache License
