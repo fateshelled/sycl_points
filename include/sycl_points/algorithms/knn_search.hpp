@@ -262,6 +262,11 @@ public:
     sycl_utils::events knn_search_async(const PointType* queries, const size_t query_size, const size_t k,
                                         KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
+        if (query_size == 0) {
+            result.allocate(this->queue);
+            return sycl_utils::events();
+        }
+        
         // constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
         // constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
         constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;

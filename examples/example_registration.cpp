@@ -56,6 +56,12 @@ int main() {
         preprocess_filter->box_filter(target_shared, BOX_FILTER_MIN_DISTANCE, BOX_FILTER_MAX_DISTANCE);
         sycl_points::PointCloudShared target_downsampled(queue);
         voxel_grid->downsampling(target_shared, target_downsampled);
+
+        source_downsampled.reserve_covs(source_downsampled.size());
+        target_downsampled.reserve_covs(target_downsampled.size());
+        source_downsampled.reserve_normals(source_downsampled.size());
+        target_downsampled.reserve_normals(target_downsampled.size());
+
         auto dt_downsampled =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
@@ -82,8 +88,8 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_normals_from_covariances(source_downsampled);
-        sycl_points::algorithms::covariance::compute_normals_from_covariances(target_downsampled);
+        sycl_points::algorithms::covariance::compute_normals_async(source_neighbors, source_downsampled).wait();
+        sycl_points::algorithms::covariance::compute_normals_async(target_neighbors, target_downsampled).wait();
         auto dt_normal =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
