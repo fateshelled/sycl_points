@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sycl_points/algorithms/registration_result.hpp>
+#include <sycl_points/algorithms/registration_robust.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
@@ -221,6 +222,29 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
     } else {
         static_assert("not support type");
     }
+}
+
+/// @brief Robust Linearlization
+/// @tparam icp icp type
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @param source_cov Source covariance
+/// @param target_pt Target point
+/// @param target_cov Target covariance
+/// @return linearlized result
+template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType::NONE>
+SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::float4, 4>& T,
+                                                         const PointType& source_pt, const Covariance& source_cov,
+                                                         const PointType& target_pt, const Covariance& target_cov,
+                                                         float robust_threshold, float robust_inlier_threshold) {
+    auto result = linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov);
+    const auto weight = kernel::compute_robust_weight<LossType>(result.error * 2.0f, robust_threshold);
+    eigen_utils::multiply_zerocopy<6, 1>(result.b, weight);
+    eigen_utils::multiply_zerocopy<6, 6>(result.H, weight);
+    result.error *= weight;
+    result.inlier = weight > robust_inlier_threshold ? 1 : 0;
+
+    return result;
 }
 
 /// @brief Compute Error
