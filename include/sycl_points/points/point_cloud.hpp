@@ -154,7 +154,10 @@ struct PointCloudShared {
     /// @brief resize normal container
     /// @param N size
     void resize_normals(size_t N) const { this->normals->resize(N); }
-    
+
+    /// @brief reserve point container
+    /// @param N size
+    void reserve_points(size_t N) const { this->points->reserve(N); }
     /// @brief reserve covariance container
     /// @param N size
     void reserve_covs(size_t N) const { this->covs->reserve(N); }

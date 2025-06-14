@@ -1,6 +1,5 @@
 #pragma once
 
-#include <mutex>
 #include <sycl_points/points/point_cloud.hpp>
 
 namespace sycl_points {
