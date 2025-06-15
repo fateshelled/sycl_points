@@ -19,6 +19,8 @@ This project was developed with reference to small_gicp, a lightweight point clo
 - Point cloud registration
     - Iterative Closest Point (ICP Point to Point)
     - Generalized Iterative Closest Point (GICP)
+    - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GERMAN_MCCLURE)
+    - Adaptive max correspondence distance by inlier points ratio
 - Preprocessing filter
     - L∞ distance (chebyshev distance) filter
     - Random sampling
