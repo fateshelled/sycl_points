@@ -23,7 +23,6 @@ struct RegistrationParams {
 
     RobustLossType robust_loss = RobustLossType::NONE;  // robust loss function type
     float robust_threshold = 1.0f;                      // threshold for robust loss function
-    float robust_inlier_threshold = 0.1f;               // threshold for inlier detection
 
     bool verbose = false;  // If true, print debug messages
     // bool optimize_lm = false; // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
@@ -228,7 +227,6 @@ private:
             const size_t global_size = queue_.get_global_size(N);
 
             const auto robust_threshold = this->params_.robust_threshold;
-            const auto robust_inlier_threshold = this->params_.robust_inlier_threshold;
 
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
@@ -259,7 +257,7 @@ private:
                 } else {
                     linearlized_ptr[i] = kernel::linearlize_robust<icp, loss>(
                         cur_T, source_ptr[i], source_cov_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                        target_cov_ptr[neighbors_index_ptr[i]], robust_threshold, robust_inlier_threshold);
+                        target_cov_ptr[neighbors_index_ptr[i]], robust_threshold);
                 }
             });
         });
@@ -298,7 +296,6 @@ private:
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
 
             const auto robust_threshold = this->params_.robust_threshold;
-            const auto robust_inlier_threshold = this->params_.robust_inlier_threshold;
 
             // get pointers
             // input
@@ -345,7 +342,7 @@ private:
                                const LinearlizedResult result = kernel::linearlize_robust<icp, loss>(
                                    cur_T, source_ptr[index], source_cov_ptr[index],
                                    target_ptr[neighbors_index_ptr[index]], target_cov_ptr[neighbors_index_ptr[index]],
-                                   robust_threshold, robust_inlier_threshold);
+                                   robust_threshold);
                                if (result.inlier == 1) {
                                    // reduction on device
                                    const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);

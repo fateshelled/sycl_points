@@ -35,8 +35,8 @@ namespace kernel {
 /// @param target_pt Target point
 /// @return linearlized result
 SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::array<sycl::float4, 4>& T,
-                                                                 const PointType& source_pt,
-                                                                 const PointType& target_pt, float& residual_norm) {
+                                                                 const PointType& source_pt, const PointType& target_pt,
+                                                                 float& residual_norm) {
     PointType transform_source;
     transform::kernel::transform_point(source_pt, transform_source, T.data());
 
@@ -71,8 +71,9 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::arra
     const auto J_T = eigen_utils::transpose<4, 6>(J);
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
     ret.b = eigen_utils::multiply<6, 4>(J_T, residual);
-    residual_norm = eigen_utils::frobenius_norm<4>(residual);
-    ret.error = 0.5f * residual_norm;
+    const float squared_norm = eigen_utils::frobenius_norm_squared<4>(residual);
+    residual_norm = sycl::sqrt(squared_norm);
+    ret.error = 0.5f * squared_norm;
     ret.inlier = 1;
     return ret;
 }
@@ -89,7 +90,7 @@ SYCL_EXTERNAL inline float calculate_error_point_to_point(const std::array<sycl:
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
-    return 0.5f * eigen_utils::frobenius_norm<4>(residual);
+    return 0.5f * eigen_utils::frobenius_norm_squared<4>(residual);
 }
 
 /// @brief Generalized Iterative Closest Point (GICP)
@@ -161,9 +162,12 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::fl
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T_mah, J));
     // J.transpose() * mahalanobis * residual;
     ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
+
+    const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual));
+    residual_norm = sycl::sqrt(squared_norm);
+
     // 0.5 * residual.transpose() * mahalanobis * residual;
-    residual_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual));
-    ret.error = 0.5f * residual_norm;
+    ret.error = 0.5f * squared_norm;
     ret.inlier = 1;
     return ret;
 }
@@ -251,13 +255,12 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
 /// @param target_pt Target point
 /// @param target_cov Target covariance
 /// @param robust_threshold Robust estimation threshold parameter
-/// @param robust_inlier_threshold threshold for inlier detection
 /// @return linearlized result
 template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType::NONE>
 SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::float4, 4>& T,
                                                          const PointType& source_pt, const Covariance& source_cov,
                                                          const PointType& target_pt, const Covariance& target_cov,
-                                                         float robust_threshold, float robust_inlier_threshold) {
+                                                         float robust_threshold) {
     float residual_norm = 0.0f;
     auto result = linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
     const auto weight = kernel::compute_robust_weight<LossType>(residual_norm, robust_threshold);
@@ -265,7 +268,6 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
 
     eigen_utils::multiply_zerocopy<6, 1>(result.b, weight);
     eigen_utils::multiply_zerocopy<6, 6>(result.H, weight);
-    result.inlier = weight > robust_inlier_threshold ? 1 : 0;
 
     return result;
 }

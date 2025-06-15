@@ -319,18 +319,27 @@ SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
 }
 
 template <size_t M>
-/// @brief Vector Frobenius Norm
+/// @brief Vector Frobenius Norm squared
 /// @tparam M Vector size
 /// @param a vector
-/// @return Frobenius norm of a
-SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Vector<float, M>& a) {
+/// @return Frobenius norm squared of a
+SYCL_EXTERNAL inline float frobenius_norm_squared(const Eigen::Vector<float, M>& a) {
     float ret = 0.0f;
 #pragma unroll M
     for (size_t i = 0; i < M; ++i) {
         // ret += a(i) * a(i);
         ret = sycl::fma(a(i), a(i), ret);
     }
-    return sycl::sqrt(ret);
+    return ret;
+}
+
+template <size_t M>
+/// @brief Vector Frobenius Norm
+/// @tparam M Vector size
+/// @param a vector
+/// @return Frobenius norm of a
+SYCL_EXTERNAL inline float frobenius_norm(const Eigen::Vector<float, M>& a) {
+    return sycl::sqrt(frobenius_norm_squared<M>(a));
 }
 
 /// @brief 3×3 Matrix Inverse
