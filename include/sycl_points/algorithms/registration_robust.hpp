@@ -15,6 +15,26 @@ enum class RobustLossType {
     GERMAN_MCCLURE  // German-McClure loss
 };
 
+RobustLossType RobustLossType_from_string(const std::string& str) {
+    std::string upper = str;
+    std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
+    if (upper == "NONE") {
+        return RobustLossType::NONE;
+    } else if (upper == "HUBER") {
+        return RobustLossType::HUBER;
+    } else if (upper == "TUKEY") {
+        return RobustLossType::TUKEY;
+    } else if (upper == "CAUCHY") {
+        return RobustLossType::CAUCHY;
+    } else if (upper == "GERMAN_MCCLURE") {
+        return RobustLossType::GERMAN_MCCLURE;
+    }
+    std::string error_str = "Invalid RobustLossType str [";
+    error_str += str;
+    error_str += "]";
+    throw std::runtime_error(error_str);
+}
+
 namespace kernel {
 
 /// @brief Compute robust weight for given residual

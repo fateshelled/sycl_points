@@ -346,16 +346,18 @@ private:
                                    cur_T, source_ptr[index], source_cov_ptr[index],
                                    target_ptr[neighbors_index_ptr[index]], target_cov_ptr[neighbors_index_ptr[index]],
                                    robust_threshold, robust_inlier_threshold);
-                               // reduction on device
-                               const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
-                               const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
-                               sum_H0_arg += H0;
-                               sum_H1_arg += H1;
-                               sum_H2_arg += H2;
-                               sum_b0_arg += b0;
-                               sum_b1_arg += b1;
-                               sum_error_arg += result.error;
-                               sum_inlier_arg += (uint32_t)1;
+                               if (result.inlier == 1) {
+                                   // reduction on device
+                                   const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
+                                   const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
+                                   sum_H0_arg += H0;
+                                   sum_H1_arg += H1;
+                                   sum_H2_arg += H2;
+                                   sum_b0_arg += b0;
+                                   sum_b1_arg += b1;
+                                   sum_error_arg += result.error;
+                                   sum_inlier_arg += (uint32_t)1;
+                               }
                            });
         });
         return events;
