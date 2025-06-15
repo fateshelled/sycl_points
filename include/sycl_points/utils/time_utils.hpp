@@ -43,13 +43,13 @@ auto measure_execution(Func&& func, TimeType& elapsed_time, Args&&... args)
         func(std::forward<Args>(args)...);
         const auto end = std::chrono::steady_clock::now();
         const auto duration = std::chrono::duration<TimeType, std::micro>(end - start);
-        elapsed_time = duration.count();
+        elapsed_time += duration.count();
         return;
     } else {
         auto result = func(std::forward<Args>(args)...);
         const auto end = std::chrono::steady_clock::now();
         const auto duration = std::chrono::duration<TimeType, std::micro>(end - start);
-        elapsed_time = duration.count();
+        elapsed_time += duration.count();
         return result;
     }
 }
