@@ -57,6 +57,33 @@ SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float thre
     return 1.0f;
 }
 
+/// @brief Compute robust error for given residual
+/// @param residual_norm Norm of residual vector
+/// @param threshold Threshold parameter for robust loss
+/// @return Robust weight (0.0 to 1.0)
+template <RobustLossType LossType = RobustLossType::NONE>
+SYCL_EXTERNAL inline float compute_robust_error(float residual_norm, float threshold) {
+    if constexpr (LossType == RobustLossType::NONE) {
+        return 0.5f * residual_norm * residual_norm;
+    } else if constexpr (LossType == RobustLossType::HUBER) {
+        return residual_norm <= threshold ? 0.5f * residual_norm * residual_norm
+                                          : threshold * (residual_norm - 0.5f * threshold);
+    } else if constexpr (LossType == RobustLossType::TUKEY) {
+        return residual_norm <= threshold
+                   ? (threshold * threshold / 6.0f) *
+                         (1.0f - sycl::pow(1.0f - ((residual_norm * residual_norm) / (threshold * threshold)), 3.0f))
+                   : threshold * threshold / 6.0f;
+    } else if constexpr (LossType == RobustLossType::CAUCHY) {
+        return 0.5f * threshold * threshold *
+               sycl::log(1.0f + ((residual_norm * residual_norm) / (threshold * threshold)));
+    } else if constexpr (LossType == RobustLossType::GERMAN_MCCLURE) {
+        return 0.5f * (threshold * threshold * residual_norm * residual_norm) /
+               (threshold * threshold + residual_norm * residual_norm);
+    }
+
+    return 0.5f * residual_norm * residual_norm;
+}
+
 }  // namespace kernel
 
 }  // namespace registration

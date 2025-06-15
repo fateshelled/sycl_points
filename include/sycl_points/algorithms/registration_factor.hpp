@@ -36,7 +36,7 @@ namespace kernel {
 /// @return linearlized result
 SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::array<sycl::float4, 4>& T,
                                                                  const PointType& source_pt,
-                                                                 const PointType& target_pt) {
+                                                                 const PointType& target_pt, float& residual_norm) {
     PointType transform_source;
     transform::kernel::transform_point(source_pt, transform_source, T.data());
 
@@ -71,7 +71,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::arra
     const auto J_T = eigen_utils::transpose<4, 6>(J);
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
     ret.b = eigen_utils::multiply<6, 4>(J_T, residual);
-    ret.error = 0.5f * eigen_utils::frobenius_norm<4>(residual);
+    residual_norm = eigen_utils::frobenius_norm<4>(residual);
+    ret.error = 0.5f * residual_norm;
     ret.inlier = 1;
     return ret;
 }
@@ -100,7 +101,7 @@ SYCL_EXTERNAL inline float calculate_error_point_to_point(const std::array<sycl:
 /// @return linearlized result
 SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                        const Covariance& source_cov, const PointType& target_pt,
-                                                       const Covariance& target_cov) {
+                                                       const Covariance& target_cov, float& residual_norm) {
     PointType transform_source_pt;
     Covariance transform_source_cov;
     transform::kernel::transform_point(source_pt, transform_source_pt, T.data());
@@ -161,7 +162,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::fl
     // J.transpose() * mahalanobis * residual;
     ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
     // 0.5 * residual.transpose() * mahalanobis * residual;
-    ret.error = 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
+    residual_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual));
+    ret.error = 0.5f * residual_norm;
     ret.inlier = 1;
     return ret;
 }
@@ -210,18 +212,35 @@ SYCL_EXTERNAL inline float calculate_error_gicp(const std::array<sycl::float4, 4
 /// @param source_cov Source covariance
 /// @param target_pt Target point
 /// @param target_cov Target covariance
+/// @param residual_norm L2 norm of residual vector
+/// @return linearlized result
+template <ICPType icp = ICPType::GICP>
+SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+                                                  const Covariance& source_cov, const PointType& target_pt,
+                                                  const Covariance& target_cov, float& residual_norm) {
+    if constexpr (icp == ICPType::POINT_TO_POINT) {
+        return linearlize_point_to_point(T, source_pt, target_pt, residual_norm);
+    } else if constexpr (icp == ICPType::GICP) {
+        return linearlize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
+    } else {
+        static_assert("not support type");
+    }
+}
+
+/// @brief Linearlization
+/// @tparam icp icp type
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @param source_cov Source covariance
+/// @param target_pt Target point
+/// @param target_cov Target covariance
 /// @return linearlized result
 template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                   const Covariance& source_cov, const PointType& target_pt,
                                                   const Covariance& target_cov) {
-    if constexpr (icp == ICPType::POINT_TO_POINT) {
-        return linearlize_point_to_point(T, source_pt, target_pt);
-    } else if constexpr (icp == ICPType::GICP) {
-        return linearlize_gicp(T, source_pt, source_cov, target_pt, target_cov);
-    } else {
-        static_assert("not support type");
-    }
+    float residual_norm = 0.0f;
+    return linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
 }
 
 /// @brief Robust Linearlization
@@ -231,17 +250,21 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
 /// @param source_cov Source covariance
 /// @param target_pt Target point
 /// @param target_cov Target covariance
+/// @param robust_threshold Robust estimation threshold parameter
+/// @param robust_inlier_threshold threshold for inlier detection
 /// @return linearlized result
 template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType::NONE>
 SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::float4, 4>& T,
                                                          const PointType& source_pt, const Covariance& source_cov,
                                                          const PointType& target_pt, const Covariance& target_cov,
                                                          float robust_threshold, float robust_inlier_threshold) {
-    auto result = linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov);
-    const auto weight = kernel::compute_robust_weight<LossType>(result.error * 2.0f, robust_threshold);
+    float residual_norm = 0.0f;
+    auto result = linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
+    const auto weight = kernel::compute_robust_weight<LossType>(residual_norm, robust_threshold);
+    result.error = kernel::compute_robust_error<LossType>(residual_norm, robust_threshold);
+
     eigen_utils::multiply_zerocopy<6, 1>(result.b, weight);
     eigen_utils::multiply_zerocopy<6, 6>(result.H, weight);
-    result.error *= weight;
     result.inlier = weight > robust_inlier_threshold ? 1 : 0;
 
     return result;
