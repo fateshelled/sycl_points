@@ -52,8 +52,10 @@ struct FlatKDNode {
 
 // Data structure for non-recursive KD-tree construction
 struct BuildTask {
-    std::vector<uint32_t> indices;  // Indices corresponding to this node
-    uint32_t nodeIdx;               // Node index in the tree
+    uint32_t nodeIdx;   // Node index in the tree
+    uint32_t startIdx;  // global indices start index
+    uint32_t endIdx;    // global indices end index
+    BuildTask(uint32_t node, uint32_t start, uint32_t end) : nodeIdx(node), startIdx(start), endIdx(end) {}
 };
 
 // Stack to track nodes that need to be explored
@@ -64,8 +66,10 @@ struct NodeEntry {
 
 // Helper function to find best split axis based on range
 template <typename ALLOCATOR>
-inline uint8_t find_axis_range(const std::vector<PointType, ALLOCATOR>& points, const std::vector<uint32_t>& indices) {
-    if (indices.size() <= 1) return 0;
+inline uint8_t find_axis_range(const std::vector<PointType, ALLOCATOR>& points, const std::vector<uint32_t>& indices,
+                               uint32_t start, uint32_t end) {
+    const int64_t size = end - start + 1;
+    if (size <= 1) return 0;
 
     // Find approximate min/max for each axis
     sycl::float3 min_vals = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
@@ -73,8 +77,8 @@ inline uint8_t find_axis_range(const std::vector<PointType, ALLOCATOR>& points, 
     sycl::float3 max_vals = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
                              std::numeric_limits<float>::lowest()};
 
-    const size_t step = std::max(indices.size() / 100, (size_t)1);
-    for (size_t i = 0; i < indices.size(); i += step) {
+    const size_t step = static_cast<size_t>(std::max(size / 100, (int64_t)1));
+    for (size_t i = start; i <= end; i += step) {
         const auto idx = indices[i];
 #pragma unroll 3
         for (size_t axis = 0; axis < 3; ++axis) {
@@ -94,15 +98,17 @@ inline uint8_t find_axis_range(const std::vector<PointType, ALLOCATOR>& points, 
 
 // Helper function to find best split axis based on variance
 template <typename ALLOCATOR>
-inline uint8_t find_axis_variance(const std::vector<PointType, ALLOCATOR>& points, const std::vector<uint32_t>& indices) {
-    if (indices.size() <= 1) return 0;
+inline uint8_t find_axis_variance(const std::vector<PointType, ALLOCATOR>& points, const std::vector<uint32_t>& indices,
+                                  uint32_t start, uint32_t end) {
+    const int64_t size = end - start + 1;
+    if (size <= 1) return 0;
 
     // Find approximate min/max for each axis
     PointType sum = PointType::Zero();
     PointType sum_sq = PointType::Zero();
 
-    const size_t step = std::max(indices.size() / 100, (size_t)1);
-    for (size_t i = 0; i < indices.size(); i += step) {
+    const size_t step = static_cast<size_t>(std::max(size / 100, (int64_t)1));
+    for (size_t i = start; i <= end; i += step) {
         const PointType& pt = points[indices[i]];
         sum += pt;
         sum_sq += pt.cwiseProduct(pt);
@@ -144,23 +150,29 @@ public:
     static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
         const size_t n = points.size();
 
+        KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
+        if (n == 0) {
+            flatTree->tree_->resize(0);  // Ensure tree is empty for n=0
+            return flatTree;
+        }
+
+        // mem_advise to host
+        {
+            q.set_accessed_by_host(points.data(), n);
+            q.set_read_mostly(points.data(), n);
+        }
+
         // Estimate tree size with some margin
         const size_t estimatedSize = n * 2;
-        KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
-
         flatTree->tree_->resize(estimatedSize);
 
-        // Reusable temporary array for sorting
-        std::vector<std::pair<float, uint32_t>> sortedValues(n);
+        std::vector<uint32_t> globalIndices(n);
+        std::iota(globalIndices.begin(), globalIndices.end(), 0);
 
         std::vector<BuildTask> taskStack;
         taskStack.reserve(n);
         // Add the first task to the stack
-        {
-            std::vector<uint32_t> indices(n);
-            std::iota(indices.begin(), indices.end(), 0);
-            taskStack.push_back({indices, 0});
-        }
+        taskStack.emplace_back((uint32_t)0, (uint32_t)0, (uint32_t)(n - 1));
 
         uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
 
@@ -170,34 +182,31 @@ public:
             BuildTask task = std::move(taskStack.back());
             taskStack.pop_back();
 
-            auto& subIndices = task.indices;
-            const auto subIndices_size = subIndices.size();
             const auto nodeIdx = task.nodeIdx;
+            const auto startIdx = task.startIdx;
+            const auto endIdx = task.endIdx;
+            const auto indices_size = endIdx - startIdx + 1;
 
-            if (subIndices.empty()) continue;
+            if (startIdx > endIdx || indices_size == 0) continue;
 
             // Split axis
-            const auto axis = find_axis_range(points, subIndices);
-            // const auto axis = find_axis_variance(points, subIndices);
-
-            // Create pairs of values and indices for sorting along the axis
-            sortedValues.resize(subIndices_size);
-            for (size_t i = 0; i < subIndices_size; ++i) {
-                const auto idx = subIndices[i];
-                sortedValues[i] = {points[idx](axis), idx};
-            }
+            const auto axis = find_axis_range(points, globalIndices, startIdx, endIdx);
+            // const auto axis = find_axis_variance(points, subIndices, startIdx, endIdx);
 
             // Partial sort to find median
-            const auto medianPos = subIndices_size / 2;
+            const uint32_t medianIdx = startIdx + indices_size / 2;
 #if __cplusplus >= 202002L
-            std::nth_element(std::execution::unseq, sortedValues.begin(), sortedValues.begin() + medianPos,
-                             sortedValues.end());
+            std::nth_element(std::execution::unseq, globalIndices.begin() + startIdx, globalIndices.begin() + medianIdx,
+                             globalIndices.begin() + endIdx + 1,
+                             [&](uint32_t a, uint32_t b) { return points[a](axis) < points[b](axis); });
 #else
-            std::nth_element(sortedValues.begin(), sortedValues.begin() + medianPos, sortedValues.end());
+            std::nth_element(globalIndices.begin() + startIdx, globalIndices.begin() + medianIdx,
+                             globalIndices.begin() + endIdx + 1,
+                             [&](uint32_t a, uint32_t b) { return points[a](axis) < points[b](axis); });
 #endif
 
             // Get the median point
-            const auto pointIdx = sortedValues[medianPos].second;
+            const auto pointIdx = globalIndices[medianIdx];
 
             // Initialize flat node
             auto& node = (*flatTree->tree_)[nodeIdx];
@@ -207,37 +216,30 @@ public:
             node.idx = pointIdx;
             node.axis = axis;
 
-            // Extract indices for left subtree
-            std::vector<uint32_t> leftIndices(medianPos);
-            for (size_t i = 0; i < medianPos; ++i) {
-                leftIndices[i] = sortedValues[i].second;
-            }
-
-            // Extract indices for right subtree
-            std::vector<uint32_t> rightIndices(subIndices_size - medianPos - 1);
-            size_t counter = 0;
-            for (size_t i = medianPos + 1; i < subIndices_size; ++i) {
-                rightIndices[counter++] = sortedValues[i].second;
-            }
-
             // Add left subtree to processing queue if not empty
-            if (!leftIndices.empty()) {
+            if (startIdx < medianIdx) {
                 const auto leftNodeIdx = nextNodeIdx++;
                 node.left = leftNodeIdx;
-                taskStack.push_back({std::move(leftIndices), leftNodeIdx});
+                taskStack.emplace_back(leftNodeIdx, startIdx, medianIdx - 1);
             }
 
             // Add right subtree to processing queue if not empty
-            if (!rightIndices.empty()) {
+            if (medianIdx < endIdx) {
                 const auto rightNodeIdx = nextNodeIdx++;
                 node.right = rightNodeIdx;
-                taskStack.push_back({std::move(rightIndices), rightNodeIdx});
+                taskStack.emplace_back(rightNodeIdx, medianIdx + 1, endIdx);
             }
+        }
+
+        // mem_advise clear
+        {
+            q.clear_accessed_by_host(points.data(), n);
+            q.clear_read_mostly(points.data(), n);
         }
 
         // Trim the tree to actual used size
         flatTree->tree_->resize(nextNodeIdx);
-        // flatTree.queue.set_read_mostly(flatTree.tree_->data(), flatTree.tree_->size());
+        // q.set_read_mostly(flatTree->tree_->data(), flatTree->tree_->size());
         return flatTree;
     }
 
@@ -266,7 +268,7 @@ public:
             result.allocate(this->queue);
             return sycl_utils::events();
         }
-        
+
         // constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
         // constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
         constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;
