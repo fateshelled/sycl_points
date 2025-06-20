@@ -89,6 +89,12 @@ inline void print_device_info(const sycl::device& device) {
                   << std::endl;
         std::cout << "\tLocal Memory Size: " << device.get_info<sycl::info::device::local_mem_size>() / 1024.0 << " KB"
                   << std::endl;
+        std::cout << "\tGlobal Memory Cache Size: "
+                  << device.get_info<sycl::info::device::global_mem_cache_size>() / 1024.0 / 1024.0 << " MB"
+                  << std::endl;
+        std::cout << "\tGlobal Memory Cache Line Size: "
+                  << device.get_info<sycl::info::device::global_mem_cache_line_size>() << " byte" << std::endl;
+
         std::cout << "\tMax Memory Allocation Size: "
                   << device.get_info<sycl::info::device::max_mem_alloc_size>() / 1024.0 / 1024.0 / 1024.0 << " GB"
                   << std::endl;
