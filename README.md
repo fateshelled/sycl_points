@@ -150,20 +150,184 @@ ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 
 #### example_registration
 
-- `CPU`: Intel Core Ultra 7 265K (Power Mode: Performance)
-- `iGPU`: Intel Graphics
+- Intel Core Ultra 7 265K (Power Mode: Performance) + RTX 3060
 
 | process                |        CPU |       iGPU |   RTX 3060 |
 | ---------------------- | ---------: | ---------: | ---------: |
-| 1. to PointCloudShared |  229.85 us |  982.98 us |  296.26 us |
-| 2. Downsampling        | 1136.21 us | 1662.89 us | 1769.61 us |
-| 3. KDTree build        | 1026.72 us | 1010.99 us | 1012.56 us |
-| 4. KDTree kNN Search   | 1121.59 us | 1651.67 us |  865.65 us |
-| 5. compute Covariances |  105.05 us |  214.01 us |   87.51 us |
-| 6. compute Normals     |   93.06 us |  193.18 us |   61.66 us |
-| 7. update Covariance   |   88.56 us |  176.38 us |   20.54 us |
-| 8. Registration        |  898.55 us | 2612.08 us |  821.15 us |
-| Total                  | 4699.59 us | 8504.18 us | 4934.94 us |
+| 1. to PointCloudShared |  213.45 us |  983.95 us |  291.99 us |
+| 2. Downsampling        | 1139.45 us | 1621.40 us | 1829.96 us |
+| 3. KDTree build        |  924.04 us |  908.26 us |  932.47 us |
+| 4. KDTree kNN Search   | 1106.85 us | 1641.91 us |  954.67 us |
+| 5. compute Covariances |  103.35 us |  213.60 us |  121.15 us |
+| 6. compute Normals     |   86.73 us |  191.48 us |   62.35 us |
+| 7. update Covariance   |   80.93 us |  170.75 us |   19.07 us |
+| 8. Registration        |  876.55 us | 2591.27 us |  861.98 us |
+| Total                  | 4531.35 us | 8322.62 us | 5073.64 us |
+
+
+- Intel Core i5 12600H (Power Mode: Performance)
+
+| process                |        CPU |       iGPU |
+| ---------------------- | ---------: | ---------: |
+| 1. to PointCloudShared |  381.53 us |  744.67 us |
+| 2. Downsampling        | 1959.32 us | 1567.27 us |
+| 3. KDTree build        | 1176.00 us | 1087.54 us |
+| 4. KDTree kNN Search   | 2642.29 us | 1827.11 us |
+| 5. compute Covariances |  189.26 us |  159.68 us |
+| 6. compute Normals     |  152.16 us |  141.44 us |
+| 7. update Covariance   |  121.76 us |  119.87 us |
+| 8. Registration        | 1749.61 us | 2136.16 us |
+| Total                  | 8371.93 us | 7783.74 us |
+
+#### device_query
+
+- Intel Core Ultra 7 265K
+
+```bash
+Platform: Intel(R) OpenCL
+        Device: Intel(R) Core(TM) Ultra 7 265K
+        type: CPU
+        Vendor: Intel(R) Corporation
+        VendorID: 32902
+        Backend name: opencl
+        Backend version: 3.0
+        Driver version: 2025.19.4.0.18_160000.xmain-hotfix
+        Global Memory Size: 30.7247 GB
+        Local Memory Size: 256 KB
+        Global Memory Cache Size: 3 MB
+        Global Memory Cache Line Size: 64 byte
+        Max Memory Allocation Size: 15.3623 GB
+        Max Work Group Size: 8192
+        Max Work Item Dimensions: 3
+        Max Work Item Sizes: [1, 1, 1]
+        Max Sub Groups num: 2048
+        Sub Group Sizes: [4, 8, 16, 32, 64]
+        Max compute units: 20
+        Max Clock Frequency: 0 GHz
+        Double precision support: true
+        USM host allocations: true
+        USM device allocations: true
+        USM shared allocations: true
+        USM atomic shared allocations: true
+        Available: true
+
+Platform: Intel(R) OpenCL Graphics
+        Device: Intel(R) Graphics
+        type: GPU
+        Vendor: Intel(R) Corporation
+        VendorID: 32902
+        Backend name: opencl
+        Backend version: 3.0
+        Driver version: 25.13.33276
+        Global Memory Size: 28.4417 GB
+        Local Memory Size: 64 KB
+        Global Memory Cache Size: 4 MB
+        Global Memory Cache Line Size: 64 byte
+        Max Memory Allocation Size: 3.99999 GB
+        Max Work Group Size: 1024
+        Max Work Item Dimensions: 3
+        Max Work Item Sizes: [1, 1, 1]
+        Max Sub Groups num: 128
+        Sub Group Sizes: [8, 16, 32]
+        Max compute units: 64
+        Max Clock Frequency: 2 GHz
+        Double precision support: true
+        USM host allocations: true
+        USM device allocations: true
+        USM shared allocations: true
+        USM atomic shared allocations: false
+        Available: true
+```
+
+- RTX 3060
+
+```bash
+Platform: NVIDIA CUDA BACKEND
+        Device: NVIDIA GeForce RTX 3060
+        type: GPU
+        Vendor: NVIDIA Corporation
+        VendorID: 4318
+        Backend name: ext_oneapi_cuda
+        Backend version: 8.6
+        Driver version: CUDA 12.9
+        Global Memory Size: 11.6307 GB
+        Local Memory Size: 99 KB
+        Global Memory Cache Size: 2.25 MB
+        Global Memory Cache Line Size: 128 byte
+        Max Memory Allocation Size: 11.6307 GB
+        Max Work Group Size: 1024
+        Max Work Item Dimensions: 3
+        Max Work Item Sizes: [1, 1, 1]
+        Max Sub Groups num: 32
+        Sub Group Sizes: [32]
+        Max compute units: 28
+        Max Clock Frequency: 1.807 GHz
+        Double precision support: true
+        USM host allocations: true
+        USM device allocations: true
+        USM shared allocations: true
+        USM atomic shared allocations: true
+        Available: true
+```
+
+- Intel Core i5 12600H
+
+```bash
+Platform: Intel(R) OpenCL
+        Device: 12th Gen Intel(R) Core(TM) i5-12600H
+        type: CPU
+        Vendor: Intel(R) Corporation
+        VendorID: 32902
+        Backend name: opencl
+        Backend version: 3.0
+        Driver version: 2025.19.4.0.18_160000.xmain-hotfix
+        Global Memory Size: 31.0784 GB
+        Local Memory Size: 256 KB
+        Global Memory Cache Size: 1.25 MB
+        Global Memory Cache Line Size: 64 byte
+        Max Memory Allocation Size: 15.5392 GB
+        Max Work Group Size: 8192
+        Max Work Item Dimensions: 3
+        Max Work Item Sizes: [1, 1, 1]
+        Max Sub Groups num: 2048
+        Sub Group Sizes: [4, 8, 16, 32, 64]
+        Max compute units: 16
+        Max Clock Frequency: 0 GHz
+        Double precision support: true
+        USM host allocations: true
+        USM device allocations: true
+        USM shared allocations: true
+        USM atomic shared allocations: true
+        Available: true
+
+Platform: Intel(R) OpenCL Graphics
+        Device: Intel(R) Iris(R) Xe Graphics
+        type: GPU
+        Vendor: Intel(R) Corporation
+        VendorID: 32902
+        Backend name: opencl
+        Backend version: 3.0
+        Driver version: 25.18.33578
+        Global Memory Size: 28.7742 GB
+        Local Memory Size: 64 KB
+        Global Memory Cache Size: 0.46875 MB
+        Global Memory Cache Line Size: 64 byte
+        Max Memory Allocation Size: 3.99999 GB
+        Max Work Group Size: 512
+        Max Work Item Dimensions: 3
+        Max Work Item Sizes: [1, 1, 1]
+        Max Sub Groups num: 64
+        Sub Group Sizes: [8, 16, 32]
+        Max compute units: 80
+        Max Clock Frequency: 1.4 GHz
+        Double precision support: false
+        USM host allocations: true
+        USM device allocations: true
+        USM shared allocations: true
+        USM atomic shared allocations: false
+        Available: true
+
+```
 
 ## License
 This library is released under Apache License
