@@ -42,7 +42,7 @@ namespace {
 
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode {
-    float x, y, z;
+        float x, y, z;
     int32_t idx;         // Index of the point in the original dataset
     int32_t left = -1;   // Index of left child node (-1 if none)
     int32_t right = -1;  // Index of right child node (-1 if none)
@@ -351,7 +351,7 @@ public:
                     }
 
                     // Calculate distance along split axis
-                    const float axisDistance = (node.axis == 0) ? (diff[0]) : (node.axis == 1) ? (diff[1]) : (diff[2]);
+                    const float axisDistance = diff[node.axis];
 
                     // Determine nearer and further subtrees
                     const auto nearerNode = (axisDistance <= 0) ? node.left : node.right;

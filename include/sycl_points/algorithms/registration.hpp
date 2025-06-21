@@ -368,20 +368,16 @@ private:
             if (this->params_.robust_loss == RobustLossType::NONE) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::NONE>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            }
-            if (this->params_.robust_loss == RobustLossType::HUBER) {
+            } else if (this->params_.robust_loss == RobustLossType::HUBER) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::HUBER>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            }
-            if (this->params_.robust_loss == RobustLossType::TUKEY) {
+            } else if (this->params_.robust_loss == RobustLossType::TUKEY) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::TUKEY>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            }
-            if (this->params_.robust_loss == RobustLossType::CAUCHY) {
+            } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::CAUCHY>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            }
-            if (this->params_.robust_loss == RobustLossType::GERMAN_MCCLURE) {
+            } else if (this->params_.robust_loss == RobustLossType::GERMAN_MCCLURE) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::GERMAN_MCCLURE>(
                     source, target, transT, max_correspondence_distance_2, depends);
             }

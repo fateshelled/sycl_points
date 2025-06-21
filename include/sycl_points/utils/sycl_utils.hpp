@@ -31,18 +31,18 @@ inline size_t get_work_group_size(const sycl::device& device, size_t work_group_
         // CPU's max_compute_units is number of total thread.
         return std::min(max_compute_unit, max_work_group_size);
     }
+    return std::min(max_compute_unit * 4, max_work_group_size);
 
-    const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
-    switch (vendor_id) {
-        case VENDOR_ID::INTEL:
-            // optimize for iGPU
-            return std::min(max_compute_unit * 2, max_work_group_size);
-            break;
-        case VENDOR_ID::NVIDIA:
-            return std::min(max_compute_unit * 4, max_work_group_size);
-            break;
-    }
-    return std::min(max_compute_unit * 3, max_work_group_size);
+    // const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
+    // switch (vendor_id) {
+    //     case VENDOR_ID::INTEL:
+    //         // optimize for iGPU
+    //         return std::min(max_compute_unit * 4, max_work_group_size);
+    //         break;
+    //     case VENDOR_ID::NVIDIA:
+    //         return std::min(max_compute_unit * 4, max_work_group_size);
+    //         break;
+    // }
 }
 
 /// @brief get device optimized work_group_size
