@@ -23,7 +23,7 @@ struct RegistrationParams {
     float rotation_eps = 1e-3f;                     // rotation tolerance [rad]
 
     RobustLossType robust_loss = RobustLossType::NONE;  // robust loss function type
-    float robust_threshold = 1.0f;                      // threshold for robust loss function
+    float robust_scale = 1.0f;                          // scale for robust loss function
 
     bool verbose = false;  // If true, print debug messages
     // bool optimize_lm = false; // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
@@ -141,7 +141,8 @@ public:
             if (!target.has_normal()) {
                 if (!target.has_cov()) {
                     throw std::runtime_error(
-                        "Normal vector or covariance matrices must be pre-computed before performing Point-to-Plane ICP matching.");
+                        "Normal vector or covariance matrices must be pre-computed before performing Point-to-Plane "
+                        "ICP matching.");
                 }
                 std::cout << "[Caution] Normal vectors for Point-to-Plane ICP are not provided. " << std::endl;
                 std::cout << "          Attempting to derive them from pre-computed covariance matrices." << std::endl;
@@ -245,7 +246,7 @@ private:
             const size_t work_group_size = queue_.get_work_group_size();
             const size_t global_size = queue_.get_global_size(N);
 
-            const auto robust_threshold = this->params_.robust_threshold;
+            const auto robust_scale = this->params_.robust_scale;
 
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
@@ -279,7 +280,7 @@ private:
                         target_normal_ptr ? target_normal_ptr[neighbors_index_ptr[i]] : Normal::Zero();
                     linearlized_ptr[i] = kernel::linearlize_robust<icp, loss>(
                         cur_T, source_ptr[i], source_cov_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                        target_cov_ptr[neighbors_index_ptr[i]], target_normal, robust_threshold);
+                        target_cov_ptr[neighbors_index_ptr[i]], target_normal, robust_scale);
                 }
             });
         });
@@ -317,7 +318,7 @@ private:
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
 
-            const auto robust_threshold = this->params_.robust_threshold;
+            const auto robust_scale = this->params_.robust_scale;
 
             // get pointers
             // input
@@ -367,7 +368,7 @@ private:
 
                     const LinearlizedResult result = kernel::linearlize_robust<icp, loss>(
                         cur_T, source_ptr[index], source_cov_ptr[index], target_ptr[neighbors_index_ptr[index]],
-                        target_cov_ptr[neighbors_index_ptr[index]], target_normal, robust_threshold);
+                        target_cov_ptr[neighbors_index_ptr[index]], target_normal, robust_scale);
                     if (result.inlier == 1) {
                         // reduction on device
                         const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);

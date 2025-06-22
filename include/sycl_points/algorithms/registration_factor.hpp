@@ -330,17 +330,17 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
 /// @param source_cov Source covariance
 /// @param target_pt Target point
 /// @param target_cov Target covariance
-/// @param robust_threshold Robust estimation threshold parameter
+/// @param robust_scale Robust estimation scale parameter
 /// @return linearlized result
 template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType::NONE>
 SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::float4, 4>& T,
                                                          const PointType& source_pt, const Covariance& source_cov,
                                                          const PointType& target_pt, const Covariance& target_cov,
-                                                         const Normal& target_normal, float robust_threshold) {
+                                                         const Normal& target_normal, float robust_scale) {
     float residual_norm = 0.0f;
     auto result = linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, residual_norm);
-    const auto weight = kernel::compute_robust_weight<LossType>(residual_norm, robust_threshold);
-    result.error = kernel::compute_robust_error<LossType>(residual_norm, robust_threshold);
+    const auto weight = kernel::compute_robust_weight<LossType>(residual_norm, robust_scale);
+    result.error = kernel::compute_robust_error<LossType>(residual_norm, robust_scale);
 
     eigen_utils::multiply_zerocopy<6, 1>(result.b, weight);
     eigen_utils::multiply_zerocopy<6, 6>(result.H, weight);
