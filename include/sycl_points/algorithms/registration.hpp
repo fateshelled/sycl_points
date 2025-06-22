@@ -1,6 +1,7 @@
 #pragma once
 
 #include <random>
+#include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/knn_search.hpp>
 #include <sycl_points/algorithms/registration_factor.hpp>
 #include <sycl_points/algorithms/transform.hpp>
@@ -136,6 +137,24 @@ public:
 
         if (N == 0) return result;
 
+        if constexpr (icp == ICPType::POINT_TO_PLANE) {
+            if (!target.has_normal()) {
+                if (!target.has_cov()) {
+                    throw std::runtime_error(
+                        "Normal vector or covariance matrices must be pre-computed before performing Point-to-Plane ICP matching.");
+                }
+                std::cout << "[Caution] Normal vectors for Point-to-Plane ICP are not provided. " << std::endl;
+                std::cout << "          Attempting to derive them from pre-computed covariance matrices." << std::endl;
+                target.reserve_covs(target.size());
+                covariance::compute_normals_from_covariances(target);
+            }
+        }
+        if constexpr (icp == ICPType::GICP) {
+            if (!source.has_cov() || !target.has_cov()) {
+                throw std::runtime_error("Covariance matrices must be pre-computed before performing GICP matching.");
+            }
+        }
+
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
         // copy
         this->aligned_ = std::make_shared<PointCloudShared>(source);
@@ -237,6 +256,7 @@ private:
             const auto source_cov_ptr = source.covs_ptr();
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.covs_ptr();
+            const auto target_normal_ptr = target.normals_ptr();
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
             // output
@@ -255,9 +275,11 @@ private:
                     linearlized_ptr[i].error = 0.0f;
                     linearlized_ptr[i].inlier = 0;
                 } else {
+                    const auto target_normal =
+                        target_normal_ptr ? target_normal_ptr[neighbors_index_ptr[i]] : Normal::Zero();
                     linearlized_ptr[i] = kernel::linearlize_robust<icp, loss>(
                         cur_T, source_ptr[i], source_cov_ptr[i], target_ptr[neighbors_index_ptr[i]],
-                        target_cov_ptr[neighbors_index_ptr[i]], robust_threshold);
+                        target_cov_ptr[neighbors_index_ptr[i]], target_normal, robust_threshold);
                 }
             });
         });
@@ -303,6 +325,7 @@ private:
             const auto source_cov_ptr = source.covs_ptr();
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.covs_ptr();
+            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
@@ -328,34 +351,36 @@ private:
             // wait for knn search
             h.depends_on(depends);
 
-            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size),                // range
-                           sum_H0, sum_H1, sum_H2, sum_b0, sum_b1, sum_error, sum_inlier,  // reduction
-                           [=](sycl::nd_item<1> item, auto& sum_H0_arg, auto& sum_H1_arg, auto& sum_H2_arg,
-                               auto& sum_b0_arg, auto& sum_b1_arg, auto& sum_error_arg, auto& sum_inlier_arg) {
-                               const size_t index = item.get_global_id(0);
-                               if (index >= N) return;
+            h.parallel_for(                                                     //
+                sycl::nd_range<1>(global_size, work_group_size),                // range
+                sum_H0, sum_H1, sum_H2, sum_b0, sum_b1, sum_error, sum_inlier,  // reduction
+                [=](sycl::nd_item<1> item, auto& sum_H0_arg, auto& sum_H1_arg, auto& sum_H2_arg, auto& sum_b0_arg,
+                    auto& sum_b1_arg, auto& sum_error_arg, auto& sum_inlier_arg) {
+                    const size_t index = item.get_global_id(0);
+                    if (index >= N) return;
 
-                               if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
-                                   return;
-                               }
+                    if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
+                        return;
+                    }
+                    const auto target_normal =
+                        target_normal_ptr ? target_normal_ptr[neighbors_index_ptr[index]] : Normal::Zero();
 
-                               const LinearlizedResult result = kernel::linearlize_robust<icp, loss>(
-                                   cur_T, source_ptr[index], source_cov_ptr[index],
-                                   target_ptr[neighbors_index_ptr[index]], target_cov_ptr[neighbors_index_ptr[index]],
-                                   robust_threshold);
-                               if (result.inlier == 1) {
-                                   // reduction on device
-                                   const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
-                                   const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
-                                   sum_H0_arg += H0;
-                                   sum_H1_arg += H1;
-                                   sum_H2_arg += H2;
-                                   sum_b0_arg += b0;
-                                   sum_b1_arg += b1;
-                                   sum_error_arg += result.error;
-                                   sum_inlier_arg += (uint32_t)1;
-                               }
-                           });
+                    const LinearlizedResult result = kernel::linearlize_robust<icp, loss>(
+                        cur_T, source_ptr[index], source_cov_ptr[index], target_ptr[neighbors_index_ptr[index]],
+                        target_cov_ptr[neighbors_index_ptr[index]], target_normal, robust_threshold);
+                    if (result.inlier == 1) {
+                        // reduction on device
+                        const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
+                        const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
+                        sum_H0_arg += H0;
+                        sum_H1_arg += H1;
+                        sum_H2_arg += H2;
+                        sum_b0_arg += b0;
+                        sum_b1_arg += b1;
+                        sum_error_arg += result.error;
+                        sum_inlier_arg += (uint32_t)1;
+                    }
+                });
         });
         return events;
     }
@@ -430,6 +455,7 @@ private:
 };
 
 using RegistrationPointToPoint = Registration<ICPType::POINT_TO_POINT>;
+using RegistrationPointToPlane = Registration<ICPType::POINT_TO_PLANE>;
 using RegistrationGICP = Registration<ICPType::GICP>;
 
 }  // namespace registration

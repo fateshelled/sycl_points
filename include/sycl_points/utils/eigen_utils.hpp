@@ -177,6 +177,27 @@ SYCL_EXTERNAL inline void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float
     }
 }
 
+/// @brief Element-wise Matrix Multiplication
+/// @tparam M Number of rows
+/// @tparam N Number of columns
+/// @param A Matrix A
+/// @param B Matrix B
+/// @return Matrix A x B
+template <size_t M, size_t N>
+SYCL_EXTERNAL inline Eigen::Matrix<float, M, N> element_wise_multiply(const Eigen::Matrix<float, M, N>& A,
+                                                                      const Eigen::Matrix<float, M, N>& B) {
+    //
+    Eigen::Matrix<float, M, N> ret;
+#pragma unroll M
+    for (size_t i = 0; i < M; ++i) {
+#pragma unroll N
+        for (size_t j = 0; j < N; ++j) {
+            ret(i, j) = A(i, j) * B(i, j);
+        }
+    }
+    return ret;
+}
+
 /// @brief Ensure Matrix Symmetry
 ///
 /// Makes a matrix symmetric by averaging corresponding off-diagonal elements.

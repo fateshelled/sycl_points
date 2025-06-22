@@ -12,7 +12,7 @@ namespace algorithms {
 
 namespace registration {
 
-enum class ICPType { POINT_TO_POINT, GICP };
+enum class ICPType { POINT_TO_POINT, POINT_TO_PLANE, GICP };
 
 /// @brief Registration Linearlized Result
 struct LinearlizedResult {
@@ -91,6 +91,79 @@ SYCL_EXTERNAL inline float calculate_error_point_to_point(const std::array<sycl:
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
     return 0.5f * eigen_utils::frobenius_norm_squared<4>(residual);
+}
+
+/// @brief Iterative Closest Point (ICP Point to PLane)
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @param target_pt Target point
+/// @param target_normal Target normal
+/// @return linearlized result
+SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_plane(const std::array<sycl::float4, 4>& T,
+                                                                 const PointType& source_pt, const PointType& target_pt,
+                                                                 const Normal& target_normal, float& residual_norm) {
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T.data());
+
+    const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
+                             target_pt.z() - transform_source.z(), 0.0f);
+    const PointType plane_error = eigen_utils::element_wise_multiply<4, 1>(target_normal, residual);
+
+    Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
+    {
+        const Eigen::Matrix3f normal_diag =
+            eigen_utils::as_diagonal<3>({target_normal.x(), target_normal.y(), target_normal.z()});
+        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source_pt);
+        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(eigen_utils::from_sycl_vec(T));
+        const Eigen::Matrix3f normal_T = eigen_utils::multiply<3, 3, 3>(normal_diag, T_3x3);
+        const Eigen::Matrix3f normal_T_skewed = eigen_utils::multiply<3, 3, 3>(normal_T, skewed);
+        J(0, 0) = normal_T_skewed(0, 0);
+        J(0, 1) = normal_T_skewed(0, 1);
+        J(0, 2) = normal_T_skewed(0, 2);
+        J(1, 0) = normal_T_skewed(1, 0);
+        J(1, 1) = normal_T_skewed(1, 1);
+        J(1, 2) = normal_T_skewed(1, 2);
+        J(2, 0) = normal_T_skewed(2, 0);
+        J(2, 1) = normal_T_skewed(2, 1);
+        J(2, 2) = normal_T_skewed(2, 2);
+
+        J(0, 3) = -normal_T(0, 0);
+        J(0, 4) = -normal_T(0, 1);
+        J(0, 5) = -normal_T(0, 2);
+        J(1, 3) = -normal_T(1, 0);
+        J(1, 4) = -normal_T(1, 1);
+        J(1, 5) = -normal_T(1, 2);
+        J(2, 3) = -normal_T(2, 0);
+        J(2, 4) = -normal_T(2, 1);
+        J(2, 5) = -normal_T(2, 2);
+    }
+    LinearlizedResult ret;
+    const auto J_T = eigen_utils::transpose<4, 6>(J);
+    ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
+    ret.b = eigen_utils::multiply<6, 4>(J_T, plane_error);
+    const float squared_norm = eigen_utils::frobenius_norm_squared<4>(plane_error);
+    residual_norm = sycl::sqrt(squared_norm);
+    ret.error = 0.5f * squared_norm;
+    ret.inlier = 1;
+    return ret;
+}
+
+/// @brief Error for Iterative Closest Point (ICP Point to Plane)
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @param target_pt Target point
+/// @param target_normal Target normal
+/// @return error
+SYCL_EXTERNAL inline float calculate_error_point_to_plane(const std::array<sycl::float4, 4>& T,
+                                                          const PointType& source_pt, const PointType& target_pt,
+                                                          const Normal& target_normal) {
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T.data());
+
+    const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
+                             target_pt.z() - transform_source.z(), 0.0f);
+    const PointType plane_error = eigen_utils::element_wise_multiply<4, 1>(target_normal, residual);
+    return 0.5f * eigen_utils::frobenius_norm_squared<4>(plane_error);
 }
 
 /// @brief Generalized Iterative Closest Point (GICP)
@@ -219,11 +292,14 @@ SYCL_EXTERNAL inline float calculate_error_gicp(const std::array<sycl::float4, 4
 /// @param residual_norm L2 norm of residual vector
 /// @return linearlized result
 template <ICPType icp = ICPType::GICP>
-SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
-                                                  const Covariance& source_cov, const PointType& target_pt,
-                                                  const Covariance& target_cov, float& residual_norm) {
+SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T,  //
+                                                  const PointType& source_pt, const Covariance& source_cov,
+                                                  const PointType& target_pt, const Covariance& target_cov,
+                                                  const Normal& target_normal, float& residual_norm) {
     if constexpr (icp == ICPType::POINT_TO_POINT) {
         return linearlize_point_to_point(T, source_pt, target_pt, residual_norm);
+    } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
+        return linearlize_point_to_plane(T, source_pt, target_pt, target_normal, residual_norm);
     } else if constexpr (icp == ICPType::GICP) {
         return linearlize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
     } else {
@@ -242,9 +318,9 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
 template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                   const Covariance& source_cov, const PointType& target_pt,
-                                                  const Covariance& target_cov) {
+                                                  const Covariance& target_cov, const Normal& target_normal) {
     float residual_norm = 0.0f;
-    return linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
+    return linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, residual_norm);
 }
 
 /// @brief Robust Linearlization
@@ -260,9 +336,9 @@ template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType:
 SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::float4, 4>& T,
                                                          const PointType& source_pt, const Covariance& source_cov,
                                                          const PointType& target_pt, const Covariance& target_cov,
-                                                         float robust_threshold) {
+                                                         const Normal& target_normal, float robust_threshold) {
     float residual_norm = 0.0f;
-    auto result = linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
+    auto result = linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, residual_norm);
     const auto weight = kernel::compute_robust_weight<LossType>(residual_norm, robust_threshold);
     result.error = kernel::compute_robust_error<LossType>(residual_norm, robust_threshold);
 
@@ -282,10 +358,13 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
 /// @return error
 template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
-                                           const Covariance& source_cov, const PointType& target_pt,
-                                           const Covariance& target_cov) {
+                                           const Covariance& source_cov, const Normal& source_normal,
+                                           const PointType& target_pt, const Covariance& target_cov,
+                                           const Normal& target_normal) {
     if constexpr (icp == ICPType::POINT_TO_POINT) {
         return calculate_error_point_to_point(T, source_pt, target_pt);
+    } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
+        return calculate_error_point_to_plane(T, source_pt, target_pt, target_normal);
     } else if constexpr (icp == ICPType::GICP) {
         return calculate_error_gicp(T, source_pt, source_cov, target_pt, target_cov);
     } else {
