@@ -17,8 +17,10 @@ This project was developed with reference to small_gicp, a lightweight point clo
     - KD-trees
     - Brute force
 - Point cloud registration
-    - Iterative Closest Point (ICP Point to Point)
-    - Generalized Iterative Closest Point (GICP)
+    - Iterative Closest Point (ICP)
+      - Point to Point
+      - Point to Plane
+      - Generalized ICP (GICP)
     - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GERMAN_MCCLURE)
     - Adaptive max correspondence distance by inlier points ratio
 - Preprocessing filter
