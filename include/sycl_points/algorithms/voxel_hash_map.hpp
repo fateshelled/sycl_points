@@ -50,13 +50,13 @@ public:
     /// @param voxel_size voxel size
     VoxelHashMap(const sycl_utils::DeviceQueue& queue, const float voxel_size)
         : queue_(queue), voxel_size_(voxel_size), voxel_size_inv_(1.0f / voxel_size) {
-        this->key_ptr_ = std::make_shared<shared_vector<uint64_t>>(this->capacity_, VoxelConstants::invalid_coord,
-                                                                   *this->queue_.ptr);
-        this->sum_ptr_ = std::make_shared<shared_vector<VoxelPoint>>(this->capacity_, VoxelPoint{0.0f, 0.0f, 0.0f, 0},
-                                                                     *this->queue_.ptr);
-        this->last_update_ptr_ = std::make_shared<shared_vector<uint32_t>>(this->capacity_, 0, *this->queue_.ptr);
-
+        if (queue.is_cpu()) {
+            throw std::runtime_error("VoxelHashMap does not support CPU");
+        }
+        this->make_device_ptr();
         this->downsampled_ptr_ = std::make_shared<PointContainerShared>(0, *this->queue_.ptr);
+
+        this->clear();
     }
 
     /// @brief Set voxel size
@@ -91,9 +91,7 @@ public:
 
     /// @brief
     void clear() {
-        this->queue_.ptr->fill<uint64_t>(this->key_ptr_->data(), VoxelConstants::invalid_coord, this->capacity_);
-        this->queue_.ptr->fill<VoxelPoint>(this->sum_ptr_->data(), VoxelPoint{0.0f, 0.0f, 0.0f, 0}, this->capacity_);
-        this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_->data(), 0, this->capacity_);
+        this->initialize_device_ptr();
         this->voxel_num_ = 0;
         this->staleness_counter_ = 0;
     }
@@ -103,19 +101,19 @@ public:
     void add_point_cloud(const PointCloudShared& pc) {
         const size_t N = pc.size();
 
+        // rehash
+        if (this->rehash_threshold_ < (float)this->voxel_num_ / (float)this->capacity_) {
+            this->rehash(this->capacity_ * 2);
+        }
+
         if (N > 0) {
             // add PointCloud to voxel map
             this->add_point_cloud_(pc);
         }
 
         // remove old data
-        if (this->staleness_counter_ % this->remove_old_data_cycle_ == 0) {
+        if (this->remove_old_data_cycle_ > 0 && (this->staleness_counter_ % this->remove_old_data_cycle_)== 0) {
             this->remove_old_data();
-        }
-
-        // rehash
-        if (this->rehash_threshold_ < (float)this->voxel_num_ / (float)this->capacity_) {
-            this->rehash(this->capacity_ * 2);
         }
 
         // increment counter
@@ -134,6 +132,52 @@ public:
         return this->downsampled_ptr_;
     }
 
+    void remove_old_data() {
+        if (this->staleness_counter_ <= this->max_staleness_) return;
+
+        shared_vector<uint64_t> voxel_num_vec(1, 0, *this->queue_.ptr);
+
+        this->queue_.ptr
+            ->submit([&](sycl::handler& h) {
+                const size_t N = this->capacity_;
+                const size_t work_group_size = this->queue_.get_work_group_size();
+                const size_t global_size = this->queue_.get_global_size(N);
+
+                // memory ptr
+                const auto key_ptr = this->key_ptr_.get();
+                const auto sum_ptr = this->sum_ptr_.get();
+                const auto last_update_ptr = this->last_update_ptr_.get();
+
+                const auto voxel_num_ptr = voxel_num_vec.data();
+
+                const auto remove_staleness = (int64_t)this->staleness_counter_ - this->max_staleness_;
+
+                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                    const uint32_t i = item.get_global_id(0);
+                    if (i >= N) return;
+
+                    const auto voxel_hash = key_ptr[i];
+                    if (voxel_hash == VoxelConstants::invalid_coord) return;
+
+                    const auto last_update = last_update_ptr[i];
+                    if (last_update >= remove_staleness) {
+                        // count up num of voxel
+                        atomic_ref_uint64_t(voxel_num_ptr[0]).fetch_add((size_t)1);
+                        return;
+                    }
+
+                    key_ptr[i] = VoxelConstants::invalid_coord;
+                    sum_ptr[i].x = 0.0f;
+                    sum_ptr[i].y = 0.0f;
+                    sum_ptr[i].z = 0.0f;
+                    sum_ptr[i].count = 0;
+                    last_update_ptr[i] = 0;
+                });
+            })
+            .wait();
+        this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
+    }
+
 private:
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint32_t = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
@@ -145,15 +189,16 @@ private:
         float z = 0.0f;
         uint32_t count = 0;
     };
+
     sycl_utils::DeviceQueue queue_;
     float voxel_size_;
     float voxel_size_inv_;
-    size_t capacity_ = 30029;  // Recommended prime number
+    size_t capacity_ = 30029;  // prime number recommended
 
-    shared_vector_ptr<uint64_t> key_ptr_ = nullptr;
-    shared_vector_ptr<VoxelPoint> sum_ptr_ = nullptr;
+    std::shared_ptr<uint64_t> key_ptr_ = nullptr;
+    std::shared_ptr<VoxelPoint> sum_ptr_ = nullptr;
+    std::shared_ptr<uint32_t> last_update_ptr_ = nullptr;
 
-    shared_vector_ptr<uint32_t> last_update_ptr_ = nullptr;
     uint32_t staleness_counter_ = 0;
     uint32_t max_staleness_ = 100;
     uint32_t remove_old_data_cycle_ = 10;
@@ -166,19 +211,36 @@ private:
     std::shared_ptr<PointContainerShared> downsampled_ptr_ = nullptr;
     size_t voxel_num_ = 0;
 
+    void make_device_ptr() {
+        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_device<uint64_t>(this->capacity_, *this->queue_.ptr),
+                                                   [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+        this->sum_ptr_ =
+            std::shared_ptr<VoxelPoint>(sycl::malloc_device<VoxelPoint>(this->capacity_, *this->queue_.ptr),
+                                        [&](VoxelPoint* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+        this->last_update_ptr_ =
+            std::shared_ptr<uint32_t>(sycl::malloc_device<uint32_t>(this->capacity_, *this->queue_.ptr),
+                                      [&](uint32_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+    }
+
+    void initialize_device_ptr() {
+        this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
+        this->queue_.ptr->fill<VoxelPoint>(this->sum_ptr_.get(), VoxelPoint{0.0f, 0.0f, 0.0f, 0}, this->capacity_);
+        this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_.get(), 0, this->capacity_);
+    }
+
     void add_point_cloud_(const PointCloudShared& pc) {
-        const size_t N = pc.size();
         // add to voxel hash map
         shared_vector<uint64_t> voxel_num_vec(1, this->voxel_num_, *this->queue_.ptr);
         this->queue_.ptr
             ->submit([&](sycl::handler& h) {
-                const size_t work_group_size = this->queue_.get_work_group_size();
+                const size_t N = pc.size();
+                const size_t work_group_size = queue_.get_work_group_size();
                 const size_t global_size = this->queue_.get_global_size(N);
 
                 // memory ptr
-                const auto key_ptr = this->key_ptr_->data();
-                const auto sum_ptr = this->sum_ptr_->data();
-                const auto last_update_ptr = this->last_update_ptr_->data();
+                const auto key_ptr = this->key_ptr_.get();
+                const auto sum_ptr = this->sum_ptr_.get();
+                const auto last_update_ptr = this->last_update_ptr_.get();
 
                 const auto point_ptr = pc.points_ptr();
 
@@ -189,7 +251,7 @@ private:
                 const auto voxel_num_ptr = voxel_num_vec.data();
 
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                    const uint32_t i = item.get_global_id(0);
+                    const size_t i = item.get_global_id(0);
                     if (i >= N) return;
 
                     const auto voxel_hash = kernel::compute_voxel_bit(point_ptr[i], vs_inv);
@@ -197,10 +259,25 @@ private:
 
                     for (size_t j = 0; j < max_probe; ++j) {
                         const size_t slot_idx = (voxel_hash + j) % cp;
-                        atomic_ref_uint64_t atomic_key(key_ptr[slot_idx]);
 
-                        const auto current_key = atomic_key.load();
-                        if (current_key == voxel_hash) {
+                        uint64_t expected = VoxelConstants::invalid_coord;
+                        if (atomic_ref_uint64_t(key_ptr[slot_idx]).compare_exchange_strong(expected, voxel_hash)) {
+                            // count up num of voxel
+                            atomic_ref_uint64_t(voxel_num_ptr[0]).fetch_add((size_t)1);
+
+                            // add point coord
+                            atomic_ref_float(sum_ptr[slot_idx].x).fetch_add(point_ptr[i].x());
+                            atomic_ref_float(sum_ptr[slot_idx].y).fetch_add(point_ptr[i].y());
+                            atomic_ref_float(sum_ptr[slot_idx].z).fetch_add(point_ptr[i].z());
+
+                            // count up num of points in voxel
+                            atomic_ref_uint32_t(sum_ptr[slot_idx].count).fetch_add(1);
+
+                            // last update
+                            atomic_ref_uint32_t(last_update_ptr[slot_idx]).store(current);
+
+                            break;
+                        } else if (expected == voxel_hash) {
                             // add point coord
                             atomic_ref_float(sum_ptr[slot_idx].x).fetch_add(point_ptr[i].x());
                             atomic_ref_float(sum_ptr[slot_idx].y).fetch_add(point_ptr[i].y());
@@ -214,26 +291,6 @@ private:
 
                             break;
                         }
-                        if (current_key == VoxelConstants::invalid_coord) {
-                            uint64_t expected = VoxelConstants::invalid_coord;
-                            if (atomic_key.compare_exchange_weak(expected, voxel_hash)) {
-                                // count up num of voxel
-                                atomic_ref_uint64_t(voxel_num_ptr[0]).fetch_add((size_t)1);
-
-                                // add point coord
-                                atomic_ref_float(sum_ptr[slot_idx].x).fetch_add(point_ptr[i].x());
-                                atomic_ref_float(sum_ptr[slot_idx].y).fetch_add(point_ptr[i].y());
-                                atomic_ref_float(sum_ptr[slot_idx].z).fetch_add(point_ptr[i].z());
-
-                                // count up num of points in voxel
-                                atomic_ref_uint32_t(sum_ptr[slot_idx].count).fetch_add(1);
-
-                                // last update
-                                atomic_ref_uint32_t(last_update_ptr[slot_idx]).store(current);
-
-                                break;
-                            }
-                        }
                     }
                 });
             })
@@ -241,6 +298,7 @@ private:
         this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
         this->downsampled_ = false;
     }
+
     void downsampling_() {
         // voxel hash map to point cloud
         this->downsampled_ptr_->resize(this->voxel_num_);
@@ -252,8 +310,8 @@ private:
                 const size_t global_size = this->queue_.get_global_size(this->capacity_);
 
                 // memory ptr
-                const auto key_ptr = this->key_ptr_->data();
-                const auto sum_ptr = this->sum_ptr_->data();
+                const auto key_ptr = this->key_ptr_.get();
+                const auto sum_ptr = this->sum_ptr_.get();
 
                 const auto downsampled_ptr = this->downsampled_ptr_->data();
 
@@ -286,6 +344,7 @@ private:
     void rehash(size_t new_capacity) {
         if (this->capacity_ >= new_capacity) return;
 
+        const auto old_capacity = this->capacity_;
         this->capacity_ = new_capacity;
 
         // old pointer
@@ -294,27 +353,24 @@ private:
         auto old_last_update_ptr = this->last_update_ptr_;
 
         // make new
-        this->key_ptr_ =
-            std::make_shared<shared_vector<uint64_t>>(new_capacity, VoxelConstants::invalid_coord, *this->queue_.ptr);
-        this->sum_ptr_ = std::make_shared<shared_vector<VoxelPoint>>(new_capacity, VoxelPoint{0.0f, 0.0f, 0.0f, 0},
-                                                                     *this->queue_.ptr);
-        this->last_update_ptr_ = std::make_shared<shared_vector<uint32_t>>(new_capacity, 0, *this->queue_.ptr);
+        this->make_device_ptr();
+        this->initialize_device_ptr();
 
         shared_vector<uint64_t> voxel_num_vec(1, 0, *this->queue_.ptr);
 
         this->queue_.ptr
             ->submit([&](sycl::handler& h) {
-                const size_t N = old_key_ptr->size();
+                const size_t N = old_capacity;
                 const size_t work_group_size = this->queue_.get_work_group_size();
                 const size_t global_size = this->queue_.get_global_size(N);
 
                 // memory ptr
-                const auto old_key = old_key_ptr->data();
-                const auto old_sum = old_sum_ptr->data();
-                const auto old_last_update = old_last_update_ptr->data();
-                const auto new_key = this->key_ptr_->data();
-                const auto new_sum = this->sum_ptr_->data();
-                const auto new_last_update = this->last_update_ptr_->data();
+                const auto old_key = old_key_ptr.get();
+                const auto old_sum = old_sum_ptr.get();
+                const auto old_last_update = old_last_update_ptr.get();
+                const auto new_key = this->key_ptr_.get();
+                const auto new_sum = this->sum_ptr_.get();
+                const auto new_last_update = this->last_update_ptr_.get();
 
                 const auto voxel_num_ptr = voxel_num_vec.data();
 
@@ -330,42 +386,36 @@ private:
 
                     for (size_t j = 0; j < max_probe; ++j) {
                         const size_t slot_idx = (voxel_hash + j) % new_cp;
-                        atomic_ref_uint64_t atomic_key(new_key[slot_idx]);
 
-                        const auto current_key = atomic_key.load();
-                        if (current_key == voxel_hash) {
+                        uint64_t expected = VoxelConstants::invalid_coord;
+                        if (atomic_ref_uint64_t(new_key[slot_idx]).compare_exchange_strong(expected, voxel_hash)) {
+                            // count up num of voxel
+                            atomic_ref_uint64_t(voxel_num_ptr[0]).fetch_add((size_t)1);
+
+                            // copy to new container
+                            // use fetch_add instead of store
                             // because the same key may be inserted at different positions
                             atomic_ref_float(new_sum[slot_idx].x).fetch_add(old_sum[i].x);
                             atomic_ref_float(new_sum[slot_idx].y).fetch_add(old_sum[i].y);
                             atomic_ref_float(new_sum[slot_idx].z).fetch_add(old_sum[i].z);
                             atomic_ref_uint32_t(new_sum[slot_idx].count).fetch_add(old_sum[i].count);
+
                             atomic_ref_uint32_t(new_last_update[slot_idx]).store(old_last_update[i]);
                             break;
-                        }
-                        if (current_key == VoxelConstants::invalid_coord) {
-                            uint64_t expected = VoxelConstants::invalid_coord;
-                            if (atomic_key.compare_exchange_weak(expected, voxel_hash)) {
-                                // count up num of voxel
-                                atomic_ref_uint64_t(voxel_num_ptr[0]).fetch_add((size_t)1);
+                        } else if (expected == voxel_hash) {
+                            atomic_ref_float(new_sum[slot_idx].x).fetch_add(old_sum[i].x);
+                            atomic_ref_float(new_sum[slot_idx].y).fetch_add(old_sum[i].y);
+                            atomic_ref_float(new_sum[slot_idx].z).fetch_add(old_sum[i].z);
+                            atomic_ref_uint32_t(new_sum[slot_idx].count).fetch_add(old_sum[i].count);
 
-                                // copy to new container
-                                atomic_ref_float(new_sum[slot_idx].x).fetch_add(old_sum[i].x);
-                                atomic_ref_float(new_sum[slot_idx].y).fetch_add(old_sum[i].y);
-                                atomic_ref_float(new_sum[slot_idx].z).fetch_add(old_sum[i].z);
-                                atomic_ref_uint32_t(new_sum[slot_idx].count).fetch_add(old_sum[i].count);
-                                atomic_ref_uint32_t(new_last_update[slot_idx]).store(old_last_update[i]);
-                                break;
-                            }
+                            atomic_ref_uint32_t(new_last_update[slot_idx]).store(old_last_update[i]);
+                            break;
                         }
                     }
                 });
             })
             .wait();
         this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
-    }
-
-    void remove_old_data() {
-        // TODO
     }
 };
 
