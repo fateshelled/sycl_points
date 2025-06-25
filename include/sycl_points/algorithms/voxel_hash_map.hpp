@@ -54,8 +54,6 @@ public:
             throw std::runtime_error("VoxelHashMap does not support CPU");
         }
         this->make_device_ptr();
-        this->downsampled_ptr_ = std::make_shared<PointContainerShared>(0, *this->queue_.ptr);
-
         this->clear();
     }
 
@@ -120,16 +118,54 @@ public:
         ++this->staleness_counter_;
     }
 
-    std::shared_ptr<PointContainerShared> downsampling() {
-        if (this->voxel_num_ == 0) {
-            return nullptr;
-        }
-        if (this->downsampled_) {
-            return this->downsampled_ptr_;
-        }
-        this->downsampling_();
+    void downsampling(PointContainerShared& result) {
+        // voxel hash map to point cloud
+        result.resize(this->voxel_num_);
+        shared_vector<size_t> point_num_vec(1, 0, *this->queue_.ptr);
 
-        return this->downsampled_ptr_;
+        this->queue_.ptr
+            ->submit([&](sycl::handler& h) {
+                const size_t work_group_size = this->queue_.get_work_group_size();
+                const size_t global_size = this->queue_.get_global_size(this->capacity_);
+
+                // memory ptr
+                const auto key_ptr = this->key_ptr_.get();
+                const auto sum_ptr = this->sum_ptr_.get();
+
+                const auto result_ptr = result.data();
+
+                const auto point_num_ptr = point_num_vec.data();
+                const auto cp = this->capacity_;
+                const uint64_t vx_num = this->voxel_num_;
+                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                    const auto i = item.get_global_id(0);
+                    if (i >= cp) return;
+
+                    if (key_ptr[i] == VoxelConstants::invalid_coord) return;
+
+                    const auto sum = sum_ptr[i];
+                    if (sum.count == 0) return;
+                    if (!std::isfinite(sum.x) || !std::isfinite(sum.y) || !std::isfinite(sum.z)) return;
+
+                    const auto output_idx = atomic_ref_uint64_t(point_num_ptr[0]).fetch_add((size_t)1);
+                    if (output_idx >= vx_num) return;
+
+                    result_ptr[output_idx].x() = sum.x / sum.count;
+                    result_ptr[output_idx].y() = sum.y / sum.count;
+                    result_ptr[output_idx].z() = sum.z / sum.count;
+                    result_ptr[output_idx].w() = 1.0f;
+                });
+            })
+            .wait();
+    }
+
+    void downsampling(PointCloudShared& result) {
+        if (this->voxel_num_ == 0) {
+            result.clear();
+            return;
+        }
+        
+        this->downsampling(*result.points);
     }
 
     void remove_old_data() {
@@ -207,8 +243,6 @@ private:
 
     float rehash_threshold_ = 0.7f;
 
-    bool downsampled_ = false;
-    std::shared_ptr<PointContainerShared> downsampled_ptr_ = nullptr;
     size_t voxel_num_ = 0;
 
     void make_device_ptr() {
@@ -296,49 +330,6 @@ private:
             })
             .wait();
         this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
-        this->downsampled_ = false;
-    }
-
-    void downsampling_() {
-        // voxel hash map to point cloud
-        this->downsampled_ptr_->resize(this->voxel_num_);
-        shared_vector<size_t> point_num_vec(1, 0, *this->queue_.ptr);
-
-        this->queue_.ptr
-            ->submit([&](sycl::handler& h) {
-                const size_t work_group_size = this->queue_.get_work_group_size();
-                const size_t global_size = this->queue_.get_global_size(this->capacity_);
-
-                // memory ptr
-                const auto key_ptr = this->key_ptr_.get();
-                const auto sum_ptr = this->sum_ptr_.get();
-
-                const auto downsampled_ptr = this->downsampled_ptr_->data();
-
-                const auto point_num_ptr = point_num_vec.data();
-                const auto cp = this->capacity_;
-                const uint64_t vx_num = this->voxel_num_;
-                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                    const auto i = item.get_global_id(0);
-                    if (i >= cp) return;
-
-                    if (key_ptr[i] == VoxelConstants::invalid_coord) return;
-
-                    const auto sum = sum_ptr[i];
-                    if (sum.count == 0) return;
-                    if (!std::isfinite(sum.x) || !std::isfinite(sum.y) || !std::isfinite(sum.z)) return;
-
-                    const auto output_idx = atomic_ref_uint64_t(point_num_ptr[0]).fetch_add((size_t)1);
-                    if (output_idx >= vx_num) return;
-
-                    downsampled_ptr[output_idx].x() = sum.x / sum.count;
-                    downsampled_ptr[output_idx].y() = sum.y / sum.count;
-                    downsampled_ptr[output_idx].z() = sum.z / sum.count;
-                    downsampled_ptr[output_idx].w() = 1.0f;
-                });
-            })
-            .wait();
-        this->downsampled_ = true;
     }
 
     void rehash(size_t new_capacity) {
