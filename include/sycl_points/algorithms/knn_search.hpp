@@ -8,6 +8,7 @@
 #include <memory>
 #include <numeric>
 #include <sycl_points/points/point_cloud.hpp>
+#include <sycl_points/utils/eigen_utils.hpp>
 
 namespace sycl_points {
 
@@ -42,13 +43,15 @@ namespace {
 
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode {
-        float x, y, z;
+    PointType pt;
     int32_t idx;         // Index of the point in the original dataset
     int32_t left = -1;   // Index of left child node (-1 if none)
     int32_t right = -1;  // Index of right child node (-1 if none)
     uint8_t axis;        // Split axis (0=x, 1=y, 2=z)
     uint8_t pad[3];      // Padding for alignment (3 bytes)
-};  // Total: 28 bytes, aligned to 4-byte boundary
+
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};  // Total: 32 bytes
 
 // Data structure for non-recursive KD-tree construction
 struct BuildTask {
@@ -210,9 +213,7 @@ public:
 
             // Initialize flat node
             auto& node = (*flatTree->tree_)[nodeIdx];
-            node.x = points[pointIdx].x();
-            node.y = points[pointIdx].y();
-            node.z = points[pointIdx].z();
+            node.pt = points[pointIdx];
             node.idx = pointIdx;
             node.axis = axis;
 
@@ -303,7 +304,7 @@ public:
                 if (queryIdx >= query_size) return;  // Early return for extra threads
 
                 // Query point
-                const auto query = query_ptr[queryIdx];
+                const PointType query = query_ptr[queryIdx];
 
                 // Arrays to store K nearest points
                 NodeEntry bestK[MAX_K];
@@ -334,8 +335,8 @@ public:
                     const auto node = tree_ptr[nodeIdx];
 
                     // Calculate distance to current node
-                    const sycl::float3 diff = {query.x() - node.x, query.y() - node.y, query.z() - node.z};
-                    const float dist_sq = sycl::dot(diff, diff);
+                    const PointType diff = eigen_utils::subtract<4, 1>(query, node.pt);
+                    const float dist_sq = eigen_utils::dot<4>(diff, diff);
 
                     // Check if this point should be included in K nearest
                     if (dist_sq < bestK[k - 1].dist_sq) {
