@@ -179,8 +179,8 @@ public:
             prev_T = result.T;
 
             // Nearest neighbor search on device
-            auto knn_event = target_tree.knn_search_async<1>(this->aligned_->points->data(), N, 1,
-                                                             (*this->neighbors_)[0], transform_events.evs);
+            auto knn_event = target_tree.nearest_neighbor_search_async(*this->aligned_, (*this->neighbors_)[0],
+                                                                       transform_events.evs);
 
             // Linearlize on device
             const float max_dist_2 = max_dist * max_dist;
