@@ -125,6 +125,27 @@ inline uint8_t find_axis_variance(const std::vector<PointType, ALLOCATOR>& point
     return 2;
 }
 
+template <size_t MAX_K>
+void insert_to_bestK(NodeEntry* bestK, float dist_sq, int32_t nodeIdx, size_t k, size_t found_num) {
+    if constexpr (MAX_K == 1) {
+        bestK[0].nodeIdx = dist_sq < bestK[0].dist_sq ? nodeIdx : bestK[0].nodeIdx;
+        bestK[0].dist_sq = dist_sq < bestK[0].dist_sq ? dist_sq : bestK[0].dist_sq;
+        return;
+    }
+
+    if (dist_sq >= bestK[k - 1].dist_sq) return;
+
+    size_t insert_pos = std::min(found_num - 1, k - 1);
+    while (insert_pos > 0 && dist_sq < bestK[insert_pos - 1].dist_sq) {
+        bestK[insert_pos].nodeIdx = bestK[insert_pos - 1].nodeIdx;
+        bestK[insert_pos].dist_sq = bestK[insert_pos - 1].dist_sq;
+        --insert_pos;
+    }
+    bestK[insert_pos].nodeIdx = nodeIdx;
+    bestK[insert_pos].dist_sq = dist_sq;
+    return;
+}
+
 }  // namespace
 
 /// @brief KDTree with SYCL implementation
@@ -261,7 +282,7 @@ public:
     /// @param result Search result
     /// @param depends depends sycl events
     /// @return knn search event
-    template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
+    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointType* queries, const size_t query_size, const size_t k,
                                         KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
@@ -269,9 +290,6 @@ public:
             result.allocate(this->queue);
             return sycl_utils::events();
         }
-
-        // constexpr size_t MAX_K = 48;      // Maximum number of neighbors to search
-        // constexpr size_t MAX_DEPTH = 32;  // Maximum stack depth
         constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;
         if (MAX_K < k) {
             throw std::runtime_error("template arg `MAX_K` must be larger than `k`.");
@@ -320,6 +338,8 @@ public:
                 // Start from root node
                 nearStack[nearStackPtr++] = {0, 0.0f};
 
+                size_t found_num = 0;
+
                 // Explore until stack is empty
                 while (nearStackPtr > 0 || farStackPtr > 0) {
                     // Pop a node from stack
@@ -337,19 +357,10 @@ public:
                     // Calculate distance to current node
                     const PointType diff = eigen_utils::subtract<4, 1>(query, node.pt);
                     const float dist_sq = eigen_utils::dot<4>(diff, diff);
+                    found_num += 1;
 
-                    // Check if this point should be included in K nearest
-                    if (dist_sq < bestK[k - 1].dist_sq) {
-                        // Find insertion position in K-nearest list (insertion sort)
-                        int32_t insertPos = k - 1;
-                        while (insertPos > 0 && dist_sq < bestK[insertPos - 1].dist_sq) {
-                            bestK[insertPos] = bestK[insertPos - 1];
-                            --insertPos;
-                        }
-
-                        // Insert result
-                        bestK[insertPos] = {node.idx, dist_sq};
-                    }
+                    // Insert result
+                    insert_to_bestK<MAX_K>(bestK, dist_sq, node.idx, k, found_num);
 
                     // Calculate distance along split axis
                     const float axisDistance = diff[node.axis];
@@ -395,7 +406,7 @@ public:
     /// @param result Search result
     /// @param depends depends sycl events
     /// @return knn search event
-    template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
+    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         return knn_search_async<MAX_K, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
@@ -408,7 +419,7 @@ public:
     /// @param k number of search nearrest neightbor
     /// @param depends depends sycl events
     /// @return knn search result
-    template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
+    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
     KNNResult knn_search(const PointCloudShared& queries, const size_t k,
                          const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         KNNResult result;
@@ -423,12 +434,25 @@ public:
     /// @param k number of search nearrest neightbor
     /// @param depends depends sycl events
     /// @return knn search result
-    template <size_t MAX_K = 48, size_t MAX_DEPTH = 32>
+    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
     KNNResult knn_search(const PointContainerShared& queries, const size_t k,
                          const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         KNNResult result;
         knn_search_async<MAX_K, MAX_DEPTH>(queries.data(), queries.size(), k, result, depends).wait();
         return result;
+    }
+
+    /// @brief async nearest neighbor search
+    /// @tparam MAX_DEPTH maximum of search depth
+    /// @param queries query points
+    /// @param result Search result
+    /// @param depends depends sycl events
+    /// @return knn search event
+    template <size_t MAX_DEPTH = 32>
+    sycl_utils::events nearest_neighbor_search_async(
+        const PointCloudShared& queries, KNNResult& result,
+        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
+        return knn_search_async<1, MAX_DEPTH>(queries, 1, result, depends);
     }
 };
 
@@ -440,7 +464,7 @@ public:
 /// @return knn search result
 inline KNNResult knn_search_bruteforce(const sycl_utils::DeviceQueue& queue, const PointCloudShared& queries,
                                        const PointCloudShared& targets, const size_t k) {
-    constexpr size_t MAX_K = 48;
+    constexpr size_t MAX_K = 20;
 
     const size_t n = targets.points->size();  // Number of dataset points
     const size_t q = queries.points->size();  // Number of query points
