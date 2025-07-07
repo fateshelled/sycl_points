@@ -691,7 +691,7 @@ inline Eigen::Quaternionf so3_exp(const Eigen::Vector3f& omega) {
 
     float imag_factor;
     float real_factor;
-    if (theta_sq < 1e-10) {
+    if (theta_sq < 1e-6f) {
         const float theta_quad = theta_sq * theta_sq;
         imag_factor = 0.5f - 1.0f / 48.0f * theta_sq + 1.0f / 3840.0f * theta_quad;
         real_factor = 1.0f - 1.0f / 8.0f * theta_sq + 1.0f / 384.0f * theta_quad;
@@ -719,7 +719,7 @@ inline Eigen::Isometry3f se3_exp(const Eigen::Matrix<float, 6, 1>& a) {
     Eigen::Isometry3f se3 = Eigen::Isometry3f::Identity();
     se3.linear() = so3_exp(omega).toRotationMatrix();
 
-    if (theta < 1e-10f) {
+    if (theta < 1e-6f) {
         se3.translation() = se3.linear() * a.tail<3>();
         /// Note: That is an accurate expansion!
     } else {
@@ -731,6 +731,137 @@ inline Eigen::Isometry3f se3_exp(const Eigen::Matrix<float, 6, 1>& a) {
 
     return se3;
 }
+
+/// @brief SO3 logmap.
+/// @param quat Quaternion
+/// @return Rotation vector [rx, ry, rz]
+inline Eigen::Vector3f so3_log(const Eigen::Quaternionf& quat) {
+    // Normalize quaternion to ensure unit quaternion
+    Eigen::Quaternionf q = quat.normalized();
+
+    // Ensure w >= 0 for canonical representation (shortest rotation)
+    if (q.w() < 0.0f) {
+        q.coeffs() *= -1.0f;
+    }
+
+    const float w = q.w();
+    const Eigen::Vector3f xyz(q.x(), q.y(), q.z());
+
+    // Calculate the magnitude of the imaginary part
+    const float xyz_norm = xyz.norm();
+
+    // Handle small angle case (near identity)
+    if (xyz_norm < 1e-6f) {
+        // For small angles: omega ≈ 2 * xyz / w
+        // Using Taylor expansion to avoid numerical issues
+        const float scale = 2.0f / w * (1.0f + xyz_norm * xyz_norm / (6.0f * w * w));
+        return scale * xyz;
+    }
+
+    // Handle large angle case (near 180 degrees)
+    if (sycl::fabs(w) < 1e-6f) {
+        // For angles near π: theta ≈ π, axis = xyz / ||xyz||
+        const float theta = PI;
+        return (theta / xyz_norm) * xyz;
+    }
+
+    // General case
+    const float theta = 2.0f * sycl::atan2(xyz_norm, sycl::fabs(w));
+    const float scale = theta / xyz_norm;
+
+    return scale * xyz;
+}
+
+/// @brief SE3 logmap (Rotation-first).
+/// @param transform SE3 transformation matrix
+/// @return Twist vector [rx, ry, rz, tx, ty, tz]
+inline Eigen::Matrix<float, 6, 1> se3_log(const Eigen::Isometry3f& transform) {
+    // Extract rotation and translation
+    const Eigen::Matrix3f R = transform.linear();
+    const Eigen::Vector3f t = transform.translation();
+
+    // Convert rotation matrix to quaternion and then to rotation vector
+    const Eigen::Quaternionf quat(R);
+    const Eigen::Vector3f omega = so3_log(quat);
+
+    const float theta = omega.norm();
+
+    Eigen::Matrix<float, 6, 1> result;
+    result.head<3>() = omega;
+
+    // Handle small angle case
+    if (theta < 1e-6f) {
+        // For small angles: V^-1 ≈ I - 0.5 * skew(omega)
+        const Eigen::Matrix3f V_inv = Eigen::Matrix3f::Identity() - 0.5f * skew(omega);
+        result.tail<3>() = V_inv * t;
+        return result;
+    }
+
+    // General case: compute V^-1
+    const float half_theta = 0.5f * theta;
+    const float sin_half_theta = sycl::sin(half_theta);
+    const float cos_half_theta = sycl::cos(half_theta);
+
+    // V^-1 = I - 0.5 * Omega + (1/theta^2) * (1 - theta*sin_half_theta/(2*sin_half_theta^2)) * Omega^2
+    // Simplified: V^-1 = I - 0.5 * Omega + coeff * Omega^2
+    const float coeff = (1.0f - theta * cos_half_theta / (2.0f * sin_half_theta)) / (theta * theta);
+
+    const Eigen::Matrix3f Omega = skew(omega);
+    const Eigen::Matrix3f V_inv = Eigen::Matrix3f::Identity() - 0.5f * Omega + coeff * Omega * Omega;
+
+    result.tail<3>() = V_inv * t;
+
+    return result;
+}
+
+/// @brief Alternative SE3 logmap implementation using more stable numerics
+/// @param transform SE3 transformation matrix
+/// @return Twist vector [rx, ry, rz, tx, ty, tz]
+inline Eigen::Matrix<float, 6, 1> se3_log_stable(const Eigen::Isometry3f& transform) {
+    // Extract rotation and translation
+    const Eigen::Matrix3f R = transform.linear();
+    const Eigen::Vector3f t = transform.translation();
+
+    // Convert rotation matrix to quaternion and then to rotation vector
+    const Eigen::Quaternionf quat(R);
+    const Eigen::Vector3f omega = so3_log(quat);
+
+    const float theta = omega.norm();
+
+    Eigen::Matrix<float, 6, 1> result;
+    result.head<3>() = omega;
+
+    // Handle small angle case with higher order terms
+    if (theta < 1e-6f) {
+        // Taylor expansion: V^-1 ≈ I - 0.5*Omega + (1/12)*Omega^2 - (1/720)*Omega^4 + ...
+        const Eigen::Matrix3f Omega = skew(omega);
+        const Eigen::Matrix3f Omega2 = Omega * Omega;
+        const float theta2 = theta * theta;
+        const float theta4 = theta2 * theta2;
+
+        const Eigen::Matrix3f V_inv = Eigen::Matrix3f::Identity() - 0.5f * Omega + (1.0f / 12.0f) * Omega2 -
+                                      (1.0f / 720.0f) * theta4 * Eigen::Matrix3f::Identity();
+        result.tail<3>() = V_inv * t;
+        return result;
+    }
+
+    // Use more numerically stable formulation
+    const float half_theta = 0.5f * theta;
+    const float cot_half = 1.0f / sycl::tan(half_theta);
+
+    // V^-1 = 0.5 * theta * cot(theta/2) * I + 0.5 * skew(omega) +
+    //        (1/theta^2) * (1 - 0.5*theta*cot(theta/2)) * skew(omega)^2
+    const float a = 0.5f * theta * cot_half;
+    const float b = (1.0f - a) / (theta * theta);
+
+    const Eigen::Matrix3f Omega = skew(omega);
+    const Eigen::Matrix3f V_inv = a * Eigen::Matrix3f::Identity() + 0.5f * Omega + b * Omega * Omega;
+
+    result.tail<3>() = V_inv * t;
+
+    return result;
+}
+
 }  // namespace lie
 }  // namespace eigen_utils
 }  // namespace sycl_points
