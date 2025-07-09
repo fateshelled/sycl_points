@@ -460,23 +460,13 @@ private:
     /// @brief Applies filtering based on the current flags
     /// @param data Point cloud to be filtered (modified in-place)
     void filter_by_flags(PointCloudShared& data) {
-        if (this->queue_.is_nvidia()) {
-            if (data.has_cov()) {
-                filter_->filter_by_flags_on_device(*data.covs, *this->flags_);
-            }
-            if (data.has_normal()) {
-                filter_->filter_by_flags_on_device(*data.normals, *this->flags_);
-            }
-            filter_->filter_by_flags_on_device(*data.points, *this->flags_);
-        } else {
-            if (data.has_cov()) {
-                filter_->filter_by_flags(*data.covs, *this->flags_);
-            }
-            if (data.has_normal()) {
-                filter_->filter_by_flags(*data.normals, *this->flags_);
-            }
-            filter_->filter_by_flags(*data.points, *this->flags_);
+        if (data.has_cov()) {
+            this->filter_->filter_by_flags(*data.covs, *this->flags_);
         }
+        if (data.has_normal()) {
+            this->filter_->filter_by_flags(*data.normals, *this->flags_);
+        }
+        this->filter_->filter_by_flags(*data.points, *this->flags_);
     }
 };
 

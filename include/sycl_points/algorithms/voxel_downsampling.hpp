@@ -17,8 +17,7 @@ public:
     /// @param voxel_size voxel size
     VoxelGrid(const sycl_points::sycl_utils::DeviceQueue& queue, const float voxel_size)
         : queue_(queue), voxel_size_(voxel_size) {
-        this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, voxel_hash_map::VoxelConstants::invalid_coord,
-                                                                   shared_allocator<uint64_t>(*this->queue_.ptr));
+        this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, shared_allocator<uint64_t>(*this->queue_.ptr));
         this->voxel_size_inv_ = 1.0f / this->voxel_size_;
     }
 
