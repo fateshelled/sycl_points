@@ -25,10 +25,10 @@ struct RegistrationParams {
     RobustLossType robust_loss = RobustLossType::NONE;  // robust loss function type
     float robust_scale = 1.0f;                          // scale for robust loss function
 
-    bool verbose = false;  // If true, print debug messages
-    // bool optimize_lm = false; // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
-    // size_t max_inner_iterations = 10; // (for LM method)
-    // float lambda_factor = 10.0f; // lambda increase factor (for LM method)
+    bool verbose = false;              // If true, print debug messages
+    bool optimize_lm = false;          // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
+    size_t max_inner_iterations = 10;  // (for LM method)
+    float lambda_factor = 10.0f;       // lambda increase factor (for LM method)
 };
 
 namespace {
@@ -115,6 +115,8 @@ public:
         this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_);
         this->linearlized_on_host_ = std::make_shared<shared_vector<LinearlizedResult>>(
             1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_.ptr));
+        this->error_on_host_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
+        this->inlier_on_host_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
     }
 
     /// @brief Get aligned point cloud
@@ -188,15 +190,31 @@ public:
                 this->linearlize(source, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
             // Optimize on Host
-            this->optimize_gauss_newton(result, linearlized_result, lambda, verbose, iter);
+            if (this->params_.optimize_lm) {
+                const bool updated = this->optimize_levenberg_marquardt(source, target, max_dist_2, result,
+                                                                        linearlized_result, lambda, iter);
 
-            // Async transform source points on device
-            transform_events = transform::transform_async(*this->aligned_,
-                                                          result.T.matrix() * prev_T.matrix().inverse());  // zero copy
+                // Async transform source points on device
+                transform_events =
+                    transform::transform_async(*this->aligned_,
+                                               result.T.matrix() * prev_T.matrix().inverse());  // zero copy
 
-            if (result.converged) {
-                break;
+                if (!updated || result.converged) {
+                    break;
+                }
+            } else {
+                this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
+
+                // Async transform source points on device
+                transform_events =
+                    transform::transform_async(*this->aligned_,
+                                               result.T.matrix() * prev_T.matrix().inverse());  // zero copy
+
+                if (result.converged) {
+                    break;
+                }
             }
+
             // adaptive max correspondence distance
             if (this->params_.adaptive_correspondence_distance) {
                 // if (result.inlier > inlier_threshold) {
@@ -227,6 +245,8 @@ private:
     shared_vector_ptr<knn_search::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
     shared_vector_ptr<LinearlizedResult> linearlized_on_host_ = nullptr;
+    shared_vector_ptr<float> error_on_host_ = nullptr;
+    shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
     bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
         return delta.template head<3>().norm() < this->params_.rotation_eps &&
@@ -333,24 +353,15 @@ private:
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
-            // output
-            this->linearlized_on_device_->setZero();
-            const auto H0_ptr = this->linearlized_on_device_->H0;
-            const auto H1_ptr = this->linearlized_on_device_->H1;
-            const auto H2_ptr = this->linearlized_on_device_->H2;
-            const auto b0_ptr = this->linearlized_on_device_->b0;
-            const auto b1_ptr = this->linearlized_on_device_->b1;
-            const auto error_ptr = this->linearlized_on_device_->error;
-            const auto inlier_ptr = this->linearlized_on_device_->inlier;
-
             // reduction
-            auto sum_H0 = sycl::reduction(H0_ptr, sycl::plus<sycl::float16>());
-            auto sum_H1 = sycl::reduction(H1_ptr, sycl::plus<sycl::float16>());
-            auto sum_H2 = sycl::reduction(H2_ptr, sycl::plus<sycl::float4>());
-            auto sum_b0 = sycl::reduction(b0_ptr, sycl::plus<sycl::float3>());
-            auto sum_b1 = sycl::reduction(b1_ptr, sycl::plus<sycl::float3>());
-            auto sum_error = sycl::reduction(error_ptr, sycl::plus<float>());
-            auto sum_inlier = sycl::reduction(inlier_ptr, sycl::plus<uint32_t>());
+            this->linearlized_on_device_->setZero();
+            auto sum_H0 = sycl::reduction(this->linearlized_on_device_->H0, sycl::plus<sycl::float16>());
+            auto sum_H1 = sycl::reduction(this->linearlized_on_device_->H1, sycl::plus<sycl::float16>());
+            auto sum_H2 = sycl::reduction(this->linearlized_on_device_->H2, sycl::plus<sycl::float4>());
+            auto sum_b0 = sycl::reduction(this->linearlized_on_device_->b0, sycl::plus<sycl::float3>());
+            auto sum_b1 = sycl::reduction(this->linearlized_on_device_->b1, sycl::plus<sycl::float3>());
+            auto sum_error = sycl::reduction(this->linearlized_on_device_->error, sycl::plus<float>());
+            auto sum_inlier = sycl::reduction(this->linearlized_on_device_->inlier, sycl::plus<uint32_t>());
 
             // wait for knn search
             h.depends_on(depends);
@@ -374,7 +385,7 @@ private:
                     const LinearlizedResult result = kernel::linearlize_robust<icp, loss>(
                         cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
                         robust_scale);
-                    if (result.inlier == 1) {
+                    if (result.inlier == 1U) {
                         // reduction on device
                         const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
                         const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
@@ -384,7 +395,7 @@ private:
                         sum_b0_arg += b0;
                         sum_b1_arg += b1;
                         sum_error_arg += result.error;
-                        sum_inlier_arg += (uint32_t)1;
+                        ++sum_inlier_arg;
                     }
                 });
         });
@@ -437,8 +448,145 @@ private:
         }
     }
 
+    std::tuple<float, uint32_t> compute_error_sequential_reduction(const PointCloudShared& source,
+                                                                   const PointCloudShared& target,
+                                                                   const knn_search::KNNResult& knn_results,
+                                                                   const Eigen::Matrix4f transT,
+                                                                   float max_correspondence_distance_2) {
+        const size_t N = source.size();
+        if (this->error_on_host_->size() < N) {
+            this->error_on_host_->resize(N);
+            this->inlier_on_host_->resize(N);
+        }
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = source.size();
+
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+
+            // convert to sycl::float4
+            const auto cur_T = eigen_utils::to_sycl_vec(transT);
+
+            // get pointers
+            // input
+            const auto source_ptr = source.points_ptr();
+            const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
+            const auto source_normal_ptr = source.has_normal() ? source.normals_ptr() : nullptr;
+            const auto target_ptr = target.points_ptr();
+            const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
+            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+            const auto neighbors_index_ptr = knn_results.indices->data();
+            const auto neighbors_distances_ptr = knn_results.distances->data();
+
+            // output
+            const auto error_ptr = this->error_on_host_->data();
+            const auto inlier_ptr = this->inlier_on_host_->data();
+
+            h.parallel_for(                                       //
+                sycl::nd_range<1>(global_size, work_group_size),  // range
+                [=](sycl::nd_item<1> item) {
+                    const size_t index = item.get_global_id(0);
+                    if (index >= N) return;
+
+                    if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
+                        error_ptr[index] = 0.0f;
+                        inlier_ptr[index] = 0;
+                        return;
+                    }
+                    const auto target_idx = neighbors_index_ptr[index];
+                    const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
+                    const auto source_normal = source_normal_ptr ? source_normal_ptr[target_idx] : Normal::Zero();
+                    const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
+                    const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+
+                    const float err = kernel::calculate_error<icp>(cur_T, source_ptr[index], source_cov, source_normal,
+                                                                   target_ptr[target_idx], target_cov, target_normal);
+
+                    error_ptr[index] = err;
+                    inlier_ptr[index] = 1;
+                });
+        });
+        event.wait();
+        const auto sum_error = std::accumulate(this->error_on_host_->begin(), this->error_on_host_->end(), 0.0f);
+        const auto sum_inlier = std::accumulate(this->inlier_on_host_->begin(), this->inlier_on_host_->end(), 0U);
+        return {sum_error, sum_inlier};
+    }
+
+    std::tuple<float, uint32_t> compute_error_parallel_reduction(const PointCloudShared& source,
+                                                                 const PointCloudShared& target,
+                                                                 const knn_search::KNNResult& knn_results,
+                                                                 const Eigen::Matrix4f transT,
+                                                                 float max_correspondence_distance_2) {
+        shared_vector<float> sum_error(1, 0.0f, shared_allocator<float>(*this->queue_.ptr));
+        shared_vector<uint32_t> inlier(1, 0, shared_allocator<uint32_t>(*this->queue_.ptr));
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = source.size();
+
+            const size_t work_group_size = this->queue_.get_work_group_size_for_parallel_reduction();
+            const size_t global_size = this->queue_.get_global_size_for_parallel_reduction(N);
+
+            // convert to sycl::float4
+            const auto cur_T = eigen_utils::to_sycl_vec(transT);
+
+            // get pointers
+            // input
+            const auto source_ptr = source.points_ptr();
+            const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
+            const auto source_normal_ptr = source.has_normal() ? source.normals_ptr() : nullptr;
+            const auto target_ptr = target.points_ptr();
+            const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
+            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+            const auto neighbors_index_ptr = knn_results.indices->data();
+            const auto neighbors_distances_ptr = knn_results.distances->data();
+
+            // output
+            auto reduction_error = sycl::reduction(sum_error.data(), sycl::plus<float>());
+            auto reduction_inlier = sycl::reduction(inlier.data(), sycl::plus<uint32_t>());
+
+            h.parallel_for(                                       //
+                sycl::nd_range<1>(global_size, work_group_size),  // range
+                reduction_error, reduction_inlier,                //
+                [=](sycl::nd_item<1> item, auto& reduction_error_arg, auto& reduction_inlier_arg) {
+                    const size_t index = item.get_global_id(0);
+                    if (index >= N) return;
+
+                    if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
+                        return;
+                    }
+                    const auto target_idx = neighbors_index_ptr[index];
+                    const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
+                    const auto source_normal = source_normal_ptr ? source_normal_ptr[target_idx] : Normal::Zero();
+                    const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
+                    const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+
+                    const float err = kernel::calculate_error<icp>(cur_T, source_ptr[index], source_cov, source_normal,
+                                                                   target_ptr[target_idx], target_cov, target_normal);
+
+                    reduction_error_arg += err;
+                    ++reduction_inlier_arg;
+                });
+        });
+        event.wait();
+        return {sum_error[0], inlier[0]};
+    }
+
+    auto compute_error(const PointCloudShared& source, const PointCloudShared& target,
+                       const knn_search::KNNResult& knn_results, const Eigen::Matrix4f transT,
+                       float max_correspondence_distance_2) {
+        // if (this->queue_.is_nvidia()) {
+        if (true) {
+            return this->compute_error_parallel_reduction(source, target, knn_results, transT,
+                                                          max_correspondence_distance_2);
+        } else {
+            return this->compute_error_sequential_reduction(source, target, knn_results, transT,
+                                                            max_correspondence_distance_2);
+        }
+    }
+
     void optimize_gauss_newton(RegistrationResult& result, const LinearlizedResult& linearlized_result, float lambda,
-                               bool verbose, size_t iter) {
+                               size_t iter) {
         const Eigen::Matrix<float, 6, 1> delta =
             (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
                 .ldlt()
@@ -450,13 +598,69 @@ private:
         result.b = linearlized_result.b;
         result.error = linearlized_result.error;
         result.inlier = linearlized_result.inlier;
-        if (verbose) {
+
+        if (this->params_.verbose) {
             std::cout << "iter [" << iter << "] ";
             std::cout << "error: " << result.error << ", ";
             std::cout << "inlier: " << result.inlier << ", ";
             std::cout << "dt: " << delta.tail<3>().norm() << ", ";
             std::cout << "dr: " << delta.head<3>().norm() << std::endl;
         }
+    }
+
+    bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
+                                      float max_correspondence_distance_2, RegistrationResult& result,
+                                      const LinearlizedResult& linearlized_result, float& lambda, size_t iter) {
+        bool updated = false;
+        float last_error = std::numeric_limits<float>::max();
+
+        for (size_t i = 0; i < this->params_.max_inner_iterations; ++i) {
+            const Eigen::Matrix<float, 6, 1> delta =
+                (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
+                    .ldlt()
+                    .solve(-linearlized_result.b);
+            const Eigen::Isometry3f new_T = result.T * eigen_utils::lie::se3_exp(delta);
+
+            const auto [new_error, inlier] =
+                compute_error(source, target, this->neighbors_->at(0), new_T.matrix(), max_correspondence_distance_2);
+
+            if (this->params_.verbose) {
+                std::cout << "iter [" << iter << "] ";
+                std::cout << "inner: " << i << ", ";
+                std::cout << "lambda: " << lambda << ", ";
+                std::cout << "error: " << new_error << ", ";
+                std::cout << "inlier: " << inlier << ", ";
+                std::cout << "dt: " << delta.tail<3>().norm() << ", ";
+                std::cout << "dr: " << delta.head<3>().norm() << std::endl;
+            }
+            if (new_error <= linearlized_result.error) {
+                result.converged = this->is_converged(delta);
+                result.T = new_T;
+                result.error = new_error;
+                result.inlier = inlier;
+                updated = true;
+
+                lambda /= this->params_.lambda_factor;
+
+                break;
+            } else if (std::fabs(new_error - last_error) <= 1e-6f) {
+                result.converged = this->is_converged(delta);
+                result.T = new_T;
+                result.error = new_error;
+                result.inlier = inlier;
+                updated = false;
+
+                break;
+            } else {
+                lambda *= this->params_.lambda_factor;
+            }
+            last_error = new_error;
+        }
+
+        result.iterations = iter;
+        result.H = linearlized_result.H;
+        result.b = linearlized_result.b;
+        return updated;
     }
 };
 
