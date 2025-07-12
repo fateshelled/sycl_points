@@ -356,20 +356,23 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
 /// @param target_pt Target point
 /// @param target_cov Target covariance
 /// @return error
-template <ICPType icp = ICPType::GICP>
+template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType::NONE>
 SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                            const Covariance& source_cov, const Normal& source_normal,
                                            const PointType& target_pt, const Covariance& target_cov,
-                                           const Normal& target_normal) {
+                                           const Normal& target_normal, float robust_scale) {
+    float residual_norm = 0.0f;
+    
     if constexpr (icp == ICPType::POINT_TO_POINT) {
-        return calculate_error_point_to_point(T, source_pt, target_pt);
+        residual_norm = calculate_error_point_to_point(T, source_pt, target_pt);
     } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
-        return calculate_error_point_to_plane(T, source_pt, target_pt, target_normal);
+        residual_norm = calculate_error_point_to_plane(T, source_pt, target_pt, target_normal);
     } else if constexpr (icp == ICPType::GICP) {
-        return calculate_error_gicp(T, source_pt, source_cov, target_pt, target_cov);
+        residual_norm = calculate_error_gicp(T, source_pt, source_cov, target_pt, target_cov);
     } else {
         static_assert("not support type");
     }
+    return kernel::compute_robust_error<LossType>(residual_norm, robust_scale);
 }
 
 }  // namespace kernel
