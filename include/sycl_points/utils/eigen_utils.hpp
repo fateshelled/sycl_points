@@ -573,6 +573,20 @@ SYCL_EXTERNAL void copy(const Eigen::Matrix<float, M, N>& src, Eigen::Matrix<flo
     }
 }
 
+template <size_t M, size_t N>
+/// @brief swap matrix
+/// @param src source matrix
+/// @param dst destination matrix
+SYCL_EXTERNAL void swap(Eigen::Matrix<float, M, N>& src, Eigen::Matrix<float, M, N>& dst) {
+#pragma unroll M
+    for (size_t i = 0; i < M; ++i) {
+#pragma unroll N
+        for (size_t j = 0; j < N; ++j) {
+            std::swap(src(i, j), dst(i, j));
+        }
+    }
+}
+
 /// @brief Convert Eigen::Vector4f to sycl vector
 /// @param vec Eigen vector
 /// @return sycl vector
