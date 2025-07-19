@@ -49,13 +49,13 @@ public:
         const size_t max_output_size = N;  // In worst case, every point creates a new voxel
         result.resize(max_output_size);
 
-        // Step 3: Reset output counter
+        // Step 2: Reset output counter
         (*this->output_counter_)[0] = 0;
 
-        // Step 4: Execute sort-based downsampling kernel
+        // Step 3: Execute sort-based downsampling kernel
         this->execute_sort_based_kernel(points, result, N);
 
-        // Step 5: Get actual output size and resize result
+        // Step 4: Get actual output size and resize result
         const uint32_t actual_output_size = (*this->output_counter_)[0];
         result.resize(actual_output_size);
     }
@@ -83,16 +83,17 @@ private:
 
         // Device-specific optimization
         if (this->queue_.is_nvidia()) {
-            // NVIDIA: TODO optimize
+            // NVIDIA:
             return std::min(max_work_group_size, 512UL);
         } else if (this->queue_.is_intel() && this->queue_.is_gpu()) {
-            // Intel iGPU: TODO optimize
-            return std::min(max_work_group_size, 256UL);
-            // return std::min(max_work_group_size, compute_units * 10UL);
+            // Intel iGPU:
+            return std::min(max_work_group_size, compute_units * 8UL);
         } else {
             // CPU:
-            return std::min(max_work_group_size, compute_units * 25UL);
+            // return std::min(max_work_group_size, compute_units * 25UL);
+            return std::min(max_work_group_size, compute_units * 50UL);
         }
+        return std::min(max_work_group_size, 512UL);
     }
 
     /// @brief Main kernel: compute voxel indices, sort, and reduce within work groups
@@ -101,11 +102,16 @@ private:
         const size_t num_work_groups = (N + wg_size - 1) / wg_size;
         const size_t global_size = num_work_groups * wg_size;
 
+        // Find the next power of 2 that is >= size
+        size_t power_of_2 = 1;
+        while (power_of_2 < wg_size) {
+            power_of_2 *= 2;
+        }
+
         this->queue_.ptr
             ->submit([&](sycl::handler& h) {
                 // Allocate local memory for work group operations
                 auto local_voxel_data = sycl::local_accessor<VoxelData>(wg_size, h);
-                auto local_output_count = sycl::local_accessor<uint32_t>(1, h);
 
                 // Capture variables for device code
                 const auto input_points = points.data();
@@ -118,13 +124,6 @@ private:
                     const size_t global_id = item.get_global_id(0);
                     const size_t local_id = item.get_local_id(0);
                     const size_t group_id = item.get_group(0);
-                    auto group = item.get_group();
-
-                    // Initialize local counter
-                    if (local_id == 0) {
-                        local_output_count[0] = 0;
-                    }
-                    item.barrier(sycl::access::fence_space::local_space);
 
                     // Step 1: Load points and compute voxel indices
                     VoxelData local_data;
@@ -138,16 +137,16 @@ private:
                         }
                     }
 
-                    local_voxel_data[local_id].voxel_index = local_data.voxel_index;
-                    eigen_utils::copy<4, 1>(local_data.point, local_voxel_data[local_id].point);
+                    copy_voxel_data(local_data, local_voxel_data[local_id]);
 
                     item.barrier(sycl::access::fence_space::local_space);
 
                     // Step 2: Sort within work group by voxel index
-                    sort_local_data(local_voxel_data.get_pointer(), wg_size, item);
+                    bitonic_sort_local_data(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), wg_size,
+                                            power_of_2, item);
 
                     // Step 3: Reduce consecutive same voxel indices
-                    reduce_and_output(local_voxel_data.get_pointer(), local_output_count.get_pointer(), output_points,
+                    reduce_and_output(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), output_points,
                                       global_counter, wg_size, item);
                 });
             })
@@ -163,24 +162,46 @@ private:
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     };
 
-    /// @brief Efficient bitonic sort for power-of-2 work group sizes
-    SYCL_EXTERNAL static void sort_local_data(VoxelData* data, size_t size, sycl::nd_item<1> item) {
+    SYCL_EXTERNAL static void copy_voxel_data(const VoxelData& src, VoxelData& dst) {
+        dst.voxel_index = src.voxel_index;
+        eigen_utils::copy<4, 1>(src.point, dst.point);
+    }
+
+    SYCL_EXTERNAL static void swap_voxel_data(VoxelData& a, VoxelData& b) {
+        std::swap(a.voxel_index, b.voxel_index);
+        eigen_utils::swap<4, 1>(a.point, b.point);
+    }
+
+    /// @brief Bitonic sort that works correctly with any work group size
+    /// @details Uses virtual infinity padding to handle non-power-of-2 sizes
+    SYCL_EXTERNAL static void bitonic_sort_local_data(VoxelData* data, size_t size, size_t size_power_of_2,
+                                                      sycl::nd_item<1> item) {
         const size_t local_id = item.get_local_id(0);
 
-        // Bitonic sort implementation optimized for voxel indices
-        for (size_t k = 2; k <= size; k *= 2) {
+        if (size <= 1) return;
+
+        // Bitonic sort with virtual infinity padding
+        for (size_t k = 2; k <= size_power_of_2; k *= 2) {
             for (size_t j = k / 2; j > 0; j /= 2) {
                 const size_t i = local_id;
                 const size_t ixj = i ^ j;
 
-                if (ixj > i && i < size && ixj < size) {
-                    const bool should_swap = (data[i].voxel_index > data[ixj].voxel_index) == ((i & k) == 0);
+                if (ixj > i && i < size_power_of_2) {
+                    // Determine if we're in ascending or descending phase
+                    const bool ascending = ((i & k) == 0);
 
-                    if (should_swap) {
-                        // Swap voxel data
-                        const VoxelData temp = data[i];
-                        std::swap(data[i].voxel_index, data[ixj].voxel_index);
-                        eigen_utils::swap<4, 1>(data[i].point, data[ixj].point);
+                    // Get values (use infinity for out-of-bounds elements)
+                    const uint64_t val_i =
+                        (i < size) ? data[i].voxel_index : voxel_hash_map::VoxelConstants::invalid_coord;
+                    const uint64_t val_ixj =
+                        (ixj < size) ? data[ixj].voxel_index : voxel_hash_map::VoxelConstants::invalid_coord;
+
+                    // Determine if swap is needed based on virtual values
+                    const bool should_swap = (val_i > val_ixj) == ascending;
+
+                    // Perform actual swap only if both indices are within real data
+                    if (should_swap && i < size && ixj < size) {
+                        swap_voxel_data(data[i], data[ixj]);
                     }
                 }
 
@@ -190,8 +211,8 @@ private:
     }
 
     /// @brief Reduce consecutive same voxel indices and output results
-    SYCL_EXTERNAL static void reduce_and_output(VoxelData* sorted_data, uint32_t* local_counter, PointType* output,
-                                                uint32_t* global_counter, size_t wg_size, sycl::nd_item<1> item) {
+    SYCL_EXTERNAL static void reduce_and_output(VoxelData* sorted_data, PointType* output, uint32_t* global_counter,
+                                                size_t wg_size, sycl::nd_item<1> item) {
         const size_t local_id = item.get_local_id(0);
 
         // Find segments of same voxel indices and reduce them
@@ -213,7 +234,6 @@ private:
 
                 for (size_t i = local_id; i < wg_size && sorted_data[i].voxel_index == current_voxel; ++i) {
                     if (sorted_data[i].point.w() > 0.0f) {
-                        // accumulated_point += sorted_data[i].point;
                         eigen_utils::add_zerocopy<4, 1>(accumulated_point, sorted_data[i].point);
                     }
                 }
@@ -222,7 +242,6 @@ private:
                     // Compute average point
                     const PointType avg_point =
                         eigen_utils::multiply<4, 1>(accumulated_point, 1.0f / accumulated_point.w());
-                    // const PointType avg_point = accumulated_point / static_cast<float>(point_count);
 
                     // Get global output index using atomic operation
                     const uint32_t output_idx =
@@ -232,12 +251,6 @@ private:
 
                     // Write averaged point to output
                     eigen_utils::copy<4, 1>(avg_point, output[output_idx]);
-                    // output[output_idx] = avg_point;
-
-                    // Update local counter for statistics
-                    sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group>(
-                        *local_counter)
-                        .fetch_add(1);
                 }
             }
         }
