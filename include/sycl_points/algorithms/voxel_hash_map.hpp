@@ -262,9 +262,12 @@ private:
     }
 
     void initialize_device_ptr() {
-        this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
-        this->queue_.ptr->fill<VoxelPoint>(this->sum_ptr_.get(), VoxelPoint{0.0f, 0.0f, 0.0f, 0}, this->capacity_);
-        this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_.get(), 0, this->capacity_);
+        sycl_utils::events evs;
+        evs +=
+            this->queue_.ptr->fill<VoxelPoint>(this->sum_ptr_.get(), VoxelPoint{0.0f, 0.0f, 0.0f, 0}, this->capacity_);
+        evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
+        evs += this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_.get(), 0, this->capacity_);
+        evs.wait();
     }
 
     size_t compute_wg_size_add_point_cloud() const {
@@ -280,7 +283,7 @@ private:
         } else if (this->queue_.is_cpu()) {
             // CPU:
             return std::min(max_work_group_size, compute_units * 50UL);
-        } 
+        }
         return 128UL;
     }
 
@@ -368,7 +371,8 @@ private:
 
         this->queue_.ptr
             ->submit([&](sycl::handler& h) {
-                const size_t work_group_size = (N + this->wg_size_add_point_cloud_ - 1) / this->wg_size_add_point_cloud_;
+                const size_t work_group_size =
+                    (N + this->wg_size_add_point_cloud_ - 1) / this->wg_size_add_point_cloud_;
                 const size_t global_size = work_group_size * this->wg_size_add_point_cloud_;
 
                 // Find the next power of 2 that is >= size
