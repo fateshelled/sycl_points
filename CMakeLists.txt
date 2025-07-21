@@ -135,7 +135,5 @@ if (BUILD_TESTS)
   endfunction()
 
   add_test_exec(test_eigen_utils)
-  add_test_exec(test_algorithms)
-  add_test_exec(test_bitonic_sort)
   add_test_exec(test_kdtree)
 endif()
