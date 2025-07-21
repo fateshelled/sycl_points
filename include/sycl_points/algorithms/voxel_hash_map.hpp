@@ -50,9 +50,6 @@ public:
     /// @param voxel_size voxel size
     VoxelHashMap(const sycl_utils::DeviceQueue& queue, const float voxel_size)
         : queue_(queue), voxel_size_(voxel_size), voxel_size_inv_(1.0f / voxel_size) {
-        if (queue.is_cpu()) {
-            throw std::runtime_error("VoxelHashMap does not support CPU");
-        }
         this->make_device_ptr();
         this->clear();
         this->wg_size_add_point_cloud_ = this->compute_wg_size_add_point_cloud();
@@ -279,15 +276,18 @@ private:
             return std::min(max_work_group_size, 128UL);
         } else if (this->queue_.is_intel() && this->queue_.is_gpu()) {
             // Intel iGPU:
-            return std::max(std::min(max_work_group_size, compute_units * 8UL), 64UL);
+            return std::min(max_work_group_size, compute_units * 16UL);
         } else if (this->queue_.is_cpu()) {
             // CPU:
-            return std::min(max_work_group_size, compute_units * 50UL);
+            // const size_t val = 50UL;
+            const size_t val = 100UL;
+            // const size_t val = 200UL;
+            return std::min(max_work_group_size, compute_units * val);
         }
         return 128UL;
     }
 
-    struct VoxelData {
+    struct VoxelLocalData {
         uint64_t voxel_idx = voxel_hash_map::VoxelConstants::invalid_coord;
         float x = 0.0f;
         float y = 0.0f;
@@ -297,7 +297,7 @@ private:
 
     /// @brief Bitonic sort that works correctly with any work group size
     /// @details Uses virtual infinity padding to handle non-power-of-2 sizes
-    SYCL_EXTERNAL static void bitonic_sort_local_data(VoxelData* data, size_t size, size_t size_power_of_2,
+    SYCL_EXTERNAL static void bitonic_sort_local_data(VoxelLocalData* data, size_t size, size_t size_power_of_2,
                                                       sycl::nd_item<1> item) {
         const size_t local_id = item.get_local_id(0);
 
@@ -334,7 +334,7 @@ private:
     }
 
     /// @brief Reduce consecutive same voxel indices and output results
-    SYCL_EXTERNAL static void reduce_local_data(VoxelData* sorted_data, size_t wg_size, sycl::nd_item<1> item) {
+    SYCL_EXTERNAL static void reduce_local_data(VoxelLocalData* sorted_data, size_t wg_size, sycl::nd_item<1> item) {
         const size_t local_id = item.get_local_id(0);
 
         // Find segments of same voxel indices and reduce them
@@ -382,7 +382,7 @@ private:
                 }
 
                 // Allocate local memory for work group operations
-                const auto local_voxel_data = sycl::local_accessor<VoxelData>(work_group_size, h);
+                const auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(work_group_size, h);
 
                 // memory ptr
                 const auto key_ptr = this->key_ptr_.get();
