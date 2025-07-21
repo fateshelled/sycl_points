@@ -248,14 +248,17 @@ private:
     size_t voxel_num_ = 0;
 
     void make_device_ptr() {
-        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_device<uint64_t>(this->capacity_, *this->queue_.ptr),
+        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
                                                    [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->sum_ptr_ =
-            std::shared_ptr<VoxelPoint>(sycl::malloc_device<VoxelPoint>(this->capacity_, *this->queue_.ptr),
+            std::shared_ptr<VoxelPoint>(sycl::malloc_shared<VoxelPoint>(this->capacity_, *this->queue_.ptr),
                                         [&](VoxelPoint* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->last_update_ptr_ =
-            std::shared_ptr<uint32_t>(sycl::malloc_device<uint32_t>(this->capacity_, *this->queue_.ptr),
+            std::shared_ptr<uint32_t>(sycl::malloc_shared<uint32_t>(this->capacity_, *this->queue_.ptr),
                                       [&](uint32_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+        this->queue_.set_accessed_by_device(this->key_ptr_.get(), this->capacity_);
+        this->queue_.set_accessed_by_device(this->sum_ptr_.get(), this->capacity_);
+        this->queue_.set_accessed_by_device(this->last_update_ptr_.get(), this->capacity_);
     }
 
     void initialize_device_ptr() {
