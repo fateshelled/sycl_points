@@ -134,7 +134,7 @@ public:
 
                 const auto point_num_ptr = point_num_vec.data();
                 const auto cp = this->capacity_;
-                const uint64_t vx_num = this->voxel_num_;
+                const uint32_t vx_num = this->voxel_num_;
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                     const auto i = item.get_global_id(0);
                     if (i >= cp) return;
@@ -142,8 +142,6 @@ public:
                     if (key_ptr[i] == VoxelConstants::invalid_coord) return;
 
                     const auto sum = sum_ptr[i];
-                    if (sum.count == 0) return;
-                    if (!std::isfinite(sum.x) || !std::isfinite(sum.y) || !std::isfinite(sum.z)) return;
 
                     const auto output_idx = atomic_ref_uint32_t(point_num_ptr[0]).fetch_add(1U);
                     if (output_idx >= vx_num) return;
@@ -288,11 +286,8 @@ private:
     }
 
     struct VoxelLocalData {
-        uint64_t voxel_idx = voxel_hash_map::VoxelConstants::invalid_coord;
-        float x = 0.0f;
-        float y = 0.0f;
-        float z = 0.0f;
-        uint32_t count = 0;
+        uint64_t voxel_idx;
+        VoxelPoint pt;
     };
 
     /// @brief Bitonic sort that works correctly with any work group size
@@ -351,13 +346,20 @@ private:
                 sorted_data[i].voxel_idx = voxel_hash_map::VoxelConstants::invalid_coord;
 
                 // accumulate
-                sorted_data[local_id].x += sorted_data[i].x;
-                sorted_data[local_id].y += sorted_data[i].y;
-                sorted_data[local_id].z += sorted_data[i].z;
-                sorted_data[local_id].count += sorted_data[i].count;
+                sorted_data[local_id].pt.x += sorted_data[i].pt.x;
+                sorted_data[local_id].pt.y += sorted_data[i].pt.y;
+                sorted_data[local_id].pt.z += sorted_data[i].pt.z;
+                sorted_data[local_id].pt.count += sorted_data[i].pt.count;
             }
         }
         item.barrier(sycl::access::fence_space::local_space);
+    }
+
+    SYCL_EXTERNAL static uint64_t hash2(uint64_t voxel_hash, size_t capacity) {
+        return (capacity - 2) - (voxel_hash % (capacity - 2));
+    }
+    SYCL_EXTERNAL static size_t compute_slot_id(uint64_t voxel_hash, size_t probe, size_t capacity) {
+        return (voxel_hash + probe * hash2(voxel_hash, capacity)) % capacity;
     }
 
     void add_point_cloud_(const PointCloudShared& pc) {
@@ -398,74 +400,79 @@ private:
                 const auto voxel_num_ptr = voxel_num_vec.data();
 
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                    const size_t i = item.get_global_id(0);
                     const size_t local_id = item.get_local_id(0);
-
+                    
                     // Reduction on workgroup
-                    if (i < N && local_id < work_group_size) {
-                        const auto voxel_hash = kernel::compute_voxel_bit(point_ptr[i], vs_inv);
+                    {
+                        const size_t global_id = item.get_global_id(0);
 
-                        // set local data
-                        local_voxel_data[local_id].voxel_idx = voxel_hash;
-                        local_voxel_data[local_id].x = point_ptr[i].x();
-                        local_voxel_data[local_id].y = point_ptr[i].y();
-                        local_voxel_data[local_id].z = point_ptr[i].z();
-                        local_voxel_data[local_id].count = 1;
+                        if (global_id < N && local_id < work_group_size) {
+                            const auto voxel_hash = kernel::compute_voxel_bit(point_ptr[global_id], vs_inv);
+    
+                            // set local data
+                            local_voxel_data[local_id].voxel_idx = voxel_hash;
+                            local_voxel_data[local_id].pt.x = point_ptr[global_id].x();
+                            local_voxel_data[local_id].pt.y = point_ptr[global_id].y();
+                            local_voxel_data[local_id].pt.z = point_ptr[global_id].z();
+                            local_voxel_data[local_id].pt.count = 1;
+                        }
+                        // wait local
+                        item.barrier(sycl::access::fence_space::local_space);
+    
+                        // sort within work group by voxel index
+                        bitonic_sort_local_data(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
+                                                work_group_size, power_of_2, item);
+                        // reduction
+                        reduce_local_data(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
+                                          work_group_size, item);
+    
+                        if (global_id >= N || local_id >= work_group_size) return;
                     }
-                    // wait local
-                    item.barrier(sycl::access::fence_space::local_space);
-
-                    // sort within work group by voxel index
-                    bitonic_sort_local_data(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                            work_group_size, power_of_2, item);
-                    // reduction
-                    reduce_local_data(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                      work_group_size, item);
-
-                    if (i >= N || local_id >= work_group_size) return;
-
-                    const auto local_hash = local_voxel_data[local_id].voxel_idx;
-                    if (local_hash == VoxelConstants::invalid_coord) return;
-
-                    const float local_x = local_voxel_data[local_id].x;
-                    const float local_y = local_voxel_data[local_id].y;
-                    const float local_z = local_voxel_data[local_id].z;
-                    const float local_count = local_voxel_data[local_id].count;
-
-                    // reduction on global memory
-                    for (size_t j = 0; j < max_probe; ++j) {
-                        const size_t slot_idx = (local_hash + j) % cp;
-
-                        uint64_t expected = VoxelConstants::invalid_coord;
-                        if (atomic_ref_uint64_t(key_ptr[slot_idx]).compare_exchange_strong(expected, local_hash)) {
-                            // count up num of voxel
-                            atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
-
-                            // add point coord
-                            atomic_ref_float(sum_ptr[slot_idx].x).fetch_add(local_x);
-                            atomic_ref_float(sum_ptr[slot_idx].y).fetch_add(local_y);
-                            atomic_ref_float(sum_ptr[slot_idx].z).fetch_add(local_z);
-
-                            // count up num of points in voxel
-                            atomic_ref_uint32_t(sum_ptr[slot_idx].count).fetch_add(local_count);
-
-                            // last update
-                            atomic_ref_uint32_t(last_update_ptr[slot_idx]).store(current);
-
-                            break;
-                        } else if (expected == local_hash) {
-                            // add point coord
-                            atomic_ref_float(sum_ptr[slot_idx].x).fetch_add(local_x);
-                            atomic_ref_float(sum_ptr[slot_idx].y).fetch_add(local_y);
-                            atomic_ref_float(sum_ptr[slot_idx].z).fetch_add(local_z);
-
-                            // count up num of points in voxel
-                            atomic_ref_uint32_t(sum_ptr[slot_idx].count).fetch_add(local_count);
-
-                            // last update
-                            atomic_ref_uint32_t(last_update_ptr[slot_idx]).store(current);
-
-                            break;
+                    
+                    // Reduction on global memory
+                    {
+                        const auto local_hash = local_voxel_data[local_id].voxel_idx;
+                        if (local_hash == VoxelConstants::invalid_coord) return;
+    
+                        const auto local_x = local_voxel_data[local_id].pt.x;
+                        const auto local_y = local_voxel_data[local_id].pt.y;
+                        const auto local_z = local_voxel_data[local_id].pt.z;
+                        const auto local_count = local_voxel_data[local_id].pt.count;
+                        
+                        for (size_t j = 0; j < max_probe; ++j) {
+                            const size_t slot_idx = compute_slot_id(local_hash, j, cp);
+    
+                            uint64_t expected = VoxelConstants::invalid_coord;
+                            if (atomic_ref_uint64_t(key_ptr[slot_idx]).compare_exchange_strong(expected, local_hash)) {
+                                // count up num of voxel
+                                atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
+    
+                                // add point coord
+                                atomic_ref_float(sum_ptr[slot_idx].x).fetch_add(local_x);
+                                atomic_ref_float(sum_ptr[slot_idx].y).fetch_add(local_y);
+                                atomic_ref_float(sum_ptr[slot_idx].z).fetch_add(local_z);
+    
+                                // count up num of points in voxel
+                                atomic_ref_uint32_t(sum_ptr[slot_idx].count).fetch_add(local_count);
+    
+                                // last update
+                                atomic_ref_uint32_t(last_update_ptr[slot_idx]).store(current);
+    
+                                break;
+                            } else if (expected == local_hash) {
+                                // add point coord
+                                atomic_ref_float(sum_ptr[slot_idx].x).fetch_add(local_x);
+                                atomic_ref_float(sum_ptr[slot_idx].y).fetch_add(local_y);
+                                atomic_ref_float(sum_ptr[slot_idx].z).fetch_add(local_z);
+    
+                                // count up num of points in voxel
+                                atomic_ref_uint32_t(sum_ptr[slot_idx].count).fetch_add(local_count);
+    
+                                // last update
+                                atomic_ref_uint32_t(last_update_ptr[slot_idx]).store(current);
+    
+                                break;
+                            }
                         }
                     }
                 });
@@ -519,7 +526,7 @@ private:
                     if (voxel_hash == VoxelConstants::invalid_coord) return;
 
                     for (size_t j = 0; j < max_probe; ++j) {
-                        const size_t slot_idx = (voxel_hash + j) % new_cp;
+                        const size_t slot_idx = compute_slot_id(voxel_hash, j, new_cp);
 
                         uint64_t expected = VoxelConstants::invalid_coord;
                         if (atomic_ref_uint64_t(new_key[slot_idx]).compare_exchange_strong(expected, voxel_hash)) {
