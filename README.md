@@ -27,6 +27,10 @@ This project was developed with reference to small_gicp, a lightweight point clo
     - L∞ distance (chebyshev distance) filter
     - Random sampling
     - Voxel downsampling
+- Point cloud file I/O
+    - PLY and PCD format support
+    - ASCII and binary format reading/writing
+    - CPU and shared memory interface compatibility
 
 ### Future optimization work will include
 - Algorithm refinements for better parallelization
