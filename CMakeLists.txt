@@ -136,4 +136,5 @@ if (BUILD_TESTS)
 
   add_test_exec(test_eigen_utils)
   add_test_exec(test_kdtree)
+  add_test_exec(test_file_io)
 endif()

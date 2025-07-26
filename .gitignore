@@ -33,4 +33,5 @@
 
 build/*
 .vscode/*
+.claude/*
 CLAUDE.md

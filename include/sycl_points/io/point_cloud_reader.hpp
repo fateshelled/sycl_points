@@ -13,36 +13,36 @@ namespace sycl_points {
 class PointCloudReader {
 private:
     using T = float;
-    // PLYファイルを読み込む
+    // Read PLY file
     static void readPLY(std::ifstream& file, PointCloudCPU& points) {
         std::string line;
 
-        // ヘッダー解析
+        // Header parsing
         bool is_binary = false;
         int vertex_count = 0;
         std::vector<std::string> properties;
-        std::vector<std::string> property_types;  // プロパティの型を格納
+        std::vector<std::string> property_types;  // Store property types
         int x_index = -1, y_index = -1, z_index = -1;
 
-        // ヘッダー読み込み
+        // Read header
         while (std::getline(file, line)) {
             if (line == "end_header") break;
 
             if (line.find("format binary") != std::string::npos) {
                 is_binary = true;
             } else if (line.find("element vertex") != std::string::npos) {
-                // "element vertex数字" の形式から数字部分を抽出
+                // Extract number part from "element vertex<number>" format
                 std::string count_str = line.substr(line.find("vertex") + 6);
                 vertex_count = std::stoi(count_str);
             } else if (line.find("property") != std::string::npos) {
-                // プロパティ行を解析
+                // Parse property line
                 std::istringstream iss(line);
                 std::string token1, token2, token3;
                 iss >> token1 >> token2;
 
-                // プロパティ名が最後のトークン
+                // Property name is the last token
                 if (token2 == "list") {
-                    // リストプロパティの場合は形式が異なる
+                    // List properties have different format
                     std::string token4, token5;
                     iss >> token3 >> token4 >> token5;
                     properties.push_back(token5);
@@ -50,7 +50,7 @@ private:
                 } else {
                     iss >> token3;
                     properties.push_back(token3);
-                    property_types.push_back(token2);  // token2はデータ型
+                    property_types.push_back(token2);  // token2 is data type
                 }
 
                 if (token3 == "x") x_index = properties.size() - 1;
@@ -59,14 +59,14 @@ private:
             }
         }
 
-        // 頂点データが見つからない場合
+        // When vertex data is not found
         if (vertex_count <= 0 || x_index == -1 || y_index == -1 || z_index == -1) {
             throw std::runtime_error("Invalid PLY format: missing vertex data");
         }
 
-        // バイナリ形式の場合
+        // For binary format
         if (is_binary) {
-            // 各プロパティのサイズとオフセットを計算
+            // Calculate size and offset for each property
             std::vector<int> property_sizes;
             std::vector<int> property_offsets;
             int total_row_size = 0;
@@ -75,7 +75,7 @@ private:
                 const std::string& type = property_types[i];
                 int size = 0;
 
-                // PLY形式の型サイズを決定
+                // Determine PLY format type sizes
                 if (type == "char" || type == "uchar" || type == "int8" || type == "uint8") {
                     size = 1;
                 } else if (type == "short" || type == "ushort" || type == "int16" || type == "uint16") {
@@ -86,8 +86,8 @@ private:
                 } else if (type == "double" || type == "float64") {
                     size = 8;
                 } else if (type == "list") {
-                    // リスト型は可変長なので、このシンプルな実装ではスキップ
-                    // リストを含むデータを正確に処理するにはより複雑なロジックが必要
+                    // List type is variable length, skip in this simple implementation
+                    // More complex logic needed to accurately process list-containing data
                     size = 0;
                 }
 
@@ -96,7 +96,7 @@ private:
                 total_row_size += size;
             }
 
-            // 行バッファを準備
+            // Prepare row buffer
             std::vector<char> buffer(total_row_size);
 
             for (int i = 0; i < vertex_count; i++) {
@@ -106,7 +106,7 @@ private:
                     throw std::runtime_error("Error reading binary PLY data");
                 }
 
-                // x, y, z座標を抽出
+                // Extract x, y, z coordinates
                 T x = 0, y = 0, z = 0;
 
                 if (x_index >= 0) {
@@ -205,11 +205,11 @@ private:
                     }
                 }
 
-                // 点を追加（if文の外に移動）
+                // Add point (moved outside if statement)
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
             }
         } else {
-            // ASCII形式の場合
+            // For ASCII format
             for (int i = 0; i < vertex_count; i++) {
                 std::getline(file, line);
                 std::istringstream iss(line);
@@ -228,21 +228,21 @@ private:
         }
     }
 
-    // PCDファイルを読み込む
+    // Read PCD file
     static void readPCD(std::ifstream& file, PointCloudCPU& points) {
         std::string line;
 
-        // ヘッダー解析
+        // Header parsing
         bool is_binary = false;
         int point_count = 0;
         int fields_count = 0;
         std::vector<std::string> fields;
-        std::vector<std::string> field_types;  // フィールドの型を格納
+        std::vector<std::string> field_types;  // Store field types
         int x_index = -1, y_index = -1, z_index = -1;
         std::string data_type;
 
         while (std::getline(file, line)) {
-            // コメント行をスキップ
+            // Skip comment lines
             if (line.empty() || line[0] == '#') continue;
 
             std::istringstream iss(line);
@@ -270,32 +270,32 @@ private:
                 if (data_type == "binary") {
                     is_binary = true;
                 }
-                break;  // DATAはヘッダーの最後
+                break;  // DATA is the last header line
             }
         }
 
-        // 点群データが見つからない場合
+        // When point cloud data is not found
         if (point_count <= 0 || fields_count <= 0 || x_index == -1 || y_index == -1 || z_index == -1) {
             throw std::runtime_error("Invalid PCD format: missing point data");
         }
 
-        // バイナリ形式の場合
+        // For binary format
         if (is_binary) {
-            // 各フィールドのサイズとオフセットを計算
+            // Calculate size and offset for each field
             std::vector<int> field_sizes;
             std::vector<int> field_offsets;
             int total_row_size = 0;
 
-            // フィールド型情報がない場合はデフォルトでfloatを使用
+            // Use float as default when field type info is missing
             if (field_types.empty()) {
-                field_types.resize(fields_count, "F");  // PCDではF=float32
+                field_types.resize(fields_count, "F");  // F=float32 in PCD
             }
 
             for (int i = 0; i < fields_count; ++i) {
                 const std::string& type = i < field_types.size() ? field_types[i] : "F";
                 int size = 0;
 
-                // PCD形式の型サイズを決定
+                // Determine PCD format type sizes
                 if (type == "I") {
                     size = 4;  // int32
                 } else if (type == "U") {
@@ -311,7 +311,7 @@ private:
                 total_row_size += size;
             }
 
-            // 行バッファを準備
+            // Prepare row buffer
             std::vector<char> buffer(total_row_size);
 
             for (int i = 0; i < point_count; i++) {
@@ -321,7 +321,7 @@ private:
                     throw std::runtime_error("Error reading binary PCD data");
                 }
 
-                // x, y, z座標を抽出
+                // Extract x, y, z coordinates
                 T x = 0, y = 0, z = 0;
 
                 if (x_index >= 0 && x_index < field_types.size()) {
@@ -384,11 +384,11 @@ private:
                     }
                 }
 
-                // 点を追加（if文の外に移動）
+                // Add point (moved outside if statement)
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
             }
         } else {
-            // ASCII形式の場合
+            // For ASCII format
             for (int i = 0; i < point_count; i++) {
                 std::getline(file, line);
                 std::istringstream iss(line);
@@ -408,10 +408,13 @@ private:
     }
 
 public:
+    /// @brief Read point cloud file to CPU memory
+    /// @param filename File path to read
+    /// @return Point cloud data in CPU memory
     static PointCloudCPU readFile(const std::string& filename) {
         std::ifstream file(filename, std::ios::binary);
         if (!file.is_open()) {
-            throw std::runtime_error("Failed to open PLY file: " + filename);
+            throw std::runtime_error("Failed to open file: " + filename);
         }
 
         // Extract file extension from filename
@@ -436,9 +439,30 @@ public:
             readPCD(file, cloud);
         } else {
             std::cerr << "not supported format [" << extension << "]" << std::endl;
+            throw std::runtime_error("Unsupported file format: " + extension);
         }
         file.close();
         return cloud;
+    }
+
+    /// @brief Read point cloud file to shared memory
+    /// @param filename File path to read
+    /// @param queue SYCL device queue for shared memory allocation
+    /// @return Point cloud data in shared memory
+    static PointCloudShared readFile(const std::string& filename, const sycl_utils::DeviceQueue& queue) {
+        // First read to CPU memory
+        PointCloudCPU cpu_cloud = readFile(filename);
+
+        // Then convert to shared memory
+        return PointCloudShared(queue, cpu_cloud);
+    }
+
+    /// @brief Read point cloud file to shared memory (convenience method)
+    /// @param queue SYCL device queue for shared memory allocation
+    /// @param filename File path to read
+    /// @return Point cloud data in shared memory
+    static PointCloudShared readFile(const sycl_utils::DeviceQueue& queue, const std::string& filename) {
+        return readFile(filename, queue);
     }
 };
 }  // namespace sycl_points
