@@ -54,14 +54,6 @@ struct GraphEdge {
     uint32_t to_node_id;
     bool enabled = true;
 
-    /// @brief Edge type for different constraint scenarios
-    enum class EdgeType {
-        SEQUENTIAL,      ///< Consecutive frames with strict thresholds and high weight
-        LOOP_CLOSURE,    ///< Loop closure constraints with robust estimation and lower weight
-        SUBMAP_TO_SCAN,  ///< Submap to scan matching with adaptive correspondence distance
-        CUSTOM           ///< User-defined parameters
-    } type = EdgeType::SEQUENTIAL;
-
     registration::RegistrationParams gicp_params;
     float weight = 1.0f;
     PoseChangeThreshold pose_threshold;
@@ -82,10 +74,6 @@ struct GraphEdge {
 
     /// @brief Default constructor with default parameters
     GraphEdge() { set_default_params(); }
-
-    /// @brief Constructor with specific edge type and corresponding parameters
-    /// @param edge_type Type of edge constraint (SEQUENTIAL, LOOP_CLOSURE, etc.)
-    GraphEdge(EdgeType edge_type) : type(edge_type) { set_params_for_type(edge_type); }
 
     /// @brief Check if edge constraint has been computed and cached
     /// @return True if constraint is computed and valid
@@ -129,36 +117,6 @@ private:
         weight = 1.0f;
     }
 
-    void set_params_for_type(EdgeType edge_type) {
-        set_default_params();
-        switch (edge_type) {
-            case EdgeType::SEQUENTIAL:
-                gicp_params.max_correspondence_distance = 0.5f;
-                pose_threshold = {1e-3f, 5e-4f};
-                weight = 1.0f;
-                break;
-
-            case EdgeType::LOOP_CLOSURE:
-                gicp_params.max_correspondence_distance = 2.0f;
-                gicp_params.robust_loss = registration::RobustLossType::HUBER;
-                gicp_params.robust_scale = 0.5f;
-                pose_threshold = {5e-3f, 2e-3f};
-                weight = 0.5f;
-                break;
-
-            case EdgeType::SUBMAP_TO_SCAN:
-                gicp_params.max_correspondence_distance = 1.5f;
-                gicp_params.adaptive_correspondence_distance = true;
-                gicp_params.inlier_ratio = 0.6f;
-                pose_threshold = {2e-3f, 1e-3f};
-                weight = 0.8f;
-                break;
-
-            case EdgeType::CUSTOM:
-                break;
-        }
-    }
-
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
@@ -198,31 +156,11 @@ public:
         mark_node_edges_for_recomputation(node_id);
     }
 
-    /// @brief Add edge between nodes with predefined parameters
-    /// @param from_id Source node ID
-    /// @param to_id Target node ID
-    /// @param type Type of edge constraint (default: SEQUENTIAL)
-    void add_edge(uint32_t from_id, uint32_t to_id, GraphEdge::EdgeType type = GraphEdge::EdgeType::SEQUENTIAL) {
-        if (this->nodes_.count(from_id) == 0 || this->nodes_.count(to_id) == 0) {
-            throw std::runtime_error("Invalid node ID in edge: " + std::to_string(from_id) + " -> " +
-                                     std::to_string(to_id));
-        }
-
-        GraphEdge edge(type);
-        edge.from_node_id = from_id;
-        edge.to_node_id = to_id;
-
-        this->edges_.push_back(edge);
-        this->edges_need_computation_.insert(this->edges_.size() - 1);
-    }
-
     /// @brief Add edge between nodes with custom parameters
     /// @param from_id Source node ID
     /// @param to_id Target node ID
-    /// @param params Custom GICP registration parameters for this edge
     /// @param weight Weight factor for this constraint in optimization (default: 1.0)
-    void add_edge(uint32_t from_id, uint32_t to_id, const registration::RegistrationParams& params,
-                  float weight = 1.0f) {
+    void add_edge(uint32_t from_id, uint32_t to_id, float weight = 1.0f) {
         if (nodes_.count(from_id) == 0 || nodes_.count(to_id) == 0) {
             throw std::runtime_error("Invalid node ID in edge");
         }
@@ -230,9 +168,7 @@ public:
         GraphEdge edge;
         edge.from_node_id = from_id;
         edge.to_node_id = to_id;
-        edge.gicp_params = params;
         edge.weight = weight;
-        edge.type = GraphEdge::EdgeType::CUSTOM;
 
         this->edges_.push_back(edge);
         this->edges_need_computation_.insert(this->edges_.size() - 1);
@@ -584,7 +520,7 @@ private:
         auto registration = std::make_shared<registration::RegistrationGICP>(this->queue_, edge.gicp_params);
 
         const auto gicp_result = registration->align(*from_node.point_cloud, *to_node.point_cloud, *to_node.kdtree,
-                                               relative_pose_initial.matrix());
+                                                     relative_pose_initial.matrix());
 
         if (edge.gicp_params.verbose) {
             std::cout << "  GICP result: " << gicp_result.T.translation().transpose() << std::endl;
