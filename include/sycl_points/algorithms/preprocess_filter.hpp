@@ -111,7 +111,7 @@ public:
     }
 
 private:
-    sycl_utils::DeviceQueue queue_;                                          // SYCL queue
+    sycl_utils::DeviceQueue queue_;                             // SYCL queue
     std::shared_ptr<PointContainerShared> points_copy_ptr_;     // Copy of point data
     std::shared_ptr<CovarianceContainerShared> covs_copy_ptr_;  // Copy of covariance data
     PrefixSum::Ptr prefix_sum_;
@@ -148,9 +148,8 @@ private:
     /// @param data Output data buffer (already resized)
     /// @param flags Flags indicating which elements to keep
     template <typename T, size_t AllocSize = 0>
-    void apply_filter(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags, 
-       const shared_vector<uint32_t>& prefix_sum,  size_t original_size,
-                      size_t new_size) {
+    void apply_filter(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags,
+                      const shared_vector<uint32_t>& prefix_sum, size_t original_size, size_t new_size) {
         // mem_advise to device
         {
             this->queue_.set_accessed_by_device(flags.data(), original_size);
@@ -211,8 +210,10 @@ public:
     /// @brief Constructor
     /// @param queue SYCL queue
     PreprocessFilter(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
-        filter_ = std::make_shared<FilterByFlags>(this->queue_);
-        flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
+        this->filter_ = std::make_shared<FilterByFlags>(this->queue_);
+        this->flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
+        this->dist_sq_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
+        this->selected_idx_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
 
         this->mt_.seed(1234);  // Default seed for reproducibility
     }
@@ -230,7 +231,7 @@ public:
         const size_t N = data.size();
         if (N == 0) return;
 
-        this->initialize_flags(N);
+        this->initialize_flags(N).wait();
 
         // mem_advise set to device
         {
@@ -273,7 +274,7 @@ public:
         if (N == 0) return;
         if (N <= sampling_num) return;
 
-        this->initialize_flags(N, REMOVE_FLAG);
+        this->initialize_flags(N, REMOVE_FLAG).wait();
 
         // mem_advise to host
         this->queue_.set_accessed_by_host(this->flags_->data(), N);
@@ -300,20 +301,122 @@ public:
         this->filter_by_flags(data);
     }
 
+    /// @brief
+    /// @param data
+    /// @param sampling_num
+    void farthest_point_sampling(PointCloudShared& data, size_t sampling_num) {
+        const size_t N = data.size();
+        if (N == 0) return;
+        if (N <= sampling_num) return;
+
+        // mem_advise set to device
+        {
+            this->queue_.set_accessed_by_device(data.points_ptr(), N);
+        }
+
+        // initialize
+        sycl_utils::events init_events;
+        {
+            init_events += this->initialize_flags(N, REMOVE_FLAG);
+
+            if (this->selected_idx_->size() < sampling_num) {
+                this->selected_idx_->resize(sampling_num);
+            }
+            if (this->dist_sq_->size() < N) {
+                this->dist_sq_->resize(N);
+            }
+            init_events +=
+                this->queue_.ptr->fill(this->selected_idx_->data(), std::numeric_limits<uint32_t>::max(), sampling_num);
+            init_events += this->queue_.ptr->fill(this->dist_sq_->data(), std::numeric_limits<float>::max(), N);
+        }
+
+        init_events.wait();
+
+        // ramdom select initial point
+        std::uniform_int_distribution<size_t> dist(0, N - 1);
+        const size_t initial_idx = dist(this->mt_);
+        this->selected_idx_->at(0) = initial_idx;
+        this->flags_->at(initial_idx) = INCLUDE_FLAG;
+
+        for (size_t iter = 1; iter < sampling_num; ++iter) {
+            // compute distance
+            this->queue_.ptr
+                ->submit([&](sycl::handler& h) {
+                    const size_t work_group_size = this->queue_.get_work_group_size();
+                    const size_t global_size = this->queue_.get_global_size(N);
+                    // memory ptr
+                    const auto point_ptr = data.points_ptr();
+                    const auto flag_ptr = this->flags_->data();
+                    const auto dist_sq_ptr = this->dist_sq_->data();
+                    const auto selected_idx_ptr = this->selected_idx_->data();
+
+                    const auto i = iter;
+
+                    h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                        const size_t gid = item.get_global_id(0);
+                        if (gid >= N) return;
+
+                        const size_t selected_idx = selected_idx_ptr[i - 1];
+                        const float dist_sq = (selected_idx == gid)
+                                                  ? 0.0f
+                                                  : eigen_utils::frobenius_norm_squared<4>(eigen_utils::subtract<4, 1>(
+                                                        point_ptr[gid], point_ptr[selected_idx]));
+
+                        dist_sq_ptr[gid] = std::min(dist_sq_ptr[gid], dist_sq);
+                    });
+                })
+                .wait();
+
+            // find farthest point
+            this->queue_.ptr
+                ->submit([&](sycl::handler& h) {
+                    // memory ptr
+                    const auto point_ptr = data.points_ptr();
+                    const auto flag_ptr = this->flags_->data();
+                    const auto dist_sq_ptr = this->dist_sq_->data();
+                    const auto selected_idx_ptr = this->selected_idx_->data();
+
+                    const auto i = iter;
+
+                    h.host_task([=]() {
+#if __cplusplus >= 202002L
+                        const auto max_elem = std::max_element(std::execution::unseq, dist_sq_ptr, dist_sq_ptr + N);
+#else
+                        const auto max_elem = std::max_element(dist_sq_ptr, dist_sq_ptr + N);
+#endif
+                        const size_t max_idx = std::distance(dist_sq_ptr, max_elem);
+                        selected_idx_ptr[i] = max_idx;
+                        flag_ptr[max_idx] = INCLUDE_FLAG;
+                    });
+                })
+                .wait();
+        }
+        this->filter_by_flags(data);
+
+        // mem_advise clear
+        {
+            this->queue_.clear_accessed_by_device(data.points_ptr(), N);
+        }
+    }
+
 private:
     sycl_utils::DeviceQueue queue_;
     std::shared_ptr<FilterByFlags> filter_;
     shared_vector_ptr<uint8_t> flags_;
+    shared_vector_ptr<uint32_t> selected_idx_;  // for FPS
+    shared_vector_ptr<float> dist_sq_;          // for FPS
     std::mt19937 mt_;
 
     /// @brief Initializes the flags vector with a specified value
     /// @param data_size Size needed for the flags vector
     /// @param initial_flag Initial value to fill the flags with (INCLUDE_FLAG or REMOVE_FLAG)
-    void initialize_flags(size_t data_size, uint8_t initial_flag = INCLUDE_FLAG) {
+    sycl_utils::events initialize_flags(size_t data_size, uint8_t initial_flag = INCLUDE_FLAG) {
         if (this->flags_->size() < data_size) {
             this->flags_->resize(data_size);
         }
-        this->queue_.ptr->fill(this->flags_->data(), initial_flag, data_size).wait();
+        sycl_utils::events events;
+        events += this->queue_.ptr->fill(this->flags_->data(), initial_flag, data_size);
+        return events;
     }
 
     /// @brief Applies filtering based on the current flags

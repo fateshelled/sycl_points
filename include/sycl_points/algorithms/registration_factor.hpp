@@ -362,7 +362,7 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
                                            const PointType& target_pt, const Covariance& target_cov,
                                            const Normal& target_normal, float robust_scale) {
     float residual_norm = 0.0f;
-    
+
     if constexpr (icp == ICPType::POINT_TO_POINT) {
         residual_norm = calculate_error_point_to_point(T, source_pt, target_pt);
     } else if constexpr (icp == ICPType::POINT_TO_PLANE) {

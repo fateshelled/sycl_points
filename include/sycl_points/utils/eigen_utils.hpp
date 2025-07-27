@@ -246,8 +246,8 @@ SYCL_EXTERNAL float dot(const Eigen::Vector<float, N>& u, const Eigen::Vector<fl
     float result = 0.0f;
 #pragma unroll N
     for (size_t i = 0; i < N; ++i) {
-        // result += u(i, 0) * v(i, 0);
-        result = sycl::fma(u(i, 0), v(i, 0), result);
+        // result += u(i) * v(i);
+        result = sycl::fma(u(i), v(i), result);
     }
     return result;
 }
