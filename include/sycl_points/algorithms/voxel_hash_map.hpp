@@ -1,6 +1,6 @@
 #pragma once
 
-#include <sycl_points/algorithms/prefix_sum.hpp>
+#include <sycl_points/algorithms/common/prefix_sum.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 
 namespace sycl_points {
