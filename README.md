@@ -26,6 +26,7 @@ This project was developed with reference to small_gicp, a lightweight point clo
 - Preprocessing filter
     - L∞ distance (chebyshev distance) filter
     - Random sampling
+    - Farthest point sampling (FPS)
     - Voxel downsampling
 - Point cloud file I/O
     - PLY and PCD format support
