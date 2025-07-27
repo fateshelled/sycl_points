@@ -44,7 +44,7 @@ public:
     FilterByFlags(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
         this->points_copy_ptr_ = std::make_shared<PointContainerShared>(*this->queue_.ptr);
         this->covs_copy_ptr_ = std::make_shared<CovarianceContainerShared>(*this->queue_.ptr);
-        this->prefix_sum_ = std::make_shared<PrefixSum>(this->queue_);
+        this->prefix_sum_ = std::make_shared<common::PrefixSum>(this->queue_);
     }
 
     /// @brief Filter data synchronously on host
@@ -114,7 +114,7 @@ private:
     sycl_utils::DeviceQueue queue_;                             // SYCL queue
     std::shared_ptr<PointContainerShared> points_copy_ptr_;     // Copy of point data
     std::shared_ptr<CovarianceContainerShared> covs_copy_ptr_;  // Copy of covariance data
-    PrefixSum::Ptr prefix_sum_;
+    common::PrefixSum::Ptr prefix_sum_;
 
     /// @brief Copy input data to temporary storage
     /// @tparam T Data type

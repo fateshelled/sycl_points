@@ -52,7 +52,7 @@ public:
     VoxelHashMap(const sycl_utils::DeviceQueue& queue, const float voxel_size)
         : queue_(queue), voxel_size_(voxel_size), voxel_size_inv_(1.0f / voxel_size) {
         this->malloc_data();
-        this->prefix_sum_ = std::make_shared<PrefixSum>(this->queue_);
+        this->prefix_sum_ = std::make_shared<common::PrefixSum>(this->queue_);
         this->valid_flags_ptr_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
         this->clear();
         this->wg_size_add_point_cloud_ = this->compute_wg_size_add_point_cloud();
@@ -172,7 +172,7 @@ private:
     std::shared_ptr<VoxelPoint> sum_ptr_ = nullptr;
     std::shared_ptr<uint32_t> last_update_ptr_ = nullptr;
     shared_vector_ptr<uint8_t> valid_flags_ptr_ = nullptr;
-    PrefixSum::Ptr prefix_sum_ = nullptr;
+    common::PrefixSum::Ptr prefix_sum_ = nullptr;
 
     uint32_t staleness_counter_ = 0;
     uint32_t max_staleness_ = 100;

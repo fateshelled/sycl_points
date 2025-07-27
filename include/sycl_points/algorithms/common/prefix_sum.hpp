@@ -5,6 +5,10 @@
 
 namespace sycl_points {
 
+namespace algorithms {
+
+namespace common {
+
 class PrefixSum {
 public:
     using Ptr = std::shared_ptr<PrefixSum>;
@@ -92,7 +96,8 @@ public:
         }
 
         // Complete if only one group
-        if (num_groups == 1) return get_new_size(N);;
+        if (num_groups == 1) return get_new_size(N);
+        ;
 
         // Step 2: Perform an exclusive scan on group sums
         {
@@ -158,7 +163,7 @@ public:
             this->queue_.clear_accessed_by_device(this->group_sums_ptr_->data(), num_groups);
             this->queue_.clear_accessed_by_device(this->group_prefix_ptr_->data(), num_groups);
         }
-        
+
         return get_new_size(N);
     }
 
@@ -168,8 +173,9 @@ private:
     shared_vector_ptr<uint32_t> group_sums_ptr_;    // Group sums for prefix calculation
     shared_vector_ptr<uint32_t> group_prefix_ptr_;  // Group prefix sums
 
-    size_t get_new_size(size_t N) const {
-        return this->prefix_sum_ptr_->at(N - 1);
-    }
+    size_t get_new_size(size_t N) const { return this->prefix_sum_ptr_->at(N - 1); }
 };
+
+}  // namespace common
+}  // namespace algorithms
 }  // namespace sycl_points
