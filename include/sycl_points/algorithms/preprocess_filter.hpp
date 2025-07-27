@@ -213,7 +213,6 @@ public:
         this->filter_ = std::make_shared<FilterByFlags>(this->queue_);
         this->flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
         this->dist_sq_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
-        this->selected_idx_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
 
         this->mt_.seed(1234);  // Default seed for reproducibility
     }
@@ -301,32 +300,28 @@ public:
         this->filter_by_flags(data);
     }
 
-    /// @brief
-    /// @param data
-    /// @param sampling_num
+    /// @brief Farthest Point Sampling (FPS)
+    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param sampling_num Number of points to retain after sampling
     void farthest_point_sampling(PointCloudShared& data, size_t sampling_num) {
         const size_t N = data.size();
         if (N == 0) return;
         if (N <= sampling_num) return;
 
+        if (this->dist_sq_->size() < N) {
+            this->dist_sq_->resize(N);
+        }
+
         // mem_advise set to device
         {
             this->queue_.set_accessed_by_device(data.points_ptr(), N);
+            this->queue_.set_accessed_by_device(this->dist_sq_->data(), N);
         }
 
         // initialize
         sycl_utils::events init_events;
         {
             init_events += this->initialize_flags(N, REMOVE_FLAG);
-
-            if (this->selected_idx_->size() < sampling_num) {
-                this->selected_idx_->resize(sampling_num);
-            }
-            if (this->dist_sq_->size() < N) {
-                this->dist_sq_->resize(N);
-            }
-            init_events +=
-                this->queue_.ptr->fill(this->selected_idx_->data(), std::numeric_limits<uint32_t>::max(), sampling_num);
             init_events += this->queue_.ptr->fill(this->dist_sq_->data(), std::numeric_limits<float>::max(), N);
         }
 
@@ -334,9 +329,8 @@ public:
 
         // ramdom select initial point
         std::uniform_int_distribution<size_t> dist(0, N - 1);
-        const size_t initial_idx = dist(this->mt_);
-        this->selected_idx_->at(0) = initial_idx;
-        this->flags_->at(initial_idx) = INCLUDE_FLAG;
+        size_t selected_idx = dist(this->mt_);
+        this->flags_->at(selected_idx) = INCLUDE_FLAG;
 
         for (size_t iter = 1; iter < sampling_num; ++iter) {
             // compute distance
@@ -348,54 +342,42 @@ public:
                     const auto point_ptr = data.points_ptr();
                     const auto flag_ptr = this->flags_->data();
                     const auto dist_sq_ptr = this->dist_sq_->data();
-                    const auto selected_idx_ptr = this->selected_idx_->data();
 
-                    const auto i = iter;
+                    const auto selected_idx_capture = selected_idx;
 
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                         const size_t gid = item.get_global_id(0);
                         if (gid >= N) return;
 
-                        const size_t selected_idx = selected_idx_ptr[i - 1];
-                        const float dist_sq = (selected_idx == gid)
-                                                  ? 0.0f
-                                                  : eigen_utils::frobenius_norm_squared<4>(eigen_utils::subtract<4, 1>(
-                                                        point_ptr[gid], point_ptr[selected_idx]));
+                        const float dist_sq = eigen_utils::frobenius_norm_squared<4>(
+                            eigen_utils::subtract<4, 1>(point_ptr[gid], point_ptr[selected_idx_capture]));
 
-                        dist_sq_ptr[gid] = std::min(dist_sq_ptr[gid], dist_sq);
+                        dist_sq_ptr[gid] = sycl::min(dist_sq_ptr[gid], dist_sq);
                     });
                 })
                 .wait();
 
             // find farthest point
-            this->queue_.ptr
-                ->submit([&](sycl::handler& h) {
-                    // memory ptr
-                    const auto point_ptr = data.points_ptr();
-                    const auto flag_ptr = this->flags_->data();
-                    const auto dist_sq_ptr = this->dist_sq_->data();
-                    const auto selected_idx_ptr = this->selected_idx_->data();
-
-                    const auto i = iter;
-
-                    h.host_task([=]() {
+            {
 #if __cplusplus >= 202002L
-                        const auto max_elem = std::max_element(std::execution::unseq, dist_sq_ptr, dist_sq_ptr + N);
+                const auto max_elem =
+                    std::max_element(std::execution::unseq, this->dist_sq_->data(), this->dist_sq_->data() + N);
 #else
-                        const auto max_elem = std::max_element(dist_sq_ptr, dist_sq_ptr + N);
+                const auto max_elem = std::max_element(this->dist_sq_->data(), this->dist_sq_->data() + N);
 #endif
-                        const size_t max_idx = std::distance(dist_sq_ptr, max_elem);
-                        selected_idx_ptr[i] = max_idx;
-                        flag_ptr[max_idx] = INCLUDE_FLAG;
-                    });
-                })
-                .wait();
+                const size_t max_elem_idx = std::distance(this->dist_sq_->data(), max_elem);
+
+                // update index
+                selected_idx = max_elem_idx;
+                this->flags_->at(max_elem_idx) = INCLUDE_FLAG;
+            }
         }
         this->filter_by_flags(data);
 
         // mem_advise clear
         {
             this->queue_.clear_accessed_by_device(data.points_ptr(), N);
+            this->queue_.clear_accessed_by_device(this->dist_sq_->data(), N);
         }
     }
 
@@ -403,8 +385,8 @@ private:
     sycl_utils::DeviceQueue queue_;
     std::shared_ptr<FilterByFlags> filter_;
     shared_vector_ptr<uint8_t> flags_;
-    shared_vector_ptr<uint32_t> selected_idx_;  // for FPS
-    shared_vector_ptr<float> dist_sq_;          // for FPS
+    shared_vector_ptr<float> dist_sq_ = nullptr;  // for FPS
+
     std::mt19937 mt_;
 
     /// @brief Initializes the flags vector with a specified value
