@@ -41,14 +41,18 @@ struct KNNResult {
 
 namespace {
 
-// Node structure for KD-Tree (ignoring w component)
+// Leaf node threshold - keep small for better unrolling
+constexpr size_t LEAF_THRESHOLD = 4;
+
+// Node structure for optimized KD-Tree
 struct FlatKDNode {
     PointType pt;
     int32_t idx;         // Index of the point in the original dataset
-    int32_t left = -1;   // Index of left child node (-1 if none)
-    int32_t right = -1;  // Index of right child node (-1 if none)
-    uint8_t axis;        // Split axis (0=x, 1=y, 2=z)
-    uint8_t pad[3];      // Padding for alignment (3 bytes)
+    int32_t left = -1;   // Index of left child node (-1 if none), or next leaf node for leaf nodes
+    int32_t right = -1;  // Index of right child node (-1 if none), unused for leaf nodes
+    uint8_t axis;        // Split axis (0=x, 1=y, 2=z) - unused for leaf nodes
+    uint8_t is_leaf;     // 1 if leaf node, 0 if internal node
+    uint8_t pad[2];      // Padding for alignment (2 bytes)
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };  // Total: 32 bytes
@@ -143,7 +147,6 @@ void insert_to_bestK(NodeEntry* bestK, float dist_sq, int32_t nodeIdx, size_t k,
     }
     bestK[insert_pos].nodeIdx = nodeIdx;
     bestK[insert_pos].dist_sq = dist_sq;
-    return;
 }
 
 }  // namespace
@@ -168,15 +171,15 @@ public:
     ~KDTree() {}
 
     /// @brief Build KDTree
-    /// @param quqeue SYCL queue
-    /// @param points Point Cloud
+    /// @param q SYCL queue
+    /// @param points Point Container
     /// @return KDTree shared_ptr
     static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
         const size_t n = points.size();
 
         KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
         if (n == 0) {
-            flatTree->tree_->resize(0);  // Ensure tree is empty for n=0
+            flatTree->tree_->resize(0);
             return flatTree;
         }
 
@@ -213,6 +216,37 @@ public:
 
             if (startIdx > endIdx || indices_size == 0) continue;
 
+            auto& node = (*flatTree->tree_)[nodeIdx];
+
+            // Check if this should be a leaf node
+            if (indices_size <= LEAF_THRESHOLD) {
+                // Create leaf nodes as a linked list
+                int32_t currentLeafIdx = nodeIdx;
+
+                for (size_t i = 0; i < indices_size; ++i) {
+                    const auto pointIdx = globalIndices[startIdx + i];
+                    auto& leafNode = (*flatTree->tree_)[currentLeafIdx];
+
+                    leafNode.pt = points[pointIdx];
+                    leafNode.idx = pointIdx;
+                    leafNode.is_leaf = 1;  // Mark as leaf node
+                    leafNode.axis = 0;     // Unused for leaf nodes
+                    leafNode.right = -1;   // Unused for leaf nodes
+
+                    // Set left to next leaf node index, or -1 for the last one
+                    if (i < indices_size - 1) {
+                        leafNode.left = nextNodeIdx;
+                        currentLeafIdx = nextNodeIdx++;
+                    } else {
+                        leafNode.left = -1;  // Last leaf node
+                    }
+                }
+                continue;
+            }
+
+            // Create internal node
+            node.is_leaf = 0;
+
             // Split axis
             const auto axis = find_axis_range(points, globalIndices, startIdx, endIdx);
             // const auto axis = find_axis_variance(points, subIndices, startIdx, endIdx);
@@ -232,8 +266,7 @@ public:
             // Get the median point
             const auto pointIdx = globalIndices[medianIdx];
 
-            // Initialize flat node
-            auto& node = (*flatTree->tree_)[nodeIdx];
+            // Initialize internal node
             node.pt = points[pointIdx];
             node.idx = pointIdx;
             node.axis = axis;
@@ -357,17 +390,15 @@ public:
                     // Calculate distance to current node
                     const PointType diff = eigen_utils::subtract<4, 1>(query, node.pt);
                     const float dist_sq = eigen_utils::dot<4>(diff, diff);
-                    found_num += 1;
-
-                    // Insert result
-                    insert_to_bestK<MAX_K>(bestK, dist_sq, node.idx, k, found_num);
+                    insert_to_bestK<MAX_K>(bestK, dist_sq, node.idx, k, ++found_num);
 
                     // Calculate distance along split axis
                     const float axisDistance = diff[node.axis];
 
                     // Determine nearer and further subtrees
-                    const auto nearerNode = (axisDistance <= 0) ? node.left : node.right;
-                    const auto furtherNode = (axisDistance <= 0) ? node.right : node.left;
+                    const bool is_leaf = (node.is_leaf != 0);
+                    const auto nearerNode = (is_leaf || axisDistance <= 0) ? node.left : node.right;
+                    const auto furtherNode = (is_leaf || axisDistance <= 0) ? node.right : node.left;
 
                     // Squared distance to splitting plane
                     const float splitDistSq = axisDistance * axisDistance;

@@ -56,8 +56,7 @@ protected:
     }
 
     // Helper function to generate random point clouds
-    void generateRandomPoints(std::shared_ptr<sycl_points::PointContainerCPU> points,
-                             size_t num_points, float range) {
+    void generateRandomPoints(std::shared_ptr<sycl_points::PointContainerCPU> points, size_t num_points, float range) {
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_real_distribution<float> dist(-range, range);
@@ -68,20 +67,21 @@ protected:
     }
 
     // Helper function to compare KNN search results
-    void compareKNNResults(const sycl_points::algorithms::knn_search::KNNResult& result1,
-                         const sycl_points::algorithms::knn_search::KNNResult& result2,
-                         size_t k, float epsilon = 1e-4f) {
-        ASSERT_EQ(result1.query_size, result2.query_size);
-        ASSERT_EQ(result1.k, result2.k);
+    void compareKNNResults(const sycl_points::algorithms::knn_search::KNNResult& kdtree_result,
+                           const sycl_points::algorithms::knn_search::KNNResult& bruteforce_result, size_t k,
+                           float epsilon = 1e-4f) {
+        ASSERT_EQ(kdtree_result.query_size, bruteforce_result.query_size);
+        ASSERT_EQ(kdtree_result.k, bruteforce_result.k);
 
-        for (size_t i = 0; i < result1.query_size; ++i) {
-            std::vector<std::pair<float, int32_t>> sorted_result1;
-            std::vector<std::pair<float, int32_t>> sorted_result2;
+        for (size_t i = 0; i < kdtree_result.query_size; ++i) {
+            std::vector<std::pair<float, int32_t>> sorted_kdtree;
+            std::vector<std::pair<float, int32_t>> sorted_bruteforce;
 
             // Create pairs of indices and distances
             for (size_t j = 0; j < k; ++j) {
-                sorted_result1.push_back({(*result1.distances)[i * k + j], (*result1.indices)[i * k + j]});
-                sorted_result2.push_back({(*result2.distances)[i * k + j], (*result2.indices)[i * k + j]});
+                sorted_kdtree.push_back({(*kdtree_result.distances)[i * k + j], (*kdtree_result.indices)[i * k + j]});
+                sorted_bruteforce.push_back(
+                    {(*bruteforce_result.distances)[i * k + j], (*bruteforce_result.indices)[i * k + j]});
             }
 
             // Sort by distance (and by index in case of equal distances)
@@ -92,22 +92,22 @@ protected:
                 return a.first < b.first;
             };
 
-            std::sort(sorted_result1.begin(), sorted_result1.end(), comparator);
-            std::sort(sorted_result2.begin(), sorted_result2.end(), comparator);
+            std::sort(sorted_kdtree.begin(), sorted_kdtree.end(), comparator);
+            std::sort(sorted_bruteforce.begin(), sorted_bruteforce.end(), comparator);
 
             // Compare results
             for (size_t j = 0; j < k; ++j) {
-                EXPECT_NEAR(sorted_result1[j].first, sorted_result2[j].first, epsilon)
+                EXPECT_NEAR(sorted_kdtree[j].first, sorted_bruteforce[j].first, epsilon)
                     << "Distance mismatch at query " << i << ", neighbor " << j;
 
                 // Check if indices match, or if the points have the same distance
-                bool valid_index = (sorted_result1[j].second == sorted_result2[j].second) ||
-                                  (std::abs(sorted_result1[j].first - sorted_result2[j].first) < epsilon);
+                bool valid_index = (sorted_kdtree[j].second == sorted_bruteforce[j].second) ||
+                                   (std::abs(sorted_kdtree[j].first - sorted_bruteforce[j].first) < epsilon);
 
-                EXPECT_TRUE(valid_index)
-                    << "Index mismatch at query " << i << ", neighbor " << j
-                    << ": " << sorted_result1[j].second << " vs " << sorted_result2[j].second
-                    << " (distances: " << sorted_result1[j].first << " vs " << sorted_result2[j].second << ")";
+                EXPECT_TRUE(valid_index) << "Index mismatch at query " << i << ", neighbor " << j << ": "
+                                         << sorted_kdtree[j].second << " vs " << sorted_bruteforce[j].second
+                                         << " (distances: " << sorted_kdtree[j].first << " vs "
+                                         << sorted_bruteforce[j].second << ")";
             }
         }
     }
@@ -144,8 +144,8 @@ TEST_F(KDTreeTest, CompareWithBruteForce) {
         auto kdtree_result = kdtree->knn_search(*query_cloud, k);
 
         // Run kNN search with brute force
-        auto bruteforce_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(
-            *queue, *query_cloud, *target_cloud, k);
+        auto bruteforce_result =
+            sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, *query_cloud, *target_cloud, k);
 
         // Compare results
         compareKNNResults(kdtree_result, bruteforce_result, k);
@@ -181,8 +181,8 @@ TEST_F(KDTreeTest, VariousSizePointClouds) {
             auto kdtree_result = test_kdtree->knn_search(test_query, k);
 
             // Run kNN search with brute force
-            auto bruteforce_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(
-                *queue, test_query, test_target, k);
+            auto bruteforce_result =
+                sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, test_query, test_target, k);
 
             // Compare results
             compareKNNResults(kdtree_result, bruteforce_result, k);
@@ -215,8 +215,8 @@ TEST_F(KDTreeTest, SinglePoint) {
     auto kdtree_result = single_kdtree->knn_search(single_query, k);
 
     // Run kNN search with brute force
-    auto bruteforce_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(
-        *queue, single_query, single_target, k);
+    auto bruteforce_result =
+        sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, single_query, single_target, k);
 
     // Compare results
     compareKNNResults(kdtree_result, bruteforce_result, k);
@@ -235,8 +235,8 @@ TEST_F(KDTreeTest, AccuracyWithDifferentK) {
         auto kdtree_result = kdtree->knn_search(*query_cloud, k);
 
         // Run kNN search with brute force
-        auto bruteforce_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(
-            *queue, *query_cloud, *target_cloud, k);
+        auto bruteforce_result =
+            sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, *query_cloud, *target_cloud, k);
 
         // Compare results
         compareKNNResults(kdtree_result, bruteforce_result, k);
@@ -248,8 +248,8 @@ TEST_F(KDTreeTest, AccuracyWithDifferentK) {
 // Performance test (large dataset)
 TEST_F(KDTreeTest, PerformanceLargeDataset) {
     // This test only measures time, without verifying accuracy for large datasets
-    const size_t large_target_size = 10000; // Adjust as needed
-    const size_t large_query_size = 100;
+    const size_t large_target_size = 10000;  // Adjust as needed
+    const size_t large_query_size = 10000;
     const size_t k = 10;
 
     // Generate large point clouds
@@ -278,14 +278,13 @@ TEST_F(KDTreeTest, PerformanceLargeDataset) {
 
     // Time measurement - Brute force search
     auto bf_start = std::chrono::high_resolution_clock::now();
-    auto bf_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(
-        *queue, large_query, large_target, k);
+    auto bf_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, large_query, large_target, k);
     auto bf_end = std::chrono::high_resolution_clock::now();
     auto bf_duration = std::chrono::duration_cast<std::chrono::milliseconds>(bf_end - bf_start);
 
     // Output results
-    std::cout << "Performance test with " << large_target_size << " target points, "
-              << large_query_size << " query points, k=" << k << ":\n";
+    std::cout << "Performance test with " << large_target_size << " target points, " << large_query_size
+              << " query points, k=" << k << ":\n";
     std::cout << "  KDTree build time: " << build_duration.count() << " ms\n";
     std::cout << "  KDTree search time: " << kdtree_duration.count() << " ms\n";
     std::cout << "  BruteForce search time: " << bf_duration.count() << " ms\n";
