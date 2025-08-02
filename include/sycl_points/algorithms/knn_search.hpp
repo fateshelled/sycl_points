@@ -180,12 +180,6 @@ public:
             return flatTree;
         }
 
-        // mem_advise to host
-        {
-            q.set_accessed_by_host(points.data(), n);
-            q.set_read_mostly(points.data(), n);
-        }
-
         // Estimate tree size with some margin
         const size_t estimatedSize = n * 2;
         flatTree->tree_->resize(estimatedSize);
@@ -285,15 +279,8 @@ public:
             }
         }
 
-        // mem_advise clear
-        {
-            q.clear_accessed_by_host(points.data(), n);
-            q.clear_read_mostly(points.data(), n);
-        }
-
         // Trim the tree to actual used size
         flatTree->tree_->resize(nextNodeIdx);
-        // q.set_read_mostly(flatTree->tree_->data(), flatTree->tree_->size());
         return flatTree;
     }
 
@@ -483,6 +470,18 @@ public:
         const PointCloudShared& queries, KNNResult& result,
         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         return knn_search_async<1, MAX_DEPTH>(queries, 1, result, depends);
+    }
+
+    /// @brief nearest neighbor search
+    /// @tparam MAX_DEPTH maximum of search depth
+    /// @param queries query points
+    /// @param result Search result
+    /// @param depends depends sycl events
+    /// @return knn search event
+    template <size_t MAX_DEPTH = 32>
+    void nearest_neighbor_search(const PointCloudShared& queries, KNNResult& result,
+                                 const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
+        nearest_neighbor_search_async<MAX_DEPTH>(queries, result, depends).wait();
     }
 };
 
