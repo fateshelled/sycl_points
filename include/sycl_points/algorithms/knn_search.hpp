@@ -41,9 +41,6 @@ struct KNNResult {
 
 namespace {
 
-// Leaf node threshold - keep small for better unrolling
-constexpr size_t LEAF_THRESHOLD = 4;
-
 // Node structure for optimized KD-Tree
 struct FlatKDNode {
     PointType pt;
@@ -202,6 +199,8 @@ public:
         taskStack.emplace_back((uint32_t)0, (uint32_t)0, (uint32_t)(n - 1));
 
         uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
+        std::string LEAF_THRESHOLD_ENV = getenv("LEAF_THRESHOLD");
+        const int32_t LEAF_THRESHOLD = std::stoi(LEAF_THRESHOLD_ENV);
 
         // Process until task stack is empty
         while (!taskStack.empty()) {
