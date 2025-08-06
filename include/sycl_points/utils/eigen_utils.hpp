@@ -30,10 +30,10 @@ constexpr float PI = 3.14159265358979323846f;
 template <size_t M, size_t N>
 SYCL_EXTERNAL Eigen::Matrix<float, M, N> add(const Eigen::Matrix<float, M, N>& A, const Eigen::Matrix<float, M, N>& B) {
     Eigen::Matrix<float, M, N> ret;
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             ret(i, j) = A(i, j) + B(i, j);
         }
     }
@@ -47,10 +47,10 @@ template <size_t M, size_t N>
 /// @param A Matrix to be modified (A += B)
 /// @param B Matrix to add
 SYCL_EXTERNAL void add_zerocopy(Eigen::Matrix<float, M, N>& A, const Eigen::Matrix<float, M, N>& B) {
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             A(i, j) += B(i, j);
         }
     }
@@ -66,10 +66,10 @@ template <size_t M, size_t N>
 SYCL_EXTERNAL Eigen::Matrix<float, M, N> subtract(const Eigen::Matrix<float, M, N>& A,
                                                   const Eigen::Matrix<float, M, N>& B) {
     Eigen::Matrix<float, M, N> ret;
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             ret(i, j) = A(i, j) - B(i, j);
         }
     }
@@ -87,10 +87,10 @@ template <size_t M, size_t K, size_t N>
 SYCL_EXTERNAL Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<float, M, K>& A,
                                                   const Eigen::Matrix<float, K, N>& B) {
     Eigen::Matrix<float, M, N> ret = Eigen::Matrix<float, M, N>::Zero();
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             float sum = 0.0f;
 #pragma unroll K
             for (size_t k = 0; k < K; ++k) {
@@ -134,10 +134,10 @@ SYCL_EXTERNAL Eigen::Vector<float, M> multiply(const Eigen::Matrix<float, M, N>&
 template <size_t M, size_t N>
 SYCL_EXTERNAL Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<float, M, N>& A, float scalar) {
     Eigen::Matrix<float, M, N> ret;
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             ret(i, j) = A(i, j) * scalar;
         }
     }
@@ -166,10 +166,10 @@ template <size_t M, size_t N>
 /// @param A Matrix to be modified  (A *= scalar)
 /// @param scalar Scalar value
 SYCL_EXTERNAL void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float scalar) {
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             A(i, j) *= scalar;
         }
     }
@@ -184,12 +184,11 @@ SYCL_EXTERNAL void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float scalar
 template <size_t M, size_t N>
 SYCL_EXTERNAL Eigen::Matrix<float, M, N> element_wise_multiply(const Eigen::Matrix<float, M, N>& A,
                                                                const Eigen::Matrix<float, M, N>& B) {
-    //
     Eigen::Matrix<float, M, N> ret;
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             ret(i, j) = A(i, j) * B(i, j);
         }
     }
@@ -209,9 +208,9 @@ template <size_t M>
 SYCL_EXTERNAL Eigen::Matrix<float, M, M> ensure_symmetric(const Eigen::Matrix<float, M, M>& A) {
     Eigen::Matrix<float, M, M> ret;
 #pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
+    for (size_t j = 0; j < M; ++j) {
 #pragma unroll M
-        for (size_t j = 0; j < M; ++j) {
+        for (size_t i = 0; i < M; ++i) {
             ret(i, j) = (i == j) ? A(i, j) : (A(i, j) + A(j, i)) * 0.5f;
         }
     }
@@ -226,10 +225,10 @@ SYCL_EXTERNAL Eigen::Matrix<float, M, M> ensure_symmetric(const Eigen::Matrix<fl
 template <size_t M, size_t N>
 SYCL_EXTERNAL Eigen::Matrix<float, N, M> transpose(const Eigen::Matrix<float, M, N>& A) {
     Eigen::Matrix<float, N, M> ret;
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             ret(j, i) = A(i, j);
         }
     }
@@ -326,10 +325,10 @@ template <size_t M, size_t N>
 /// @return Frobenius norm of A
 SYCL_EXTERNAL float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
     float ret = 0.0f;
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             // ret += A(i, j) * A(i, j);
             ret = sycl::fma(A(i, j), A(i, j), ret);
         }
@@ -564,10 +563,10 @@ template <size_t M, size_t N>
 /// @param src source matrix
 /// @param dst destination matrix
 SYCL_EXTERNAL void copy(const Eigen::Matrix<float, M, N>& src, Eigen::Matrix<float, M, N>& dst) {
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             dst(i, j) = src(i, j);
         }
     }
@@ -578,10 +577,10 @@ template <size_t M, size_t N>
 /// @param src source matrix
 /// @param dst destination matrix
 SYCL_EXTERNAL void swap(Eigen::Matrix<float, M, N>& src, Eigen::Matrix<float, M, N>& dst) {
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
 #pragma unroll N
-        for (size_t j = 0; j < N; ++j) {
+    for (size_t j = 0; j < N; ++j) {
+#pragma unroll M
+        for (size_t i = 0; i < M; ++i) {
             std::swap(src(i, j), dst(i, j));
         }
     }
@@ -636,9 +635,9 @@ inline Eigen::Vector4f from_sycl_vec(const sycl::float4& vec) { return {vec.x(),
 inline Eigen::Matrix4f from_sycl_vec(const std::array<sycl::float4, 4>& vecs) {
     Eigen::Matrix4f mat;
 #pragma unroll 4
-    for (size_t i = 0; i < 4; ++i) {
+    for (size_t j = 0; j < 4; ++j) {
 #pragma unroll 4
-        for (size_t j = 0; j < 4; ++j) {
+        for (size_t i = 0; i < 4; ++i) {
             mat(i, j) = vecs[i][j];
         }
     }
@@ -822,54 +821,6 @@ inline Eigen::Matrix<float, 6, 1> se3_log(const Eigen::Isometry3f& transform) {
 
     const Eigen::Matrix3f Omega = skew(omega);
     const Eigen::Matrix3f V_inv = Eigen::Matrix3f::Identity() - 0.5f * Omega + coeff * Omega * Omega;
-
-    result.tail<3>() = V_inv * t;
-
-    return result;
-}
-
-/// @brief Alternative SE3 logmap implementation using more stable numerics
-/// @param transform SE3 transformation matrix
-/// @return Twist vector [rx, ry, rz, tx, ty, tz]
-inline Eigen::Matrix<float, 6, 1> se3_log_stable(const Eigen::Isometry3f& transform) {
-    // Extract rotation and translation
-    const Eigen::Matrix3f R = transform.linear();
-    const Eigen::Vector3f t = transform.translation();
-
-    // Convert rotation matrix to quaternion and then to rotation vector
-    const Eigen::Quaternionf quat(R);
-    const Eigen::Vector3f omega = so3_log(quat);
-
-    const float theta = omega.norm();
-
-    Eigen::Matrix<float, 6, 1> result;
-    result.head<3>() = omega;
-
-    // Handle small angle case with higher order terms
-    if (theta < 1e-6f) {
-        // Taylor expansion: V^-1 ≈ I - 0.5*Omega + (1/12)*Omega^2 - (1/720)*Omega^4 + ...
-        const Eigen::Matrix3f Omega = skew(omega);
-        const Eigen::Matrix3f Omega2 = Omega * Omega;
-        const float theta2 = theta * theta;
-        const float theta4 = theta2 * theta2;
-
-        const Eigen::Matrix3f V_inv = Eigen::Matrix3f::Identity() - 0.5f * Omega + (1.0f / 12.0f) * Omega2 -
-                                      (1.0f / 720.0f) * theta4 * Eigen::Matrix3f::Identity();
-        result.tail<3>() = V_inv * t;
-        return result;
-    }
-
-    // Use more numerically stable formulation
-    const float half_theta = 0.5f * theta;
-    const float cot_half = 1.0f / sycl::tan(half_theta);
-
-    // V^-1 = 0.5 * theta * cot(theta/2) * I + 0.5 * skew(omega) +
-    //        (1/theta^2) * (1 - 0.5*theta*cot(theta/2)) * skew(omega)^2
-    const float a = 0.5f * theta * cot_half;
-    const float b = (1.0f - a) / (theta * theta);
-
-    const Eigen::Matrix3f Omega = skew(omega);
-    const Eigen::Matrix3f V_inv = a * Eigen::Matrix3f::Identity() + 0.5f * Omega + b * Omega * Omega;
 
     result.tail<3>() = V_inv * t;
 
