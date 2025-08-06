@@ -44,7 +44,6 @@ This project was developed with reference to small_gicp, a lightweight point clo
 note:
 - `level_zero` backend is not supported.
 - AMD CPU is worked fine but not optimized.
-- Intel Arc GPU is worked but too slow.
 
 ## Requirements
 
@@ -110,7 +109,7 @@ sudo apt install -y software-properties-common
 sudo add-apt-repository -y ppa:kobuk-team/intel-graphics
 
 # install compute related packages
-sudo apt install -y libze-intel-gpu1 libze1 intel-metrics-discovery intel-opencl-icd clinfo intel-gsc
+sudo apt install -y intel-metrics-discovery intel-opencl-icd clinfo intel-gsc
 
 # install media related packages
 sudo apt install -y intel-media-va-driver-non-free libmfx1 libmfx-gen1 libvpl2 libvpl-tools libva-glx2 va-driver-all vainfo
@@ -157,34 +156,34 @@ ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 
 #### example_registration
 
-- Intel Core Ultra 7 265K (Power Mode: Performance) + RTX 3060
+- Intel Core Ultra 7 265K (Power Mode: Performance) + RTX 5060 Ti
 
-| process                |        CPU |       iGPU |   RTX 3060 |
-| ---------------------- | ---------: | ---------: | ---------: |
-| 1. to PointCloudShared |  213.45 us |  983.95 us |  291.99 us |
-| 2. Downsampling        | 1139.45 us | 1621.40 us | 1829.96 us |
-| 3. KDTree build        |  924.04 us |  908.26 us |  932.47 us |
-| 4. KDTree kNN Search   | 1106.85 us | 1641.91 us |  954.67 us |
-| 5. compute Covariances |  103.35 us |  213.60 us |  121.15 us |
-| 6. compute Normals     |   86.73 us |  191.48 us |   62.35 us |
-| 7. update Covariance   |   80.93 us |  170.75 us |   19.07 us |
-| 8. Registration        |  876.55 us | 2591.27 us |  861.98 us |
-| Total                  | 4531.35 us | 8322.62 us | 5073.64 us |
+| process                |        CPU |       iGPU | RTX 5060 Ti |
+| ---------------------- | ---------: | ---------: | ----------: |
+| 1. to PointCloudShared |  217.30 us |  969.01 us |   182.22 us |
+| 2. Downsampling        | 1253.82 us | 1617.40 us |  1416.13 us |
+| 3. KDTree build        |  680.91 us |  697.72 us |   703.85 us |
+| 4. KDTree kNN Search   | 1324.21 us | 1670.28 us |  1052.88 us |
+| 5. compute Covariances |  105.07 us |  213.71 us |    22.50 us |
+| 6. compute Normals     |  104.69 us |  183.16 us |    20.86 us |
+| 7. update Covariance   |   98.06 us |  180.06 us |    16.75 us |
+| 8. Registration        | 1008.41 us | 2640.56 us |   639.36 us |
+| Total                  | 4792.47 us | 8171.90 us |  4054.55 us |
 
 
 - Intel Core i5 12600H (Power Mode: Performance)
 
 | process                |        CPU |       iGPU |
 | ---------------------- | ---------: | ---------: |
-| 1. to PointCloudShared |  381.53 us |  744.67 us |
-| 2. Downsampling        | 1959.32 us | 1567.27 us |
-| 3. KDTree build        | 1176.00 us | 1087.54 us |
-| 4. KDTree kNN Search   | 2642.29 us | 1827.11 us |
-| 5. compute Covariances |  189.26 us |  159.68 us |
-| 6. compute Normals     |  152.16 us |  141.44 us |
-| 7. update Covariance   |  121.76 us |  119.87 us |
-| 8. Registration        | 1749.61 us | 2136.16 us |
-| Total                  | 8371.93 us | 7783.74 us |
+| 1. to PointCloudShared |  366.30 us |  693.97 us |
+| 2. Downsampling        | 2263.52 us | 1508.10 us |
+| 3. KDTree build        |  875.13 us |  765.88 us |
+| 4. KDTree kNN Search   | 3543.59 us | 1908.59 us |
+| 5. compute Covariances |  198.80 us |  155.44 us |
+| 6. compute Normals     |  153.70 us |  136.87 us |
+| 7. update Covariance   |  122.71 us |  115.23 us |
+| 8. Registration        | 2336.41 us | 2388.69 us |
+| Total                  | 9860.16 us | 7672.77 us |
 
 #### device_query
 
@@ -198,12 +197,12 @@ Platform: Intel(R) OpenCL
         VendorID: 32902
         Backend name: opencl
         Backend version: 3.0
-        Driver version: 2025.19.4.0.18_160000.xmain-hotfix
-        Global Memory Size: 30.7247 GB
+        Driver version: 2025.20.6.0.04_224945
+        Global Memory Size: 30.7256 GB
         Local Memory Size: 256 KB
         Global Memory Cache Size: 3 MB
         Global Memory Cache Line Size: 64 byte
-        Max Memory Allocation Size: 15.3623 GB
+        Max Memory Allocation Size: 15.3628 GB
         Max Work Group Size: 8192
         Max Work Item Dimensions: 3
         Max Work Item Sizes: [1, 1, 1]
@@ -212,6 +211,7 @@ Platform: Intel(R) OpenCL
         Max compute units: 20
         Max Clock Frequency: 0 GHz
         Double precision support: true
+        Atomic 64bit support: true
         USM host allocations: true
         USM device allocations: true
         USM shared allocations: true
@@ -225,8 +225,8 @@ Platform: Intel(R) OpenCL Graphics
         VendorID: 32902
         Backend name: opencl
         Backend version: 3.0
-        Driver version: 25.13.33276
-        Global Memory Size: 28.4417 GB
+        Driver version: 25.27.34303
+        Global Memory Size: 28.4426 GB
         Local Memory Size: 64 KB
         Global Memory Cache Size: 4 MB
         Global Memory Cache Line Size: 64 byte
@@ -239,6 +239,7 @@ Platform: Intel(R) OpenCL Graphics
         Max compute units: 64
         Max Clock Frequency: 2 GHz
         Double precision support: true
+        Atomic 64bit support: true
         USM host allocations: true
         USM device allocations: true
         USM shared allocations: true
@@ -246,30 +247,31 @@ Platform: Intel(R) OpenCL Graphics
         Available: true
 ```
 
-- RTX 3060
+- RTX 5060 Ti
 
 ```bash
 Platform: NVIDIA CUDA BACKEND
-        Device: NVIDIA GeForce RTX 3060
+        Device: NVIDIA GeForce RTX 5060 Ti
         type: GPU
         Vendor: NVIDIA Corporation
         VendorID: 4318
         Backend name: ext_oneapi_cuda
-        Backend version: 8.6
-        Driver version: CUDA 12.9
-        Global Memory Size: 11.6307 GB
+        Backend version: 12.0
+        Driver version: CUDA 12.8
+        Global Memory Size: 15.4649 GB
         Local Memory Size: 99 KB
-        Global Memory Cache Size: 2.25 MB
+        Global Memory Cache Size: 32 MB
         Global Memory Cache Line Size: 128 byte
-        Max Memory Allocation Size: 11.6307 GB
+        Max Memory Allocation Size: 15.4649 GB
         Max Work Group Size: 1024
         Max Work Item Dimensions: 3
         Max Work Item Sizes: [1, 1, 1]
         Max Sub Groups num: 32
         Sub Group Sizes: [32]
-        Max compute units: 28
-        Max Clock Frequency: 1.807 GHz
+        Max compute units: 36
+        Max Clock Frequency: 2.692 GHz
         Double precision support: true
+        Atomic 64bit support: true
         USM host allocations: true
         USM device allocations: true
         USM shared allocations: true
@@ -287,7 +289,7 @@ Platform: Intel(R) OpenCL
         VendorID: 32902
         Backend name: opencl
         Backend version: 3.0
-        Driver version: 2025.19.4.0.18_160000.xmain-hotfix
+        Driver version: 2025.20.6.0.04_224945
         Global Memory Size: 31.0784 GB
         Local Memory Size: 256 KB
         Global Memory Cache Size: 1.25 MB
@@ -301,6 +303,7 @@ Platform: Intel(R) OpenCL
         Max compute units: 16
         Max Clock Frequency: 0 GHz
         Double precision support: true
+        Atomic 64bit support: true
         USM host allocations: true
         USM device allocations: true
         USM shared allocations: true
@@ -314,7 +317,7 @@ Platform: Intel(R) OpenCL Graphics
         VendorID: 32902
         Backend name: opencl
         Backend version: 3.0
-        Driver version: 25.18.33578
+        Driver version: 25.27.34303
         Global Memory Size: 28.7742 GB
         Local Memory Size: 64 KB
         Global Memory Cache Size: 0.46875 MB
@@ -328,13 +331,13 @@ Platform: Intel(R) OpenCL Graphics
         Max compute units: 80
         Max Clock Frequency: 1.4 GHz
         Double precision support: false
+        Atomic 64bit support: true
         USM host allocations: true
         USM device allocations: true
         USM shared allocations: true
         USM atomic shared allocations: false
         Available: true
-
 ```
 
 ## License
-This library is released under Apache License
+This library is released under Apache License 2.0
