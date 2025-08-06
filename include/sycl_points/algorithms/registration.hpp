@@ -176,8 +176,8 @@ public:
         const size_t inlier_threshold = this->params_.inlier_ratio * N;
 
         sycl_utils::events transform_events;
+        float lambda = this->params_.lambda;
         for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
-            const float lambda = this->params_.lambda;
             prev_T = result.T;
 
             // Nearest neighbor search on device
@@ -643,7 +643,7 @@ private:
 
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
                                       float max_correspondence_distance_2, RegistrationResult& result,
-                                      const LinearlizedResult& linearlized_result, float lambda, size_t iter) {
+                                      const LinearlizedResult& linearlized_result, float& lambda, size_t iter) {
         bool updated = false;
         float last_error = std::numeric_limits<float>::max();
 
