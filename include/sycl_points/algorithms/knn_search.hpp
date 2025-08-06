@@ -170,8 +170,10 @@ public:
     /// @brief Build KDTree
     /// @param q SYCL queue
     /// @param points Point Container
+    /// @param leaf_threshold The maximum number of points in a leaf node.
     /// @return KDTree shared_ptr
-    static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
+    static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points,
+                             size_t leaf_threshold = 16) {
         const size_t n = points.size();
 
         KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
@@ -193,8 +195,6 @@ public:
         taskStack.emplace_back((uint32_t)0, (uint32_t)0, (uint32_t)(n - 1));
 
         uint32_t nextNodeIdx = 1;  // Node 0 is root, subsequent nodes start from 1
-        std::string LEAF_THRESHOLD_ENV = getenv("LEAF_THRESHOLD");
-        const int32_t LEAF_THRESHOLD = std::stoi(LEAF_THRESHOLD_ENV);
 
         // Process until task stack is empty
         while (!taskStack.empty()) {
@@ -212,7 +212,7 @@ public:
             auto& node = (*flatTree->tree_)[nodeIdx];
 
             // Check if this should be a leaf node
-            if (indices_size <= LEAF_THRESHOLD) {
+            if (indices_size <= leaf_threshold) {
                 // Create leaf nodes as a linked list
                 int32_t currentLeafIdx = nodeIdx;
 
@@ -287,9 +287,11 @@ public:
     /// @brief Build KDTree
     /// @param queue SYCL queue
     /// @param cloud Point Cloud
+    /// @param leaf_threshold The maximum number of points in a leaf node.
     /// @return KDTree shared_ptr
-    static KDTree::Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud) {
-        return KDTree::build(queue, *cloud.points);
+    static KDTree::Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud,
+                             size_t leaf_threshold = 16) {
+        return KDTree::build(queue, *cloud.points, leaf_threshold);
     }
 
     /// @brief async kNN search
