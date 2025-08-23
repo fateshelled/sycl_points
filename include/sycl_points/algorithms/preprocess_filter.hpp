@@ -67,8 +67,7 @@ public:
         size_t new_size = 0;
         for (size_t i = 0; i < N; ++i) {
             if (flags[i] == INCLUDE_FLAG) {
-                data[new_size] = data[i];
-                ++new_size;
+                data[new_size++] = data[i];
             }
         }
         // mem_advise clear
@@ -409,6 +408,9 @@ private:
         }
         if (data.has_normal()) {
             this->filter_->filter_by_flags(*data.normals, *this->flags_);
+        }
+        if (data.has_rgb()) {
+            this->filter_->filter_by_flags(*data.rgb, *this->flags_);
         }
         this->filter_->filter_by_flags(*data.points, *this->flags_);
     }

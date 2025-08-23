@@ -37,16 +37,8 @@ public:
             result.resize(0);
             return;
         }
-
-        if (this->bit_ptr_->size() < N) {
-            this->bit_ptr_->resize(N);
-        }
-
-        // compute bit on device
-        this->compute_voxel_bit(points);
-
         // compute Voxel map on host
-        const auto voxel_map = this->compute_voxel_map(points);
+        const auto voxel_map = this->compute_voxel_bit_and_voxel_map(points);
 
         // Voxel map to point cloud on host
         this->voxel_map_to_cloud(voxel_map, result);
@@ -56,7 +48,23 @@ public:
     /// @param points Point Cloud
     /// @param result Voxel downsampled
     void downsampling(const PointCloudShared& cloud, PointCloudShared& result) {
-        this->downsampling(*cloud.points, *result.points);
+        const size_t N = cloud.size();
+        if (N == 0) {
+            result.resize_points(0);
+            return;
+        }
+        // compute Voxel map on host
+        const auto voxel_map = this->compute_voxel_bit_and_voxel_map(*cloud.points);
+
+        if (cloud.has_rgb()) {
+            // compute RGB map on host
+            const auto rgb_map = this->compute_voxel_map(*cloud.rgb);
+            // Voxel map to point cloud on host
+            this->voxel_map_to_cloud(voxel_map, rgb_map, result);
+        } else {
+            // Voxel map to point cloud on host
+            this->voxel_map_to_cloud(voxel_map, *result.points);
+        }
     }
 
 private:
@@ -98,35 +106,49 @@ private:
         }
     }
 
-    std::unordered_map<uint64_t, PointType> compute_voxel_map(const PointContainerShared& points) const {
-        const size_t N = points.size();
+    template <typename T, size_t AllocSize = 0>
+    std::unordered_map<uint64_t, T> compute_voxel_map(const shared_vector<T, AllocSize>& data) const {
+        const size_t N = data.size();
 
         // mem_advise set to host
         {
             this->queue_.set_accessed_by_host(this->bit_ptr_->data(), N);
-            this->queue_.set_accessed_by_host(points.data(), N);
+            this->queue_.set_accessed_by_host(data.data(), N);
         }
 
-        std::unordered_map<uint64_t, PointType> voxel_map;
+        std::unordered_map<uint64_t, T> voxel_map;
         {
             for (size_t i = 0; i < N; ++i) {
                 const auto voxel_bit = (*this->bit_ptr_)[i];
                 if (voxel_bit == voxel_hash_map::VoxelConstants::invalid_coord) continue;
                 const auto it = voxel_map.find(voxel_bit);
                 if (it == voxel_map.end()) {
-                    voxel_map[voxel_bit] = points[i];
+                    voxel_map[voxel_bit] = data[i];
                 } else {
-                    it->second += points[i];
+                    it->second += data[i];
                 }
             }
         }
         // mem_advise clear
         {
             this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), N);
-            this->queue_.clear_accessed_by_host(points.data(), N);
+            this->queue_.clear_accessed_by_host(data.data(), N);
         }
 
         return voxel_map;
+    }
+
+    std::unordered_map<uint64_t, PointType> compute_voxel_bit_and_voxel_map(const PointContainerShared& points) {
+        const size_t N = points.size();
+        if (this->bit_ptr_->size() < N) {
+            this->bit_ptr_->resize(N);
+        }
+
+        // compute bit on device
+        this->compute_voxel_bit(points);
+
+        // compute Voxel map on host
+        return this->compute_voxel_map(points);
     }
 
     void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
@@ -143,6 +165,29 @@ private:
         }
         // mem_advise clear
         this->queue_.clear_accessed_by_host(result.data(), N);
+    }
+
+    void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
+                            const std::unordered_map<uint64_t, PointType>& voxel_map_rgb,
+                            PointCloudShared& result) const {
+        const size_t N = voxel_map.size();
+        result.clear();
+        result.resize_points(N);
+        result.resize_rgb(N);
+        // mem_advise set to host
+        this->queue_.set_accessed_by_host(result.points_ptr(), N);
+        this->queue_.set_accessed_by_host(result.rgb_ptr(), N);
+
+        // to point cloud
+        size_t idx = 0;
+        for (const auto& [voxel_idx, point] : voxel_map) {
+            (*result.points)[idx] = point / point.w();
+            (*result.rgb)[idx] = voxel_map_rgb.at(voxel_idx) / point.w();
+            ++idx;
+        }
+        // mem_advise clear
+        this->queue_.clear_accessed_by_host(result.points_ptr(), N);
+        this->queue_.clear_accessed_by_host(result.rgb_ptr(), N);
     }
 };
 
