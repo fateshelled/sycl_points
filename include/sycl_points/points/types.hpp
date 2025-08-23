@@ -9,6 +9,9 @@ namespace sycl_points {
 using PointType = Eigen::Vector4f;
 using Covariance = Eigen::Matrix4f;
 using Normal = Eigen::Vector4f;
+/// @brief RGB color with 4 channels (RGBA).
+/// @note data is in range [0.0, 1.0].
+/// @note x: R, y: G, z: B, w: A
 using RGBType = Eigen::Vector4f;
 using TransformMatrix = Eigen::Matrix4f;
 

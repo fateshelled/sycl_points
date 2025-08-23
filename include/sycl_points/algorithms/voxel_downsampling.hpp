@@ -168,7 +168,7 @@ private:
     }
 
     void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
-                            const std::unordered_map<uint64_t, PointType>& voxel_map_rgb,
+                            const std::unordered_map<uint64_t, RGBType>& voxel_map_rgb,
                             PointCloudShared& result) const {
         const size_t N = voxel_map.size();
         result.clear();
