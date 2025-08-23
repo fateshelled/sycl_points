@@ -15,20 +15,25 @@ struct PointCloudCPU {
     std::shared_ptr<CovarianceContainerCPU> covs = nullptr;
     /// @brief normal container
     std::shared_ptr<NormalContainerCPU> normals = nullptr;
+    /// @brief rgb container
+    std::shared_ptr<RGBContainerCPU> rgb = nullptr;
 
     /// @brief Constructor
     PointCloudCPU() {
         this->points = std::make_shared<PointContainerCPU>();
         this->covs = std::make_shared<CovarianceContainerCPU>();
         this->normals = std::make_shared<NormalContainerCPU>();
+        this->rgb = std::make_shared<RGBContainerCPU>();
     }
 
     /// @brief number of point
     size_t size() const { return this->points->size(); }
-    /// @brief has covariance or not
-    bool has_cov() const { return this->covs != nullptr && this->covs->size() > 0; }
-    /// @brief has normal or not
-    bool has_normal() const { return this->normals != nullptr && this->normals->size() > 0; }
+    /// @brief has covariance field or not
+    bool has_cov() const { return this->covs != nullptr && this->covs->size() == this->points->size(); }
+    /// @brief has normal field or not
+    bool has_normal() const { return this->normals != nullptr && this->normals->size() == this->points->size(); }
+    /// @brief has RGB field or not
+    bool has_rgb() const { return this->rgb != nullptr && this->rgb->size() == this->points->size(); }
 };
 
 /// @brief Shared memory point cloud class with point and covariance container.
@@ -44,6 +49,8 @@ struct PointCloudShared {
     std::shared_ptr<CovarianceContainerShared> covs = nullptr;
     /// @brief normal container
     std::shared_ptr<NormalContainerShared> normals = nullptr;
+    /// @brief rgb container
+    std::shared_ptr<RGBContainerShared> rgb = nullptr;
 
     /// @brief Constructor
     /// @param queue SYCL queue
@@ -51,6 +58,7 @@ struct PointCloudShared {
         this->points = std::make_shared<PointContainerShared>(0, *this->queue.ptr);
         this->covs = std::make_shared<CovarianceContainerShared>(0, *this->queue.ptr);
         this->normals = std::make_shared<NormalContainerShared>(0, *this->queue.ptr);
+        this->rgb = std::make_shared<RGBContainerShared>(0, *this->queue.ptr);
     }
 
     /// @brief Copy from CPU point cloud
@@ -88,6 +96,17 @@ struct PointCloudShared {
             this->normals = std::make_shared<NormalContainerShared>(0, *this->queue.ptr);
         }
 
+        if (cpu.has_rgb()) {
+            this->rgb = std::make_shared<RGBContainerShared>(N, *this->queue.ptr);
+            if (is_cpu) {
+                copy_events += this->queue.ptr->memcpy(this->rgb->data(), cpu.rgb->data(), N * sizeof(RGBType));
+            } else {
+                for (size_t i = 0; i < N; ++i) {
+                    this->rgb->data()[i] = cpu.rgb->data()[i];
+                }
+            }
+        }
+
         this->points = std::make_shared<PointContainerShared>(N, *this->queue.ptr);
         if (N > 0) {
             if (is_cpu) {
@@ -120,6 +139,12 @@ struct PointCloudShared {
         } else {
             this->normals = std::make_shared<NormalContainerShared>(0, *this->queue.ptr);
         }
+        if (other.has_rgb()) {
+            this->rgb = std::make_shared<RGBContainerShared>(N, *this->queue.ptr);
+            copy_events += this->queue.ptr->memcpy(this->rgb->data(), other.rgb->data(), N * sizeof(RGBType));
+        } else {
+            this->rgb = std::make_shared<RGBContainerShared>(0, *this->queue.ptr);
+        }
 
         this->points = std::make_shared<PointContainerShared>(N, *this->queue.ptr);
         if (N > 0) {
@@ -134,16 +159,20 @@ struct PointCloudShared {
 
     /// @brief number of points
     size_t size() const { return this->points->size(); }
-    /// @brief has covariance or not
+    /// @brief has covariance field or not
     bool has_cov() const { return this->covs->size() > 0 && this->covs->size() == this->points->size(); }
-    /// @brief has normal or not
+    /// @brief has normal field or not
     bool has_normal() const { return this->normals->size() > 0 && this->normals->size() == this->points->size(); }
+    /// @brief has RGB field or not
+    bool has_rgb() const { return this->rgb->size() > 0 && this->rgb->size() == this->points->size(); }
     /// @brief pointer of points
     PointType* points_ptr() const { return this->points->data(); }
     /// @brief pointer of covariances
     Covariance* covs_ptr() const { return this->covs->data(); }
     /// @brief pointer of normals
     Normal* normals_ptr() const { return this->normals->data(); }
+    /// @brief pointer of RGB
+    RGBType* rgb_ptr() const { return this->rgb->data(); }
 
     /// @brief resize point container
     /// @param N size
@@ -154,6 +183,9 @@ struct PointCloudShared {
     /// @brief resize normal container
     /// @param N size
     void resize_normals(size_t N) const { this->normals->resize(N); }
+    /// @brief resize RGB container
+    /// @param N size
+    void resize_rgb(size_t N) const { this->rgb->resize(N); }
 
     /// @brief reserve point container
     /// @param N size
@@ -164,12 +196,16 @@ struct PointCloudShared {
     /// @brief reserve normal container
     /// @param N size
     void reserve_normals(size_t N) const { this->normals->reserve(N); }
+    /// @brief reserve RGB container
+    /// @param N size
+    void reserve_rgb(size_t N) const { this->rgb->reserve(N); }
 
     /// @brief Erase all points and covariances data.
     void clear() {
         this->points->clear();
         this->covs->clear();
         this->normals->clear();
+        this->rgb->clear();
     }
 
     void extend(const PointCloudShared& other) {
@@ -182,6 +218,9 @@ struct PointCloudShared {
         if (this->has_normal() && other.has_normal()) {
             this->normals->insert(this->normals->end(), other.normals->begin(), other.normals->end());
         }
+        if (this->has_rgb() && other.has_rgb()) {
+            this->rgb->insert(this->rgb->end(), other.rgb->begin(), other.rgb->end());
+        }
         this->points->insert(this->points->end(), other.points->begin(), other.points->end());
     }
 
@@ -191,6 +230,9 @@ struct PointCloudShared {
         }
         if (this->has_normal()) {
             this->normals->erase(this->normals->begin() + start_idx, this->normals->begin() + end_idx);
+        }
+        if (this->has_rgb()) {
+            this->rgb->erase(this->rgb->begin() + start_idx, this->rgb->begin() + end_idx);
         }
         this->points->erase(this->points->begin() + start_idx, this->points->begin() + end_idx);
     }

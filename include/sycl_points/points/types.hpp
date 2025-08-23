@@ -9,11 +9,13 @@ namespace sycl_points {
 using PointType = Eigen::Vector4f;
 using Covariance = Eigen::Matrix4f;
 using Normal = Eigen::Vector4f;
+using RGBType = Eigen::Vector4f;
 using TransformMatrix = Eigen::Matrix4f;
 
 constexpr size_t PointAlignment = 16;
 constexpr size_t CovarianceAlignment = 64;
 constexpr size_t NormalAlignment = 16;
+constexpr size_t RGBAlignment = 16;
 
 // Vector of point on CPU. Accessible from CPU process only.
 using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
@@ -29,5 +31,10 @@ using CovarianceContainerShared = shared_vector<Covariance, CovarianceAlignment>
 using NormalContainerCPU = std::vector<Normal, Eigen::aligned_allocator<Normal>>;
 // Vector of normal on shared memory
 using NormalContainerShared = shared_vector<Normal, NormalAlignment>;
+
+// Vector of RGB on CPU
+using RGBContainerCPU = std::vector<RGBType, Eigen::aligned_allocator<RGBType>>;
+// Vector of RGB on shared memory
+using RGBContainerShared = shared_vector<RGBType, RGBAlignment>;
 
 }  // namespace sycl_points
