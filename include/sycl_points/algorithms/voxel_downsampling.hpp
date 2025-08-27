@@ -19,14 +19,17 @@ public:
         : queue_(queue), voxel_size_(voxel_size) {
         this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, shared_allocator<uint64_t>(*this->queue_.ptr));
         this->voxel_size_inv_ = 1.0f / this->voxel_size_;
+        this->min_voxel_count_ = 1;
     }
 
     /// @brief Set voxel size
     /// @param voxel_size voxel size
-    void set_voxel_size(const float voxel_size) { voxel_size_ = voxel_size; }
+    void set_voxel_size(const float voxel_size) { this->voxel_size_ = voxel_size; }
     /// @brief Get voxel size
     /// @param voxel_size voxel size
-    float get_voxel_size() const { return voxel_size_; }
+    float get_voxel_size() const { return this->voxel_size_; }
+
+    void set_min_voxel_count(const size_t min_voxel_count) { this->min_voxel_count_ = min_voxel_count; }
 
     /// @brief Voxel downsampling
     /// @param points Point Cloud
@@ -71,6 +74,7 @@ private:
     sycl_points::sycl_utils::DeviceQueue queue_;
     float voxel_size_;
     float voxel_size_inv_;
+    size_t min_voxel_count_;
 
     shared_vector_ptr<uint64_t> bit_ptr_ = nullptr;
 
@@ -159,9 +163,12 @@ private:
         // mem_advise set to host
         this->queue_.set_accessed_by_host(result.data(), N);
         // to point cloud
+        const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
         size_t idx = 0;
         for (const auto& [_, point] : voxel_map) {
-            result[idx++] = point / point.w();
+            if (point.w() >= min_voxel_count) {
+                result[idx++] = point / point.w();
+            }
         }
         // mem_advise clear
         this->queue_.clear_accessed_by_host(result.data(), N);
@@ -179,11 +186,14 @@ private:
         this->queue_.set_accessed_by_host(result.rgb_ptr(), N);
 
         // to point cloud
+        const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
         size_t idx = 0;
         for (const auto& [voxel_idx, point] : voxel_map) {
-            (*result.points)[idx] = point / point.w();
-            (*result.rgb)[idx] = voxel_map_rgb.at(voxel_idx) / point.w();
-            ++idx;
+            if (point.w() >= min_voxel_count) {
+                (*result.points)[idx] = point / point.w();
+                (*result.rgb)[idx] = voxel_map_rgb.at(voxel_idx) / point.w();
+                ++idx;
+            }
         }
         // mem_advise clear
         this->queue_.clear_accessed_by_host(result.points_ptr(), N);

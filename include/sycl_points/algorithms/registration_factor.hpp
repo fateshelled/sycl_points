@@ -93,7 +93,7 @@ SYCL_EXTERNAL inline float calculate_error_point_to_point(const std::array<sycl:
     return 0.5f * eigen_utils::frobenius_norm_squared<4>(residual);
 }
 
-/// @brief Iterative Closest Point (ICP Point to PLane)
+/// @brief Iterative Closest Point (ICP Point to Plane)
 /// @param T transform matrix
 /// @param source_pt Source Point
 /// @param target_pt Target point
