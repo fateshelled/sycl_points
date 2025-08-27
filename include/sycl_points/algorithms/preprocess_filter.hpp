@@ -39,6 +39,8 @@ SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float m
 /// @brief Filter class for processing data based on flags
 class FilterByFlags {
 public:
+    using Ptr = std::shared_ptr<FilterByFlags>;
+
     /// @brief Constructor
     /// @param queue SYCL queue
     FilterByFlags(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
@@ -382,7 +384,7 @@ public:
 
 private:
     sycl_utils::DeviceQueue queue_;
-    std::shared_ptr<FilterByFlags> filter_;
+    FilterByFlags::Ptr filter_;
     shared_vector_ptr<uint8_t> flags_;
     shared_vector_ptr<float> dist_sq_ = nullptr;  // for FPS
 
