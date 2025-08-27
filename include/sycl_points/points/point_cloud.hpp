@@ -105,6 +105,8 @@ struct PointCloudShared {
                     this->rgb->data()[i] = cpu.rgb->data()[i];
                 }
             }
+        } else {
+            this->rgb = std::make_shared<RGBContainerShared>(0, *this->queue.ptr);
         }
 
         this->points = std::make_shared<PointContainerShared>(N, *this->queue.ptr);
