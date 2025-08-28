@@ -1,7 +1,7 @@
 #pragma once
 
+#include <sycl_points/algorithms/filter_by_flags.hpp>
 #include <sycl_points/algorithms/knn_search.hpp>
-#include <sycl_points/algorithms/preprocess_filter.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
 
@@ -27,7 +27,8 @@ public:
     void statistical(PointCloudShared& cloud, const knn_search::KDTree& tree, size_t mean_k, float stddev_mul_thresh) {
         const size_t N = cloud.size();
         if (N < mean_k) {
-            std::cerr << "Not enough points in the cloud [ points = " << N << ", mean_k = " << mean_k << " ]" << std::endl;
+            std::cerr << "Not enough points in the cloud [ points = " << N << ", mean_k = " << mean_k << " ]"
+                      << std::endl;
             return;
         }
         auto knn_event = tree.knn_search_async(cloud, mean_k, *this->neighbors_);
@@ -130,7 +131,8 @@ public:
     void radius(PointCloudShared& cloud, const knn_search::KDTree& tree, size_t min_k, float radius) {
         const size_t N = cloud.size();
         if (N < min_k) {
-            std::cerr << "Not enough points in the cloud [ points = " << N << ", min_k = " << min_k << " ]" << std::endl;
+            std::cerr << "Not enough points in the cloud [ points = " << N << ", min_k = " << min_k << " ]"
+                      << std::endl;
             return;
         }
         auto knn_event = tree.knn_search_async(cloud, min_k, *this->neighbors_);
