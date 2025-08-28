@@ -342,8 +342,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
     const auto weight = kernel::compute_robust_weight<LossType>(residual_norm, robust_scale);
     result.error = kernel::compute_robust_error<LossType>(residual_norm, robust_scale);
 
-    eigen_utils::multiply_zerocopy<6, 1>(result.b, weight);
-    eigen_utils::multiply_zerocopy<6, 6>(result.H, weight);
+    eigen_utils::multiply_inplace<6, 1>(result.b, weight);
+    eigen_utils::multiply_inplace<6, 6>(result.H, weight);
 
     return result;
 }

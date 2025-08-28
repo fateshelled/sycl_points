@@ -93,13 +93,13 @@ TEST_F(EigenUtilsTest, add) {
     expectVectorNear(expected4, result4);
 }
 
-TEST_F(EigenUtilsTest, add_zerocopy) {
+TEST_F(EigenUtilsTest, add_inplace) {
     // 3x3
     Eigen::Matrix3f expected3x3;
     expected3x3 << 10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f;
 
     Eigen::Matrix3f result3x3 = A3x3;
-    add_zerocopy<3, 3>(result3x3, B3x3);
+    add_inplace<3, 3>(result3x3, B3x3);
     expectMatrixNear(expected3x3, result3x3);
 }
 
@@ -133,11 +133,11 @@ TEST_F(EigenUtilsTest, multiply) {
     expectMatrixNear(C6x4, result6x4);
 }
 
-TEST_F(EigenUtilsTest, multiply_zerocopy) {
+TEST_F(EigenUtilsTest, multiply_inplace) {
     const float scalar = 2.5f;
     const Eigen::Matrix3f expected = A3x3 * scalar;
     Eigen::Matrix3f result = A3x3;
-    multiply_zerocopy<3, 3>(result, scalar);
+    multiply_inplace<3, 3>(result, scalar);
     expectMatrixNear(expected, result);
 }
 

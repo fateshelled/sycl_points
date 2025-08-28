@@ -19,10 +19,10 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
 
     for (size_t j = 0; j < k_correspondences; ++j) {
         const auto pt = point_ptr[index_ptr[i * k_correspondences + j]];
-        eigen_utils::add_zerocopy<4, 1>(sum_points, pt);
+        eigen_utils::add_inplace<4, 1>(sum_points, pt);
 
         const auto outer = eigen_utils::block3x3(eigen_utils::outer(pt, pt));
-        eigen_utils::add_zerocopy<3, 3>(sum_outer, outer);
+        eigen_utils::add_inplace<3, 3>(sum_outer, outer);
     }
 
     const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / k_correspondences);

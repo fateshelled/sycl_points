@@ -46,7 +46,7 @@ template <size_t M, size_t N>
 /// @tparam N number of cols
 /// @param A Matrix to be modified (A += B)
 /// @param B Matrix to add
-SYCL_EXTERNAL void add_zerocopy(Eigen::Matrix<float, M, N>& A, const Eigen::Matrix<float, M, N>& B) {
+SYCL_EXTERNAL void add_inplace(Eigen::Matrix<float, M, N>& A, const Eigen::Matrix<float, M, N>& B) {
 #pragma unroll N
     for (size_t j = 0; j < N; ++j) {
 #pragma unroll M
@@ -89,15 +89,14 @@ SYCL_EXTERNAL Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<float, M, 
     Eigen::Matrix<float, M, N> ret = Eigen::Matrix<float, M, N>::Zero();
 #pragma unroll N
     for (size_t j = 0; j < N; ++j) {
-#pragma unroll M
-        for (size_t i = 0; i < M; ++i) {
-            float sum = 0.0f;
 #pragma unroll K
-            for (size_t k = 0; k < K; ++k) {
+        for (size_t k = 0; k < K; ++k) {
+            const auto b_kj = B(k, j);
+#pragma unroll M
+            for (size_t i = 0; i < M; ++i) {
                 // ret(i, j) += A(i, k) * B(k, j);
-                sum = sycl::fma(A(i, k), B(k, j), sum);
+                ret(i, j) = sycl::fma(A(i, k), b_kj, ret(i, j));
             }
-            ret(i, j) = sum;
         }
     }
     return ret;
@@ -165,7 +164,7 @@ template <size_t M, size_t N>
 /// @tparam N Number of columns
 /// @param A Matrix to be modified  (A *= scalar)
 /// @param scalar Scalar value
-SYCL_EXTERNAL void multiply_zerocopy(Eigen::Matrix<float, M, N>& A, float scalar) {
+SYCL_EXTERNAL void multiply_inplace(Eigen::Matrix<float, M, N>& A, float scalar) {
 #pragma unroll N
     for (size_t j = 0; j < N; ++j) {
 #pragma unroll M

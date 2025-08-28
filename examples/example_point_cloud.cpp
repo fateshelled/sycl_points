@@ -78,17 +78,17 @@ int main() {
     }
     dt_transform_cpu_copy /= 10;
 
-    double dt_transform_cpu_zerocopy = 0.0;
+    double dt_transform_cpu_inplace = 0.0;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::transform::transform_cpu(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
-            dt_transform_cpu_zerocopy +=
+            dt_transform_cpu_inplace +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                     .count();
         }
     }
-    dt_transform_cpu_zerocopy /= 10;
+    dt_transform_cpu_inplace /= 10;
 
     double dt_transform_copy = 0.0;
     for (size_t i = 0; i < 11; ++i) {
@@ -108,17 +108,17 @@ int main() {
     }
     dt_transform_copy /= 10;
 
-    double dt_transform_zerocopy = 0.0;
+    double dt_transform_inplace = 0.0;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::transform::transform(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
-            dt_transform_zerocopy +=
+            dt_transform_inplace +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                     .count();
         }
     }
-    dt_transform_zerocopy /= 10;
+    dt_transform_inplace /= 10;
 
     {
         // for (size_t i = 0; i < 10; ++i) {
@@ -142,9 +142,9 @@ int main() {
         std::cout << "Compute covariances on device (shared_ptr): " << dt_covariances << " us" << std::endl;
         std::cout << "Voxel downsampling (shared_ptr): " << dt_voxel_downsampling << " us" << std::endl;
         std::cout << "transform on cpu (shared_ptr, copy): " << dt_transform_cpu_copy << " us" << std::endl;
-        std::cout << "transform on cpu (shared_ptr, zero copy): " << dt_transform_cpu_zerocopy << " us" << std::endl;
+        std::cout << "transform on cpu (shared_ptr, zero copy): " << dt_transform_cpu_inplace << " us" << std::endl;
         std::cout << "transform on device (shared_ptr, copy): " << dt_transform_copy << " us" << std::endl;
-        std::cout << "transform on device (shared_ptr, zero copy): " << dt_transform_zerocopy << " us" << std::endl;
+        std::cout << "transform on device (shared_ptr, zero copy): " << dt_transform_inplace << " us" << std::endl;
     }
 
     return 0;
