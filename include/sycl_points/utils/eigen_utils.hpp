@@ -359,6 +359,15 @@ SYCL_EXTERNAL float frobenius_norm(const Eigen::Vector<float, M>& a) {
     return sycl::sqrt(frobenius_norm_squared<M>(a));
 }
 
+template <size_t M>
+SYCL_EXTERNAL Eigen::Vector<float, M> normalize(const Eigen::Vector<float, M>& a) {
+    const float norm = frobenius_norm<M>(a);
+    if (norm < 1e-6f) {
+        return Eigen::Vector<float, M>::Zero();
+    }
+    return multiply<M>(a, 1.0f / norm);
+}
+
 /// @brief 3×3 Matrix Inverse
 /// @param src 3×3 matrix to invert
 /// @return Inverse of src

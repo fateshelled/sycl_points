@@ -99,7 +99,7 @@ SYCL_EXTERNAL inline Covariance compute_mahalanobis_covariance(const Covariance&
     Covariance mahalanobis = Covariance::Zero();
 
     Covariance transform_source_cov;
-    transform::kernel::transform_covs(source_cov, transform_source_cov, T.data());
+    transform::kernel::transform_covs(source_cov, transform_source_cov, T);
     const Eigen::Matrix3f RCR =
         eigen_utils::add<3, 3>(eigen_utils::block3x3(transform_source_cov), eigen_utils::block3x3(target_cov));
     const Eigen::Matrix3f RCR_inv = eigen_utils::inverse(RCR);
@@ -126,7 +126,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::arra
                                                                  const PointType& source_pt, const PointType& target_pt,
                                                                  float& residual_norm) {
     PointType transform_source;
-    transform::kernel::transform_point(source_pt, transform_source, T.data());
+    transform::kernel::transform_point(source_pt, transform_source, T);
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
@@ -151,7 +151,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::arra
 SYCL_EXTERNAL inline float calculate_error_point_to_point(const std::array<sycl::float4, 4>& T,
                                                           const PointType& source_pt, const PointType& target_pt) {
     PointType transform_source;
-    transform::kernel::transform_point(source_pt, transform_source, T.data());
+    transform::kernel::transform_point(source_pt, transform_source, T);
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
@@ -168,7 +168,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_plane(const std::arra
                                                                  const PointType& source_pt, const PointType& target_pt,
                                                                  const Normal& target_normal, float& residual_norm) {
     PointType transform_source;
-    transform::kernel::transform_point(source_pt, transform_source, T.data());
+    transform::kernel::transform_point(source_pt, transform_source, T);
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
@@ -199,7 +199,7 @@ SYCL_EXTERNAL inline float calculate_error_point_to_plane(const std::array<sycl:
                                                           const PointType& source_pt, const PointType& target_pt,
                                                           const Normal& target_normal) {
     PointType transform_source;
-    transform::kernel::transform_point(source_pt, transform_source, T.data());
+    transform::kernel::transform_point(source_pt, transform_source, T);
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
@@ -218,7 +218,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::fl
                                                        const Covariance& source_cov, const PointType& target_pt,
                                                        const Covariance& target_cov, float& residual_norm) {
     PointType transform_source_pt;
-    transform::kernel::transform_point(source_pt, transform_source_pt, T.data());
+    transform::kernel::transform_point(source_pt, transform_source_pt, T);
 
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
@@ -255,8 +255,8 @@ SYCL_EXTERNAL inline float calculate_error_gicp(const std::array<sycl::float4, 4
                                                 const Covariance& target_cov) {
     PointType transform_source_pt;
     Covariance transform_source_cov;
-    transform::kernel::transform_point(source_pt, transform_source_pt, T.data());
-    transform::kernel::transform_covs(source_cov, transform_source_cov, T.data());
+    transform::kernel::transform_point(source_pt, transform_source_pt, T);
+    transform::kernel::transform_covs(source_cov, transform_source_cov, T);
 
     Covariance mahalanobis = Covariance::Zero();
     {
