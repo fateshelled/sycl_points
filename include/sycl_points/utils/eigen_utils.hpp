@@ -389,7 +389,7 @@ SYCL_EXTERNAL inline Eigen::Matrix3f inverse(const Eigen::Matrix3f& src) {
 /// @param diag Vector of diagonal elements
 /// @return Diagonal matrix
 template <size_t M>
-SYCL_EXTERNAL Eigen::Matrix3f as_diagonal(const Eigen::Vector<float, M>& diag) {
+SYCL_EXTERNAL Eigen::Matrix<float, M, M> as_diagonal(const Eigen::Vector<float, M>& diag) {
     Eigen::Matrix<float, M, M> ret = Eigen::Matrix<float, M, M>::Zero();
 #pragma unroll M
     for (size_t i = 0; i < M; ++i) {

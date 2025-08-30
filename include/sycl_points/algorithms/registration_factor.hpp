@@ -29,6 +29,94 @@ struct LinearlizedResult {
 };
 
 namespace kernel {
+
+/// @brief Compute basic SE(3) Jacobian matrix for ICP registration
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @return Jacobian matrix (4x6) [residual_dim x se3_param_dim]
+SYCL_EXTERNAL inline Eigen::Matrix<float, 4, 6> compute_se3_jacobian(const std::array<sycl::float4, 4>& T,
+                                                                     const PointType& source_pt) {
+    Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
+
+    // Compute rotation part: J_rot = T * skew(source_pt)
+    const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source_pt);
+    const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(eigen_utils::from_sycl_vec(T));
+    const Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
+
+    // Fill rotation part (columns 0-2)
+    J(0, 0) = T_skewed(0, 0);
+    J(0, 1) = T_skewed(0, 1);
+    J(0, 2) = T_skewed(0, 2);
+    J(1, 0) = T_skewed(1, 0);
+    J(1, 1) = T_skewed(1, 1);
+    J(1, 2) = T_skewed(1, 2);
+    J(2, 0) = T_skewed(2, 0);
+    J(2, 1) = T_skewed(2, 1);
+    J(2, 2) = T_skewed(2, 2);
+
+    // Compute translation part: J_trans = -T_rot
+    J(0, 3) = -T[0][0];
+    J(0, 4) = -T[0][1];
+    J(0, 5) = -T[0][2];
+    J(1, 3) = -T[1][0];
+    J(1, 4) = -T[1][1];
+    J(1, 5) = -T[1][2];
+    J(2, 3) = -T[2][0];
+    J(2, 4) = -T[2][1];
+    J(2, 5) = -T[2][2];
+
+    return J;
+}
+
+/// @brief Apply weight matrix to Jacobian (left multiplication)
+/// @param J_basic Basic Jacobian matrix (4x6)
+/// @param weight_matrix Weight matrix (4x4)
+/// @return Weighted Jacobian matrix (4x6)
+SYCL_EXTERNAL inline Eigen::Matrix<float, 4, 6> apply_weight_to_jacobian(
+    const Eigen::Matrix<float, 4, 6>& J_basic, const Eigen::Matrix<float, 4, 4>& weight_matrix) {
+    return eigen_utils::multiply<4, 4, 6>(weight_matrix, J_basic);
+}
+
+/// @brief Compute weighted SE(3) Jacobian matrix
+/// @param T transform matrix
+/// @param source_pt Source Point
+/// @param weight_matrix Weight matrix for error term
+/// @return Weighted Jacobian matrix (4x6)
+SYCL_EXTERNAL inline Eigen::Matrix<float, 4, 6> compute_weighted_se3_jacobian(
+    const std::array<sycl::float4, 4>& T, const PointType& source_pt, const Eigen::Matrix<float, 4, 4>& weight_matrix) {
+    const auto J_basic = compute_se3_jacobian(T, source_pt);
+    return apply_weight_to_jacobian(J_basic, weight_matrix);
+}
+
+/// @brief Compute Mahalanobis covariance matrix for GICP registration
+/// @param source_cov Source covariance matrix (4x4)
+/// @param target_cov Target covariance matrix (4x4)
+/// @param T transform matrix
+/// @return Mahalanobis covariance matrix (4x4)
+SYCL_EXTERNAL inline Covariance compute_mahalanobis_covariance(const Covariance& source_cov,
+                                                               const Covariance& target_cov,
+                                                               const std::array<sycl::float4, 4>& T) {
+    Covariance mahalanobis = Covariance::Zero();
+
+    Covariance transform_source_cov;
+    transform::kernel::transform_covs(source_cov, transform_source_cov, T.data());
+    const Eigen::Matrix3f RCR =
+        eigen_utils::add<3, 3>(eigen_utils::block3x3(transform_source_cov), eigen_utils::block3x3(target_cov));
+    const Eigen::Matrix3f RCR_inv = eigen_utils::inverse(RCR);
+
+    mahalanobis(0, 0) = RCR_inv(0, 0);
+    mahalanobis(0, 1) = RCR_inv(0, 1);
+    mahalanobis(0, 2) = RCR_inv(0, 2);
+    mahalanobis(1, 0) = RCR_inv(1, 0);
+    mahalanobis(1, 1) = RCR_inv(1, 1);
+    mahalanobis(1, 2) = RCR_inv(1, 2);
+    mahalanobis(2, 0) = RCR_inv(2, 0);
+    mahalanobis(2, 1) = RCR_inv(2, 1);
+    mahalanobis(2, 2) = RCR_inv(2, 2);
+
+    return mahalanobis;
+}
+
 /// @brief Iterative Closest Point (ICP Point to Point)
 /// @param T transform matrix
 /// @param source_pt Source Point
@@ -42,31 +130,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::arra
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
-    Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
-    {
-        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source_pt);
-        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(eigen_utils::from_sycl_vec(T));
-        const Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
-        J(0, 0) = T_skewed(0, 0);
-        J(0, 1) = T_skewed(0, 1);
-        J(0, 2) = T_skewed(0, 2);
-        J(1, 0) = T_skewed(1, 0);
-        J(1, 1) = T_skewed(1, 1);
-        J(1, 2) = T_skewed(1, 2);
-        J(2, 0) = T_skewed(2, 0);
-        J(2, 1) = T_skewed(2, 1);
-        J(2, 2) = T_skewed(2, 2);
+    const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, Eigen::Matrix4f::Identity());
 
-        J(0, 3) = -T[0][0];
-        J(0, 4) = -T[0][1];
-        J(0, 5) = -T[0][2];
-        J(1, 3) = -T[1][0];
-        J(1, 4) = -T[1][1];
-        J(1, 5) = -T[1][2];
-        J(2, 3) = -T[2][0];
-        J(2, 4) = -T[2][1];
-        J(2, 5) = -T[2][2];
-    }
     LinearlizedResult ret;
     const auto J_T = eigen_utils::transpose<4, 6>(J);
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
@@ -109,34 +174,10 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_plane(const std::arra
                              target_pt.z() - transform_source.z(), 0.0f);
     const PointType plane_error = eigen_utils::element_wise_multiply<4, 1>(target_normal, residual);
 
-    Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
-    {
-        const Eigen::Matrix3f normal_diag =
-            eigen_utils::as_diagonal<3>({target_normal.x(), target_normal.y(), target_normal.z()});
-        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source_pt);
-        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(eigen_utils::from_sycl_vec(T));
-        const Eigen::Matrix3f normal_T = eigen_utils::multiply<3, 3, 3>(normal_diag, T_3x3);
-        const Eigen::Matrix3f normal_T_skewed = eigen_utils::multiply<3, 3, 3>(normal_T, skewed);
-        J(0, 0) = normal_T_skewed(0, 0);
-        J(0, 1) = normal_T_skewed(0, 1);
-        J(0, 2) = normal_T_skewed(0, 2);
-        J(1, 0) = normal_T_skewed(1, 0);
-        J(1, 1) = normal_T_skewed(1, 1);
-        J(1, 2) = normal_T_skewed(1, 2);
-        J(2, 0) = normal_T_skewed(2, 0);
-        J(2, 1) = normal_T_skewed(2, 1);
-        J(2, 2) = normal_T_skewed(2, 2);
+    const Eigen::Matrix4f weight_matrix =
+        eigen_utils::as_diagonal<4>({target_normal.x(), target_normal.y(), target_normal.z(), 0.0f});
+    const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, weight_matrix);
 
-        J(0, 3) = -normal_T(0, 0);
-        J(0, 4) = -normal_T(0, 1);
-        J(0, 5) = -normal_T(0, 2);
-        J(1, 3) = -normal_T(1, 0);
-        J(1, 4) = -normal_T(1, 1);
-        J(1, 5) = -normal_T(1, 2);
-        J(2, 3) = -normal_T(2, 0);
-        J(2, 4) = -normal_T(2, 1);
-        J(2, 5) = -normal_T(2, 2);
-    }
     LinearlizedResult ret;
     const auto J_T = eigen_utils::transpose<4, 6>(J);
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
@@ -177,55 +218,12 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::fl
                                                        const Covariance& source_cov, const PointType& target_pt,
                                                        const Covariance& target_cov, float& residual_norm) {
     PointType transform_source_pt;
-    Covariance transform_source_cov;
     transform::kernel::transform_point(source_pt, transform_source_pt, T.data());
-    transform::kernel::transform_covs(source_cov, transform_source_cov, T.data());
-
-    Covariance mahalanobis = Covariance::Zero();
-    {
-        const Eigen::Matrix3f RCR =
-            eigen_utils::add<3, 3>(eigen_utils::block3x3(transform_source_cov), eigen_utils::block3x3(target_cov));
-        const Eigen::Matrix3f RCR_inv = eigen_utils::inverse(RCR);
-
-        mahalanobis(0, 0) = RCR_inv(0, 0);
-        mahalanobis(0, 1) = RCR_inv(0, 1);
-        mahalanobis(0, 2) = RCR_inv(0, 2);
-        mahalanobis(1, 0) = RCR_inv(1, 0);
-        mahalanobis(1, 1) = RCR_inv(1, 1);
-        mahalanobis(1, 2) = RCR_inv(1, 2);
-        mahalanobis(2, 0) = RCR_inv(2, 0);
-        mahalanobis(2, 1) = RCR_inv(2, 1);
-        mahalanobis(2, 2) = RCR_inv(2, 2);
-    }
 
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
-
-    Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
-    {
-        const Eigen::Matrix3f skewed = eigen_utils::lie::skew(source_pt);
-        const Eigen::Matrix3f T_3x3 = eigen_utils::block3x3(eigen_utils::from_sycl_vec(T));
-        const Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(T_3x3, skewed);
-        J(0, 0) = T_skewed(0, 0);
-        J(0, 1) = T_skewed(0, 1);
-        J(0, 2) = T_skewed(0, 2);
-        J(1, 0) = T_skewed(1, 0);
-        J(1, 1) = T_skewed(1, 1);
-        J(1, 2) = T_skewed(1, 2);
-        J(2, 0) = T_skewed(2, 0);
-        J(2, 1) = T_skewed(2, 1);
-        J(2, 2) = T_skewed(2, 2);
-
-        J(0, 3) = -T[0][0];
-        J(0, 4) = -T[0][1];
-        J(0, 5) = -T[0][2];
-        J(1, 3) = -T[1][0];
-        J(1, 4) = -T[1][1];
-        J(1, 5) = -T[1][2];
-        J(2, 3) = -T[2][0];
-        J(2, 4) = -T[2][1];
-        J(2, 5) = -T[2][2];
-    }
+    const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, Eigen::Matrix4f::Identity());
+    const Covariance mahalanobis = compute_mahalanobis_covariance(source_cov, target_cov, T);
 
     const Eigen::Matrix<float, 6, 4> J_T_mah =
         eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
