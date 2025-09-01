@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <shared_mutex>
 #include <sycl/sycl.hpp>
 
 namespace sycl_points {
@@ -126,7 +127,7 @@ inline void print_device_info(const sycl::device& device) {
         std::cout << "\tDouble precision support: " << (device.has(sycl::aspect::fp64) ? "true" : "false") << std::endl;
 
         std::cout << "\tAtomic 64bit support: " << (device.has(sycl::aspect::atomic64) ? "true" : "false") << std::endl;
-        
+
         std::cout << "\tUSM host allocations: " << (device.has(sycl::aspect::usm_host_allocations) ? "true" : "false")
                   << std::endl;
         std::cout << "\tUSM device allocations: "
@@ -480,6 +481,55 @@ public:
     template <typename T>
     void clear_read_mostly(T* data_ptr, size_t N) const {
         sycl_utils::mem_advise::clear_read_mostly<T>(*this->ptr, data_ptr, N);
+    }
+
+    /// @brief Execute a task with shared mutex protection using SYCL event dependency chain
+    ///
+    /// This function provides thread-safe execution of SYCL tasks by wrapping them with
+    /// shared mutex operations. It supports both exclusive (write) and shared (read) locking
+    /// modes through the is_write parameter. The function ensures proper lock → task → unlock
+    /// ordering using SYCL event dependencies.
+    ///
+    /// @param mtx Shared mutex for synchronization control
+    /// @param task Function object that takes sycl::handler& and defines the SYCL task to execute
+    /// @param depends Vector of SYCL events that this operation should depend on (default: empty)
+    /// @param is_write Lock mode selector: true for exclusive lock (write), false for shared lock (read)
+    ///
+    /// @return SYCL event representing the completion of the entire operation (lock + task + unlock)
+    ///
+    /// @note The task execution order is guaranteed as: lock → task → unlock through event dependencies
+    /// @note For write operations (is_write=true): uses exclusive lock, blocks all other operations
+    /// @note For read operations (is_write=false): uses shared lock, allows concurrent readers
+    sycl::event execute_with_mutex(std::shared_mutex& mtx, const std::function<void(sycl::handler&)>& task,
+                                   const std::vector<sycl::event>& depends = {}, bool is_write = false) const {
+        auto lock_event = this->ptr->submit([&](sycl::handler& h) {
+            h.host_task([&]() {
+                if (is_write) {
+                    mtx.lock();
+                } else {
+                    mtx.lock_shared();
+                }
+            });
+        });
+
+        sycl::event task_event = ptr->submit([&](sycl::handler& h) {
+            auto all_depends = depends;
+            all_depends.push_back(lock_event);
+            h.depends_on(all_depends);
+            task(h);
+        });
+
+        auto unlock_event = this->ptr->submit([&](sycl::handler& h) {
+            h.depends_on(task_event);
+            h.host_task([&]() {
+                if (is_write) {
+                    mtx.unlock();
+                } else {
+                    mtx.unlock_shared();
+                }
+            });
+        });
+        return unlock_event;
     }
 };
 
