@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <random>
+#include <sycl_points/algorithms/common/filter_by_flags.hpp>
 #include <sycl_points/algorithms/knn_search.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
@@ -16,9 +17,14 @@ protected:
     const size_t num_target_points = 1000;
     const size_t num_query_points = 100;
     const float point_range = 10.0f;
+    const size_t random_seed = 1234;
+    std::mt19937 gen;
 
     void SetUp() override {
         try {
+            // set random seed
+            gen.seed(random_seed);
+
             // Setup SYCL device
             sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
             queue = std::make_shared<sycl_points::sycl_utils::DeviceQueue>(device);
@@ -57,8 +63,6 @@ protected:
 
     // Helper function to generate random point clouds
     void generateRandomPoints(std::shared_ptr<sycl_points::PointContainerCPU> points, size_t num_points, float range) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
         std::uniform_real_distribution<float> dist(-range, range);
 
         for (size_t i = 0; i < num_points; ++i) {
@@ -248,8 +252,8 @@ TEST_F(KDTreeTest, AccuracyWithDifferentK) {
 // Performance test (large dataset)
 TEST_F(KDTreeTest, PerformanceLargeDataset) {
     // This test only measures time, without verifying accuracy for large datasets
-    const size_t large_target_size = 10000;  // Adjust as needed
-    const size_t large_query_size = 10000;
+    const size_t large_target_size = 100000;  // Adjust as needed
+    const size_t large_query_size = 100000;
     const size_t k = 10;
 
     // Generate large point clouds
@@ -292,6 +296,61 @@ TEST_F(KDTreeTest, PerformanceLargeDataset) {
 
     // Also verify the results are correct
     compareKNNResults(kdtree_result, bf_result, k);
+}
+
+TEST_F(KDTreeTest, RemoveByFlags) {
+    const size_t k = 10;
+    const size_t target_size = 1000;
+
+    // Generate point cloud
+    sycl_points::PointCloudCPU target_cpu;
+    target_cpu.points->resize(target_size);
+    generateRandomPoints(target_cpu.points, target_size, point_range);
+
+    auto test_target = sycl_points::PointCloudShared(*queue, target_cpu);
+    auto test_kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, test_target);
+
+    // Initial search - all points find themselves
+    auto initial_result = test_kdtree->knn_search(test_target, k);
+    for (size_t i = 0; i < target_size; ++i) {
+        EXPECT_FLOAT_EQ(0.0f, (*initial_result.distances)[i * k]);
+        EXPECT_EQ(static_cast<int32_t>(i), (*initial_result.indices)[i * k]);
+    }
+
+    // Create removal flags - remove every 10th point
+    sycl_points::shared_vector<uint8_t> flags(target_size, sycl_points::algorithms::filter::INCLUDE_FLAG, *queue->ptr);
+    sycl_points::shared_vector<int32_t> indices(target_size, *queue->ptr);
+    std::iota(indices.begin(), indices.end(), 0);
+    int32_t count = 0;
+    for (size_t i = 0; i < target_size; i += 10) {
+        flags[i] = sycl_points::algorithms::filter::REMOVE_FLAG;
+    }
+    for (size_t i = 0; i < target_size; ++i) {
+        indices[i] = (flags[i] == sycl_points::algorithms::filter::INCLUDE_FLAG) ? count++ : -1;
+    }
+
+    // Apply removal flags
+    test_kdtree->remove_nodes_by_flags(flags, indices);
+
+    // Remove points
+    sycl_points::algorithms::filter::FilterByFlags filter_by_flags(*queue);
+    auto removed_target = test_target;
+    filter_by_flags.filter_by_flags(*removed_target.points, flags);
+
+    // Search BruteForce with removed points
+    const auto bf_result =
+        sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, removed_target, removed_target, k);
+
+    // Verify that removed points are not in results
+    auto removed_result = test_kdtree->knn_search(removed_target, k);
+    for (size_t i = 0; i < removed_result.query_size; ++i) {
+        for (size_t j = 0; j < k; ++j) {
+            const size_t result_idx = i * k + j;
+            const int32_t point_idx = (*removed_result.indices)[result_idx];
+            ASSERT_FLOAT_EQ(bf_result.distances->at(result_idx), removed_result.distances->at(result_idx))
+                << "Mismatch in distances at query " << i << ", neighbor " << j;
+        }
+    }
 }
 
 int main(int argc, char** argv) {
