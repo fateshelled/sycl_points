@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <sycl_points/algorithms/common/filter_by_flags.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
@@ -47,10 +48,12 @@ namespace {
 struct FlatKDNode {
     PointType pt;
     int32_t idx;         // Index of the point in the original dataset
-    int32_t left = -1;   // Index of left child node (-1 if none)
-    int32_t right = -1;  // Index of right child node (-1 if none)
-    uint8_t axis;        // Split axis (0=x, 1=y, 2=z)
-    uint8_t pad[3];      // Padding for alignment (3 bytes)
+    int32_t left = -1;   // Index of left child node (-1 if none), or next leaf node for leaf nodes
+    int32_t right = -1;  // Index of right child node (-1 if none), unused for leaf nodes
+    uint8_t axis;        // Split axis (0=x, 1=y, 2=z) - unused for leaf nodes
+    uint8_t is_leaf;     // 1 if leaf node, 0 if internal node
+    uint8_t valid = 1;   // 0 is removed node, 1 is valid
+    uint8_t pad;         // Padding for alignment (1 bytes)
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };  // Total: 32 bytes
@@ -154,6 +157,7 @@ class KDTree {
 private:
     using FlatKDNodeVector = shared_vector<FlatKDNode>;
     std::shared_ptr<FlatKDNodeVector> tree_;
+    mutable std::shared_mutex mutex_;
 
 public:
     using Ptr = std::shared_ptr<KDTree>;
@@ -171,13 +175,15 @@ public:
     /// @brief Build KDTree
     /// @param q SYCL queue
     /// @param points Point Container
+    /// @param leaf_threshold The maximum number of points in a leaf node.
     /// @return KDTree shared_ptr
-    static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points) {
+    static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points,
+                             size_t leaf_threshold = 16) {
         const size_t n = points.size();
 
         KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
         if (n == 0) {
-            flatTree->tree_->resize(0);  // Ensure tree is empty for n=0
+            flatTree->tree_->resize(0);
             return flatTree;
         }
 
@@ -208,6 +214,39 @@ public:
 
             if (startIdx > endIdx || indices_size == 0) continue;
 
+            auto& node = (*flatTree->tree_)[nodeIdx];
+
+            // Check if this should be a leaf node
+            if (indices_size <= leaf_threshold) {
+                // Create leaf nodes as a linked list
+                int32_t currentLeafIdx = nodeIdx;
+
+                for (size_t i = 0; i < indices_size; ++i) {
+                    const auto pointIdx = globalIndices[startIdx + i];
+                    auto& leafNode = (*flatTree->tree_)[currentLeafIdx];
+
+                    leafNode.pt = points[pointIdx];
+                    leafNode.idx = pointIdx;
+                    leafNode.is_leaf = 1;  // Mark as leaf node
+                    leafNode.axis = 0;     // Unused for leaf nodes
+                    leafNode.right = -1;   // Unused for leaf nodes
+                    leafNode.valid = 1;
+
+                    // Set left to next leaf node index, or -1 for the last one
+                    if (i < indices_size - 1) {
+                        leafNode.left = nextNodeIdx;
+                        currentLeafIdx = nextNodeIdx++;
+                    } else {
+                        leafNode.left = -1;  // Last leaf node
+                    }
+                }
+                continue;
+            }
+
+            // Create internal node
+            node.is_leaf = 0;
+            node.valid = 1;
+
             // Split axis
             const auto axis = find_axis_range(points, globalIndices, startIdx, endIdx);
             // const auto axis = find_axis_variance(points, subIndices, startIdx, endIdx);
@@ -227,8 +266,7 @@ public:
             // Get the median point
             const auto pointIdx = globalIndices[medianIdx];
 
-            // Initialize flat node
-            auto& node = (*flatTree->tree_)[nodeIdx];
+            // Initialize internal node
             node.pt = points[pointIdx];
             node.idx = pointIdx;
             node.axis = axis;
@@ -256,9 +294,61 @@ public:
     /// @brief Build KDTree
     /// @param queue SYCL queue
     /// @param cloud Point Cloud
+    /// @param leaf_threshold The maximum number of points in a leaf node.
     /// @return KDTree shared_ptr
-    static KDTree::Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud) {
-        return KDTree::build(queue, *cloud.points);
+    static KDTree::Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud,
+                             size_t leaf_threshold = 16) {
+        return KDTree::build(queue, *cloud.points, leaf_threshold);
+    }
+
+    void remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
+        const size_t N = this->tree_->size();
+        if (N != flags.size()) {
+            throw std::runtime_error("flags size must be equal to tree size.");
+        }
+
+        // mem_advise to device
+        {
+            this->queue.set_accessed_by_device(this->tree_->data(), N);
+            this->queue.set_accessed_by_device(flags.data(), N);
+            this->queue.set_accessed_by_device(indices.data(), N);
+        }
+
+        const size_t work_group_size = this->queue.get_work_group_size();
+        const size_t global_size = this->queue.get_global_size(N);
+
+        auto remove_task = [&](sycl::handler& h) {
+            // Get pointers
+            const auto tree_ptr = (*this->tree_).data();
+            const auto flags_ptr = flags.data();
+            const auto indices_ptr = indices.data();
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t idx = item.get_global_id(0);
+
+                if (idx >= N) return;
+
+                const auto point_idx = tree_ptr[idx].idx;
+                if (point_idx < 0 || N < point_idx) return;
+
+                // Direct assignment: REMOVE_FLAG(0) -> invalid(0), INCLUDE_FLAG(1) -> valid(1)
+                tree_ptr[idx].valid = flags_ptr[point_idx];
+                tree_ptr[idx].idx = indices_ptr[point_idx];
+            });
+        };
+
+        // mutex unlock
+        sycl_utils::events events;
+        events += this->queue.execute_with_mutex(this->mutex_, remove_task, {}, true);
+
+        events.wait();
+
+        // mem_advise clear
+        {
+            this->queue.clear_accessed_by_device(this->tree_->data(), N);
+            this->queue.clear_accessed_by_device(flags.data(), N);
+            this->queue.clear_accessed_by_device(indices.data(), N);
+        }
     }
 
     /// @brief async kNN search
@@ -296,14 +386,13 @@ public:
         const size_t work_group_size = this->queue.get_work_group_size();
         const size_t global_size = this->queue.get_global_size(query_size);
 
-        auto event = this->queue.ptr->submit([&](sycl::handler& h) {
+        auto search_task = [&](sycl::handler& h) {
             // Get pointers
             const auto query_ptr = queries;
             const auto distance_ptr = result.distances->data();
             const auto index_ptr = result.indices->data();
             const auto tree_ptr = (*this->tree_).data();
 
-            h.depends_on(depends);
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t queryIdx = item.get_global_id(0);
 
@@ -341,21 +430,22 @@ public:
                     if (nodeIdx == -1 || nodeIdx >= treeSize) continue;
 
                     const auto node = tree_ptr[nodeIdx];
+                    const bool is_valid = (node.valid == filter::INCLUDE_FLAG);
 
                     // Calculate distance to current node
                     const PointType diff = eigen_utils::subtract<4, 1>(query, node.pt);
-                    const float dist_sq = eigen_utils::dot<4>(diff, diff);
-                    ++found_num;
-
-                    // Insert result
+                    const float dist_sq =
+                        is_valid ? eigen_utils::dot<4>(diff, diff) : std::numeric_limits<float>::max();
+                    found_num = is_valid ? found_num + 1 : found_num;
                     insert_to_bestK<MAX_K>(bestK, dist_sq, node.idx, k, found_num);
 
                     // Calculate distance along split axis
                     const float axisDistance = diff[node.axis];
 
                     // Determine nearer and further subtrees
-                    const auto nearerNode = (axisDistance <= 0) ? node.left : node.right;
-                    const auto furtherNode = (axisDistance <= 0) ? node.right : node.left;
+                    const bool is_leaf = (node.is_leaf != 0);
+                    const auto nearerNode = (is_leaf || axisDistance <= 0) ? node.left : node.right;
+                    const auto furtherNode = (is_leaf || axisDistance <= 0) ? node.right : node.left;
 
                     // Squared distance to splitting plane
                     const float splitDistSq = axisDistance * axisDistance;
@@ -380,9 +470,9 @@ public:
                     index_ptr[queryIdx * k + i] = bestK[i].nodeIdx;
                 }
             });
-        });
+        };
         sycl_utils::events events;
-        events.push_back(event);
+        events += this->queue.execute_with_mutex(this->mutex_, search_task, depends);
         return events;
     }
 

@@ -18,13 +18,14 @@ public:
     OutlierRemoval(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
         this->filter_ = std::make_shared<FilterByFlags>(this->queue_);
         this->flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
+        this->indices_ = std::make_shared<shared_vector<int32_t>>(*this->queue_.ptr);
         this->local_mean_distance_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->distance_threshold_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
 
         this->neighbors_ = std::make_shared<knn_search::KNNResult>();
     }
 
-    void statistical(PointCloudShared& cloud, const knn_search::KDTree& tree, size_t mean_k, float stddev_mul_thresh) {
+    void statistical(PointCloudShared& cloud, knn_search::KDTree& tree, size_t mean_k, float stddev_mul_thresh, bool remove_from_tree = false) {
         const size_t N = cloud.size();
         if (N < mean_k) {
             std::cerr << "Not enough points in the cloud [ points = " << N << ", mean_k = " << mean_k << " ]"
@@ -126,16 +127,19 @@ public:
 
         // filter
         this->filter_by_flags(cloud);
+
+        tree.remove_nodes_by_flags(this->get_flags(), this->calculate_indices());
     }
 
-    void radius(PointCloudShared& cloud, const knn_search::KDTree& tree, size_t min_k, float radius) {
+    void radius(PointCloudShared& cloud, knn_search::KDTree& tree, size_t min_k, float radius, bool remove_from_tree = false) {
         const size_t N = cloud.size();
         if (N < min_k) {
             std::cerr << "Not enough points in the cloud [ points = " << N << ", min_k = " << min_k << " ]"
                       << std::endl;
             return;
         }
-        auto knn_event = tree.knn_search_async(cloud, min_k, *this->neighbors_);
+        // tree include the point itself, so search min_k + 1
+        auto knn_event = tree.knn_search_async(cloud, min_k + 1, *this->neighbors_);
 
         this->flags_->resize(cloud.size());
 
@@ -159,7 +163,7 @@ public:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    const auto max_dist = neighbors_distances_ptr[index * min_k + (min_k - 1)];
+                    const auto max_dist = neighbors_distances_ptr[index * (min_k + 1) + min_k];
                     flag_ptr[index] = (max_dist > threshold) ? REMOVE_FLAG : INCLUDE_FLAG;
                 });
             })
@@ -167,15 +171,22 @@ public:
 
         // filter
         this->filter_by_flags(cloud);
+
+        tree.remove_nodes_by_flags(this->get_flags(), this->calculate_indices());
     }
 
     const shared_vector<uint8_t>& get_flags() const { return *this->flags_; }
+    const shared_vector<int32_t>& calculate_indices() const {
+        this->filter_->calculate_indices(*this->flags_, *this->indices_);
+        return *this->indices_;
+    }
 
 private:
     sycl_utils::DeviceQueue queue_;
     knn_search::KNNResult::Ptr neighbors_;
     FilterByFlags::Ptr filter_;
     shared_vector_ptr<uint8_t> flags_;
+    shared_vector_ptr<int32_t> indices_;
     shared_vector_ptr<float> local_mean_distance_;
     shared_vector_ptr<float> distance_threshold_;
 

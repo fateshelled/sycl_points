@@ -53,6 +53,30 @@ public:
         data.resize(new_size);
     }
 
+    void calculate_indices(const shared_vector<uint8_t>& flags, shared_vector<int32_t>& indices) const {
+        const size_t N = flags.size();
+        if (N == 0) return;
+
+        // mem_advise to host
+        {
+            this->queue_.set_accessed_by_host(flags.data(), N);
+            this->queue_.set_accessed_by_host(indices.data(), N);
+        }
+
+        // Calculate indices on host
+        indices.resize(N);
+        int32_t count = 0;
+        for (size_t i = 0; i < N; ++i) {
+            indices[i] = (flags[i] == INCLUDE_FLAG) ? count++ : -1;
+        }
+
+        // mem_advise clear
+        {
+            this->queue_.clear_accessed_by_host(flags.data(), N);
+            this->queue_.clear_accessed_by_host(indices.data(), N);
+        }
+    }
+
 private:
     sycl_utils::DeviceQueue queue_;  // SYCL queue
 };
