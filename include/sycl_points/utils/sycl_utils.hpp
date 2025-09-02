@@ -494,34 +494,46 @@ public:
     /// @param task Function object that takes sycl::handler& and defines the SYCL task to execute
     /// @param depends Vector of SYCL events that this operation should depend on (default: empty)
     /// @param is_write Lock mode selector: true for exclusive lock (write), false for shared lock (read)
+    /// @param lock_timeout Lock timeout duration to prevent indefinite blocking (default: 50 milliseconds)
     ///
     /// @return SYCL event representing the completion of the entire operation (lock + task + unlock)
     ///
     /// @note The task execution order is guaranteed as: lock → task → unlock through event dependencies
     /// @note For write operations (is_write=true): uses exclusive lock, blocks all other operations
     /// @note For read operations (is_write=false): uses shared lock, allows concurrent readers
-    sycl::event execute_with_mutex(std::shared_mutex& mtx, const std::function<void(sycl::handler&)>& task,
-                                   const std::vector<sycl::event>& depends = {}, bool is_write = false) const {
-        auto lock_event = this->ptr->submit([&](sycl::handler& h) {
-            h.host_task([&]() {
-                if (is_write) {
-                    mtx.lock();
-                } else {
-                    mtx.lock_shared();
+    sycl::event execute_with_mutex(std::shared_timed_mutex& mtx, const std::function<void(sycl::handler&)>& task,
+                                   const std::vector<sycl::event>& depends = {}, bool is_write = false,
+                                   const std::chrono::steady_clock::duration& lock_timeout = std::chrono::milliseconds(50)) const {
+        auto lock_event = this->ptr->submit([&mtx, is_write, &lock_timeout](sycl::handler& h) {
+            h.host_task([&mtx, is_write, &lock_timeout]() {
+                constexpr auto backoff = std::chrono::microseconds(50);
+                const auto now = std::chrono::steady_clock::now();
+                const auto end_time = now + lock_timeout;
+                while (std::chrono::steady_clock::now() < end_time) {
+                    bool locked = false;
+                    if (is_write) {
+                        locked = mtx.try_lock_for(backoff);
+                    } else {
+                        locked = mtx.try_lock_shared_for(backoff);
+                    }
+                    if (locked) {
+                        return;
+                    }
                 }
+                throw std::runtime_error("failed to acquire mutex lock in given timeout");
             });
         });
 
-        sycl::event task_event = ptr->submit([&](sycl::handler& h) {
+        auto task_event = ptr->submit([&task, &depends, &lock_event](sycl::handler& h) {
             auto all_depends = depends;
             all_depends.push_back(lock_event);
             h.depends_on(all_depends);
             task(h);
         });
 
-        auto unlock_event = this->ptr->submit([&](sycl::handler& h) {
+        auto unlock_event = this->ptr->submit([&task_event, &mtx, is_write](sycl::handler& h) {
             h.depends_on(task_event);
-            h.host_task([&]() {
+            h.host_task([&mtx, is_write]() {
                 if (is_write) {
                     mtx.unlock();
                 } else {

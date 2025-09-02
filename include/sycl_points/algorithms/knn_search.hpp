@@ -157,7 +157,7 @@ class KDTree {
 private:
     using FlatKDNodeVector = shared_vector<FlatKDNode>;
     std::shared_ptr<FlatKDNodeVector> tree_;
-    mutable std::shared_mutex mutex_;
+    mutable std::shared_timed_mutex mutex_;
 
 public:
     using Ptr = std::shared_ptr<KDTree>;
@@ -303,10 +303,9 @@ public:
 
     void remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
         const size_t N = this->tree_->size();
-        if (N != flags.size()) {
+        if (N != flags.size() || N != indices.size()) {
             throw std::runtime_error("flags size must be equal to tree size.");
         }
-
         // mem_advise to device
         {
             this->queue.set_accessed_by_device(this->tree_->data(), N);
@@ -319,7 +318,7 @@ public:
 
         auto remove_task = [&](sycl::handler& h) {
             // Get pointers
-            const auto tree_ptr = (*this->tree_).data();
+            const auto tree_ptr = this->tree_->data();
             const auto flags_ptr = flags.data();
             const auto indices_ptr = indices.data();
 
@@ -337,11 +336,7 @@ public:
             });
         };
 
-        // mutex unlock
-        sycl_utils::events events;
-        events += this->queue.execute_with_mutex(this->mutex_, remove_task, {}, true);
-
-        events.wait();
+        this->queue.execute_with_mutex(this->mutex_, remove_task, {}, true).wait();
 
         // mem_advise clear
         {

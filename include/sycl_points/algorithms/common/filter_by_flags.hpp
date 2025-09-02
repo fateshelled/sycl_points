@@ -53,9 +53,14 @@ public:
         data.resize(new_size);
     }
 
+    /// @brief Calculates new indices based on flags.
+    /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove.
+    /// @param indices Output vector to store the new indices for elements to be kept, or -1 for elements to be removed.
     void calculate_indices(const shared_vector<uint8_t>& flags, shared_vector<int32_t>& indices) const {
         const size_t N = flags.size();
         if (N == 0) return;
+
+        indices.resize(N);
 
         // mem_advise to host
         {
@@ -64,7 +69,6 @@ public:
         }
 
         // Calculate indices on host
-        indices.resize(N);
         int32_t count = 0;
         for (size_t i = 0; i < N; ++i) {
             indices[i] = (flags[i] == INCLUDE_FLAG) ? count++ : -1;

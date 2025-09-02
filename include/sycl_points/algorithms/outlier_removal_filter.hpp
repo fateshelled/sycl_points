@@ -11,10 +11,13 @@ namespace algorithms {
 
 namespace filter {
 
+/// @brief Class for removing outliers from a point cloud.
 class OutlierRemoval {
 public:
     using Ptr = std::shared_ptr<OutlierRemoval>;
 
+    /// @brief Constructor.
+    /// @param queue SYCL queue to be used for computations.
     OutlierRemoval(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
         this->filter_ = std::make_shared<FilterByFlags>(this->queue_);
         this->flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
@@ -25,6 +28,13 @@ public:
         this->neighbors_ = std::make_shared<knn_search::KNNResult>();
     }
 
+    /// @brief Filters outliers from a point cloud based on statistical analysis of the neighborhood of each point.
+    /// @details For each point, it computes the mean distance to its k-nearest neighbors. Points whose mean distance is outside a threshold (mean + std_dev_multiplier * std_dev) are considered outliers and removed.
+    /// @param cloud The point cloud to filter (modified in-place).
+    /// @param tree The KD-Tree for nearest neighbor search.
+    /// @param mean_k The number of nearest neighbors to use for mean distance calculation.
+    /// @param stddev_mul_thresh The standard deviation multiplier threshold. A point is an outlier if its mean distance is > (global_mean + stddev_mul_thresh * global_stddev).
+    /// @param remove_from_tree If true, removes the outlier nodes from the KD-Tree as well.
     void statistical(PointCloudShared& cloud, knn_search::KDTree& tree, size_t mean_k, float stddev_mul_thresh, bool remove_from_tree = false) {
         const size_t N = cloud.size();
         if (N < mean_k) {
@@ -128,9 +138,18 @@ public:
         // filter
         this->filter_by_flags(cloud);
 
-        tree.remove_nodes_by_flags(this->get_flags(), this->calculate_indices());
+        if (remove_from_tree) {
+            tree.remove_nodes_by_flags(this->get_flags(), this->calculate_indices());
+        }
     }
 
+    /// @brief Filters outliers from a point cloud based on the number of neighbors within a given radius.
+    /// @details For each point, it counts the number of neighbors within a specified radius. If the number of neighbors is less than a given threshold, the point is considered an outlier and removed.
+    /// @param cloud The point cloud to filter (modified in-place).
+    /// @param tree The KD-Tree for nearest neighbor search.
+    /// @param min_k The minimum number of neighbors a point must have within the radius to be considered an inlier.
+    /// @param radius The radius to search for neighbors.
+    /// @param remove_from_tree If true, removes the outlier nodes from the KD-Tree as well.
     void radius(PointCloudShared& cloud, knn_search::KDTree& tree, size_t min_k, float radius, bool remove_from_tree = false) {
         const size_t N = cloud.size();
         if (N < min_k) {
@@ -172,10 +191,18 @@ public:
         // filter
         this->filter_by_flags(cloud);
 
-        tree.remove_nodes_by_flags(this->get_flags(), this->calculate_indices());
+        if (remove_from_tree) {
+            tree.remove_nodes_by_flags(this->get_flags(), this->calculate_indices());
+        }
     }
 
+    /// @brief Gets the flags indicating which points were kept or removed.
+    /// @return A constant reference to the flags vector. `INCLUDE_FLAG` for inliers, `REMOVE_FLAG` for outliers.
     const shared_vector<uint8_t>& get_flags() const { return *this->flags_; }
+
+    /// @brief Calculates the new indices for the inlier points.
+    /// @details This is useful for remapping other data structures that correspond to the point cloud.
+    /// @return A constant reference to the indices vector. Inlier points get a new compact index, outliers get -1.
     const shared_vector<int32_t>& calculate_indices() const {
         this->filter_->calculate_indices(*this->flags_, *this->indices_);
         return *this->indices_;
