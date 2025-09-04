@@ -19,6 +19,7 @@ constexpr size_t PointAlignment = 16;
 constexpr size_t CovarianceAlignment = 64;
 constexpr size_t NormalAlignment = 16;
 constexpr size_t RGBAlignment = 16;
+constexpr size_t IntensityAlignment = 4;
 
 // Vector of point on CPU. Accessible from CPU process only.
 using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
@@ -39,5 +40,10 @@ using NormalContainerShared = shared_vector<Normal, NormalAlignment>;
 using RGBContainerCPU = std::vector<RGBType, Eigen::aligned_allocator<RGBType>>;
 // Vector of RGB on shared memory
 using RGBContainerShared = shared_vector<RGBType, RGBAlignment>;
+
+// Vector of Intensity on CPU
+using IntensityContainerCPU = std::vector<float, Eigen::aligned_allocator<float>>;
+// Vector of RGB on shared memory
+using IntensityContainerShared = shared_vector<float, IntensityAlignment>;
 
 }  // namespace sycl_points
