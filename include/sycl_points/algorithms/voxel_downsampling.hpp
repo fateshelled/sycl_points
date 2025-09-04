@@ -87,11 +87,12 @@ public:
         // compute Voxel map on host
         const auto voxel_map = this->compute_voxel_bit_and_voxel_map(*cloud.points);
 
-        if (cloud.has_rgb()) {
+        if (cloud.has_rgb() || cloud.has_intensity()) {
             // compute RGB map on host
             const auto rgb_map = this->compute_voxel_map(*cloud.rgb);
+            const auto intensity_map = this->compute_voxel_map(*cloud.intensities);
             // Voxel map to point cloud on host
-            this->voxel_map_to_cloud(voxel_map, rgb_map, result);
+            this->voxel_map_to_cloud(voxel_map, rgb_map, intensity_map, result);
         } else {
             // Voxel map to point cloud on host
             this->voxel_map_to_cloud(voxel_map, *result.points);
@@ -141,6 +142,9 @@ private:
     template <typename T, size_t AllocSize = 0>
     std::unordered_map<uint64_t, T> compute_voxel_map(const shared_vector<T, AllocSize>& data) const {
         const size_t N = data.size();
+        if (N == 0) {
+            return {};
+        }
 
         // mem_advise set to host
         {
@@ -204,14 +208,22 @@ private:
 
     void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
                             const std::unordered_map<uint64_t, RGBType>& voxel_map_rgb,
+                            const std::unordered_map<uint64_t, float>& voxel_map_intensity,
                             PointCloudShared& result) const {
         const size_t N = voxel_map.size();
+        const bool has_rgb = voxel_map_rgb.size() == N;
+        const bool has_intensity = voxel_map_intensity.size() == N;
         result.clear();
         result.resize_points(N);
-        result.resize_rgb(N);
-        // mem_advise set to host
         this->queue_.set_accessed_by_host(result.points_ptr(), N);
-        this->queue_.set_accessed_by_host(result.rgb_ptr(), N);
+        if (has_rgb) {
+            result.resize_rgb(voxel_map_rgb.size());
+            this->queue_.set_accessed_by_host(result.rgb_ptr(), voxel_map_rgb.size());
+        }
+        if (has_intensity) {
+            result.resize_intensities(voxel_map_intensity.size());
+            this->queue_.set_accessed_by_host(result.intensities_ptr(), voxel_map_intensity.size());
+        }
 
         // to point cloud
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
@@ -219,13 +231,19 @@ private:
         for (const auto& [voxel_idx, point] : voxel_map) {
             if (point.w() >= min_voxel_count) {
                 (*result.points)[idx] = point / point.w();
-                (*result.rgb)[idx] = voxel_map_rgb.at(voxel_idx) / point.w();
+                if (has_rgb) (*result.rgb)[idx] = voxel_map_rgb.at(voxel_idx) / point.w();
+                if (has_intensity) (*result.intensities)[idx] = voxel_map_intensity.at(voxel_idx) / point.w();
                 ++idx;
             }
         }
         // mem_advise clear
         this->queue_.clear_accessed_by_host(result.points_ptr(), N);
-        this->queue_.clear_accessed_by_host(result.rgb_ptr(), N);
+        if (has_rgb) {
+            this->queue_.clear_accessed_by_host(result.rgb_ptr(), voxel_map_rgb.size());
+        }
+        if (has_intensity) {
+            this->queue_.clear_accessed_by_host(result.intensities_ptr(), voxel_map_intensity.size());
+        }
     }
 };
 
