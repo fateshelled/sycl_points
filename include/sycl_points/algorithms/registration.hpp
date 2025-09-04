@@ -36,9 +36,9 @@ namespace {
 /// @brief Device copyable linealized result
 struct LinearlizedDevice {
     // H is 6x6 -> 16 + 16 + 4
-    sycl::float16* H0 = nullptr;  // H(0, 0) ~ H(3, 2)
-    sycl::float16* H1 = nullptr;  // H(4, 2) ~ H(1, 5)
-    sycl::float4* H2 = nullptr;   // H(2, 5) ~ H(5, 5)
+    sycl::float16* H0 = nullptr;  // H(0, 0) ~ H(2, 3)
+    sycl::float16* H1 = nullptr;  // H(2, 4) ~ H(5, 1)
+    sycl::float4* H2 = nullptr;   // H(5, 2) ~ H(5, 5)
     // b is 6x1 -> 3 + 3
     sycl::float3* b0 = nullptr;  // b(0) ~ b(2)
     sycl::float3* b1 = nullptr;  // b(3) ~ b(5)
