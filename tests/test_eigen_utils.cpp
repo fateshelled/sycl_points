@@ -208,7 +208,7 @@ TEST_F(EigenUtilsTest, outer) {
     const Eigen::Vector4f v2(5.0f, 6.0f, 7.0f, 8.0f);
 
     const Eigen::Matrix4f expected = v1 * v2.transpose();
-    const Eigen::Matrix4f result = outer(v1, v2);
+    const Eigen::Matrix4f result = outer<4>(v1, v2);
     expectMatrixNear(expected, result);
 }
 

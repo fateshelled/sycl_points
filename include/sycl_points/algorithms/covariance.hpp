@@ -21,14 +21,14 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
         const auto pt = point_ptr[index_ptr[i * k_correspondences + j]];
         eigen_utils::add_inplace<4, 1>(sum_points, pt);
 
-        const auto outer = eigen_utils::block3x3(eigen_utils::outer(pt, pt));
+        const auto outer = eigen_utils::block3x3(eigen_utils::outer<4>(pt, pt));
         eigen_utils::add_inplace<3, 3>(sum_outer, outer);
     }
 
     const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / k_correspondences);
 
     const auto cov3x3 = eigen_utils::ensure_symmetric<3>(
-        eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::block3x3(eigen_utils::outer(mean, sum_points))));
+        eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::block3x3(eigen_utils::outer<4>(mean, sum_points))));
 
     ret.setZero();
     ret(0, 0) = cov3x3(0, 0);

@@ -266,13 +266,15 @@ SYCL_EXTERNAL inline Eigen::Vector3f cross(const Eigen::Vector3f& u, const Eigen
 /// @param u 1st vector
 /// @param v 2nd vector
 /// @return Outer product result u ⊗ v
-SYCL_EXTERNAL inline Eigen::Matrix4f outer(const Eigen::Vector4f& u, const Eigen::Vector4f& v) {
-    Eigen::Matrix4f ret;
-#pragma unroll 4
-    for (size_t j = 0; j < 4; ++j) {
+template <size_t N>
+SYCL_EXTERNAL inline Eigen::Matrix<float, N, N> outer(const Eigen::Vector<float, N>& u,
+                                                      const Eigen::Vector<float, N>& v) {
+    Eigen::Matrix<float, N, N> ret;
+#pragma unroll N
+    for (size_t j = 0; j < N; ++j) {
         const float v_j = v(j);
-#pragma unroll 4
-        for (size_t i = 0; i < 4; ++i) {
+#pragma unroll N
+        for (size_t i = 0; i < N; ++i) {
             ret(i, j) = u(i) * v_j;
         }
     }
