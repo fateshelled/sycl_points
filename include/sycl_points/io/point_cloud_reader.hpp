@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -23,6 +24,7 @@ private:
         std::vector<std::string> properties;
         std::vector<std::string> property_types;  // Store property types
         int x_index = -1, y_index = -1, z_index = -1;
+        int rgb_r_index = -1, rgb_g_index = -1, rgb_b_index = -1;
 
         // Read header
         while (std::getline(file, line)) {
@@ -42,11 +44,11 @@ private:
 
                 // Property name is the last token
                 if (token2 == "list") {
-                    // List properties have different format
-                    std::string token4, token5;
-                    iss >> token3 >> token4 >> token5;
-                    properties.push_back(token5);
-                    property_types.push_back("list");
+                    // // List properties have different format
+                    // std::string token4, token5;
+                    // iss >> token3 >> token4 >> token5;
+                    // properties.push_back(token5);
+                    // property_types.push_back("list");
                 } else {
                     iss >> token3;
                     properties.push_back(token3);
@@ -56,12 +58,24 @@ private:
                 if (token3 == "x") x_index = properties.size() - 1;
                 if (token3 == "y") y_index = properties.size() - 1;
                 if (token3 == "z") z_index = properties.size() - 1;
+                if (token3 == "red") rgb_r_index = properties.size() - 1;
+                if (token3 == "green") rgb_g_index = properties.size() - 1;
+                if (token3 == "blue") rgb_b_index = properties.size() - 1;
             }
         }
 
         // When vertex data is not found
         if (vertex_count <= 0 || x_index == -1 || y_index == -1 || z_index == -1) {
             throw std::runtime_error("Invalid PLY format: missing vertex data");
+        }
+
+        points.points->clear();
+        points.points->reserve(vertex_count);
+
+        const bool has_rgb = (rgb_r_index >= 0 && rgb_g_index >= 0 && rgb_b_index >= 0);
+        points.rgb->clear();
+        if (has_rgb) {
+            points.rgb->reserve(vertex_count);
         }
 
         // For binary format
@@ -107,123 +121,106 @@ private:
                 }
 
                 // Extract x, y, z coordinates
-                T x = 0, y = 0, z = 0;
-
-                if (x_index >= 0) {
-                    const int offset = property_offsets[x_index];
-                    const std::string& type = property_types[x_index];
-
+                auto read_coordinate = [&](int idx) {
+                    const int offset = property_offsets[idx];
+                    const std::string& type = property_types[idx];
                     switch (type[0]) {
                         case 'f':  // float, float32
-                            x = static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
+                            return static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
                             break;
                         case 'd':  // double, float64
-                            x = static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
+                            return static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
                             break;
                         case 'i':  // int, int32, int16, int8
                             if (type == "int" || type == "int32") {
-                                x = static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
+                                return static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
                             } else if (type == "int16" || type == "short") {
-                                x = static_cast<T>(*reinterpret_cast<int16_t*>(&buffer[offset]));
+                                return static_cast<T>(*reinterpret_cast<int16_t*>(&buffer[offset]));
                             } else if (type == "int8" || type == "char") {
-                                x = static_cast<T>(*reinterpret_cast<int8_t*>(&buffer[offset]));
+                                return static_cast<T>(*reinterpret_cast<int8_t*>(&buffer[offset]));
                             }
                             break;
                         case 'u':  // uint, uint32, uint16, uint8, ushort, uchar
                             if (type == "uint" || type == "uint32") {
-                                x = static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
+                                return static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
                             } else if (type == "uint16" || type == "ushort") {
-                                x = static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
+                               return static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
                             } else if (type == "uint8" || type == "uchar") {
-                                x = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[offset]));
+                                return static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[offset]));
                             }
                             break;
                     }
-                }
+                    static_assert("unsupported type");
+                    return (T)0;
+                };
 
-                if (y_index >= 0) {
-                    const int offset = property_offsets[y_index];
-                    const std::string& type = property_types[y_index];
-
-                    switch (type[0]) {
-                        case 'f':  // float, float32
-                            y = static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
-                            break;
-                        case 'd':  // double, float64
-                            y = static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
-                            break;
-                        case 'i':  // int, int32, int16, int8
-                            if (type == "int" || type == "int32") {
-                                y = static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
-                            } else if (type == "int16" || type == "short") {
-                                y = static_cast<T>(*reinterpret_cast<int16_t*>(&buffer[offset]));
-                            } else if (type == "int8" || type == "char") {
-                                y = static_cast<T>(*reinterpret_cast<int8_t*>(&buffer[offset]));
-                            }
-                            break;
-                        case 'u':  // uint, uint32, uint16, uint8, ushort, uchar
-                            if (type == "uint" || type == "uint32") {
-                                y = static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
-                            } else if (type == "uint16" || type == "ushort") {
-                                y = static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
-                            } else if (type == "uint8" || type == "uchar") {
-                                y = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[offset]));
-                            }
-                            break;
-                    }
-                }
-
-                if (z_index >= 0) {
-                    const int offset = property_offsets[z_index];
-                    const std::string& type = property_types[z_index];
-
-                    switch (type[0]) {
-                        case 'f':  // float, float32
-                            z = static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
-                            break;
-                        case 'd':  // double, float64
-                            z = static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
-                            break;
-                        case 'i':  // int, int32, int16, int8
-                            if (type == "int" || type == "int32") {
-                                z = static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
-                            } else if (type == "int16" || type == "short") {
-                                z = static_cast<T>(*reinterpret_cast<int16_t*>(&buffer[offset]));
-                            } else if (type == "int8" || type == "char") {
-                                z = static_cast<T>(*reinterpret_cast<int8_t*>(&buffer[offset]));
-                            }
-                            break;
-                        case 'u':  // uint, uint32, uint16, uint8, ushort, uchar
-                            if (type == "uint" || type == "uint32") {
-                                z = static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
-                            } else if (type == "uint16" || type == "ushort") {
-                                z = static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
-                            } else if (type == "uint8" || type == "uchar") {
-                                z = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[offset]));
-                            }
-                            break;
-                    }
-                }
-
-                // Add point (moved outside if statement)
+                const T x = read_coordinate(x_index);
+                const T y = read_coordinate(y_index);
+                const T z = read_coordinate(z_index);
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
+
+                if (has_rgb) {
+                    auto read_color = [&](int idx) {
+                        const int offset = property_offsets[idx];
+                        const std::string& type = property_types[idx];
+                        switch (type[0]) {
+                            case 'i':
+                                if (type == "int" || type == "int32") {
+                                    return static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
+                                } else if (type == "int16" || type == "short") {
+                                    return static_cast<T>(*reinterpret_cast<int16_t*>(&buffer[offset]));
+                                } else {
+                                    return static_cast<T>(*reinterpret_cast<int8_t*>(&buffer[offset]));
+                                }
+                            case 'u':
+                                if (type == "uint" || type == "uint32") {
+                                    return static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
+                                } else if (type == "uint16" || type == "ushort") {
+                                    return static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
+                                } else {
+                                    return static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[offset]));
+                                }
+                            default:
+                                static_assert("unsupported type");
+                        }
+                        return (T)0;
+                    };
+                    const T r = read_color(rgb_r_index);
+                    const T g = read_color(rgb_g_index);
+                    const T b = read_color(rgb_b_index);
+                    points.rgb->emplace_back(r / 255.f, g / 255.f, b / 255.f, static_cast<T>(1.0));
+                }
             }
         } else {
             // For ASCII format
+            std::vector<double> raw_values(properties.size());
             for (int i = 0; i < vertex_count; i++) {
-                std::getline(file, line);
-                std::istringstream iss(line);
-
-                std::vector<double> values(properties.size());
-                for (size_t j = 0; j < properties.size(); j++) {
-                    iss >> values[j];
+                size_t count = 0;
+                while (count < properties.size()) {
+                    std::getline(file, line);
+                    std::istringstream iss(line);
+                    double raw_value = std::numeric_limits<double>::quiet_NaN();
+                    while (iss >> raw_value) {
+                        if (!std::isnan(raw_value)) {
+                            raw_values[count++] = raw_value;
+                        } else {
+                            break;
+                        }
+                        raw_value = std::numeric_limits<double>::quiet_NaN();
+                    }
                 }
 
-                T x = static_cast<T>(values[x_index]);
-                T y = static_cast<T>(values[y_index]);
-                T z = static_cast<T>(values[z_index]);
-
+                const T x = static_cast<T>(raw_values[x_index]);
+                const T y = static_cast<T>(raw_values[y_index]);
+                const T z = static_cast<T>(raw_values[z_index]);
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
+
+                if (has_rgb) {
+                    const T r = static_cast<T>(raw_values[rgb_r_index]) / 255.f;
+                    const T g = static_cast<T>(raw_values[rgb_g_index]) / 255.f;
+                    const T b = static_cast<T>(raw_values[rgb_b_index]) / 255.f;
+                    points.rgb->emplace_back(r, g, b, static_cast<T>(1.0));
+                }
             }
         }
     }
@@ -238,7 +235,9 @@ private:
         int fields_count = 0;
         std::vector<std::string> fields;
         std::vector<std::string> field_types;  // Store field types
+        std::vector<int> field_sizes_line;     // Store sizes from SIZE line
         int x_index = -1, y_index = -1, z_index = -1;
+        int rgb_r_index = -1, rgb_g_index = -1, rgb_b_index = -1;
         std::string data_type;
 
         while (std::getline(file, line)) {
@@ -256,12 +255,20 @@ private:
                     if (field == "x") x_index = fields.size() - 1;
                     if (field == "y") y_index = fields.size() - 1;
                     if (field == "z") z_index = fields.size() - 1;
+                    if (field == "r") rgb_r_index = fields.size() - 1;
+                    if (field == "g") rgb_g_index = fields.size() - 1;
+                    if (field == "b") rgb_b_index = fields.size() - 1;
                 }
                 fields_count = fields.size();
             } else if (keyword == "TYPE") {
                 std::string type;
                 while (iss >> type) {
                     field_types.push_back(type);
+                }
+            } else if (keyword == "SIZE") {
+                int size;
+                while (iss >> size) {
+                    field_sizes_line.push_back(size);
                 }
             } else if (keyword == "POINTS") {
                 iss >> point_count;
@@ -279,6 +286,19 @@ private:
             throw std::runtime_error("Invalid PCD format: missing point data");
         }
 
+        points.points->clear();
+        points.points->reserve(point_count);
+        points.rgb->clear();
+
+        bool has_rgb = false;
+        if (rgb_r_index >= 0 && rgb_g_index >= 0 && rgb_b_index >= 0) {
+            if (field_sizes_line.size() > static_cast<size_t>(std::max({rgb_r_index, rgb_g_index, rgb_b_index})) &&
+                field_sizes_line[rgb_r_index] == 1 && field_sizes_line[rgb_g_index] == 1 && field_sizes_line[rgb_b_index] == 1) {
+                has_rgb = true;
+                points.rgb->reserve(point_count);
+            }
+        }
+
         // For binary format
         if (is_binary) {
             // Calculate size and offset for each field
@@ -292,18 +312,15 @@ private:
             }
 
             for (int i = 0; i < fields_count; ++i) {
-                const std::string& type = i < field_types.size() ? field_types[i] : "F";
-                int size = 0;
-
-                // Determine PCD format type sizes
-                if (type == "I") {
-                    size = 4;  // int32
-                } else if (type == "U") {
-                    size = 4;  // uint32
-                } else if (type == "F") {
-                    size = 4;  // float32
-                } else if (type == "D") {
-                    size = 8;  // float64/double
+                int size = i < field_sizes_line.size() ? field_sizes_line[i] : 0;
+                if (size == 0) {
+                    const std::string& type = i < field_types.size() ? field_types[i] : "F";
+                    // Determine PCD format type sizes when SIZE is missing
+                    if (type == "I" || type == "U" || type == "F") {
+                        size = 4;  // int32/uint32/float32
+                    } else if (type == "D") {
+                        size = 8;  // float64/double
+                    }
                 }
 
                 field_sizes.push_back(size);
@@ -322,70 +339,41 @@ private:
                 }
 
                 // Extract x, y, z coordinates
-                T x = 0, y = 0, z = 0;
-
-                if (x_index >= 0 && x_index < field_types.size()) {
-                    const int offset = field_offsets[x_index];
-                    const std::string& type = field_types[x_index];
-
+                auto read_coordinate = [&](int idx) {
+                    const int offset = field_offsets[idx];
+                    const std::string& type = field_types[idx];
                     switch (type[0]) {
                         case 'F':  // float32
-                            x = static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
+                            return static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
                             break;
                         case 'D':  // double/float64
-                            x = static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
+                            return static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
                             break;
                         case 'I':  // int32
-                            x = static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
+                            return static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
                             break;
                         case 'U':  // uint32
-                            x = static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
+                            return static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
                             break;
                     }
-                }
+                    static_assert("unsupported type");
+                    return (T)0;
+                };
 
-                if (y_index >= 0 && y_index < field_types.size()) {
-                    const int offset = field_offsets[y_index];
-                    const std::string& type = field_types[y_index];
-
-                    switch (type[0]) {
-                        case 'F':  // float32
-                            y = static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
-                            break;
-                        case 'D':  // double/float64
-                            y = static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
-                            break;
-                        case 'I':  // int32
-                            y = static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
-                            break;
-                        case 'U':  // uint32
-                            y = static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
-                            break;
-                    }
-                }
-
-                if (z_index >= 0 && z_index < field_types.size()) {
-                    const int offset = field_offsets[z_index];
-                    const std::string& type = field_types[z_index];
-
-                    switch (type[0]) {
-                        case 'F':  // float32
-                            z = static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
-                            break;
-                        case 'D':  // double/float64
-                            z = static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
-                            break;
-                        case 'I':  // int32
-                            z = static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
-                            break;
-                        case 'U':  // uint32
-                            z = static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
-                            break;
-                    }
-                }
-
-                // Add point (moved outside if statement)
+                const T x = read_coordinate(x_index);
+                const T y = read_coordinate(y_index);
+                const T z = read_coordinate(z_index);
+                // Add point and color
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
+
+                if (has_rgb) {
+                    // RGB fieid is uint8_t
+                    const T r = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[field_offsets[rgb_r_index]]));
+                    const T g = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[field_offsets[rgb_g_index]]));
+                    const T b = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[field_offsets[rgb_b_index]]));
+                    points.rgb->emplace_back(r / 255.f, g / 255.f, b / 255.f, static_cast<T>(1.0));
+                }
+
             }
         } else {
             // For ASCII format
@@ -401,8 +389,14 @@ private:
                 T x = static_cast<T>(values[x_index]);
                 T y = static_cast<T>(values[y_index]);
                 T z = static_cast<T>(values[z_index]);
-
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
+
+                if (has_rgb) {
+                    T r = static_cast<T>(values[rgb_r_index]) / 255.f;
+                    T g = static_cast<T>(values[rgb_g_index]) / 255.f;
+                    T b = static_cast<T>(values[rgb_b_index]) / 255.f;
+                    points.rgb->emplace_back(r, g, b, static_cast<T>(1.0));
+                }
             }
         }
     }
