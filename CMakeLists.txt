@@ -132,6 +132,7 @@ if (BUILD_TESTS)
       -fsycl
       -fsycl-targets=${SYCL_TARGET_FLAGS}
     )
+    add_test(NAME ${EXEC_NAME} COMMAND ${EXEC_NAME})
   endfunction()
 
   add_test_exec(test_eigen_utils)

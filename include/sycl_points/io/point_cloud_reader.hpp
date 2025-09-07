@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -23,6 +24,7 @@ private:
         std::vector<std::string> properties;
         std::vector<std::string> property_types;  // Store property types
         int x_index = -1, y_index = -1, z_index = -1;
+        int r_index = -1, g_index = -1, b_index = -1;
 
         // Read header
         while (std::getline(file, line)) {
@@ -56,12 +58,20 @@ private:
                 if (token3 == "x") x_index = properties.size() - 1;
                 if (token3 == "y") y_index = properties.size() - 1;
                 if (token3 == "z") z_index = properties.size() - 1;
+                if (token3 == "red") r_index = properties.size() - 1;
+                if (token3 == "green") g_index = properties.size() - 1;
+                if (token3 == "blue") b_index = properties.size() - 1;
             }
         }
 
         // When vertex data is not found
         if (vertex_count <= 0 || x_index == -1 || y_index == -1 || z_index == -1) {
             throw std::runtime_error("Invalid PLY format: missing vertex data");
+        }
+
+        const bool has_rgb = r_index >= 0 && g_index >= 0 && b_index >= 0;
+        if (has_rgb) {
+            points.rgb->reserve(vertex_count);
         }
 
         // For binary format
@@ -108,6 +118,7 @@ private:
 
                 // Extract x, y, z coordinates
                 T x = 0, y = 0, z = 0;
+                T r = 0, g = 0, b = 0;
 
                 if (x_index >= 0) {
                     const int offset = property_offsets[x_index];
@@ -205,8 +216,41 @@ private:
                     }
                 }
 
-                // Add point (moved outside if statement)
+                if (has_rgb) {
+                    auto read_color = [&](int idx) {
+                        const int offset = property_offsets[idx];
+                        const std::string& type = property_types[idx];
+                        switch (type[0]) {
+                            case 'i':
+                                if (type == "int" || type == "int32") {
+                                    return static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
+                                } else if (type == "int16" || type == "short") {
+                                    return static_cast<T>(*reinterpret_cast<int16_t*>(&buffer[offset]));
+                                } else {
+                                    return static_cast<T>(*reinterpret_cast<int8_t*>(&buffer[offset]));
+                                }
+                            case 'u':
+                                if (type == "uint" || type == "uint32") {
+                                    return static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
+                                } else if (type == "uint16" || type == "ushort") {
+                                    return static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
+                                } else {
+                                    return static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[offset]));
+                                }
+                            default:
+                                return static_cast<T>(0);
+                        }
+                    };
+                    r = read_color(r_index);
+                    g = read_color(g_index);
+                    b = read_color(b_index);
+                }
+
+                // Add point and color
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
+                if (has_rgb) {
+                    points.rgb->emplace_back(r / 255.f, g / 255.f, b / 255.f, static_cast<T>(1.0));
+                }
             }
         } else {
             // For ASCII format
@@ -224,6 +268,12 @@ private:
                 T z = static_cast<T>(values[z_index]);
 
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
+                if (has_rgb) {
+                    T r = static_cast<T>(values[r_index]) / 255.f;
+                    T g = static_cast<T>(values[g_index]) / 255.f;
+                    T b = static_cast<T>(values[b_index]) / 255.f;
+                    points.rgb->emplace_back(r, g, b, static_cast<T>(1.0));
+                }
             }
         }
     }
@@ -238,7 +288,9 @@ private:
         int fields_count = 0;
         std::vector<std::string> fields;
         std::vector<std::string> field_types;  // Store field types
+        std::vector<int> field_sizes_line;     // Store sizes from SIZE line
         int x_index = -1, y_index = -1, z_index = -1;
+        int r_index = -1, g_index = -1, b_index = -1;
         std::string data_type;
 
         while (std::getline(file, line)) {
@@ -256,12 +308,20 @@ private:
                     if (field == "x") x_index = fields.size() - 1;
                     if (field == "y") y_index = fields.size() - 1;
                     if (field == "z") z_index = fields.size() - 1;
+                    if (field == "r") r_index = fields.size() - 1;
+                    if (field == "g") g_index = fields.size() - 1;
+                    if (field == "b") b_index = fields.size() - 1;
                 }
                 fields_count = fields.size();
             } else if (keyword == "TYPE") {
                 std::string type;
                 while (iss >> type) {
                     field_types.push_back(type);
+                }
+            } else if (keyword == "SIZE") {
+                int size;
+                while (iss >> size) {
+                    field_sizes_line.push_back(size);
                 }
             } else if (keyword == "POINTS") {
                 iss >> point_count;
@@ -279,6 +339,15 @@ private:
             throw std::runtime_error("Invalid PCD format: missing point data");
         }
 
+        bool has_rgb = false;
+        if (r_index >= 0 && g_index >= 0 && b_index >= 0) {
+            if (field_sizes_line.size() > static_cast<size_t>(std::max({r_index, g_index, b_index})) &&
+                field_sizes_line[r_index] == 1 && field_sizes_line[g_index] == 1 && field_sizes_line[b_index] == 1) {
+                has_rgb = true;
+                points.rgb->reserve(point_count);
+            }
+        }
+
         // For binary format
         if (is_binary) {
             // Calculate size and offset for each field
@@ -292,18 +361,15 @@ private:
             }
 
             for (int i = 0; i < fields_count; ++i) {
-                const std::string& type = i < field_types.size() ? field_types[i] : "F";
-                int size = 0;
-
-                // Determine PCD format type sizes
-                if (type == "I") {
-                    size = 4;  // int32
-                } else if (type == "U") {
-                    size = 4;  // uint32
-                } else if (type == "F") {
-                    size = 4;  // float32
-                } else if (type == "D") {
-                    size = 8;  // float64/double
+                int size = i < field_sizes_line.size() ? field_sizes_line[i] : 0;
+                if (size == 0) {
+                    const std::string& type = i < field_types.size() ? field_types[i] : "F";
+                    // Determine PCD format type sizes when SIZE is missing
+                    if (type == "I" || type == "U" || type == "F") {
+                        size = 4;  // int32/uint32/float32
+                    } else if (type == "D") {
+                        size = 8;  // float64/double
+                    }
                 }
 
                 field_sizes.push_back(size);
@@ -323,6 +389,7 @@ private:
 
                 // Extract x, y, z coordinates
                 T x = 0, y = 0, z = 0;
+                T r = 0, g = 0, b = 0;
 
                 if (x_index >= 0 && x_index < field_types.size()) {
                     const int offset = field_offsets[x_index];
@@ -384,8 +451,17 @@ private:
                     }
                 }
 
-                // Add point (moved outside if statement)
+                if (has_rgb) {
+                    r = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[field_offsets[r_index]]));
+                    g = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[field_offsets[g_index]]));
+                    b = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[field_offsets[b_index]]));
+                }
+
+                // Add point and color
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
+                if (has_rgb) {
+                    points.rgb->emplace_back(r / 255.f, g / 255.f, b / 255.f, static_cast<T>(1.0));
+                }
             }
         } else {
             // For ASCII format
@@ -403,6 +479,12 @@ private:
                 T z = static_cast<T>(values[z_index]);
 
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
+                if (has_rgb) {
+                    T r = static_cast<T>(values[r_index]) / 255.f;
+                    T g = static_cast<T>(values[g_index]) / 255.f;
+                    T b = static_cast<T>(values[b_index]) / 255.f;
+                    points.rgb->emplace_back(r, g, b, static_cast<T>(1.0));
+                }
             }
         }
     }
