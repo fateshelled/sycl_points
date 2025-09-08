@@ -59,7 +59,7 @@ private:
     template <typename PointCloud>
     static void writePLY(std::ofstream& file, const PointCloud& cloud, bool binary) {
         const size_t N = cloud.size();
-        const bool has_normals = cloud.has_normal();
+        const bool has_rgb = cloud.has_rgb();
 
         // Count valid points first
         const size_t valid_count = countValidPoints(cloud);
@@ -71,8 +71,8 @@ private:
         // Set memory access hints for shared memory
         if constexpr (std::is_same_v<PointCloud, PointCloudShared>) {
             cloud.queue.set_accessed_by_host(cloud.points_ptr(), N);
-            if (has_normals) {
-                cloud.queue.set_accessed_by_host(cloud.normals_ptr(), N);
+            if (has_rgb) {
+                cloud.queue.set_accessed_by_host(cloud.rgb_ptr(), N);
             }
         }
 
@@ -88,10 +88,10 @@ private:
         file << "property float y\n";
         file << "property float z\n";
 
-        if (has_normals) {
-            file << "property float nx\n";
-            file << "property float ny\n";
-            file << "property float nz\n";
+        if (has_rgb) {
+            file << "property uchar red\n";
+            file << "property uchar green\n";
+            file << "property uchar blue\n";
         }
 
         file << "end_header\n";
@@ -110,10 +110,12 @@ private:
                 float coords[3] = {point.x(), point.y(), point.z()};
                 file.write(reinterpret_cast<const char*>(coords), sizeof(coords));
 
-                if (has_normals) {
-                    const auto& normal = (*cloud.normals)[i];
-                    float normals[3] = {normal.x(), normal.y(), normal.z()};
-                    file.write(reinterpret_cast<const char*>(normals), sizeof(normals));
+                if (has_rgb) {
+                    const auto& c = (*cloud.rgb)[i];
+                    const uint8_t rgb[3] = {static_cast<uint8_t>(std::clamp(c.x(), 0.f, 1.f) * 255.f),
+                                            static_cast<uint8_t>(std::clamp(c.y(), 0.f, 1.f) * 255.f),
+                                            static_cast<uint8_t>(std::clamp(c.z(), 0.f, 1.f) * 255.f)};
+                    file.write(reinterpret_cast<const char*>(rgb), sizeof(rgb));
                 }
             }
         } else {
@@ -125,9 +127,12 @@ private:
 
                 file << point.x() << " " << point.y() << " " << point.z();
 
-                if (has_normals) {
-                    const auto& normal = (*cloud.normals)[i];
-                    file << " " << normal.x() << " " << normal.y() << " " << normal.z();
+                if (has_rgb) {
+                    const auto& c = (*cloud.rgb)[i];
+                    file << " "  //
+                         << static_cast<int>(std::clamp(c.x(), 0.f, 1.f) * 255.f) << " "
+                         << static_cast<int>(std::clamp(c.y(), 0.f, 1.f) * 255.f) << " "
+                         << static_cast<int>(std::clamp(c.z(), 0.f, 1.f) * 255.f);
                 }
                 file << "\n";
             }
@@ -136,8 +141,8 @@ private:
         // Clear memory access hints for shared memory
         if constexpr (std::is_same_v<PointCloud, PointCloudShared>) {
             cloud.queue.clear_accessed_by_host(cloud.points_ptr(), N);
-            if (has_normals) {
-                cloud.queue.clear_accessed_by_host(cloud.normals_ptr(), N);
+            if (has_rgb) {
+                cloud.queue.clear_accessed_by_host(cloud.rgb_ptr(), N);
             }
         }
 
@@ -150,7 +155,7 @@ private:
     template <typename PointCloud>
     static void writePCD(std::ofstream& file, const PointCloud& cloud, bool binary) {
         const size_t N = cloud.size();
-        const bool has_normals = cloud.has_normal();
+        const bool has_rgb = cloud.has_rgb();
 
         // Count valid points first
         const size_t valid_count = countValidPoints(cloud);
@@ -162,26 +167,38 @@ private:
         // Set memory access hints for shared memory
         if constexpr (std::is_same_v<PointCloud, PointCloudShared>) {
             cloud.queue.set_accessed_by_host(cloud.points_ptr(), N);
-            if (has_normals) {
-                cloud.queue.set_accessed_by_host(cloud.normals_ptr(), N);
+            if (has_rgb) {
+                cloud.queue.set_accessed_by_host(cloud.rgb_ptr(), N);
             }
         }
 
         // Write PCD header
-        file << "# .PCD v0.7 - Point Cloud Data file format\n";
-        file << "VERSION 0.7\n";
+        file << "# .PCD v.7 - Point Cloud Data file format\n";
+        file << "VERSION .7\n";
 
-        if (has_normals) {
-            file << "FIELDS x y z nx ny nz\n";
-            file << "SIZE 4 4 4 4 4 4\n";
-            file << "TYPE F F F F F F\n";
-            file << "COUNT 1 1 1 1 1 1\n";
-        } else {
-            file << "FIELDS x y z\n";
-            file << "SIZE 4 4 4\n";
-            file << "TYPE F F F\n";
-            file << "COUNT 1 1 1\n";
+        file << "FIELDS x y z";
+        if (has_rgb) {
+            file << " rgb";
         }
+        file << "\n";
+
+        file << "SIZE 4 4 4";
+        if (has_rgb) {
+            file << " 4";
+        }
+        file << "\n";
+
+        file << "TYPE F F F";
+        if (has_rgb) {
+            file << " U";
+        }
+        file << "\n";
+
+        file << "COUNT 1 1 1";
+        if (has_rgb) {
+            file << " 1";
+        }
+        file << "\n";
 
         file << "WIDTH " << valid_count << "\n";
         file << "HEIGHT 1\n";
@@ -208,10 +225,12 @@ private:
                 float coords[3] = {point.x(), point.y(), point.z()};
                 file.write(reinterpret_cast<const char*>(coords), sizeof(coords));
 
-                if (has_normals) {
-                    const auto& normal = (*cloud.normals)[i];
-                    float normals[3] = {normal.x(), normal.y(), normal.z()};
-                    file.write(reinterpret_cast<const char*>(normals), sizeof(normals));
+                if (has_rgb) {
+                    const auto& color = (*cloud.rgb)[i];
+                    const int32_t rgb = (static_cast<uint32_t>(color.x() * 255.0f) << 16) |
+                                        (static_cast<uint32_t>(color.y() * 255.0f) << 8) |
+                                        (static_cast<uint32_t>(color.z() * 255.0f));
+                    file.write(reinterpret_cast<const char*>(&rgb), sizeof(rgb));
                 }
             }
         } else {
@@ -223,9 +242,12 @@ private:
 
                 file << point.x() << " " << point.y() << " " << point.z();
 
-                if (has_normals) {
-                    const auto& normal = (*cloud.normals)[i];
-                    file << " " << normal.x() << " " << normal.y() << " " << normal.z();
+                if (has_rgb) {
+                    const auto& color = (*cloud.rgb)[i];
+                    const int32_t rgb = (static_cast<uint32_t>(color.x() * 255.0f) << 16) |
+                                        (static_cast<uint32_t>(color.y() * 255.0f) << 8) |
+                                        (static_cast<uint32_t>(color.z() * 255.0f));
+                    file << " " << rgb;
                 }
                 file << "\n";
             }
@@ -234,8 +256,8 @@ private:
         // Clear memory access hints for shared memory
         if constexpr (std::is_same_v<PointCloud, PointCloudShared>) {
             cloud.queue.clear_accessed_by_host(cloud.points_ptr(), N);
-            if (has_normals) {
-                cloud.queue.clear_accessed_by_host(cloud.normals_ptr(), N);
+            if (has_rgb) {
+                cloud.queue.clear_accessed_by_host(cloud.rgb_ptr(), N);
             }
         }
 
