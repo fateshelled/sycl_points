@@ -112,10 +112,9 @@ private:
 
                 if (has_rgb) {
                     const auto& c = (*cloud.rgb)[i];
-                    uint8_t rgb[3] = {
-                        static_cast<uint8_t>(std::clamp(c.x(), 0.f, 1.f) * 255.f),
-                        static_cast<uint8_t>(std::clamp(c.y(), 0.f, 1.f) * 255.f),
-                        static_cast<uint8_t>(std::clamp(c.z(), 0.f, 1.f) * 255.f)};
+                    const uint8_t rgb[3] = {static_cast<uint8_t>(std::clamp(c.x(), 0.f, 1.f) * 255.f),
+                                            static_cast<uint8_t>(std::clamp(c.y(), 0.f, 1.f) * 255.f),
+                                            static_cast<uint8_t>(std::clamp(c.z(), 0.f, 1.f) * 255.f)};
                     file.write(reinterpret_cast<const char*>(rgb), sizeof(rgb));
                 }
             }
@@ -130,7 +129,7 @@ private:
 
                 if (has_rgb) {
                     const auto& c = (*cloud.rgb)[i];
-                    file << " "
+                    file << " "  //
                          << static_cast<int>(std::clamp(c.x(), 0.f, 1.f) * 255.f) << " "
                          << static_cast<int>(std::clamp(c.y(), 0.f, 1.f) * 255.f) << " "
                          << static_cast<int>(std::clamp(c.z(), 0.f, 1.f) * 255.f);
@@ -174,12 +173,32 @@ private:
         }
 
         // Write PCD header
-        file << "# .PCD v0.7 - Point Cloud Data file format\n";
-        file << "VERSION 0.7\n";
-        file << "FIELDS x y z r g b\n";
-        file << "SIZE 4 4 4 1 1 1\n";
-        file << "TYPE F F F U U U\n";
-        file << "COUNT 1 1 1 1 1 1\n";
+        file << "# .PCD v.7 - Point Cloud Data file format\n";
+        file << "VERSION .7\n";
+
+        file << "FIELDS x y z";
+        if (has_rgb) {
+            file << " rgb";
+        }
+        file << "\n";
+
+        file << "SIZE 4 4 4";
+        if (has_rgb) {
+            file << " 4";
+        }
+        file << "\n";
+
+        file << "TYPE F F F";
+        if (has_rgb) {
+            file << " U";
+        }
+        file << "\n";
+
+        file << "COUNT 1 1 1";
+        if (has_rgb) {
+            file << " 1";
+        }
+        file << "\n";
 
         file << "WIDTH " << valid_count << "\n";
         file << "HEIGHT 1\n";
@@ -205,14 +224,14 @@ private:
 
                 float coords[3] = {point.x(), point.y(), point.z()};
                 file.write(reinterpret_cast<const char*>(coords), sizeof(coords));
-                uint8_t rgb[3] = {0, 0, 0};
+
                 if (has_rgb) {
-                    const auto& c = (*cloud.rgb)[i];
-                    rgb[0] = static_cast<uint8_t>(std::clamp(c.x(), 0.f, 1.f) * 255.f);
-                    rgb[1] = static_cast<uint8_t>(std::clamp(c.y(), 0.f, 1.f) * 255.f);
-                    rgb[2] = static_cast<uint8_t>(std::clamp(c.z(), 0.f, 1.f) * 255.f);
+                    const auto& color = (*cloud.rgb)[i];
+                    const int32_t rgb = (static_cast<uint32_t>(color.x() * 255.0f) << 16) |
+                                        (static_cast<uint32_t>(color.y() * 255.0f) << 8) |
+                                        (static_cast<uint32_t>(color.z() * 255.0f));
+                    file.write(reinterpret_cast<const char*>(&rgb), sizeof(rgb));
                 }
-                file.write(reinterpret_cast<const char*>(rgb), sizeof(rgb));
             }
         } else {
             // ASCII format
@@ -222,14 +241,13 @@ private:
                 if (!isValidPoint(point)) continue;
 
                 file << point.x() << " " << point.y() << " " << point.z();
+
                 if (has_rgb) {
-                    const auto& c = (*cloud.rgb)[i];
-                    file << " "
-                         << static_cast<int>(std::clamp(c.x(), 0.f, 1.f) * 255.f) << " "
-                         << static_cast<int>(std::clamp(c.y(), 0.f, 1.f) * 255.f) << " "
-                         << static_cast<int>(std::clamp(c.z(), 0.f, 1.f) * 255.f);
-                } else {
-                    file << " 0 0 0";
+                    const auto& color = (*cloud.rgb)[i];
+                    const int32_t rgb = (static_cast<uint32_t>(color.x() * 255.0f) << 16) |
+                                        (static_cast<uint32_t>(color.y() * 255.0f) << 8) |
+                                        (static_cast<uint32_t>(color.z() * 255.0f));
+                    file << " " << rgb;
                 }
                 file << "\n";
             }
