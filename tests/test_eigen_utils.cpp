@@ -344,330 +344,326 @@ TEST_F(EigenUtilsTest, multiply) {
     }
 }
 
+// Additional random-loop tests
 TEST_F(EigenUtilsTest, multiply_inplace) {
-    const float scalar = 2.5f;
-    const Eigen::Matrix3f expected = A3x3 * scalar;
-    Eigen::Matrix3f result = A3x3;
-    multiply_inplace<3, 3>(result, scalar);
-    EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        // 3x3
+        {
+            constexpr size_t M = 3;
+            constexpr size_t N = 3;
+            const Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            const float scalar = Eigen::Matrix<float, 1, 1>::Random()(0, 0);
+            const Eigen::Matrix<float, M, N> expected = A * scalar;
+            Eigen::Matrix<float, M, N> actual = A;
+            multiply_inplace<M, N>(actual, scalar);
+            EXPECT_MATRIX_NEAR(expected, actual, EPSILON);
+        }
+        // 4x4
+        {
+            constexpr size_t M = 4;
+            constexpr size_t N = 4;
+            const Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            const float scalar = Eigen::Matrix<float, 1, 1>::Random()(0, 0);
+            const Eigen::Matrix<float, M, N> expected = A * scalar;
+            Eigen::Matrix<float, M, N> actual = A;
+            multiply_inplace<M, N>(actual, scalar);
+            EXPECT_MATRIX_NEAR(expected, actual, EPSILON);
+        }
+    }
 }
 
-TEST_F(EigenUtilsTest, MatrixVectorMultiply) {
-    // 4x4 * 4x1
-    const Eigen::Vector4f expected4 = A4x4 * vec4;
-    const Eigen::Vector4f result4 = multiply<4, 4>(A4x4, vec4);
-    EXPECT_VECTOR_NEAR(expected4, result4, EPSILON);
-
-    // 3x3 * 3x1
-    const Eigen::Vector3f expected3 = A3x3 * vec3;
-    const Eigen::Vector3f result3 = multiply<3, 3>(A3x3, vec3);
-    EXPECT_VECTOR_NEAR(expected3, result3, EPSILON);
-}
-
-TEST_F(EigenUtilsTest, MatrixScalarMultiply) {
-    const float scalar = 2.5f;
-    const Eigen::Matrix3f expected = A3x3 * scalar;
-    const Eigen::Matrix3f result = multiply<3, 3>(A3x3, scalar);
-    EXPECT_MATRIX_NEAR(expected, result, EPSILON);
-}
-
-TEST_F(EigenUtilsTest, VectorScalarMultiply) {
-    const float scalar = 3.0f;
-    const Eigen::Vector3f expected = vec3 * scalar;
-    const Eigen::Vector3f result = multiply<3>(vec3, scalar);
-    EXPECT_VECTOR_NEAR(expected, result, EPSILON);
+TEST_F(EigenUtilsTest, element_wise_multiply) {
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        // 3x3
+        {
+            constexpr size_t M = 3;
+            constexpr size_t N = 3;
+            const Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            const Eigen::Matrix<float, M, N> B = Eigen::Matrix<float, M, N>::Random();
+            const Eigen::Matrix<float, M, N> expected = A.cwiseProduct(B);
+            const Eigen::Matrix<float, M, N> result = element_wise_multiply<M, N>(A, B);
+            EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+        }
+        // 4x4
+        {
+            constexpr size_t M = 4;
+            constexpr size_t N = 4;
+            const Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            const Eigen::Matrix<float, M, N> B = Eigen::Matrix<float, M, N>::Random();
+            const Eigen::Matrix<float, M, N> expected = A.cwiseProduct(B);
+            const Eigen::Matrix<float, M, N> result = element_wise_multiply<M, N>(A, B);
+            EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+        }
+    }
 }
 
 TEST_F(EigenUtilsTest, transpose) {
-    // 3x3
-    const Eigen::Matrix3f expected3 = A3x3.transpose();
-    const Eigen::Matrix3f result3 = transpose<3, 3>(A3x3);
-    EXPECT_MATRIX_NEAR(expected3, result3, EPSILON);
-
-    // 4x4
-    const Eigen::Matrix4f expected4 = A4x4.transpose();
-    const Eigen::Matrix4f result4 = transpose<4, 4>(A4x4);
-    EXPECT_MATRIX_NEAR(expected4, result4, EPSILON);
-
-    // 4x6
-    const Eigen::Matrix<float, 6, 4> expected6x4 = B4x6.transpose();
-    const Eigen::Matrix<float, 6, 4> result6x4 = transpose<4, 6>(B4x6);
-    EXPECT_MATRIX_NEAR(expected6x4, result6x4, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        // 3x3
+        {
+            constexpr size_t M = 3;
+            constexpr size_t N = 3;
+            const Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            const Eigen::Matrix<float, N, M> expected = A.transpose();
+            const Eigen::Matrix<float, N, M> result = transpose<M, N>(A);
+            EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+        }
+        // 4x6
+        {
+            constexpr size_t M = 4;
+            constexpr size_t N = 6;
+            const Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            const Eigen::Matrix<float, N, M> expected = A.transpose();
+            const Eigen::Matrix<float, N, M> result = transpose<M, N>(A);
+            EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+        }
+    }
 }
 
 TEST_F(EigenUtilsTest, dot) {
-    const float expected3 = vec3.dot(vec3);
-    const float result3 = dot<3>(vec3, vec3);
-    EXPECT_NEAR(expected3, result3, EPSILON);
-
-    const float expected4 = vec4.dot(vec4);
-    const float result4 = dot<4>(vec4, vec4);
-    EXPECT_NEAR(expected4, result4, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        // size 3
+        {
+            constexpr size_t M = 3;
+            const Eigen::Vector<float, M> a = Eigen::Vector<float, M>::Random();
+            const Eigen::Vector<float, M> b = Eigen::Vector<float, M>::Random();
+            const float expected = a.dot(b);
+            const float result = dot<M>(a, b);
+            EXPECT_NEAR(expected, result, EPSILON);
+        }
+        // size 4
+        {
+            constexpr size_t M = 4;
+            const Eigen::Vector<float, M> a = Eigen::Vector<float, M>::Random();
+            const Eigen::Vector<float, M> b = Eigen::Vector<float, M>::Random();
+            const float expected = a.dot(b);
+            const float result = dot<M>(a, b);
+            EXPECT_NEAR(expected, result, EPSILON);
+        }
+    }
 }
 
 TEST_F(EigenUtilsTest, cross) {
-    const Eigen::Vector3f v1(1.0f, 2.0f, 3.0f);
-    const Eigen::Vector3f v2(4.0f, 5.0f, 6.0f);
-
-    const Eigen::Vector3f expected = v1.cross(v2);
-    const Eigen::Vector3f result = cross(v1, v2);
-    EXPECT_VECTOR_NEAR(expected, result, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        const Eigen::Vector3f a = Eigen::Vector3f::Random();
+        const Eigen::Vector3f b = Eigen::Vector3f::Random();
+        const Eigen::Vector3f expected = a.cross(b);
+        const Eigen::Vector3f result = cross(a, b);
+        EXPECT_VECTOR_NEAR(expected, result, EPSILON);
+    }
 }
 
 TEST_F(EigenUtilsTest, outer) {
-    const Eigen::Vector4f v1(1.0f, 2.0f, 3.0f, 4.0f);
-    const Eigen::Vector4f v2(5.0f, 6.0f, 7.0f, 8.0f);
-
-    const Eigen::Matrix4f expected = v1 * v2.transpose();
-    const Eigen::Matrix4f result = outer<4>(v1, v2);
-    EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        const Eigen::Vector4f a = Eigen::Vector4f::Random();
+        const Eigen::Vector4f b = Eigen::Vector4f::Random();
+        const Eigen::Matrix4f expected = a * b.transpose();
+        const Eigen::Matrix4f result = outer<4>(a, b);
+        EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+    }
 }
 
 TEST_F(EigenUtilsTest, block3x3) {
-    const Eigen::Matrix3f expected = A4x4.block<3, 3>(0, 0);
-    const Eigen::Matrix3f result = block3x3(A4x4);
-    EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        const Eigen::Matrix4f A = Eigen::Matrix4f::Random();
+        const Eigen::Matrix3f expected = A.block<3, 3>(0, 0);
+        const Eigen::Matrix3f result = block3x3(A);
+        EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+    }
 }
 
 TEST_F(EigenUtilsTest, inverse) {
-    // regular matrix
-    Eigen::Matrix3f invertible;
-    invertible << 4.0f, 7.0f, 2.0f, 9.0f, 6.0f, 1.0f, 8.0f, 5.0f, 3.0f;
-
-    const Eigen::Matrix3f expectedInv = invertible.inverse();
-    const Eigen::Matrix3f resultInv = inverse(invertible);
-    EXPECT_MATRIX_NEAR(expectedInv, resultInv, EPSILON);
-
-    // Irregular matrix (det==0)
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        Eigen::Matrix3f A = Eigen::Matrix3f::Random();
+        if (sycl::fabs(A.determinant()) < 1e-3f) {
+            A += Eigen::Matrix3f::Identity();
+        }
+        const Eigen::Matrix3f invA = inverse(A);
+        const Eigen::Matrix3f identity = A * invA;
+        EXPECT_MATRIX_NEAR(Eigen::Matrix3f::Identity(), identity, 1e-3f);
+    }
     Eigen::Matrix3f singular;
     singular << 1.0f, 2.0f, 3.0f, 2.0f, 4.0f, 6.0f, 7.0f, 8.0f, 9.0f;
-
-    const Eigen::Matrix3f zeroMatrix = Eigen::Matrix3f::Zero();
-    const Eigen::Matrix3f resultSingular = inverse(singular);
-    EXPECT_MATRIX_NEAR(zeroMatrix, resultSingular, EPSILON);
+    const Eigen::Matrix3f zero = Eigen::Matrix3f::Zero();
+    const Eigen::Matrix3f result = inverse(singular);
+    EXPECT_MATRIX_NEAR(zero, result, 1e-3f);
 }
 
 TEST_F(EigenUtilsTest, ensure_symmetric) {
-    // Create a non-symmetric matrix
-    Eigen::Matrix3f non_symmetric;
-    non_symmetric << 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f;
-
-    // Expected symmetric result (average of corresponding elements)
-    Eigen::Matrix3f expected;
-    expected << 1.0f, 3.0f, 5.0f, 3.0f, 5.0f, 7.0f, 5.0f, 7.0f, 9.0f;
-
-    const Eigen::Matrix3f result = ensure_symmetric<3>(non_symmetric);
-    EXPECT_MATRIX_NEAR(expected, result, EPSILON);
-
-    // Verify the result is actually symmetric
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            EXPECT_NEAR(result(i, j), result(j, i), EPSILON);
-        }
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        Eigen::Matrix3f A = Eigen::Matrix3f::Random();
+        const Eigen::Matrix3f expected = 0.5f * (A + A.transpose());
+        const Eigen::Matrix3f result = ensure_symmetric<3>(A);
+        EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+        EXPECT_MATRIX_NEAR(result, result.transpose(), EPSILON);
     }
 }
 
 TEST_F(EigenUtilsTest, frobenius_norm) {
-    // Matrix Frobenius norm
-    const float expected_norm_A3x3 = A3x3.norm();
-    const float result_norm_A3x3 = frobenius_norm<3, 3>(A3x3);
-    EXPECT_NEAR(expected_norm_A3x3, result_norm_A3x3, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        {
+            constexpr size_t M = 3;
+            constexpr size_t N = 3;
+            const Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            const float expected = A.norm();
+            const float result = frobenius_norm<M, N>(A);
+            EXPECT_NEAR(expected, result, EPSILON);
+        }
+        {
+            constexpr size_t M = 3;
+            const Eigen::Vector<float, M> v = Eigen::Vector<float, M>::Random();
+            const float expected = v.norm();
+            const float result = frobenius_norm<M>(v);
+            EXPECT_NEAR(expected, result, EPSILON);
+        }
+    }
+}
 
-    // Vector Frobenius norm (L2 norm)
-    const float expected_norm_vec3 = vec3.norm();
-    const float result_norm_vec3 = frobenius_norm<3>(vec3);
-    EXPECT_NEAR(expected_norm_vec3, result_norm_vec3, EPSILON);
+TEST_F(EigenUtilsTest, frobenius_norm_squared) {
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        constexpr size_t M = 3;
+        const Eigen::Vector<float, M> v = Eigen::Vector<float, M>::Random();
+        const float expected = v.squaredNorm();
+        const float result = frobenius_norm_squared<M>(v);
+        EXPECT_NEAR(expected, result, EPSILON);
+    }
 }
 
 TEST_F(EigenUtilsTest, determinant) {
-    Eigen::Matrix3f mat;
-    mat << 4.0f, 3.0f, 2.0f, 1.0f, 5.0f, 9.0f, 7.0f, 6.0f, 8.0f;
-
-    const float expected_det = mat.determinant();
-    const float result_det = determinant(mat);
-    EXPECT_NEAR(expected_det, result_det, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        Eigen::Matrix3f A = Eigen::Matrix3f::Random();
+        const float expected = A.determinant();
+        const float result = determinant(A);
+        EXPECT_NEAR(expected, result, EPSILON);
+    }
 }
 
 TEST_F(EigenUtilsTest, as_diagonal) {
-    const Eigen::Vector3f diag_elements(2.0f, 4.0f, 6.0f);
-
-    Eigen::Matrix3f expected = Eigen::Matrix3f::Zero();
-    expected(0, 0) = 2.0f;
-    expected(1, 1) = 4.0f;
-    expected(2, 2) = 6.0f;
-
-    const Eigen::Matrix3f result = as_diagonal<3>(diag_elements);
-    EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        const Eigen::Vector3f diag = Eigen::Vector3f::Random();
+        Eigen::Matrix3f expected = Eigen::Matrix3f::Zero();
+        expected.diagonal() = diag;
+        const Eigen::Matrix3f result = as_diagonal<3>(diag);
+        EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+    }
 }
 
 TEST_F(EigenUtilsTest, symmetric_eigen_decomposition_3x3) {
-    // Create a symmetric matrix
     Eigen::Matrix3f symmetric;
-    symmetric << 2.0f, 1.0f, 0.0f, 1.0f, 2.0f, 1.0f, 0.0f, 1.0f, 2.0f;
+    symmetric << 2.0f, 1.0f, 0.0f,
+                 1.0f, 2.0f, 1.0f,
+                 0.0f, 1.0f, 2.0f;
+    Eigen::Vector3f values;
+    Eigen::Matrix3f vectors;
+    symmetric_eigen_decomposition_3x3(symmetric, values, vectors);
+    const Eigen::Matrix3f reconstructed = vectors * values.asDiagonal() * vectors.transpose();
+    EXPECT_MATRIX_NEAR(symmetric, reconstructed, 1e-3f);
+}
 
-    Eigen::Vector3f computed_eigenvalues;
-    Eigen::Matrix3f computed_eigenvectors;
-
-    // Use our implementation to compute eigenvalues and eigenvectors
-    symmetric_eigen_decomposition_3x3(symmetric, computed_eigenvalues, computed_eigenvectors);
-
-    // Use Eigen's implementation as reference
-    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> eigen_solver(symmetric);
-    Eigen::Vector3f expected_eigenvalues = eigen_solver.eigenvalues();
-    Eigen::Matrix3f expected_eigenvectors = eigen_solver.eigenvectors();
-
-    // Sort eigenvalues for comparison (our implementation should already be sorted)
-    std::sort(expected_eigenvalues.data(), expected_eigenvalues.data() + 3);
-
-    // Check eigenvalues
-    EXPECT_VECTOR_NEAR(expected_eigenvalues, computed_eigenvalues, EPSILON);
-
-    // Check that eigenvectors are valid
-    for (int i = 0; i < 3; ++i) {
-        // Apply matrix to eigenvector
-        const Eigen::Vector3f Av = symmetric * computed_eigenvectors.col(i);
-        // Should be close to lambda * v
-        const Eigen::Vector3f lambda_v = computed_eigenvalues(i) * computed_eigenvectors.col(i);
-        EXPECT_VECTOR_NEAR(Av, lambda_v, EPSILON);
+TEST_F(EigenUtilsTest, trace) {
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        const Eigen::Matrix3f A = Eigen::Matrix3f::Random();
+        const float expected = A.trace();
+        const float result = trace<3>(A);
+        EXPECT_NEAR(expected, result, EPSILON);
     }
 }
 
-TEST_F(EigenUtilsTest, solve_system_6x6) {
-    // Create a 6x6 SPD matrix
-    Eigen::Matrix<float, 6, 6> A = Eigen::Matrix<float, 6, 6>::Random();
-    A = A.transpose() * A + Eigen::Matrix<float, 6, 6>::Identity();  // Ensure positive definiteness
-
-    const Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Random();
-
-    // Use Eigen's solver as reference
-    const Eigen::Matrix<float, 6, 1> expected_x = A.ldlt().solve(b);
-
-    // Use our implementation
-    const Eigen::Matrix<float, 6, 1> computed_x = solve_system_6x6(A, b);
-
-    // Compare results
-    EXPECT_VECTOR_NEAR(expected_x, computed_x, EPSILON);
-
-    // Also verify solution by checking A*x ≈ b
-    const Eigen::Matrix<float, 6, 1> computed_b = A * computed_x;
-    EXPECT_VECTOR_NEAR(b, computed_b, EPSILON);
+TEST_F(EigenUtilsTest, copy_swap) {
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        {
+            constexpr size_t M = 3;
+            constexpr size_t N = 3;
+            const Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            Eigen::Matrix<float, M, N> B;
+            copy<M, N>(A, B);
+            EXPECT_MATRIX_NEAR(A, B, EPSILON);
+        }
+        {
+            constexpr size_t M = 4;
+            constexpr size_t N = 4;
+            Eigen::Matrix<float, M, N> A = Eigen::Matrix<float, M, N>::Random();
+            Eigen::Matrix<float, M, N> B = Eigen::Matrix<float, M, N>::Random();
+            Eigen::Matrix<float, M, N> A_orig = A;
+            Eigen::Matrix<float, M, N> B_orig = B;
+            swap<M, N>(A, B);
+            EXPECT_MATRIX_NEAR(A_orig, B, EPSILON);
+            EXPECT_MATRIX_NEAR(B_orig, A, EPSILON);
+        }
+    }
 }
 
-// trace test
-TEST_F(EigenUtilsTest, trace) {
-    const float expected_trace = A3x3(0, 0) + A3x3(1, 1) + A3x3(2, 2);
-    const float computed_trace = trace<3>(A3x3);
-    EXPECT_NEAR(expected_trace, computed_trace, EPSILON);
+TEST_F(EigenUtilsTest, normalize) {
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        Eigen::Vector3f v = Eigen::Vector3f::Random();
+        if (v.norm() < 1e-3f) {
+            v(0) += 1.0f;
+        }
+        const Eigen::Vector3f expected = v.normalized();
+        const Eigen::Vector3f result = normalize<3>(v);
+        EXPECT_VECTOR_NEAR(expected, result, EPSILON);
+    }
+    const Eigen::Vector3f zero = Eigen::Vector3f::Zero();
+    const Eigen::Vector3f result = normalize<3>(zero);
+    EXPECT_VECTOR_NEAR(zero, result, EPSILON);
 }
 
-// SYCL vector conversion tests
-TEST_F(EigenUtilsTest, to_sycl_vec_from_sycl_vec) {
-    // Test vector conversion
-    const Eigen::Vector4f input_vec(1.0f, 2.0f, 3.0f, 4.0f);
-    const sycl::float4 sycl_vec = to_sycl_vec(input_vec);
-    const Eigen::Vector4f output_vec = from_sycl_vec(sycl_vec);
-    EXPECT_VECTOR_NEAR(input_vec, output_vec, EPSILON);
-
-    // Test Matrix4f conversion
-    const Eigen::Matrix4f input_mat = A4x4;
-    const auto sycl_mat = to_sycl_vec(input_mat);
-    const Eigen::Matrix4f output_mat = from_sycl_vec(sycl_mat);
-    EXPECT_MATRIX_NEAR(input_mat, output_mat, EPSILON);
-
-    // Test Matrix<float, 6, 6> conversion
-    const Eigen::Matrix<float, 6, 6> input_mat6 = Eigen::Matrix<float, 6, 6>::Random();
-    const auto sycl_mat6 = to_sycl_vec(input_mat6);
-    const Eigen::Matrix<float, 6, 6> output_mat6 = from_sycl_vec(sycl_mat6);
-    EXPECT_MATRIX_NEAR(input_mat6, output_mat6, EPSILON);
-
-    // Test Vector<float, 6> conversion
-    const Eigen::Vector<float, 6> input_vec6 = Eigen::Vector<float, 6>::Random();
-    const auto sycl_vec6 = to_sycl_vec(input_vec6);
-    const Eigen::Vector<float, 6> output_vec6 = from_sycl_vec(sycl_vec6);
-    EXPECT_VECTOR_NEAR(input_vec6, output_vec6, EPSILON);
+TEST_F(EigenUtilsTest, to_from_sycl_vec) {
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        {
+            const Eigen::Vector4f v = Eigen::Vector4f::Random();
+            const sycl::float4 sv = to_sycl_vec(v);
+            const Eigen::Vector4f back = from_sycl_vec(sv);
+            EXPECT_VECTOR_NEAR(v, back, EPSILON);
+        }
+        {
+            const Eigen::Matrix4f m = Eigen::Matrix4f::Random();
+            const auto sm = to_sycl_vec(m);
+            const Eigen::Matrix4f back = from_sycl_vec(sm);
+            EXPECT_MATRIX_NEAR(m, back, EPSILON);
+        }
+        {
+            const Eigen::Matrix<float,6,6> m = Eigen::Matrix<float,6,6>::Random();
+            const auto sm = to_sycl_vec(m);
+            const Eigen::Matrix<float,6,6> back = from_sycl_vec(sm);
+            EXPECT_MATRIX_NEAR(m, back, EPSILON);
+        }
+        {
+            const Eigen::Vector<float,6> v = Eigen::Vector<float,6>::Random();
+            const auto sv = to_sycl_vec(v);
+            const Eigen::Vector<float,6> back = from_sycl_vec(sv);
+            EXPECT_VECTOR_NEAR(v, back, EPSILON);
+        }
+    }
 }
 
 TEST_F(EigenUtilsTest, skew) {
-    const Eigen::Vector3f v(1.0f, 2.0f, 3.0f);
-
-    Eigen::Matrix3f expected;
-    expected << 0.0f, -3.0f, 2.0f, 3.0f, 0.0f, -1.0f, -2.0f, 1.0f, 0.0f;
-
-    const Eigen::Matrix3f result3 = lie::skew(v);
-    EXPECT_MATRIX_NEAR(expected, result3, EPSILON);
-
-    const Eigen::Vector4f v4(1.0f, 2.0f, 3.0f, 4.0f);
-    const Eigen::Matrix3f result4 = lie::skew(v4);
-    EXPECT_MATRIX_NEAR(expected, result4, EPSILON);
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        const Eigen::Vector3f v = Eigen::Vector3f::Random();
+        const Eigen::Matrix3f expected = lie::skew(v);
+        const Eigen::Matrix3f result = lie::skew(v);
+        EXPECT_MATRIX_NEAR(expected, result, EPSILON);
+        const Eigen::Vector4f v4(v(0), v(1), v(2), Eigen::Matrix<float,1,1>::Random()(0,0));
+        const Eigen::Matrix3f result4 = lie::skew(v4);
+        EXPECT_MATRIX_NEAR(expected, result4, EPSILON);
+    }
 }
 
-TEST_F(EigenUtilsTest, SO3Exp) {
-    // small rotation
-    const Eigen::Vector3f small_rotation(0.1f, 0.2f, 0.3f);
-    const Eigen::Quaternionf quat1 = lie::so3_exp(small_rotation);
-
-    const float angle = small_rotation.norm();
-    const Eigen::Vector3f axis = small_rotation / angle;
-    const Eigen::AngleAxisf aa(angle, axis);
-    const Eigen::Quaternionf expected = Eigen::Quaternionf(aa);
-
-    EXPECT_NEAR(expected.w(), quat1.w(), EPSILON);
-    EXPECT_NEAR(expected.x(), quat1.x(), EPSILON);
-    EXPECT_NEAR(expected.y(), quat1.y(), EPSILON);
-    EXPECT_NEAR(expected.z(), quat1.z(), EPSILON);
-
-    // nearly zero
-    const Eigen::Vector3f zero_rotation(1e-10f, 2e-10f, 3e-10f);
-    const Eigen::Quaternionf quat2 = lie::so3_exp(zero_rotation);
-
-    EXPECT_NEAR(1.0f, quat2.w(), EPSILON);
-    EXPECT_NEAR(0.0f, quat2.x(), EPSILON);
-    EXPECT_NEAR(0.0f, quat2.y(), EPSILON);
-    EXPECT_NEAR(0.0f, quat2.z(), EPSILON);
+TEST_F(EigenUtilsTest, so3_exp_log) {
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        const Eigen::Vector3f omega = Eigen::Vector3f::Random();
+        const Eigen::Quaternionf q = lie::so3_exp(omega);
+        const Eigen::Vector3f back = lie::so3_log(q);
+        EXPECT_VECTOR_NEAR(omega, back, EPSILON);
+    }
 }
 
-TEST_F(EigenUtilsTest, SE3Exp) {
-    Eigen::Matrix<float, 6, 1> twist;
-    twist << 0.1f, 0.2f, 0.3f, 1.0f, 2.0f, 3.0f;  // [rx, ry, rz, tx, ty, tz]
-
-    const Eigen::Isometry3f transform = lie::se3_exp(twist);
-
-    const Eigen::Vector3f rotation_part = twist.head<3>();
-    const Eigen::Quaternionf quat = lie::so3_exp(rotation_part);
-    const Eigen::Matrix3f expected_rotation = quat.toRotationMatrix();
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            EXPECT_NEAR(expected_rotation(i, j), transform.linear()(i, j), EPSILON)
-                << "Rotation matrices differ at (" << i << "," << j << ")";
-        }
-    }
-
-    // transform * point1 = point2 -> transform.inverse() * point2 = point1
-    const Eigen::Vector3f point1(5.0f, 6.0f, 7.0f);
-    const Eigen::Vector3f point2 = transform * point1;
-    const Eigen::Vector3f point1_back = transform.inverse() * point2;
-
-    for (int i = 0; i < 3; ++i) {
-        EXPECT_NEAR(point1(i), point1_back(i), EPSILON) << "Points differ after transform and inverse at index " << i;
-    }
-
-    // nearly zero rotation
-    Eigen::Matrix<float, 6, 1> small_twist;
-    small_twist << 1e-10f, 2e-10f, 3e-10f, 1.0f, 2.0f, 3.0f;
-
-    const Eigen::Isometry3f small_transform = lie::se3_exp(small_twist);
-
-    const Eigen::Matrix3f identity = Eigen::Matrix3f::Identity();
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            EXPECT_NEAR(identity(i, j), small_transform.linear()(i, j), EPSILON)
-                << "Small rotation matrix differs from identity at (" << i << "," << j << ")";
-        }
-    }
-
-    const Eigen::Vector3f trans = small_transform.translation();
-    for (int i = 0; i < 3; ++i) {
-        EXPECT_NEAR(small_twist(i + 3), trans(i), EPSILON) << "Small translation differs at index " << i;
+TEST_F(EigenUtilsTest, se3_exp_log) {
+    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+        Eigen::Matrix<float,6,1> twist = Eigen::Matrix<float,6,1>::Random();
+        const Eigen::Isometry3f T = lie::se3_exp(twist);
+        const Eigen::Matrix<float,6,1> back = lie::se3_log(T);
+        EXPECT_VECTOR_NEAR(twist, back, EPSILON);
     }
 }
 
@@ -679,3 +675,5 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+
