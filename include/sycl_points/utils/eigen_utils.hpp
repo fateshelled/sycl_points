@@ -314,8 +314,9 @@ SYCL_EXTERNAL float trace(const Eigen::Matrix<float, M, M>& A) {
 /// @param A 3×3 matrix
 /// @return Determinant of A
 SYCL_EXTERNAL inline float determinant(const Eigen::Matrix3f& A) {
-    return A(0, 0) * (A(1, 1) * A(2, 2) - A(1, 2) * A(2, 1)) - A(0, 1) * (A(1, 0) * A(2, 2) - A(1, 2) * A(2, 0)) +
-           A(0, 2) * (A(1, 0) * A(2, 1) - A(1, 1) * A(2, 0));
+    return A(0, 0) * sycl::fma(A(1, 1), A(2, 2), -A(1, 2) * A(2, 1)) -
+           A(0, 1) * sycl::fma(A(1, 0), A(2, 2), -A(1, 2) * A(2, 0)) +
+           A(0, 2) * sycl::fma(A(1, 0), A(2, 1), -A(1, 1) * A(2, 0));
 }
 
 template <size_t M, size_t N>
@@ -323,8 +324,8 @@ template <size_t M, size_t N>
 /// @tparam M Number of rows
 /// @tparam N Number of columns
 /// @param A Matrix
-/// @return Frobenius norm of A
-SYCL_EXTERNAL float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
+/// @return Frobenius norm squared of A
+SYCL_EXTERNAL float frobenius_norm_squared(const Eigen::Matrix<float, M, N>& A) {
     float ret = 0.0f;
 #pragma unroll N
     for (size_t j = 0; j < N; ++j) {
@@ -334,7 +335,17 @@ SYCL_EXTERNAL float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
             ret = sycl::fma(A(i, j), A(i, j), ret);
         }
     }
-    return sycl::sqrt(ret);
+    return ret;
+}
+
+template <size_t M, size_t N>
+/// @brief Matrix Frobenius Norm squared
+/// @tparam M Number of rows
+/// @tparam N Number of columns
+/// @param A Matrix
+/// @return Frobenius norm of A
+SYCL_EXTERNAL float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
+    return sycl::sqrt(frobenius_norm_squared<M, N>(A));
 }
 
 template <size_t M>
@@ -383,15 +394,15 @@ SYCL_EXTERNAL inline Eigen::Matrix3f inverse(const Eigen::Matrix3f& src) {
     const float invDet = 1.0f / det;
 
     Eigen::Matrix3f ret;
-    ret(0, 0) = (src(1, 1) * src(2, 2) - src(1, 2) * src(2, 1)) * invDet;
-    ret(1, 0) = (src(1, 2) * src(2, 0) - src(1, 0) * src(2, 2)) * invDet;
-    ret(2, 0) = (src(1, 0) * src(2, 1) - src(1, 1) * src(2, 0)) * invDet;
-    ret(0, 1) = (src(0, 2) * src(2, 1) - src(0, 1) * src(2, 2)) * invDet;
-    ret(1, 1) = (src(0, 0) * src(2, 2) - src(0, 2) * src(2, 0)) * invDet;
-    ret(2, 1) = (src(0, 1) * src(2, 0) - src(0, 0) * src(2, 1)) * invDet;
-    ret(0, 2) = (src(0, 1) * src(1, 2) - src(0, 2) * src(1, 1)) * invDet;
-    ret(1, 2) = (src(0, 2) * src(1, 0) - src(0, 0) * src(1, 2)) * invDet;
-    ret(2, 2) = (src(0, 0) * src(1, 1) - src(0, 1) * src(1, 0)) * invDet;
+    ret(0, 0) = sycl::fma(src(1, 1), src(2, 2), -src(1, 2) * src(2, 1)) * invDet;
+    ret(1, 0) = sycl::fma(src(1, 2), src(2, 0), -src(1, 0) * src(2, 2)) * invDet;
+    ret(2, 0) = sycl::fma(src(1, 0), src(2, 1), -src(1, 1) * src(2, 0)) * invDet;
+    ret(0, 1) = sycl::fma(src(0, 2), src(2, 1), -src(0, 1) * src(2, 2)) * invDet;
+    ret(1, 1) = sycl::fma(src(0, 0), src(2, 2), -src(0, 2) * src(2, 0)) * invDet;
+    ret(2, 1) = sycl::fma(src(0, 1), src(2, 0), -src(0, 0) * src(2, 1)) * invDet;
+    ret(0, 2) = sycl::fma(src(0, 1), src(1, 2), -src(0, 2) * src(1, 1)) * invDet;
+    ret(1, 2) = sycl::fma(src(0, 2), src(1, 0), -src(0, 0) * src(1, 2)) * invDet;
+    ret(2, 2) = sycl::fma(src(0, 0), src(1, 1), -src(0, 1) * src(1, 0)) * invDet;
     return ret;
 }
 
