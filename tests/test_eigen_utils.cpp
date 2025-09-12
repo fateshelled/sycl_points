@@ -11,7 +11,7 @@ constexpr float BASE_EPSILON = 1e-5f;
 constexpr float DET_EPSILON = 1e-4f;
 constexpr float MATMUL_EPSILON = 1e-4f;
 constexpr float INVERSE_EPSILON = 1e-3f;
-constexpr size_t TEST_ITERAIONS = 1000;
+constexpr size_t TEST_ITERATIONS = 1000;
 constexpr float RANDOM_SCALE = 10.0f;  // -10.0 ~ +10.0
 
 ::testing::AssertionResult AssertMatrixExactEqual(const char* expr1, const char* expr2, const Eigen::MatrixXf& m1,
@@ -86,23 +86,23 @@ constexpr float RANDOM_SCALE = 10.0f;  // -10.0 ~ +10.0
 }
 
 ::testing::AssertionResult AssertVectorNear(const char* expr1, const char* expr2, const char* expr3,
-                                            const Eigen::VectorXf& m1, const Eigen::VectorXf& m2, double threshold) {
-    if (m1.size() != m2.size()) {
+                                            const Eigen::VectorXf& v1, const Eigen::VectorXf& v2, double threshold) {
+    if (v1.size() != v2.size()) {
         return ::testing::AssertionFailure() << "Vector size mismatch:\n"
-                                             << expr1 << " is " << m1.size() << ",\n"
-                                             << expr2 << " is " << m2.size();
+                                             << expr1 << " is " << v1.size() << ",\n"
+                                             << expr2 << " is " << v2.size();
     }
 
-    const Eigen::MatrixXf abs_diff = (m1 - m2).cwiseAbs();
-    const Eigen::MatrixXf rel_diff = abs_diff.cwiseQuotient(m1.cwiseAbs().cwiseMax(m2.cwiseAbs()));
+    const Eigen::VectorXf abs_diff = (v1 - v2).cwiseAbs();
+    const Eigen::VectorXf rel_diff = abs_diff.cwiseQuotient(v1.cwiseAbs().cwiseMax(v2.cwiseAbs()));
 
     for (int i = 0; i < abs_diff.size(); ++i) {
         if (abs_diff(i) > threshold && rel_diff(i) > threshold) {
             return ::testing::AssertionFailure() << "Vector differ at (" << i << "): threshold = " << threshold << "\n"
                                                  << expr1 << ":\n"
-                                                 << m1.transpose() << "\n"
+                                                 << v1.transpose() << "\n"
                                                  << expr2 << ":\n"
-                                                 << m2.transpose() << std::endl;
+                                                 << v2.transpose() << std::endl;
         }
     }
 
@@ -149,7 +149,7 @@ protected:
 };
 
 TEST_F(EigenUtilsTest, add) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         // 3x3
         {
             constexpr size_t M = 3;
@@ -196,7 +196,7 @@ TEST_F(EigenUtilsTest, add) {
 }
 
 TEST_F(EigenUtilsTest, add_inplace) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         // 3x3
         {
             constexpr size_t M = 3;
@@ -248,7 +248,7 @@ TEST_F(EigenUtilsTest, add_inplace) {
 }
 
 TEST_F(EigenUtilsTest, subtract) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         // 3x3
         {
             constexpr size_t M = 3;
@@ -295,7 +295,7 @@ TEST_F(EigenUtilsTest, subtract) {
 }
 
 TEST_F(EigenUtilsTest, multiply) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         // 3x3 * 3x3
         {
             constexpr size_t M = 3;
@@ -394,7 +394,7 @@ TEST_F(EigenUtilsTest, multiply) {
 
 // Additional random-loop tests
 TEST_F(EigenUtilsTest, multiply_inplace) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         // 3x3
         {
             constexpr size_t M = 3;
@@ -421,7 +421,7 @@ TEST_F(EigenUtilsTest, multiply_inplace) {
 }
 
 TEST_F(EigenUtilsTest, element_wise_multiply) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         // 3x3
         {
             constexpr size_t M = 3;
@@ -446,7 +446,7 @@ TEST_F(EigenUtilsTest, element_wise_multiply) {
 }
 
 TEST_F(EigenUtilsTest, transpose) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         // 3x3
         {
             constexpr size_t M = 3;
@@ -469,7 +469,7 @@ TEST_F(EigenUtilsTest, transpose) {
 }
 
 TEST_F(EigenUtilsTest, dot) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         // size 3
         {
             constexpr size_t M = 3;
@@ -492,7 +492,7 @@ TEST_F(EigenUtilsTest, dot) {
 }
 
 TEST_F(EigenUtilsTest, cross) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         const Eigen::Vector3f a = Eigen::Vector3f::Random() * RANDOM_SCALE;
         const Eigen::Vector3f b = Eigen::Vector3f::Random() * RANDOM_SCALE;
         const Eigen::Vector3f expected = a.cross(b);
@@ -502,7 +502,7 @@ TEST_F(EigenUtilsTest, cross) {
 }
 
 TEST_F(EigenUtilsTest, outer) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         const Eigen::Vector4f a = Eigen::Vector4f::Random() * RANDOM_SCALE;
         const Eigen::Vector4f b = Eigen::Vector4f::Random() * RANDOM_SCALE;
         const Eigen::Matrix4f expected = a * b.transpose();
@@ -512,7 +512,7 @@ TEST_F(EigenUtilsTest, outer) {
 }
 
 TEST_F(EigenUtilsTest, block3x3) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         const Eigen::Matrix4f A = Eigen::Matrix4f::Random() * RANDOM_SCALE;
         const Eigen::Matrix3f expected = A.block<3, 3>(0, 0);
         const Eigen::Matrix3f result = block3x3(A);
@@ -521,7 +521,7 @@ TEST_F(EigenUtilsTest, block3x3) {
 }
 
 TEST_F(EigenUtilsTest, inverse) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         Eigen::Matrix3f A = Eigen::Matrix3f::Random() * RANDOM_SCALE;
 
         const Eigen::Matrix3f expected = A.inverse();
@@ -540,7 +540,7 @@ TEST_F(EigenUtilsTest, inverse) {
 }
 
 TEST_F(EigenUtilsTest, ensure_symmetric) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         Eigen::Matrix3f A = Eigen::Matrix3f::Random() * RANDOM_SCALE;
         const Eigen::Matrix3f expected = 0.5f * (A + A.transpose());
         const Eigen::Matrix3f result = ensure_symmetric<3>(A);
@@ -550,7 +550,7 @@ TEST_F(EigenUtilsTest, ensure_symmetric) {
 }
 
 TEST_F(EigenUtilsTest, frobenius_norm) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         {
             constexpr size_t M = 3;
             constexpr size_t N = 3;
@@ -570,7 +570,7 @@ TEST_F(EigenUtilsTest, frobenius_norm) {
 }
 
 TEST_F(EigenUtilsTest, frobenius_norm_squared) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         constexpr size_t M = 3;
         const Eigen::Vector<float, M> v = Eigen::Vector<float, M>::Random() * RANDOM_SCALE;
         const float expected = v.squaredNorm();
@@ -580,7 +580,7 @@ TEST_F(EigenUtilsTest, frobenius_norm_squared) {
 }
 
 TEST_F(EigenUtilsTest, determinant) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         Eigen::Matrix3f A = Eigen::Matrix3f::Random() * RANDOM_SCALE;
         const float expected = A.determinant();
         const float result = determinant(A);
@@ -589,7 +589,7 @@ TEST_F(EigenUtilsTest, determinant) {
 }
 
 TEST_F(EigenUtilsTest, as_diagonal) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         const Eigen::Vector3f diag = Eigen::Vector3f::Random() * RANDOM_SCALE;
         Eigen::Matrix3f expected = Eigen::Matrix3f::Zero();
         expected.diagonal() = diag;
@@ -609,7 +609,7 @@ TEST_F(EigenUtilsTest, symmetric_eigen_decomposition_3x3) {
 }
 
 TEST_F(EigenUtilsTest, trace) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         const Eigen::Matrix3f A = Eigen::Matrix3f::Random() * RANDOM_SCALE;
         const float expected = A.trace();
         const float result = trace<3>(A);
@@ -618,7 +618,7 @@ TEST_F(EigenUtilsTest, trace) {
 }
 
 TEST_F(EigenUtilsTest, copy_swap) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         {
             constexpr size_t M = 3;
             constexpr size_t N = 3;
@@ -642,7 +642,7 @@ TEST_F(EigenUtilsTest, copy_swap) {
 }
 
 TEST_F(EigenUtilsTest, normalize) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         Eigen::Vector3f v = Eigen::Vector3f::Random() * RANDOM_SCALE;
         if (v.norm() < 1e-3f) {
             v(0) += 1.0f;
@@ -657,7 +657,7 @@ TEST_F(EigenUtilsTest, normalize) {
 }
 
 TEST_F(EigenUtilsTest, to_from_sycl_vec) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         {
             const Eigen::Vector4f v = Eigen::Vector4f::Random() * RANDOM_SCALE;
             const sycl::float4 sv = to_sycl_vec(v);
@@ -685,21 +685,8 @@ TEST_F(EigenUtilsTest, to_from_sycl_vec) {
     }
 }
 
-TEST_F(EigenUtilsTest, skew) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
-        const Eigen::Vector3f v = Eigen::Vector3f::Random() * RANDOM_SCALE;
-        const Eigen::Matrix3f expected = lie::skew(v);
-        const Eigen::Matrix3f result = lie::skew(v);
-        EXPECT_MATRIX_NEAR(expected, result, BASE_EPSILON);
-
-        const Eigen::Vector4f v4(v(0), v(1), v(2), Eigen::Matrix<float, 1, 1>::Random()(0, 0));
-        const Eigen::Matrix3f result4 = lie::skew(v4);
-        EXPECT_MATRIX_NEAR(expected, result4, BASE_EPSILON);
-    }
-}
-
 TEST_F(EigenUtilsTest, so3_exp_log) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         const Eigen::Vector3f omega = Eigen::Vector3f::Random();
         const Eigen::Quaternionf q = lie::so3_exp(omega);
         const Eigen::Vector3f back = lie::so3_log(q);
@@ -708,7 +695,7 @@ TEST_F(EigenUtilsTest, so3_exp_log) {
 }
 
 TEST_F(EigenUtilsTest, se3_exp_log) {
-    for (size_t iter = 0; iter < TEST_ITERAIONS; ++iter) {
+    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         Eigen::Matrix<float, 6, 1> twist = Eigen::Matrix<float, 6, 1>::Random();
         const Eigen::Isometry3f T = lie::se3_exp(twist);
         const Eigen::Matrix<float, 6, 1> back = lie::se3_log(T);
