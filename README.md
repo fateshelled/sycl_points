@@ -23,6 +23,10 @@ This project was developed with reference to small_gicp, a lightweight point clo
       - Generalized ICP (GICP)
     - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GERMAN_MCCLURE)
     - Adaptive max correspondence distance by inlier points ratio
+    - Color term blending via `color_weight`
+### Colored ICP
+Set `color_weight` > 0 in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB fields, and the target cloud requires pre-computed color gradients.
+
 - Preprocessing filter
     - L∞ distance (chebyshev distance) filter
     - Random sampling
