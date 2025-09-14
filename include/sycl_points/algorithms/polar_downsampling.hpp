@@ -2,6 +2,7 @@
 
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
 #include <sycl_points/points/point_cloud.hpp>
+#include <stdexcept>
 
 namespace sycl_points {
 namespace algorithms {
@@ -19,12 +20,9 @@ SYCL_EXTERNAL inline uint64_t compute_polar_bit(const PointType &point,
     return VoxelConstants::invalid_coord;
   }
 
-  const float r =
-      sycl::sqrt(point.x() * point.x() + point.y() * point.y() +
-                 point.z() * point.z());
-  const float polar =
-      sycl::atan2(sycl::sqrt(point.x() * point.x() + point.y() * point.y()),
-                  point.z());
+  const float xy_dist_sq = point.x() * point.x() + point.y() * point.y();
+  const float r = sycl::sqrt(xy_dist_sq + point.z() * point.z());
+  const float polar = sycl::atan2(sycl::sqrt(xy_dist_sq), point.z());
   const float azimuth =
       sycl::atan2(point.y(), point.x()) + sycl::numbers::pi_v<float>;
 
@@ -68,6 +66,10 @@ public:
       : queue_(queue), distance_leaf_size_(distance_leaf_size),
         polar_leaf_size_(polar_leaf_size),
         azimuth_leaf_size_(azimuth_leaf_size) {
+    if (distance_leaf_size <= 0.0f || polar_leaf_size <= 0.0f ||
+        azimuth_leaf_size <= 0.0f) {
+      throw std::invalid_argument("leaf sizes must be positive");
+    }
     this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(
         0, shared_allocator<uint64_t>(*this->queue_.ptr));
     this->distance_leaf_size_inv_ = 1.0f / this->distance_leaf_size_;
@@ -77,15 +79,29 @@ public:
   }
 
   void set_distance_leaf_size(const float size) {
+    if (size <= 0.0f) {
+      throw std::invalid_argument("distance_leaf_size must be positive");
+    }
     this->distance_leaf_size_ = size;
+    this->distance_leaf_size_inv_ = 1.0f / size;
   }
   float get_distance_leaf_size() const { return this->distance_leaf_size_; }
 
-  void set_polar_leaf_size(const float size) { this->polar_leaf_size_ = size; }
+  void set_polar_leaf_size(const float size) {
+    if (size <= 0.0f) {
+      throw std::invalid_argument("polar_leaf_size must be positive");
+    }
+    this->polar_leaf_size_ = size;
+    this->polar_leaf_size_inv_ = 1.0f / size;
+  }
   float get_polar_leaf_size() const { return this->polar_leaf_size_; }
 
   void set_azimuth_leaf_size(const float size) {
+    if (size <= 0.0f) {
+      throw std::invalid_argument("azimuth_leaf_size must be positive");
+    }
     this->azimuth_leaf_size_ = size;
+    this->azimuth_leaf_size_inv_ = 1.0f / size;
   }
   float get_azimuth_leaf_size() const { return this->azimuth_leaf_size_; }
 
@@ -223,6 +239,7 @@ private:
         result[idx++] = point / point.w();
       }
     }
+    result.resize(idx);
     this->queue_.clear_accessed_by_host(result.data(), N);
   }
 
@@ -259,6 +276,13 @@ private:
               voxel_map_intensity.at(voxel_idx) / point.w();
         ++idx;
       }
+    }
+    result.resize_points(idx);
+    if (has_rgb) {
+      result.resize_rgb(idx);
+    }
+    if (has_intensity) {
+      result.resize_intensities(idx);
     }
 
     this->queue_.clear_accessed_by_host(result.points_ptr(), N);
