@@ -20,9 +20,10 @@ SYCL_EXTERNAL inline uint64_t compute_polar_bit(const PointType &point,
     return VoxelConstants::invalid_coord;
   }
 
-  const float xy_dist_sq = point.x() * point.x() + point.y() * point.y();
-  const float r = sycl::sqrt(xy_dist_sq + point.z() * point.z());
-  const float polar = sycl::atan2(sycl::sqrt(xy_dist_sq), point.z());
+  const float xy_dist =
+      sycl::sqrt(point.x() * point.x() + point.y() * point.y());
+  const float r = sycl::hypot(xy_dist, point.z());
+  const float polar = sycl::atan2(xy_dist, point.z());
   const float azimuth =
       sycl::atan2(point.y(), point.x()) + sycl::numbers::pi_v<float>;
 
@@ -200,12 +201,8 @@ private:
       const auto voxel_bit = (*this->bit_ptr_)[i];
       if (voxel_bit == VoxelConstants::invalid_coord)
         continue;
-      const auto it = voxel_map.find(voxel_bit);
-      if (it == voxel_map.end()) {
-        voxel_map[voxel_bit] = data[i];
-      } else {
-        it->second += data[i];
-      }
+      auto [it, inserted] = voxel_map.try_emplace(voxel_bit);
+      it->second += data[i];
     }
 
     this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), N);
@@ -239,8 +236,8 @@ private:
         result[idx++] = point / point.w();
       }
     }
-    result.resize(idx);
     this->queue_.clear_accessed_by_host(result.data(), N);
+    result.resize(idx);
   }
 
   void voxel_map_to_cloud(
@@ -277,14 +274,6 @@ private:
         ++idx;
       }
     }
-    result.resize_points(idx);
-    if (has_rgb) {
-      result.resize_rgb(idx);
-    }
-    if (has_intensity) {
-      result.resize_intensities(idx);
-    }
-
     this->queue_.clear_accessed_by_host(result.points_ptr(), N);
     if (has_rgb) {
       this->queue_.clear_accessed_by_host(result.rgb_ptr(),
@@ -293,6 +282,13 @@ private:
     if (has_intensity) {
       this->queue_.clear_accessed_by_host(result.intensities_ptr(),
                                           voxel_map_intensity.size());
+    }
+    result.resize_points(idx);
+    if (has_rgb) {
+      result.resize_rgb(idx);
+    }
+    if (has_intensity) {
+      result.resize_intensities(idx);
     }
   }
 };
