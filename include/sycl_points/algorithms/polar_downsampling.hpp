@@ -3,12 +3,19 @@
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <stdexcept>
+#include <cstdint>
 
 namespace sycl_points {
 namespace algorithms {
 namespace filter {
 
 namespace kernel {
+
+enum class VoxelDimension : std::uint8_t {
+  DISTANCE = 0,
+  POLAR = 1,
+  AZIMUTH = 2
+};
 
 SYCL_EXTERNAL inline uint64_t compute_polar_bit(const PointType &point,
                                                 const float distance_inv,
@@ -42,11 +49,14 @@ SYCL_EXTERNAL inline uint64_t compute_polar_bit(const PointType &point,
 
   // Encode range, polar angle, and azimuth angle into a 64-bit key
   return (static_cast<uint64_t>(coord0 & VoxelConstants::coord_bit_mask)
-          << (VoxelConstants::coord_bit_size * 0)) |
+          << (VoxelConstants::coord_bit_size *
+              static_cast<int>(VoxelDimension::DISTANCE))) |
          (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask)
-          << (VoxelConstants::coord_bit_size * 1)) |
+          << (VoxelConstants::coord_bit_size *
+              static_cast<int>(VoxelDimension::POLAR))) |
          (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask)
-          << (VoxelConstants::coord_bit_size * 2));
+          << (VoxelConstants::coord_bit_size *
+              static_cast<int>(VoxelDimension::AZIMUTH)));
 }
 
 } // namespace kernel
