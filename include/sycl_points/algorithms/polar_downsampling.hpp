@@ -201,7 +201,7 @@ private:
       const auto voxel_bit = (*this->bit_ptr_)[i];
       if (voxel_bit == VoxelConstants::invalid_coord)
         continue;
-      auto [it, inserted] = voxel_map.try_emplace(voxel_bit);
+      auto it = voxel_map.try_emplace(voxel_bit).first;
       it->second += data[i];
     }
 
