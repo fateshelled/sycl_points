@@ -9,22 +9,29 @@ namespace sycl_points {
 namespace algorithms {
 namespace filter {
 
+/// @brief Defines the coordinate system for polar coordinate conversion, following REP-103.
+/// @see https://ros.org/reps/rep-0103.html
 enum class CoordinateSystem : std::uint8_t { LIDAR = 0, CAMERA = 1 };
 
 namespace kernel {
 
+/// @brief Constants for bit-shifting components of the polar coordinate key.
 struct PolarCoordComponent {
     static constexpr uint8_t DISTANCE = 0;
     static constexpr uint8_t POLAR = 1;
     static constexpr uint8_t AZIMUTH = 2;
 };
 
-/// @brief
-/// @param point
-/// @param distance_voxel_size_inv
-/// @param elevation_voxel_size_inv
-/// @param azimuth_voxel_size_inv
-/// @return
+/// @brief Computes a 64-bit key for a point based on its polar coordinates.
+/// @details This function converts a 3D point from Cartesian to polar coordinates (distance, elevation, azimuth)
+///          and then quantizes these coordinates into a single 64-bit integer key. This key is used for voxelization.
+///          The coordinate system (LIDAR or CAMERA) affects how angles are calculated.
+/// @tparam coord_system The coordinate system to use for conversion (LIDAR or CAMERA).
+/// @param point The input 3D point.
+/// @param distance_voxel_size_inv Inverse of the voxel size for the radial distance.
+/// @param elevation_voxel_size_inv Inverse of the voxel size for the elevation angle.
+/// @param azimuth_voxel_size_inv Inverse of the voxel size for the azimuth angle.
+/// @return A 64-bit key representing the polar voxel, or `VoxelConstants::invalid_coord` if the point is invalid.
 template <CoordinateSystem coord_system = CoordinateSystem::LIDAR>
 SYCL_EXTERNAL inline uint64_t compute_polar_bit(const PointType &point, const float distance_voxel_size_inv,
                                                 const float elevation_voxel_size_inv,
@@ -111,26 +118,29 @@ public:
 
     /// @brief Constructor
     /// @param queue SYCL queue
-    /// @param distance_voxel_size leaf size for radial distance
-    /// @param polar_voxel_size leaf size for polar angle (radian)
-    /// @param azimuth_voxel_size leaf size for azimuth angle (radian)
-    PolarGrid(const sycl_points::sycl_utils::DeviceQueue &queue, float distance_voxel_size, float polar_voxel_size,
-              float azimuth_voxel_size, CoordinateSystem coord = CoordinateSystem::LIDAR)
+    /// @param distance_voxel_size voxel size for radial distance
+    /// @param elevation_voxel_size voxel size for elevation angle (radian)
+    /// @param azimuth_voxel_size voxel size for azimuth angle (radian)
+    /// @param coord The coordinate system to use for polar conversion.
+    PolarGrid(const sycl_points::sycl_utils::DeviceQueue &queue, float distance_voxel_size, float elevation_voxel_size,
+              float azimuth_voxel_size, CoordinateSystem coord = CoordinateSystem::LIDAR)  //
         : queue_(queue),
           distance_voxel_size_(distance_voxel_size),
-          polar_voxel_size_(polar_voxel_size),
+          elevation_voxel_size_(elevation_voxel_size),
           azimuth_voxel_size_(azimuth_voxel_size),
           coord_(coord) {
-        if (distance_voxel_size <= 0.0f || polar_voxel_size <= 0.0f || azimuth_voxel_size <= 0.0f) {
-            throw std::invalid_argument("leaf sizes must be positive");
+        if (distance_voxel_size <= 0.0f || elevation_voxel_size <= 0.0f || azimuth_voxel_size <= 0.0f) {
+            throw std::invalid_argument("voxel sizes must be positive");
         }
         this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, shared_allocator<uint64_t>(*this->queue_.ptr));
         this->distance_voxel_size_inv_ = 1.0f / this->distance_voxel_size_;
-        this->polar_voxel_size_inv_ = 1.0f / this->polar_voxel_size_;
+        this->elevation_voxel_size_inv_ = 1.0f / this->elevation_voxel_size_;
         this->azimuth_voxel_size_inv_ = 1.0f / this->azimuth_voxel_size_;
         this->min_voxel_count_ = 1;
     }
 
+    /// @brief Set the voxel size for the radial distance.
+    /// @param size The new distance voxel size. Must be positive.
     void set_distance_voxel_size(const float size) {
         if (size <= 0.0f) {
             throw std::invalid_argument("distance_voxel_size must be positive");
@@ -138,17 +148,25 @@ public:
         this->distance_voxel_size_ = size;
         this->distance_voxel_size_inv_ = 1.0f / size;
     }
+    /// @brief Get the current distance voxel size.
+    /// @return The distance voxel size.
     float get_distance_voxel_size() const { return this->distance_voxel_size_; }
 
-    void set_polar_voxel_size(const float size) {
+    /// @brief Set the voxel size for the polar (elevation) angle.
+    /// @param size The new polar voxel size in radians. Must be positive.
+    void set_elevation_voxel_size(const float size) {
         if (size <= 0.0f) {
-            throw std::invalid_argument("polar_voxel_size must be positive");
+            throw std::invalid_argument("elevation_voxel_size must be positive");
         }
-        this->polar_voxel_size_ = size;
-        this->polar_voxel_size_inv_ = 1.0f / size;
+        this->elevation_voxel_size_ = size;
+        this->elevation_voxel_size_inv_ = 1.0f / size;
     }
-    float get_polar_voxel_size() const { return this->polar_voxel_size_; }
+    /// @brief Get the current polar (elevation) voxel size.
+    /// @return The polar voxel size in radians.
+    float get_elevation_voxel_size() const { return this->elevation_voxel_size_; }
 
+    /// @brief Set the voxel size for the azimuth angle.
+    /// @param size The new azimuth voxel size in radians. Must be positive.
     void set_azimuth_voxel_size(const float size) {
         if (size <= 0.0f) {
             throw std::invalid_argument("azimuth_voxel_size must be positive");
@@ -156,17 +174,29 @@ public:
         this->azimuth_voxel_size_ = size;
         this->azimuth_voxel_size_inv_ = 1.0f / size;
     }
+    /// @brief Get the current azimuth voxel size.
+    /// @return The azimuth voxel size in radians.
     float get_azimuth_voxel_size() const { return this->azimuth_voxel_size_; }
 
+    /// @brief Set the minimum number of points required in a voxel to be kept.
+    /// @param min_voxel_count The minimum number of points.
     void set_min_voxel_count(const size_t min_voxel_count) { this->min_voxel_count_ = min_voxel_count; }
+    /// @brief Get the minimum number of points required in a voxel.
+    /// @return The minimum number of points.
     size_t get_min_voxel_count() const { return this->min_voxel_count_; }
 
+    /// @brief Set the coordinate system used for polar conversion.
+    /// @param coord The coordinate system (LIDAR or CAMERA).
     void set_coordinate_system(const CoordinateSystem coord) { this->coord_ = coord; }
+    /// @brief Get the current coordinate system.
+    /// @return The current coordinate system.
     CoordinateSystem get_coordinate_system() const { return this->coord_; }
 
-    /// @brief Downsampling based on polar grid
-    /// @param points Point Cloud
-    /// @param result Downsampled point cloud
+    /// @brief Downsample a point cloud using a polar grid filter.
+    /// @details Points are grouped into voxels in polar coordinate space. The centroid of the points in each voxel is
+    /// computed to produce the downsampled point cloud.
+    /// @param points The input point container to be downsampled.
+    /// @param result The output point container for the downsampled points.
     void downsampling(const PointContainerShared &points, PointContainerShared &result) {
         const size_t N = points.size();
         if (N == 0) {
@@ -177,9 +207,11 @@ public:
         this->voxel_map_to_cloud(voxel_map, result);
     }
 
-    /// @brief Downsampling based on polar grid
-    /// @param cloud Point Cloud with attributes
-    /// @param result Downsampled point cloud with attributes
+    /// @brief Downsample a point cloud with attributes using a polar grid filter.
+    /// @details Points and their attributes (RGB, intensity) are grouped into voxels in polar coordinate space.
+    ///          The centroid of points and the average of attributes in each voxel are computed.
+    /// @param cloud The input point cloud with attributes to be downsampled.
+    /// @param result The output point cloud for the downsampled data.
     void downsampling(const PointCloudShared &cloud, PointCloudShared &result) {
         const size_t N = cloud.size();
         if (N == 0) {
@@ -200,16 +232,18 @@ public:
 private:
     sycl_points::sycl_utils::DeviceQueue queue_;
     float distance_voxel_size_;
-    float polar_voxel_size_;
+    float elevation_voxel_size_;
     float azimuth_voxel_size_;
     float distance_voxel_size_inv_;
-    float polar_voxel_size_inv_;
+    float elevation_voxel_size_inv_;
     float azimuth_voxel_size_inv_;
     size_t min_voxel_count_;
     CoordinateSystem coord_;
 
     shared_vector_ptr<uint64_t> bit_ptr_ = nullptr;
 
+    /// @brief Computes the 64-bit polar key for each point in the input container on the SYCL device.
+    /// @param points The input point container.
     void compute_voxel_bit(const PointContainerShared &points) {
         const size_t N = points.size();
         if (this->bit_ptr_->size() < N) {
@@ -232,7 +266,7 @@ private:
             const auto point_ptr = points.data();
             const auto bit_ptr = this->bit_ptr_->data();
             const auto distance_inv = this->distance_voxel_size_inv_;
-            const auto polar_inv = this->polar_voxel_size_inv_;
+            const auto polar_inv = this->elevation_voxel_size_inv_;
             const auto azimuth_inv = this->azimuth_voxel_size_inv_;
             const auto coord = this->coord_;
 
@@ -240,8 +274,8 @@ private:
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                     const uint32_t i = item.get_global_id(0);
                     if (i >= N) return;
-                    bit_ptr[i] = kernel::compute_polar_bit<coord_tag.value>(point_ptr[i], distance_inv,
-                                                                                    polar_inv, azimuth_inv);
+                    bit_ptr[i] =
+                        kernel::compute_polar_bit<coord_tag.value>(point_ptr[i], distance_inv, polar_inv, azimuth_inv);
                 });
             };
             if (this->coord_ == CoordinateSystem::LIDAR) {
@@ -259,6 +293,11 @@ private:
         }
     }
 
+    /// @brief Aggregates data on the host based on the pre-computed voxel keys.
+    /// @tparam T The type of data to aggregate (e.g., PointType, RGBType).
+    /// @tparam AllocSize The allocator size for the shared_vector.
+    /// @param data The shared_vector containing the data to be aggregated.
+    /// @return An unordered_map from voxel key to the summed data within that voxel.
     template <typename T, size_t AllocSize = 0>
     std::unordered_map<uint64_t, T> compute_voxel_map(const shared_vector<T, AllocSize> &data) const {
         const size_t N = data.size();
@@ -293,11 +332,17 @@ private:
         return voxel_map;
     }
 
+    /// @brief A helper function that first computes polar keys and then creates the voxel map for points.
+    /// @param points The input point container.
+    /// @return An unordered_map from voxel key to the summed points within that voxel.
     std::unordered_map<uint64_t, PointType> compute_voxel_bit_and_voxel_map(const PointContainerShared &points) {
         this->compute_voxel_bit(points);
         return this->compute_voxel_map(points);
     }
 
+    /// @brief Converts a voxel map of points back into a point container.
+    /// @param voxel_map The map from voxel key to summed PointType.
+    /// @param result The output point container.
     void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType> &voxel_map,
                             PointContainerShared &result) const {
         const size_t N = voxel_map.size();
@@ -315,6 +360,11 @@ private:
         result.resize(idx);
     }
 
+    /// @brief Converts voxel maps of points and attributes back into a PointCloudShared object.
+    /// @param voxel_map The map from voxel key to summed PointType.
+    /// @param voxel_map_rgb The map from voxel key to summed RGBType.
+    /// @param voxel_map_intensity The map from voxel key to summed intensity.
+    /// @param result The output PointCloudShared object.
     void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType> &voxel_map,
                             const std::unordered_map<uint64_t, RGBType> &voxel_map_rgb,
                             const std::unordered_map<uint64_t, float> &voxel_map_intensity,
@@ -323,15 +373,18 @@ private:
         const bool has_rgb = voxel_map_rgb.size() == N;
         const bool has_intensity = voxel_map_intensity.size() == N;
         result.clear();
-        result.resize_points(N);
-        this->queue_.set_accessed_by_host(result.points_ptr(), N);
-        if (has_rgb) {
-            result.resize_rgb(voxel_map_rgb.size());
-            this->queue_.set_accessed_by_host(result.rgb_ptr(), voxel_map_rgb.size());
-        }
-        if (has_intensity) {
-            result.resize_intensities(voxel_map_intensity.size());
-            this->queue_.set_accessed_by_host(result.intensities_ptr(), voxel_map_intensity.size());
+        // resize and mem_advise set to host
+        {
+            result.resize_points(N);
+            this->queue_.set_accessed_by_host(result.points_ptr(), N);
+            if (has_rgb) {
+                result.resize_rgb(voxel_map_rgb.size());
+                this->queue_.set_accessed_by_host(result.rgb_ptr(), voxel_map_rgb.size());
+            }
+            if (has_intensity) {
+                result.resize_intensities(voxel_map_intensity.size());
+                this->queue_.set_accessed_by_host(result.intensities_ptr(), voxel_map_intensity.size());
+            }
         }
 
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
