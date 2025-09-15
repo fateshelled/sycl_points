@@ -9,7 +9,7 @@ namespace sycl_points {
 namespace algorithms {
 namespace filter {
 
-enum CoordinateSystem : std::uint8_t { LIDAR = 0, CAMERA = 1 };
+enum class CoordinateSystem : std::uint8_t { LIDAR = 0, CAMERA = 1 };
 
 namespace kernel {
 
@@ -68,16 +68,10 @@ SYCL_EXTERNAL inline uint64_t compute_polar_bit(const PointType &point, const fl
         if (point.x() == 0.0f && point.y() == 0.0f) {
             return VoxelConstants::invalid_coord;
         }
-        if (point.z() == 0.0f && x2y2 == 0.0f) {
-            return VoxelConstants::invalid_coord;
-        }
         azimuth = sycl::atan2(point.y(), point.x());
         elevation = sycl::atan2(point.z(), sycl::sqrt(x2y2));
     } else if constexpr (coord_system == CoordinateSystem::CAMERA) {
         if (point.x() == 0.0f && point.z() == 0.0f) {
-            return VoxelConstants::invalid_coord;
-        }
-        if (point.y() == 0.0f && x2y2 == 0.0f) {
             return VoxelConstants::invalid_coord;
         }
         azimuth = sycl::atan2(point.x(), point.z());
@@ -242,20 +236,18 @@ private:
             const auto azimuth_inv = this->azimuth_voxel_size_inv_;
             const auto coord = this->coord_;
 
-            if (this->coord_ == CoordinateSystem::LIDAR) {
+            auto kernel_launch = [&](auto coord_tag) {
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                     const uint32_t i = item.get_global_id(0);
                     if (i >= N) return;
-                    bit_ptr[i] = kernel::compute_polar_bit<CoordinateSystem::LIDAR>(point_ptr[i], distance_inv,
+                    bit_ptr[i] = kernel::compute_polar_bit<coord_tag.value>(point_ptr[i], distance_inv,
                                                                                     polar_inv, azimuth_inv);
                 });
+            };
+            if (this->coord_ == CoordinateSystem::LIDAR) {
+                kernel_launch(std::integral_constant<CoordinateSystem, CoordinateSystem::LIDAR>{});
             } else if (this->coord_ == CoordinateSystem::CAMERA) {
-                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                    const uint32_t i = item.get_global_id(0);
-                    if (i >= N) return;
-                    bit_ptr[i] = kernel::compute_polar_bit<CoordinateSystem::CAMERA>(point_ptr[i], distance_inv,
-                                                                                     polar_inv, azimuth_inv);
-                });
+                kernel_launch(std::integral_constant<CoordinateSystem, CoordinateSystem::CAMERA>{});
             }
         });
         event.wait();
