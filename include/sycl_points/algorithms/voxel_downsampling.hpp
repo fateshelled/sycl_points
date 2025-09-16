@@ -22,15 +22,19 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
     const auto coord1 = static_cast<int64_t>(std::floor(point.y() * voxel_size_inv)) + VoxelConstants::coord_offset;
     const auto coord2 = static_cast<int64_t>(std::floor(point.z() * voxel_size_inv)) + VoxelConstants::coord_offset;
 
-    if (coord0 < 0 || VoxelConstants::coord_bit_mask < coord0 || coord1 < 0 ||
-        VoxelConstants::coord_bit_mask < coord1 || coord2 < 0 || VoxelConstants::coord_bit_mask < coord2) {
+    if (coord0 < 0 || VoxelConstants::coord_bit_mask < coord0 ||  //
+        coord1 < 0 || VoxelConstants::coord_bit_mask < coord1 ||  //
+        coord2 < 0 || VoxelConstants::coord_bit_mask < coord2) {
         return VoxelConstants::invalid_coord;
     }
 
     // Compute voxel coord bits (0|1bit, z|21bit, y|21bit, x|21bit)
-    return (static_cast<uint64_t>(coord0 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 0)) |
-           (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 1)) |
-           (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask) << (VoxelConstants::coord_bit_size * 2));
+    return (static_cast<uint64_t>(coord0 & VoxelConstants::coord_bit_mask)
+            << (VoxelConstants::coord_bit_size * CartesianCoordComponent::X)) |
+           (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask)
+            << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Y)) |
+           (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask)
+            << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Z));
 }
 
 }  // namespace kernel
@@ -45,6 +49,9 @@ public:
     /// @param voxel_size voxel size
     VoxelGrid(const sycl_points::sycl_utils::DeviceQueue& queue, const float voxel_size)
         : queue_(queue), voxel_size_(voxel_size) {
+        if (voxel_size <= 0.0f) {
+            throw std::invalid_argument("voxel_size must be positive");
+        }
         this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, shared_allocator<uint64_t>(*this->queue_.ptr));
         this->voxel_size_inv_ = 1.0f / this->voxel_size_;
         this->min_voxel_count_ = 1;
@@ -52,7 +59,14 @@ public:
 
     /// @brief Set voxel size
     /// @param voxel_size voxel size
-    void set_voxel_size(const float voxel_size) { this->voxel_size_ = voxel_size; }
+    void set_voxel_size(const float voxel_size) {
+        if (voxel_size <= 0.0f) {
+            throw std::invalid_argument("voxel_size must be positive");
+        }
+        this->voxel_size_ = voxel_size;
+        this->voxel_size_inv_ = 1.0f / this->voxel_size_;
+    }
+
     /// @brief Get voxel size
     /// @param voxel_size voxel size
     float get_voxel_size() const { return this->voxel_size_; }
@@ -191,19 +205,14 @@ private:
                             PointContainerShared& result) const {
         const size_t N = voxel_map.size();
         result.clear();
-        result.resize(N);
-        // mem_advise set to host
-        this->queue_.set_accessed_by_host(result.data(), N);
-        // to point cloud
+        result.reserve(N);
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
-        size_t idx = 0;
         for (const auto& [_, point] : voxel_map) {
-            if (point.w() >= min_voxel_count) {
-                result[idx++] = point / point.w();
+            const auto point_count = point.w();
+            if (point_count >= min_voxel_count) {
+                result.push_back(point / point_count);
             }
         }
-        // mem_advise clear
-        this->queue_.clear_accessed_by_host(result.data(), N);
     }
 
     void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
@@ -214,35 +223,23 @@ private:
         const bool has_rgb = voxel_map_rgb.size() == N;
         const bool has_intensity = voxel_map_intensity.size() == N;
         result.clear();
-        result.resize_points(N);
-        this->queue_.set_accessed_by_host(result.points_ptr(), N);
+        result.reserve_points(N);
         if (has_rgb) {
-            result.resize_rgb(voxel_map_rgb.size());
-            this->queue_.set_accessed_by_host(result.rgb_ptr(), voxel_map_rgb.size());
+            result.reserve_rgb(voxel_map_rgb.size());
         }
         if (has_intensity) {
-            result.resize_intensities(voxel_map_intensity.size());
-            this->queue_.set_accessed_by_host(result.intensities_ptr(), voxel_map_intensity.size());
+            result.reserve_intensities(voxel_map_intensity.size());
         }
 
         // to point cloud
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
-        size_t idx = 0;
         for (const auto& [voxel_idx, point] : voxel_map) {
-            if (point.w() >= min_voxel_count) {
-                (*result.points)[idx] = point / point.w();
-                if (has_rgb) (*result.rgb)[idx] = voxel_map_rgb.at(voxel_idx) / point.w();
-                if (has_intensity) (*result.intensities)[idx] = voxel_map_intensity.at(voxel_idx) / point.w();
-                ++idx;
+            const auto point_count = point.w();
+            if (point_count >= min_voxel_count) {
+                result.points->emplace_back(point / point_count);
+                if (has_rgb) result.rgb->emplace_back(voxel_map_rgb.at(voxel_idx) / point_count);
+                if (has_intensity) result.intensities->emplace_back(voxel_map_intensity.at(voxel_idx) / point_count);
             }
-        }
-        // mem_advise clear
-        this->queue_.clear_accessed_by_host(result.points_ptr(), N);
-        if (has_rgb) {
-            this->queue_.clear_accessed_by_host(result.rgb_ptr(), voxel_map_rgb.size());
-        }
-        if (has_intensity) {
-            this->queue_.clear_accessed_by_host(result.intensities_ptr(), voxel_map_intensity.size());
         }
     }
 };

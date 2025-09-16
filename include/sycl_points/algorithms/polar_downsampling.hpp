@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <stdexcept>
+#include <sycl_points/algorithms/common/coordinate_system.hpp>
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 
@@ -9,18 +10,7 @@ namespace sycl_points {
 namespace algorithms {
 namespace filter {
 
-/// @brief Defines the coordinate system for polar coordinate conversion, following REP-103.
-/// @see https://ros.org/reps/rep-0103.html
-enum class CoordinateSystem : std::uint8_t { LIDAR = 0, CAMERA = 1 };
-
 namespace kernel {
-
-/// @brief Constants for bit-shifting components of the polar coordinate key.
-struct PolarCoordComponent {
-    static constexpr uint8_t DISTANCE = 0;
-    static constexpr uint8_t POLAR = 1;
-    static constexpr uint8_t AZIMUTH = 2;
-};
 
 /// @brief Computes a 64-bit key for a point based on its polar coordinates.
 /// @details This function converts a 3D point from Cartesian to polar coordinates (distance, elevation, azimuth)
@@ -347,17 +337,14 @@ private:
                             PointContainerShared &result) const {
         const size_t N = voxel_map.size();
         result.clear();
-        result.resize(N);
-        this->queue_.set_accessed_by_host(result.data(), N);
+        result.reserve(N);
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
-        size_t idx = 0;
         for (const auto &[_, point] : voxel_map) {
-            if (point.w() >= min_voxel_count) {
-                result[idx++] = point / point.w();
+            const auto point_count = point.w();
+            if (point_count >= min_voxel_count) {
+                result.push_back(point / point_count);
             }
         }
-        this->queue_.clear_accessed_by_host(result.data(), N);
-        result.resize(idx);
     }
 
     /// @brief Converts voxel maps of points and attributes back into a PointCloudShared object.
@@ -373,48 +360,22 @@ private:
         const bool has_rgb = voxel_map_rgb.size() == N;
         const bool has_intensity = voxel_map_intensity.size() == N;
         result.clear();
-        // resize and mem_advise set to host
-        {
-            result.resize_points(N);
-            this->queue_.set_accessed_by_host(result.points_ptr(), N);
-            if (has_rgb) {
-                result.resize_rgb(voxel_map_rgb.size());
-                this->queue_.set_accessed_by_host(result.rgb_ptr(), voxel_map_rgb.size());
-            }
-            if (has_intensity) {
-                result.resize_intensities(voxel_map_intensity.size());
-                this->queue_.set_accessed_by_host(result.intensities_ptr(), voxel_map_intensity.size());
-            }
+
+        result.reserve_points(N);
+        if (has_rgb) {
+            result.reserve_rgb(voxel_map_rgb.size());
+        }
+        if (has_intensity) {
+            result.reserve_intensities(voxel_map_intensity.size());
         }
 
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
-        size_t idx = 0;
         for (const auto &[voxel_idx, point] : voxel_map) {
-            if (point.w() >= min_voxel_count) {
-                (*result.points)[idx] = point / point.w();
-                if (has_rgb) (*result.rgb)[idx] = voxel_map_rgb.at(voxel_idx) / point.w();
-                if (has_intensity) (*result.intensities)[idx] = voxel_map_intensity.at(voxel_idx) / point.w();
-                ++idx;
-            }
-        }
-        // mem_advise clear
-        {
-            this->queue_.clear_accessed_by_host(result.points_ptr(), N);
-            if (has_rgb) {
-                this->queue_.clear_accessed_by_host(result.rgb_ptr(), voxel_map_rgb.size());
-            }
-            if (has_intensity) {
-                this->queue_.clear_accessed_by_host(result.intensities_ptr(), voxel_map_intensity.size());
-            }
-        }
-        // resize
-        {
-            result.resize_points(idx);
-            if (has_rgb) {
-                result.resize_rgb(idx);
-            }
-            if (has_intensity) {
-                result.resize_intensities(idx);
+            const auto point_count = point.w();
+            if (point_count >= min_voxel_count) {
+                result.points->emplace_back(point / point_count);
+                if (has_rgb) result.rgb->emplace_back(voxel_map_rgb.at(voxel_idx) / point_count);
+                if (has_intensity) result.intensities->emplace_back(voxel_map_intensity.at(voxel_idx) / point_count);
             }
         }
     }
