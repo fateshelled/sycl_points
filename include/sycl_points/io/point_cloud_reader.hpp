@@ -15,7 +15,7 @@ class PointCloudReader {
 private:
     using T = float;
     // Read PLY file
-    static void readPLY(std::ifstream& file, PointCloudCPU& points) {
+    static void readPLY(std::ifstream& file, PointCloudCPU& points, bool read_rgb, bool read_intensity) {
         std::string line;
 
         // Header parsing
@@ -25,6 +25,7 @@ private:
         std::vector<std::string> property_types;  // Store property types
         int x_index = -1, y_index = -1, z_index = -1;
         int rgb_r_index = -1, rgb_g_index = -1, rgb_b_index = -1;
+        int intensity_index = -1;
 
         // Read header
         while (std::getline(file, line)) {
@@ -61,6 +62,7 @@ private:
                 if (token3 == "red") rgb_r_index = properties.size() - 1;
                 if (token3 == "green") rgb_g_index = properties.size() - 1;
                 if (token3 == "blue") rgb_b_index = properties.size() - 1;
+                if (token3.find("intensity") != std::string::npos) intensity_index = properties.size() - 1;
             }
         }
 
@@ -72,10 +74,15 @@ private:
         points.points->clear();
         points.points->reserve(vertex_count);
 
-        const bool has_rgb = (rgb_r_index >= 0 && rgb_g_index >= 0 && rgb_b_index >= 0);
+        const bool has_rgb = read_rgb && (rgb_r_index >= 0 && rgb_g_index >= 0 && rgb_b_index >= 0);
         points.rgb->clear();
         if (has_rgb) {
             points.rgb->reserve(vertex_count);
+        }
+        const bool has_intensity = read_intensity && (intensity_index >= 0);
+        points.intensities->clear();
+        if (has_intensity) {
+            points.intensities->reserve(vertex_count);
         }
 
         // For binary format
@@ -144,7 +151,7 @@ private:
                             if (type == "uint" || type == "uint32") {
                                 return static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
                             } else if (type == "uint16" || type == "ushort") {
-                               return static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
+                                return static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
                             } else if (type == "uint8" || type == "uchar") {
                                 return static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[offset]));
                             }
@@ -190,6 +197,42 @@ private:
                     const T b = read_color(rgb_b_index);
                     points.rgb->emplace_back(r / 255.f, g / 255.f, b / 255.f, static_cast<T>(1.0));
                 }
+
+                if (has_intensity) {
+                    auto read_intensity = [&](int idx) {
+                        const int offset = property_offsets[idx];
+                        const std::string& type = property_types[idx];
+                        switch (type[0]) {
+                            case 'f':  // float, float32
+                                return static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
+                                break;
+                            case 'd':  // double, float64
+                                return static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
+                                break;
+                            case 'i':
+                                if (type == "int" || type == "int32") {
+                                    return static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
+                                } else if (type == "int16" || type == "short") {
+                                    return static_cast<T>(*reinterpret_cast<int16_t*>(&buffer[offset]));
+                                } else {
+                                    return static_cast<T>(*reinterpret_cast<int8_t*>(&buffer[offset]));
+                                }
+                            case 'u':
+                                if (type == "uint" || type == "uint32") {
+                                    return static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
+                                } else if (type == "uint16" || type == "ushort") {
+                                    return static_cast<T>(*reinterpret_cast<uint16_t*>(&buffer[offset]));
+                                } else {
+                                    return static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[offset]));
+                                }
+                            default:
+                                static_assert("unsupported type");
+                        }
+                        return (T)0;
+                    };
+                    const T intensity = read_intensity(intensity_index);
+                    points.intensities->emplace_back(intensity);
+                }
             }
         } else {
             // For ASCII format
@@ -221,12 +264,16 @@ private:
                     const T b = static_cast<T>(raw_values[rgb_b_index]) / 255.f;
                     points.rgb->emplace_back(r, g, b, static_cast<T>(1.0));
                 }
+                if (has_intensity) {
+                    const T intensity = static_cast<T>(raw_values[intensity_index]);
+                    points.intensities->emplace_back(intensity);
+                }
             }
         }
     }
 
     // Read PCD file
-    static void readPCD(std::ifstream& file, PointCloudCPU& points) {
+    static void readPCD(std::ifstream& file, PointCloudCPU& points, bool read_rgb, bool read_intensity) {
         std::string line;
 
         // Header parsing
@@ -238,6 +285,8 @@ private:
         std::vector<int> field_sizes_line;     // Store sizes from SIZE line
         int x_index = -1, y_index = -1, z_index = -1;
         int rgb_r_index = -1, rgb_g_index = -1, rgb_b_index = -1;
+        int intensity_index = -1;
+
         std::string data_type;
 
         while (std::getline(file, line)) {
@@ -258,6 +307,7 @@ private:
                     if (field == "r") rgb_r_index = fields.size() - 1;
                     if (field == "g") rgb_g_index = fields.size() - 1;
                     if (field == "b") rgb_b_index = fields.size() - 1;
+                    if (field == "intensity") intensity_index = fields.size() - 1;
                 }
                 fields_count = fields.size();
             } else if (keyword == "TYPE") {
@@ -291,11 +341,20 @@ private:
         points.rgb->clear();
 
         bool has_rgb = false;
-        if (rgb_r_index >= 0 && rgb_g_index >= 0 && rgb_b_index >= 0) {
+        if (read_rgb && (rgb_r_index >= 0 && rgb_g_index >= 0 && rgb_b_index >= 0)) {
             if (field_sizes_line.size() > static_cast<size_t>(std::max({rgb_r_index, rgb_g_index, rgb_b_index})) &&
-                field_sizes_line[rgb_r_index] == 1 && field_sizes_line[rgb_g_index] == 1 && field_sizes_line[rgb_b_index] == 1) {
+                field_sizes_line[rgb_r_index] == 1 && field_sizes_line[rgb_g_index] == 1 &&
+                field_sizes_line[rgb_b_index] == 1) {
                 has_rgb = true;
                 points.rgb->reserve(point_count);
+            }
+        }
+        bool has_intensity = false;
+        if (read_intensity && intensity_index >= 0) {
+            if (field_sizes_line.size() > static_cast<size_t>(intensity_index) &&
+                field_sizes_line[intensity_index] == 1) {
+                has_intensity = true;
+                points.intensities->reserve(point_count);
             }
         }
 
@@ -373,7 +432,28 @@ private:
                     const T b = static_cast<T>(*reinterpret_cast<uint8_t*>(&buffer[field_offsets[rgb_b_index]]));
                     points.rgb->emplace_back(r / 255.f, g / 255.f, b / 255.f, static_cast<T>(1.0));
                 }
-
+                if (has_intensity) {
+                    const int offset = field_offsets[intensity_index];
+                    const std::string& type = field_types[intensity_index];
+                    float intensity = 0.0f;
+                    switch (type[0]) {
+                        case 'F':  // float32
+                            intensity = static_cast<T>(*reinterpret_cast<float*>(&buffer[offset]));
+                            break;
+                        case 'D':  // double/float64
+                            intensity = static_cast<T>(*reinterpret_cast<double*>(&buffer[offset]));
+                            break;
+                        case 'I':  // int32
+                            intensity = static_cast<T>(*reinterpret_cast<int32_t*>(&buffer[offset]));
+                            break;
+                        case 'U':  // uint32
+                            intensity = static_cast<T>(*reinterpret_cast<uint32_t*>(&buffer[offset]));
+                            break;
+                        default:
+                            static_assert("unsupported type");
+                    }
+                    points.intensities->emplace_back(intensity);
+                }
             }
         } else {
             // For ASCII format
@@ -386,16 +466,20 @@ private:
                     iss >> values[j];
                 }
 
-                T x = static_cast<T>(values[x_index]);
-                T y = static_cast<T>(values[y_index]);
-                T z = static_cast<T>(values[z_index]);
+                const T x = static_cast<T>(values[x_index]);
+                const T y = static_cast<T>(values[y_index]);
+                const T z = static_cast<T>(values[z_index]);
                 points.points->emplace_back(x, y, z, static_cast<T>(1.0));
 
                 if (has_rgb) {
-                    T r = static_cast<T>(values[rgb_r_index]) / 255.f;
-                    T g = static_cast<T>(values[rgb_g_index]) / 255.f;
-                    T b = static_cast<T>(values[rgb_b_index]) / 255.f;
+                    const T r = static_cast<T>(values[rgb_r_index]) / 255.f;
+                    const T g = static_cast<T>(values[rgb_g_index]) / 255.f;
+                    const T b = static_cast<T>(values[rgb_b_index]) / 255.f;
                     points.rgb->emplace_back(r, g, b, static_cast<T>(1.0));
+                }
+                if (has_intensity) {
+                    const T intensity  = static_cast<T>(values[intensity_index]);
+                    points.intensities->emplace_back(intensity);
                 }
             }
         }
@@ -405,7 +489,7 @@ public:
     /// @brief Read point cloud file to CPU memory
     /// @param filename File path to read
     /// @return Point cloud data in CPU memory
-    static PointCloudCPU readFile(const std::string& filename) {
+    static PointCloudCPU readFile(const std::string& filename, bool read_rgb = true, bool read_intensity = true) {
         std::ifstream file(filename, std::ios::binary);
         if (!file.is_open()) {
             throw std::runtime_error("Failed to open file: " + filename);
@@ -428,9 +512,9 @@ public:
             if (first_line != "ply") {
                 throw std::runtime_error("Invalid PLY file format: " + filename);
             }
-            readPLY(file, cloud);
+            readPLY(file, cloud, read_rgb, read_intensity);
         } else if (extension == "pcd") {
-            readPCD(file, cloud);
+            readPCD(file, cloud, read_rgb, read_intensity);
         } else {
             std::cerr << "not supported format [" << extension << "]" << std::endl;
             throw std::runtime_error("Unsupported file format: " + extension);
@@ -443,9 +527,10 @@ public:
     /// @param filename File path to read
     /// @param queue SYCL device queue for shared memory allocation
     /// @return Point cloud data in shared memory
-    static PointCloudShared readFile(const std::string& filename, const sycl_utils::DeviceQueue& queue) {
+    static PointCloudShared readFile(const std::string& filename, const sycl_utils::DeviceQueue& queue,
+                                     bool read_rgb = true, bool read_intensity = true) {
         // First read to CPU memory
-        PointCloudCPU cpu_cloud = readFile(filename);
+        PointCloudCPU cpu_cloud = readFile(filename, read_rgb, read_intensity);
 
         // Then convert to shared memory
         return PointCloudShared(queue, cpu_cloud);
@@ -455,8 +540,9 @@ public:
     /// @param queue SYCL device queue for shared memory allocation
     /// @param filename File path to read
     /// @return Point cloud data in shared memory
-    static PointCloudShared readFile(const sycl_utils::DeviceQueue& queue, const std::string& filename) {
-        return readFile(filename, queue);
+    static PointCloudShared readFile(const sycl_utils::DeviceQueue& queue, const std::string& filename,
+                                     bool read_rgb = true, bool read_intensity = true) {
+        return readFile(filename, queue, read_rgb, read_intensity);
     }
 };
 }  // namespace sycl_points
