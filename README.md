@@ -21,7 +21,7 @@ This project was developed with reference to small_gicp, a lightweight point clo
       - Point to Point
       - Point to Plane
       - Generalized ICP (GICP)
-    - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GERMAN_MCCLURE)
+    - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
     - Adaptive max correspondence distance by inlier points ratio
 - Preprocessing filter
     - L∞ distance (chebyshev distance) filter
