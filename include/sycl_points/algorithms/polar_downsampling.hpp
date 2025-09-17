@@ -59,20 +59,21 @@ SYCL_EXTERNAL inline uint64_t compute_polar_bit(const PointType &point, const fl
     if (r == 0.0f) {
         return VoxelConstants::invalid_coord;
     }
-    const float x2y2 = point.x() * point.x() + point.y() * point.y();
     float azimuth, elevation;
     if constexpr (coord_system == CoordinateSystem::LIDAR) {
-        if (point.x() == 0.0f && point.y() == 0.0f) {
+        const float x2y2 = point.x() * point.x() + point.y() * point.y();
+        if (x2y2 == 0.0f) {
             return VoxelConstants::invalid_coord;
         }
         azimuth = sycl::atan2(point.y(), point.x());
         elevation = sycl::atan2(point.z(), sycl::sqrt(x2y2));
     } else if constexpr (coord_system == CoordinateSystem::CAMERA) {
-        if (point.x() == 0.0f && point.z() == 0.0f) {
+        const float x2z2 = point.x() * point.x() + point.z() * point.z();
+        if (x2z2 == 0.0f) {
             return VoxelConstants::invalid_coord;
         }
         azimuth = sycl::atan2(point.x(), point.z());
-        elevation = sycl::atan2(-point.y(), sycl::sqrt(x2y2));
+        elevation = sycl::atan2(-point.y(), sycl::sqrt(x2z2));
     } else {
         // not support type
         return VoxelConstants::invalid_coord;
