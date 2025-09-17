@@ -21,13 +21,10 @@ SYCL_EXTERNAL inline bool is_finite(const PointType& pt) {
 }
 
 SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float min_distance, float max_distance) {
-#pragma unroll 3
-    for (size_t j = 0; j < 3; ++j) {
-        const auto val = std::fabs(pt[j]);
-        if (val < min_distance || val > max_distance) {
-            flag = REMOVE_FLAG;
-            return;
-        }
+    const float linf_dist = sycl::max(sycl::fabs(pt.x()), sycl::max(sycl::fabs(pt.y()), sycl::fabs(pt.z())));
+
+    if (linf_dist < min_distance || linf_dist > max_distance) {
+        flag = REMOVE_FLAG;
     }
 }
 
