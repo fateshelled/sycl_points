@@ -281,21 +281,6 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, N, N> outer(const Eigen::Vector<float,
     return ret;
 }
 
-/// @brief Extract 3×3 Block from 4×4 Matrix
-/// @param src Source 4×4 matrix
-/// @return Upper-left 3×3 submatrix
-SYCL_EXTERNAL inline Eigen::Matrix3f block3x3(const Eigen::Matrix4f& src) {
-    Eigen::Matrix3f ret;
-#pragma unroll 3
-    for (size_t i = 0; i < 3; ++i) {
-#pragma unroll 3
-        for (size_t j = 0; j < 3; ++j) {
-            ret(i, j) = src(i, j);
-        }
-    }
-    return ret;
-}
-
 template <size_t M>
 /// @brief Matrix Trace
 /// @tparam M Matrix dimension

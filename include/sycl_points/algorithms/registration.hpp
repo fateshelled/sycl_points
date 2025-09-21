@@ -443,8 +443,8 @@ private:
             } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::CAUCHY>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::GERMAN_MCCLURE) {
-                events += this->linearlize_parallel_reduction_async<RobustLossType::GERMAN_MCCLURE>(
+            } else if (this->params_.robust_loss == RobustLossType::GEMAN_MCCLURE) {
+                events += this->linearlize_parallel_reduction_async<RobustLossType::GEMAN_MCCLURE>(
                     source, target, transT, max_correspondence_distance_2, depends);
             } else {
                 throw std::runtime_error("Unknown robust loss type.");
@@ -464,8 +464,8 @@ private:
             } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
                 return this->linearlize_sequential_reduction<RobustLossType::CAUCHY>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::GERMAN_MCCLURE) {
-                return this->linearlize_sequential_reduction<RobustLossType::GERMAN_MCCLURE>(
+            } else if (this->params_.robust_loss == RobustLossType::GEMAN_MCCLURE) {
+                return this->linearlize_sequential_reduction<RobustLossType::GEMAN_MCCLURE>(
                     source, target, transT, max_correspondence_distance_2, depends);
             }
             throw std::runtime_error("Unknown robust loss type.");
@@ -638,8 +638,8 @@ private:
             } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
                 return this->compute_error_parallel_reduction<RobustLossType::CAUCHY>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::GERMAN_MCCLURE) {
-                return this->compute_error_parallel_reduction<RobustLossType::GERMAN_MCCLURE>(
+            } else if (this->params_.robust_loss == RobustLossType::GEMAN_MCCLURE) {
+                return this->compute_error_parallel_reduction<RobustLossType::GEMAN_MCCLURE>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
             }
             throw std::runtime_error("Unknown robust loss type.");
@@ -657,8 +657,8 @@ private:
             } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
                 return this->compute_error_sequential_reduction<RobustLossType::CAUCHY>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::GERMAN_MCCLURE) {
-                return this->compute_error_sequential_reduction<RobustLossType::GERMAN_MCCLURE>(
+            } else if (this->params_.robust_loss == RobustLossType::GEMAN_MCCLURE) {
+                return this->compute_error_sequential_reduction<RobustLossType::GEMAN_MCCLURE>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
             }
             throw std::runtime_error("Unknown robust loss type.");

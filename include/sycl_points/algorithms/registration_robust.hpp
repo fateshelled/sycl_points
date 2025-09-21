@@ -12,7 +12,7 @@ enum class RobustLossType {
     HUBER,          // Huber loss
     TUKEY,          // Tukey bi-weight
     CAUCHY,         // Cauchy loss
-    GERMAN_MCCLURE  // German-McClure loss
+    GEMAN_MCCLURE  // Geman-McClure loss
 };
 
 RobustLossType RobustLossType_from_string(const std::string& str) {
@@ -26,8 +26,8 @@ RobustLossType RobustLossType_from_string(const std::string& str) {
         return RobustLossType::TUKEY;
     } else if (upper == "CAUCHY") {
         return RobustLossType::CAUCHY;
-    } else if (upper == "GERMAN_MCCLURE") {
-        return RobustLossType::GERMAN_MCCLURE;
+    } else if (upper == "GEMAN_MCCLURE") {
+        return RobustLossType::GEMAN_MCCLURE;
     }
     std::string error_str = "Invalid RobustLossType str [";
     error_str += str;
@@ -67,7 +67,7 @@ SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float scal
         // Cauchy loss: w = 1 / (1 + (r/scale)^2)
         const float x = normalized_residual * normalized_residual;
         return 1.0f / (1.0f + x);
-    } else if constexpr (LossType == RobustLossType::GERMAN_MCCLURE) {
+    } else if constexpr (LossType == RobustLossType::GEMAN_MCCLURE) {
         // German-McClure loss: w = 1 / (1 + (r/scale)^2)^2
         const float x = normalized_residual * normalized_residual;
         const float denominator = 1.0f + x;
@@ -94,7 +94,7 @@ SYCL_EXTERNAL inline float compute_robust_error(float residual_norm, float scale
                    : scale * scale / 6.0f;
     } else if constexpr (LossType == RobustLossType::CAUCHY) {
         return 0.5f * scale * scale * sycl::log(1.0f + ((residual_norm * residual_norm) / (scale * scale)));
-    } else if constexpr (LossType == RobustLossType::GERMAN_MCCLURE) {
+    } else if constexpr (LossType == RobustLossType::GEMAN_MCCLURE) {
         return 0.5f * (scale * scale * residual_norm * residual_norm) / (scale * scale + residual_norm * residual_norm);
     }
 

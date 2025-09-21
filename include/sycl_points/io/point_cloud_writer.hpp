@@ -60,6 +60,7 @@ private:
     static void writePLY(std::ofstream& file, const PointCloud& cloud, bool binary) {
         const size_t N = cloud.size();
         const bool has_rgb = cloud.has_rgb();
+        const bool has_intensity = cloud.has_intensity();
 
         // Count valid points first
         const size_t valid_count = countValidPoints(cloud);
@@ -93,6 +94,9 @@ private:
             file << "property uchar green\n";
             file << "property uchar blue\n";
         }
+        if (has_intensity) {
+            file << "property float intensity\n";
+        }
 
         file << "end_header\n";
 
@@ -117,6 +121,10 @@ private:
                                             static_cast<uint8_t>(std::clamp(c.z(), 0.f, 1.f) * 255.f)};
                     file.write(reinterpret_cast<const char*>(rgb), sizeof(rgb));
                 }
+                if (has_intensity) {
+                    const auto& intensity = (*cloud.intensities)[i];
+                    file.write(reinterpret_cast<const char*>(&intensity), sizeof(intensity));
+                }
             }
         } else {
             // ASCII format
@@ -133,6 +141,10 @@ private:
                          << static_cast<int>(std::clamp(c.x(), 0.f, 1.f) * 255.f) << " "
                          << static_cast<int>(std::clamp(c.y(), 0.f, 1.f) * 255.f) << " "
                          << static_cast<int>(std::clamp(c.z(), 0.f, 1.f) * 255.f);
+                }
+                if (has_intensity) {
+                    const auto& intensity = (*cloud.intensities)[i];
+                    file << " " << intensity;
                 }
                 file << "\n";
             }
