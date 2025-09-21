@@ -44,13 +44,22 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
     ret(2, 2) = cov3x3(2, 2);
 }
 
-SYCL_EXTERNAL inline sycl::float3 compute_normal_from_covariance(const Covariance& cov) {
+SYCL_EXTERNAL inline void compute_normal_from_covariance(const PointType& point, const Covariance& cov, Normal& normal) {
     Eigen::Vector3f eigenvalues;
     Eigen::Matrix3f eigenvectors;
     eigen_utils::symmetric_eigen_decomposition_3x3(eigen_utils::block3x3(cov), eigenvalues, eigenvectors);
-
-    const sycl::float3 normal(eigenvectors(0, 0), eigenvectors(1, 0), eigenvectors(2, 0));
-    return normal;
+    Eigen::Vector3f normal3 = eigenvectors.col(0);
+    if(eigen_utils::dot<3>(normal3, {point[0], point[1], point[2]}) <= 1.0) {
+        normal.x() = normal3.x();
+        normal.y() = normal3.y();
+        normal.z() = normal3.z();
+        normal.w() = 0.0f;
+    } else {
+        normal.x() = -normal3.x();
+        normal.y() = -normal3.y();
+        normal.z() = -normal3.z();
+        normal.w() = 0.0f;
+    }
 }
 
 SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
@@ -165,11 +174,7 @@ inline sycl_utils::events compute_normals_async(const knn_search::KNNResult& nei
             if (i >= N) return;
             Covariance cov;
             kernel::compute_covariance(cov, point_ptr, k_correspondences, index_ptr, i);
-            const auto normal = kernel::compute_normal_from_covariance(cov);
-            normal_ptr[i][0] = normal[0];
-            normal_ptr[i][1] = normal[1];
-            normal_ptr[i][2] = normal[2];
-            normal_ptr[i][3] = 0.0f;
+            kernel::compute_normal_from_covariance(point_ptr[i], cov, normal_ptr[i]);
         });
     });
     return events;
@@ -204,17 +209,14 @@ inline sycl_utils::events compute_normals_from_covariances_async(const PointClou
 
     sycl_utils::events events;
     events += points.queue.ptr->submit([&](sycl::handler& h) {
+        const auto point_ptr = points.points_ptr();
         const auto cov_ptr = points.covs_ptr();
         const auto normal_ptr = points.normals_ptr();
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
 
-            const auto normal = kernel::compute_normal_from_covariance(cov_ptr[i]);
-            normal_ptr[i][0] = normal[0];
-            normal_ptr[i][1] = normal[1];
-            normal_ptr[i][2] = normal[2];
-            normal_ptr[i][3] = 0.0f;
+            kernel::compute_normal_from_covariance(point_ptr[i], cov_ptr[i], normal_ptr[i]);
         });
     });
 
