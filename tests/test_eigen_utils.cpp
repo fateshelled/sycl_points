@@ -34,9 +34,7 @@ Eigen::Matrix<float, M, 1> random_vector() {
 }
 
 // Generate a random scalar in [-RANDOM_SCALE, RANDOM_SCALE]
-inline float random_scalar() {
-    return random_float();
-}
+inline float random_scalar() { return random_float(); }
 
 ::testing::AssertionResult AssertMatrixExactEqual(const char* expr1, const char* expr2, const Eigen::MatrixXf& m1,
                                                   const Eigen::MatrixXf& m2) {
@@ -532,15 +530,6 @@ TEST_F(EigenUtilsTest, outer) {
         const Eigen::Matrix4f expected = a * b.transpose();
         const Eigen::Matrix4f result = outer<4>(a, b);
         EXPECT_MATRIX_NEAR(expected, result, BASE_EPSILON);
-    }
-}
-
-TEST_F(EigenUtilsTest, block3x3) {
-    for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
-        const Eigen::Matrix4f A = random_matrix<4, 4>();
-        const Eigen::Matrix3f expected = A.block<3, 3>(0, 0);
-        const Eigen::Matrix3f result = block3x3(A);
-        EXPECT_MATRIX_EXACT_EQ(expected, result);
     }
 }
 

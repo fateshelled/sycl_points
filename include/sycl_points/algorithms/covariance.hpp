@@ -14,6 +14,7 @@ namespace kernel {
 
 SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* point_ptr,
                                              const size_t k_correspondences, const int32_t* index_ptr, const size_t i) {
+    ret.setZero();
     PointType sum_points = PointType::Zero();
     Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
 
@@ -21,35 +22,23 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
         const auto pt = point_ptr[index_ptr[i * k_correspondences + j]];
         eigen_utils::add_inplace<4, 1>(sum_points, pt);
 
-        const auto outer = eigen_utils::block3x3(eigen_utils::outer<4>(pt, pt));
+        const auto outer = eigen_utils::outer<4>(pt, pt).block<3, 3>(0, 0);
         eigen_utils::add_inplace<3, 3>(sum_outer, outer);
     }
 
     const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / k_correspondences);
 
-    const auto cov3x3 = eigen_utils::ensure_symmetric<3>(
-        eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::block3x3(eigen_utils::outer<4>(mean, sum_points))));
-
-    ret.setZero();
-    ret(0, 0) = cov3x3(0, 0);
-    ret(0, 1) = cov3x3(0, 1);
-    ret(0, 2) = cov3x3(0, 2);
-
-    ret(1, 0) = cov3x3(1, 0);
-    ret(1, 1) = cov3x3(1, 1);
-    ret(1, 2) = cov3x3(1, 2);
-
-    ret(2, 0) = cov3x3(2, 0);
-    ret(2, 1) = cov3x3(2, 1);
-    ret(2, 2) = cov3x3(2, 2);
+    ret.block<3, 3>(0, 0) = eigen_utils::ensure_symmetric<3>(
+        eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::outer<4>(mean, sum_points).block<3, 3>(0, 0)));
 }
 
-SYCL_EXTERNAL inline void compute_normal_from_covariance(const PointType& point, const Covariance& cov, Normal& normal) {
+SYCL_EXTERNAL inline void compute_normal_from_covariance(const PointType& point, const Covariance& cov,
+                                                         Normal& normal) {
     Eigen::Vector3f eigenvalues;
     Eigen::Matrix3f eigenvectors;
-    eigen_utils::symmetric_eigen_decomposition_3x3(eigen_utils::block3x3(cov), eigenvalues, eigenvectors);
+    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
     Eigen::Vector3f normal3 = eigenvectors.col(0);
-    if(eigen_utils::dot<3>(normal3, {point[0], point[1], point[2]}) <= 1.0) {
+    if (eigen_utils::dot<3>(normal3, {point[0], point[1], point[2]}) <= 1.0) {
         normal.x() = normal3.x();
         normal.y() = normal3.y();
         normal.z() = normal3.z();
@@ -65,19 +54,10 @@ SYCL_EXTERNAL inline void compute_normal_from_covariance(const PointType& point,
 SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
     Eigen::Vector3f eigenvalues;
     Eigen::Matrix3f eigenvectors;
-    eigen_utils::symmetric_eigen_decomposition_3x3(eigen_utils::block3x3(cov), eigenvalues, eigenvectors);
+    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
     const auto diag = eigen_utils::as_diagonal<3>({1e-3f, 1.0f, 1.0f});
-    const auto new_cov = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
-                                                        eigen_utils::transpose<3, 3>(eigenvectors));
-    cov(0, 0) = new_cov(0, 0);
-    cov(0, 1) = new_cov(0, 1);
-    cov(0, 2) = new_cov(0, 2);
-    cov(1, 0) = new_cov(1, 0);
-    cov(1, 1) = new_cov(1, 1);
-    cov(1, 2) = new_cov(1, 2);
-    cov(2, 0) = new_cov(2, 0);
-    cov(2, 1) = new_cov(2, 1);
-    cov(2, 2) = new_cov(2, 2);
+    cov.block<3, 3>(0, 0) = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
+                                                           eigen_utils::transpose<3, 3>(eigenvectors));
 }
 
 }  // namespace kernel
@@ -197,7 +177,7 @@ inline sycl_utils::events compute_normals_async(const knn_search::KDTree& kdtree
 inline sycl_utils::events compute_normals_from_covariances_async(const PointCloudShared& points) {
     const size_t N = points.size();
     if (!points.has_cov()) {
-        throw std::runtime_error("not computed covariances");
+        throw std::runtime_error("[compute_normals_from_covariances_async] not computed covariances");
     }
 
     const size_t work_group_size = points.queue.get_work_group_size();
@@ -235,7 +215,7 @@ inline void compute_normals_from_covariances(const PointCloudShared& points) {
 /// @return events
 inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& points) {
     if (!points.has_cov()) {
-        throw std::runtime_error("not computed covariances");
+        throw std::runtime_error("[covariance_update_plane_async] not computed covariances");
     }
 
     const size_t N = points.size();
@@ -258,9 +238,7 @@ inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& 
 
 /// @brief Update covariance matrix to a plane
 /// @param points Point Cloud with covatiance
-inline void covariance_update_plane(const PointCloudShared& points) {
-    covariance_update_plane_async(points).wait();
-}
+inline void covariance_update_plane(const PointCloudShared& points) { covariance_update_plane_async(points).wait(); }
 
 }  // namespace covariance
 }  // namespace algorithms
