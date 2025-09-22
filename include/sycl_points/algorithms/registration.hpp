@@ -4,7 +4,6 @@
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/knn_search.hpp>
 #include <sycl_points/algorithms/registration_factor.hpp>
-#include <sycl_points/algorithms/registration_color_factor.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 
@@ -25,7 +24,7 @@ struct RegistrationParams {
 
     RobustLossType robust_loss = RobustLossType::NONE;  // robust loss function type
     float robust_scale = 1.0f;                          // scale for robust loss function
-    float color_weight = 0.0f;                         // weight for color term
+    float color_weight = 0.0f;                          // weight for color term
 
     bool verbose = false;              // If true, print debug messages
     bool optimize_lm = false;          // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
@@ -297,23 +296,13 @@ private:
                     const auto source_cov = source_cov_ptr ? source_cov_ptr[i] : Covariance::Identity();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[i] : RGBType::Zero();
+                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
+                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
                     linearlized_ptr[i] = kernel::linearlize_robust<icp, loss>(  //
                         cur_T, source_ptr[i], source_cov,                       //
                         target_ptr[target_idx], target_cov, target_normal,      //
-                        robust_scale);
-                    if (color_weight > 0.f && source_rgb_ptr && target_rgb_ptr && target_grad_ptr) {
-                        float color_residual_norm = 0.f;
-                        const auto color_term = kernel::linearlize_color(
-                            cur_T, source_ptr[i], source_rgb_ptr[i], target_rgb_ptr[target_idx],
-                            target_grad_ptr[target_idx], color_residual_norm);
-                        const float denom = 1.f + color_weight;
-                        linearlized_ptr[i].H =
-                            (linearlized_ptr[i].H + color_weight * color_term.H) / denom;
-                        linearlized_ptr[i].b =
-                            (linearlized_ptr[i].b + color_weight * color_term.b) / denom;
-                        linearlized_ptr[i].error =
-                            (linearlized_ptr[i].error + color_weight * color_term.error) / denom;
-                    }
+                        robust_scale, source_rgb, target_rgb, target_grad, color_weight);
                 }
             });
         });
@@ -395,20 +384,15 @@ private:
                     const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
+                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
+                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
 
-                    LinearlizedResult result = kernel::linearlize_robust<icp, loss>(
-                        cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
-                        robust_scale);
-                    if (color_weight > 0.f && source_rgb_ptr && target_rgb_ptr && target_grad_ptr) {
-                        float color_residual_norm = 0.f;
-                        const auto color_term = kernel::linearlize_color(
-                            cur_T, source_ptr[index], source_rgb_ptr[index], target_rgb_ptr[target_idx],
-                            target_grad_ptr[target_idx], color_residual_norm);
-                        const float denom = 1.f + color_weight;
-                        result.H = (result.H + color_weight * color_term.H) / denom;
-                        result.b = (result.b + color_weight * color_term.b) / denom;
-                        result.error = (result.error + color_weight * color_term.error) / denom;
-                    }
+                    const LinearlizedResult result =
+                        kernel::linearlize_robust<icp, loss>(cur_T, source_ptr[index], source_cov,               //
+                                                             target_ptr[target_idx], target_cov, target_normal,  //
+                                                             robust_scale,                                       //
+                                                             source_rgb, target_rgb, target_grad, color_weight);
                     if (result.inlier == 1U) {
                         // reduction on device
                         const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
@@ -505,6 +489,7 @@ private:
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
+            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
             const float color_weight = this->params_.color_weight;
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
@@ -529,17 +514,17 @@ private:
                     const auto source_normal = source_normal_ptr ? source_normal_ptr[target_idx] : Normal::Zero();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
+                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
+                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
 
-                    float err = kernel::calculate_error<icp, loss>(
-                        cur_T, source_ptr[index], source_cov, source_normal, target_ptr[target_idx], target_cov,
-                        target_normal, robust_scale);
-                    if (color_weight > 0.f && source_rgb_ptr && target_rgb_ptr) {
-                        const float dr = target_rgb_ptr[target_idx].x() - source_rgb_ptr[index].x();
-                        const float dg = target_rgb_ptr[target_idx].y() - source_rgb_ptr[index].y();
-                        const float db = target_rgb_ptr[target_idx].z() - source_rgb_ptr[index].z();
-                        const float color_err = 0.5f * (dr * dr + dg * dg + db * db);
-                        err = (err + color_weight * color_err) / (1.f + color_weight);
-                    }
+                    const float err =
+                        kernel::calculate_error<icp, loss>(cur_T,                                              //
+                                                           source_ptr[index], source_cov, source_normal,       // source
+                                                           target_ptr[target_idx], target_cov, target_normal,  // target
+                                                           robust_scale,                                       //
+                                                           source_rgb, target_rgb, target_grad, color_weight);
+
                     error_ptr[index] = err;
                     inlier_ptr[index] = 1;
                 });
@@ -580,6 +565,7 @@ private:
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
+            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
             const float color_weight = this->params_.color_weight;
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
@@ -603,17 +589,17 @@ private:
                     const auto source_normal = source_normal_ptr ? source_normal_ptr[target_idx] : Normal::Zero();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
+                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
+                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
 
-                    float err = kernel::calculate_error<icp, loss>(
-                        cur_T, source_ptr[index], source_cov, source_normal, target_ptr[target_idx], target_cov,
-                        target_normal, robust_scale);
-                    if (color_weight > 0.f && source_rgb_ptr && target_rgb_ptr) {
-                        const float dr = target_rgb_ptr[target_idx].x() - source_rgb_ptr[index].x();
-                        const float dg = target_rgb_ptr[target_idx].y() - source_rgb_ptr[index].y();
-                        const float db = target_rgb_ptr[target_idx].z() - source_rgb_ptr[index].z();
-                        const float color_err = 0.5f * (dr * dr + dg * dg + db * db);
-                        err = (err + color_weight * color_err) / (1.f + color_weight);
-                    }
+                    const float err =
+                        kernel::calculate_error<icp, loss>(cur_T,                                              //
+                                                           source_ptr[index], source_cov, source_normal,       // source
+                                                           target_ptr[target_idx], target_cov, target_normal,  // target
+                                                           robust_scale,                                       //
+                                                           source_rgb, target_rgb, target_grad, color_weight);
+
                     reduction_error_arg += err;
                     ++reduction_inlier_arg;
                 });
