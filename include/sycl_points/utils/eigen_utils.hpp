@@ -366,6 +366,37 @@ SYCL_EXTERNAL Eigen::Vector<float, M> normalize(const Eigen::Vector<float, M>& a
     return multiply<M>(a, 1.0f / norm);
 }
 
+
+// Cholesky decomposition L of a 3x3 SPD matrix A
+SYCL_EXTERNAL inline Eigen::Matrix3f cholesky_3x3(const Eigen::Matrix3f& A) {
+    Eigen::Matrix3f L = Eigen::Matrix3f::Zero();
+    constexpr float EPS = 1e-6f;
+
+    L(0, 0) = sycl::sqrt(sycl::fmax(A(0, 0), EPS));
+    L(1, 0) = A(1, 0) / L(0, 0);
+    L(2, 0) = A(2, 0) / L(0, 0);
+    L(1, 1) = sycl::sqrt(sycl::fmax(A(1, 1) - L(1, 0) * L(1, 0), EPS));
+    L(2, 1) = sycl::fma(-L(1, 0), L(2, 0), A(2, 1)) / L(1, 1);
+    L(2, 2) = sycl::sqrt(sycl::fmax(sycl::fma(-L(2, 0), L(2, 0), sycl::fma(-L(2, 1), L(2, 1), A(2, 2))), EPS));
+    return L;
+}
+
+// Solves Ax = b using a pre-computed Cholesky decomposition L of A
+SYCL_EXTERNAL inline Eigen::Vector3f solve_cholesky_3x3(const Eigen::Matrix3f& L, const Eigen::Vector3f& b) {
+    // Forward substitution: Ly = b
+    Eigen::Vector3f y;
+    y(0) = b(0) / L(0, 0);
+    y(1) = sycl::fma(-L(1, 0), y(0), b(1)) / L(1, 1);
+    y(2) = sycl::fma(-L(2, 0), y(0), sycl::fma(-L(2, 1), y(1), b(2))) / L(2, 2);
+
+    // Backward substitution: L^T x = y
+    Eigen::Vector3f x;
+    x(2) = y(2) / L(2, 2);
+    x(1) = sycl::fma(-L(2, 1), x(2), y(1)) / L(1, 1);
+    x(0) = sycl::fma(-L(1, 0), x(1), sycl::fma(-L(2, 0), x(2), y(0))) / L(0, 0);
+    return x;
+}
+
 /// @brief 3×3 Matrix Inverse
 /// @param src 3×3 matrix to invert
 /// @return Inverse of src
