@@ -83,15 +83,6 @@ inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& 
     if (!cloud.has_rgb()) {
         throw std::runtime_error("RGB field not found");
     }
-    if (!cloud.has_normal()) {
-        if (cloud.has_cov()) {
-            std::cout << "[Warning] Normals not computed. compute normals from covariances." << std::endl;
-            algorithms::covariance::compute_normals_from_covariances(cloud);
-        } else {
-            std::cout << "[Warning] Normals not computed. compute normals from neighbors." << std::endl;
-            algorithms::covariance::compute_normals_async(neighbors, cloud).wait();
-        }
-    }
 
     if (cloud.color_gradients->size() != N) {
         cloud.resize_color_gradients(N);
