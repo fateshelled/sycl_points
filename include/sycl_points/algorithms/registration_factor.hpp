@@ -318,7 +318,12 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
     const Eigen::Vector3f geometric_residual =
         (transform_source - target_pt).template head<3>();
 
-    // Compute color residual including geometric correction
+    // Compute color residual including geometric correction.
+    // The geometric residual is expressed in metric space (meters) and the
+    // target RGB gradient encodes the color change per unit displacement. The
+    // product therefore estimates the expected color difference that arises
+    // purely from the geometric misalignment and compensates the raw color
+    // difference accordingly.
     const Eigen::Vector3f color_difference = (target_rgb - source_rgb).template head<3>();
     const Eigen::Vector3f residual =
         color_difference + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, geometric_residual);
@@ -362,6 +367,8 @@ SYCL_EXTERNAL inline float calculate_color_error(
         (transform_source - target_pt).template head<3>();
 
     const Eigen::Vector3f color_difference = (target_rgb - source_rgb).template head<3>();
+    // See linearlize_color for the rationale behind correcting the color
+    // difference with the geometric residual scaled by the target gradient.
     const Eigen::Vector3f residual =
         color_difference + eigen_utils::multiply<3, 3, 1>(target_grad, geometric_residual);
 
