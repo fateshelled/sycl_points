@@ -366,8 +366,9 @@ SYCL_EXTERNAL Eigen::Vector<float, M> normalize(const Eigen::Vector<float, M>& a
     return multiply<M>(a, 1.0f / norm);
 }
 
-
-// Cholesky decomposition L of a 3x3 SPD matrix A
+/// @brief Cholesky decomposition L of a 3x3 SPD matrix A
+/// @param A 3x3 symmetric positive-definite matrix
+/// @return Lower triangular matrix L such that A = L * L^T
 SYCL_EXTERNAL inline Eigen::Matrix3f cholesky_3x3(const Eigen::Matrix3f& A) {
     Eigen::Matrix3f L = Eigen::Matrix3f::Zero();
     constexpr float EPS = 1e-6f;
@@ -381,7 +382,10 @@ SYCL_EXTERNAL inline Eigen::Matrix3f cholesky_3x3(const Eigen::Matrix3f& A) {
     return L;
 }
 
-// Solves Ax = b using a pre-computed Cholesky decomposition L of A
+/// @brief Solves Ax = b using a pre-computed Cholesky decomposition L of A
+/// @param L Lower triangular matrix from Cholesky decomposition of A
+/// @param b Right-hand side vector
+/// @return Solution vector x
 SYCL_EXTERNAL inline Eigen::Vector3f solve_cholesky_3x3(const Eigen::Matrix3f& L, const Eigen::Vector3f& b) {
     // Forward substitution: Ly = b
     Eigen::Vector3f y;
