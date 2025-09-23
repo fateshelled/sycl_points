@@ -352,24 +352,32 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
                                                          const Normal& target_normal, float robust_scale,
                                                          const RGBType& source_rgb, const RGBType& target_rgb,
                                                          const ColorGradient& target_grad, float color_weight) {
-    float residual_norm = 0.0f;
+    float geo_residual_norm = 0.0f;
     LinearlizedResult result =
-        linearlize_geometry<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, residual_norm);
-    if (0.0f < color_weight && color_weight < 1.0f) {
+        linearlize_geometry<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, geo_residual_norm);
+
+    float total_error = result.error;
+
+    if (color_weight > 0.0f) {
         auto color_result = linearlize_color(T, source_pt, source_rgb, target_rgb, target_grad);
-        eigen_utils::multiply_inplace<6, 6>(result.H, 1.0f - color_weight);
+
         eigen_utils::multiply_inplace<6, 6>(color_result.H, color_weight);
         eigen_utils::add_inplace<6, 6>(result.H, color_result.H);
 
-        eigen_utils::multiply_inplace<6, 1>(result.b, 1.0f - color_weight);
         eigen_utils::multiply_inplace<6, 1>(color_result.b, color_weight);
         eigen_utils::add_inplace<6, 1>(result.b, color_result.b);
+
+        total_error += color_weight * color_result.error;
     }
+
     if constexpr (LossType != RobustLossType::NONE) {
-        const auto weight = kernel::compute_robust_weight<LossType>(residual_norm, robust_scale);
+        const float total_residual_norm = sycl::sqrt(2.0f * total_error);
+        const float weight = kernel::compute_robust_weight<LossType>(total_residual_norm, robust_scale);
         eigen_utils::multiply_inplace<6, 6>(result.H, weight);
         eigen_utils::multiply_inplace<6, 1>(result.b, weight);
-        result.error = kernel::compute_robust_error<LossType>(residual_norm, robust_scale);
+        result.error = kernel::compute_robust_error<LossType>(total_residual_norm, robust_scale);
+    } else {
+        result.error = total_error;
     }
 
     return result;
@@ -392,14 +400,19 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
                                            float color_weight) {
     const float geo_error =
         calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal);
-    if (0.0f < color_weight && color_weight < 1.0f) {
+
+    float total_error = geo_error;
+    if (color_weight > 0.0f) {
         const float color_error = calculate_color_error(source_rgb, target_rgb);
-        const float weighted_error = sycl::fma(1.0f - color_weight, geo_error, color_weight * color_error);
-        const float robust_error = kernel::compute_robust_error<LossType>(weighted_error, robust_scale);
-        return robust_error;
+        total_error += color_weight * color_error;
     }
-    const float robust_error = kernel::compute_robust_error<LossType>(geo_error, robust_scale);
-    return robust_error;
+
+    if constexpr (LossType != RobustLossType::NONE) {
+        const float total_residual_norm = sycl::sqrt(2.0f * total_error);
+        return kernel::compute_robust_error<LossType>(total_residual_norm, robust_scale);
+    }
+
+    return total_error;
 }
 
 }  // namespace kernel
