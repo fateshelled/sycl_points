@@ -355,23 +355,26 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
 
     float total_error = result.error;
 
-    if (color_weight > 0.0f) {
+    if (0.0f < color_weight && color_weight <= 1.0f) {
+        const float geo_weight = 1.0f - color_weight;
         auto color_result = linearlize_color(T, source_pt, source_rgb, target_rgb, target_grad);
 
+        eigen_utils::multiply_inplace<6, 6>(result.H, geo_weight);
         eigen_utils::multiply_inplace<6, 6>(color_result.H, color_weight);
         eigen_utils::add_inplace<6, 6>(result.H, color_result.H);
 
+        eigen_utils::multiply_inplace<6, 1>(result.b, geo_weight);
         eigen_utils::multiply_inplace<6, 1>(color_result.b, color_weight);
         eigen_utils::add_inplace<6, 1>(result.b, color_result.b);
 
-        total_error += color_weight * color_result.error;
+        total_error = sycl::fma(geo_weight, result.error, color_weight * color_result.error);
     }
 
     if constexpr (LossType != RobustLossType::NONE) {
         const float total_residual_norm = sycl::sqrt(2.0f * total_error);
-        const float weight = kernel::compute_robust_weight<LossType>(total_residual_norm, robust_scale);
-        eigen_utils::multiply_inplace<6, 6>(result.H, weight);
-        eigen_utils::multiply_inplace<6, 1>(result.b, weight);
+        const float robust_weight = kernel::compute_robust_weight<LossType>(total_residual_norm, robust_scale);
+        eigen_utils::multiply_inplace<6, 6>(result.H, robust_weight);
+        eigen_utils::multiply_inplace<6, 1>(result.b, robust_weight);
         result.error = kernel::compute_robust_error<LossType>(total_residual_norm, robust_scale);
     } else {
         result.error = total_error;
@@ -399,9 +402,10 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
         calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal);
 
     float total_error = geo_error;
-    if (color_weight > 0.0f) {
+    if (0.0f < color_weight && color_weight <= 1.0f) {
+        const float geo_weight = 1.0f - color_weight;
         const float color_error = calculate_color_error(source_rgb, target_rgb);
-        total_error += color_weight * color_error;
+        total_error = sycl::fma(geo_weight, geo_error, color_weight * color_error);
     }
 
     if constexpr (LossType != RobustLossType::NONE) {
