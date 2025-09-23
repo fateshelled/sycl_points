@@ -13,39 +13,6 @@ namespace color_gradient {
 
 namespace kernel {
 
-SYCL_EXTERNAL inline RGBType RGB_to_XYZ(const RGBType& rgb) {
-    const float lr = rgb.x() < 0.04045f ? rgb.x() / 12.92f : std::pow((rgb.x() + 0.055f) / 1.055f, 2.4f);
-    const float lg = rgb.y() < 0.04045f ? rgb.y() / 12.92f : std::pow((rgb.y() + 0.055f) / 1.055f, 2.4f);
-    const float lb = rgb.z() < 0.04045f ? rgb.z() / 12.92f : std::pow((rgb.z() + 0.055f) / 1.055f, 2.4f);
-
-    const float x = 0.4124f * lr + 0.3576f * lg + 0.1805f * lb;
-    const float y = 0.2126f * lr + 0.7152f * lg + 0.0722f * lb;
-    const float z = 0.0193f * lr + 0.1192f * lg + 0.9505f * lb;
-
-    return RGBType(x, y, z, 1.0f);
-}
-
-SYCL_EXTERNAL inline RGBType XYZ_to_Lab(const Eigen::Vector4f& xyz) {
-    // D65
-    const float x = xyz.x() / 95.047f;
-    const float y = xyz.y() / 100.000f;
-    const float z = xyz.z() / 108.883f;
-
-    const float fx = x > 0.008856f ? std::pow(x, 1.0f / 3.0f) : 7.787f * x + 16.0f / 116.0f;
-    const float fy = y > 0.008856f ? std::pow(y, 1.0f / 3.0f) : 7.787f * y + 16.0f / 116.0f;
-    const float fz = z > 0.008856f ? std::pow(z, 1.0f / 3.0f) : 7.787f * z + 16.0f / 116.0f;
-
-    const float l = 116.0f * fy - 16.0f;
-    const float a = 500.0 * (fx - fy);
-    const float b = 200.0 * (fy - fz);
-    return RGBType(l, a, b, 1.0f);
-}
-
-SYCL_EXTERNAL inline RGBType RGB_to_Lab(const RGBType& rgb) {
-    const auto xyz = RGB_to_XYZ(rgb);
-    return XYZ_to_Lab(xyz);
-}
-
 SYCL_EXTERNAL inline void compute_gradient(ColorGradient& ret, const PointType* points, const RGBType* colors,
                                            const int32_t* index_ptr, size_t k, size_t i) {
     const auto p0 = points[i];
