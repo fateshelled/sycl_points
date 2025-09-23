@@ -305,24 +305,21 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
     const ColorGradient& target_rgb_grad) {  ///< Target RGB gradient
 
     // Compute color residual (target - source)
-    const Eigen::Vector4f residual(target_rgb.x() - source_rgb.x(), target_rgb.y() - source_rgb.y(),
-                                   target_rgb.z() - source_rgb.z(), 0.0f);
+    const Eigen::Vector3f residual = (target_rgb - source_rgb).head<3>();
 
     // SE(3) Jacobian of the source point
-    const Eigen::Matrix<float, 4, 6> J_geo = compute_se3_jacobian(T, source_pt);
+    const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
 
     // Color Jacobian: gradient * J_geo
-    Eigen::Matrix4f grad = Eigen::Matrix4f::Zero();
-    grad.block<3, 3>(0, 0) = target_rgb_grad;
-    Eigen::Matrix<float, 4, 6> J_color = eigen_utils::multiply<4, 4, 6>(grad, J_geo);
+    const Eigen::Matrix<float, 3, 6> J_color = eigen_utils::multiply<3, 3, 6>(target_rgb_grad, J_geo);
 
     LinearlizedResult ret;
     // H = J.T * J
     // b = J.T * residual
     // error = 0.5 * norm(residual)
-    ret.H = eigen_utils::multiply<6, 4, 6>(eigen_utils::transpose<4, 6>(J_color), J_color);
-    ret.b = eigen_utils::multiply<6, 4, 1>(eigen_utils::transpose<4, 6>(J_color), residual);
-    ret.error = 0.5f * eigen_utils::frobenius_norm_squared<4>(residual);
+    ret.H = eigen_utils::multiply<6, 3, 6>(eigen_utils::transpose<3, 6>(J_color), J_color);
+    ret.b = eigen_utils::multiply<6, 3, 1>(eigen_utils::transpose<3, 6>(J_color), residual);
+    ret.error = 0.5f * eigen_utils::frobenius_norm_squared<3>(residual);
     ret.inlier = 1;
 
     return ret;
