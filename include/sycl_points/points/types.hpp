@@ -22,7 +22,7 @@ constexpr size_t CovarianceAlignment = 64;
 constexpr size_t NormalAlignment = 16;
 constexpr size_t RGBAlignment = 16;
 constexpr size_t IntensityAlignment = 4;
-constexpr size_t ColorGradientAlignment = 36;
+constexpr size_t ColorGradientAlignment = 0; // 36 is bad alignment
 
 // Vector of point on CPU. Accessible from CPU process only.
 using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
