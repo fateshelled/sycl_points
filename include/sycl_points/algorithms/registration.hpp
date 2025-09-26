@@ -273,7 +273,7 @@ private:
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
             const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
-            const float color_weight = this->params_.color_weight;
+            const float color_weight = (source_rgb_ptr && target_rgb_ptr && target_grad_ptr) ? this->params_.color_weight : 0.0f;
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
             // output
@@ -299,10 +299,11 @@ private:
                     const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[i] : RGBType::Zero();
                     const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
                     const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
-                    linearlized_ptr[i] = kernel::linearlize_robust<icp, loss>(  //
-                        cur_T, source_ptr[i], source_cov,                       //
-                        target_ptr[target_idx], target_cov, target_normal,      //
-                        robust_scale, source_rgb, target_rgb, target_grad, color_weight);
+                    linearlized_ptr[i] =                                                                         //
+                        kernel::linearlize_robust<icp, loss>(cur_T, source_ptr[i], source_cov,                   //
+                                                             target_ptr[target_idx], target_cov, target_normal,  //
+                                                             robust_scale,                                       //
+                                                             source_rgb, target_rgb, target_grad, color_weight);
                 }
             });
         });
@@ -352,7 +353,7 @@ private:
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
             const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
-            const float color_weight = this->params_.color_weight;
+            const float color_weight = (source_rgb_ptr && target_rgb_ptr && target_grad_ptr) ? this->params_.color_weight : 0.0f;
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
