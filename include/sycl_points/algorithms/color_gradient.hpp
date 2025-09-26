@@ -16,6 +16,9 @@ namespace kernel {
 SYCL_EXTERNAL inline void compute_gradient(ColorGradient& ret, const PointType* points, const RGBType* colors,
                                            const int32_t* index_ptr, size_t k, size_t i) {
     const auto p0 = points[i];
+    // The w-component of a point stores the number of points in the voxel.
+    // It should not be included in the position calculation.
+    const Eigen::Vector3f p0_3d = p0.head<3>();
     const auto c0 = colors[i];
 
     Eigen::Matrix3f A = Eigen::Matrix3f::Zero();
@@ -25,20 +28,21 @@ SYCL_EXTERNAL inline void compute_gradient(ColorGradient& ret, const PointType* 
         const auto pj = points[idx];
         const auto cj = colors[idx];
 
-        const Eigen::Vector3f dp(pj[0] - p0[0], pj[1] - p0[1], pj[2] - p0[2]);
+        const Eigen::Vector3f dp = pj.head<3>() - p0_3d;
         const Eigen::Vector3f dc(cj[0] - c0[0], cj[1] - c0[1], cj[2] - c0[2]);
 
         eigen_utils::add_inplace<3, 3>(A, eigen_utils::outer<3>(dp, dp));
         eigen_utils::add_inplace<3, 3>(B, eigen_utils::outer<3>(dp, dc));
     }
 
+    // Add a small identity matrix for numerical stability
+    eigen_utils::add_inplace<3, 3>(A, Eigen::Matrix3f::Identity() * 1e-6f);
+
     const Eigen::Matrix3f L = eigen_utils::cholesky_3x3(A);
     for (size_t c = 0; c < 3; ++c) {
         const Eigen::Vector3f b = B.col(c);
         const Eigen::Vector3f g = eigen_utils::solve_cholesky_3x3(L, b);
-        ret(c, 0) = g(0);
-        ret(c, 1) = g(1);
-        ret(c, 2) = g(2);
+        ret.row(c) = g;
     }
 }
 
