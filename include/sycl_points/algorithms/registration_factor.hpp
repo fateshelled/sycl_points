@@ -318,15 +318,23 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
     // Transform source point to compute geometric residual
     PointType transform_source;
     transform::kernel::transform_point(source_pt, transform_source, T);
-
     const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
 
+    // Project the transformed source point onto the plane defined by the target normal
+    // to decouple the color error from the geometric error along the normal.
     const Eigen::Vector3f projected =
         transform_source.template head<3>() -
         target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
+
+    // The offset is the in-plane difference between the projected source and the target.
     const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+
+    // The color residual is the difference between the source and target colors,
+    // compensated by the geometric misalignment in the tangent plane.
+    // residual = (c_s - c_t) + G_t * (p_proj - p_t)
     const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
-    const Eigen::Vector3f residual_color = color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);
+    const Eigen::Vector3f residual_color =
+        color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);  // G_t * offset
 
     // SE(3) Jacobian of the source point
     const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
