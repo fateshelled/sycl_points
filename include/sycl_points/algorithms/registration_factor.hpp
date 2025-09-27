@@ -297,6 +297,9 @@ SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float
 }
 
 /// @brief Linearize color residual using RGB gradient
+/// @note reference:
+/// https://github.com/koide3/gtsam_points/blob/master/include/gtsam_points/factors/impl/integrated_colored_gicp_factor_impl.hpp
+/// (MIT License)
 /// @param T SE(3) transform applied to the source point
 /// @param source_pt Source point before transformation
 /// @param target_pt Target point associated with the source point
@@ -309,24 +312,21 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
     const PointType& target_pt,              ///< Target point
     const RGBType& source_rgb,               ///< Source color
     const RGBType& target_rgb,               ///< Target color
+    const Normal& target_normal,             ///< Target normal
     const ColorGradient& target_rgb_grad) {  ///< Target RGB gradient
 
     // Transform source point to compute geometric residual
     PointType transform_source;
     transform::kernel::transform_point(source_pt, transform_source, T);
 
-    const Eigen::Vector3f geometric_residual =
-        (transform_source - target_pt).template head<3>();
+    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
 
-    // The color residual is the difference between the target color and the
-    // source color, compensated by the geometric misalignment. The term
-    // (target_rgb_grad * geometric_residual) approximates the color change
-    // caused by the geometric error based on the target's color gradient.
-    // The residual is formulated to be minimized, ideally approaching zero.
-    // residual = (c_t - c_s) + G_t * (T*p_s - p_t)
-    const Eigen::Vector3f color_difference = (target_rgb - source_rgb).template head<3>();
-    const Eigen::Vector3f residual =
-        color_difference + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, geometric_residual);
+    const Eigen::Vector3f projected =
+        transform_source.template head<3>() -
+        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
+    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+    const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
+    const Eigen::Vector3f residual_color = color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);
 
     // SE(3) Jacobian of the source point
     const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
@@ -339,8 +339,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
     // b = J.T * residual
     // error = 0.5 * norm(residual)
     ret.H = eigen_utils::multiply<6, 3, 6>(eigen_utils::transpose<3, 6>(J_color), J_color);
-    ret.b = eigen_utils::multiply<6, 3, 1>(eigen_utils::transpose<3, 6>(J_color), residual);
-    ret.error = 0.5f * eigen_utils::frobenius_norm_squared<3>(residual);
+    ret.b = eigen_utils::multiply<6, 3, 1>(eigen_utils::transpose<3, 6>(J_color), residual_color);
+    ret.error = 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
     ret.inlier = 1;
 
     return ret;
@@ -352,28 +352,27 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
 /// @param target_pt Target point associated with the source point
 /// @param source_rgb Color observed at the source point
 /// @param target_rgb Color observed at the target point
-/// @param target_grad Spatial gradient of the target color
-SYCL_EXTERNAL inline float calculate_color_error(
-    const std::array<sycl::float4, 4>& T,  ///< SE(3) transform
-    const PointType& source_pt,            ///< Source point
-    const PointType& target_pt,            ///< Target point
-    const RGBType& source_rgb,             ///< Source color
-    const RGBType& target_rgb,             ///< Target color
-    const ColorGradient& target_grad) {    ///< Target RGB gradient
+/// @param target_rgb_grad Spatial gradient of the target color
+SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 4>& T,    ///< SE(3) transform
+                                                 const PointType& source_pt,              ///< Source point
+                                                 const PointType& target_pt,              ///< Target point
+                                                 const RGBType& source_rgb,               ///< Source color
+                                                 const RGBType& target_rgb,               ///< Target color
+                                                 const Normal& target_normal,             ///< Target normal
+                                                 const ColorGradient& target_rgb_grad) {  ///< Target RGB gradient
     PointType transform_source;
     transform::kernel::transform_point(source_pt, transform_source, T);
 
-    const Eigen::Vector3f geometric_residual =
-        (transform_source - target_pt).template head<3>();
+    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
 
-    // See linearlize_color for the rationale behind correcting the color
-    // difference with the geometric residual scaled by the target gradient.
-    // residual = (c_t - c_s) + G_t * (T*p_s - p_t)
-    const Eigen::Vector3f color_difference = (target_rgb - source_rgb).template head<3>();
-    const Eigen::Vector3f residual =
-        color_difference + eigen_utils::multiply<3, 3, 1>(target_grad, geometric_residual);
+    const Eigen::Vector3f projected =
+        transform_source.template head<3>() -
+        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
+    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+    const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
+    const Eigen::Vector3f residual_color = color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);
 
-    return 0.5f * eigen_utils::frobenius_norm_squared<3>(residual);
+    return 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
 }
 
 /// @brief Robust Linearlization
@@ -400,7 +399,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
 
     if (0.0f < color_weight && color_weight <= 1.0f) {
         const float geo_weight = 1.0f - color_weight;
-        auto color_result = linearlize_color(T, source_pt, target_pt, source_rgb, target_rgb, target_grad);
+        auto color_result =
+            linearlize_color(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_grad);
 
         eigen_utils::multiply_inplace<6, 6>(result.H, geo_weight);
         eigen_utils::multiply_inplace<6, 6>(color_result.H, color_weight);
@@ -447,7 +447,8 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
     float total_error = geo_error;
     if (0.0f < color_weight && color_weight <= 1.0f) {
         const float geo_weight = 1.0f - color_weight;
-        const float color_error = calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_grad);
+        const float color_error =
+            calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_grad);
         total_error = sycl::fma(geo_weight, geo_error, color_weight * color_error);
     }
 
