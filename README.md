@@ -22,12 +22,15 @@ This project was developed with reference to small_gicp, a lightweight point clo
       - Point to Plane
       - Generalized ICP (GICP)
     - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
+    - Colored ICP
+        - Set `0.0 < color_weight <= 1.0` in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB fields, and the target cloud requires pre-computed color gradients.
     - Adaptive max correspondence distance by inlier points ratio
 - Preprocessing filter
     - L∞ distance (chebyshev distance) filter
     - Random sampling
     - Farthest point sampling (FPS)
-    - Voxel downsampling
+    - Voxel grid downsampling
+    - Polar grid downsampling
 - Point cloud file I/O
     - PLY and PCD format support
     - ASCII and binary format reading/writing
