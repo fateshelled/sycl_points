@@ -360,7 +360,11 @@ public:
                                         KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         if (query_size == 0) {
-            result.allocate(this->queue);
+            if (result.indices == nullptr || result.distances == nullptr) {
+                result.allocate(this->queue, 0, 0);
+            } else {
+                result.resize(0, 0);
+            }
             return sycl_utils::events();
         }
         constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;
@@ -472,46 +476,45 @@ public:
     }
 
     /// @brief async kNN search
-    /// @tparam MAX_K maximum of k
     /// @tparam MAX_DEPTH maximum of search depth
     /// @param queries query points
     /// @param k number of search nearrest neightbor
     /// @param result Search result
     /// @param depends depends sycl events
     /// @return knn search event
-    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
+    template <size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
-        return knn_search_async<MAX_K, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+        if (k == 1) {
+            return knn_search_async<1, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+        } else if (k <= 10) {
+            return knn_search_async<10, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+        } else if (k <= 20) {
+            return knn_search_async<20, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+        } else if (k <= 30) {
+            return knn_search_async<30, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+        } else if (k <= 40) {
+            return knn_search_async<40, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+        } else if (k <= 50) {
+            return knn_search_async<50, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+        } else if (k <= 100) {
+            return knn_search_async<100, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+        } else {
+            throw std::runtime_error("`k` is too large. not support.");
+        }
     }
 
     /// @brief kNN search
-    /// @tparam MAX_K maximum of k
     /// @tparam MAX_DEPTH maximum of search depth
     /// @param queries query points
     /// @param k number of search nearrest neightbor
     /// @param depends depends sycl events
     /// @return knn search result
-    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
+    template <ssize_t MAX_DEPTH = 32>
     KNNResult knn_search(const PointCloudShared& queries, const size_t k,
                          const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         KNNResult result;
-        knn_search_async<MAX_K, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends).wait();
-        return result;
-    }
-
-    /// @brief kNN search
-    /// @tparam MAX_K maximum of k
-    /// @tparam MAX_DEPTH maximum of search depth
-    /// @param queries query points
-    /// @param k number of search nearrest neightbor
-    /// @param depends depends sycl events
-    /// @return knn search result
-    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
-    KNNResult knn_search(const PointContainerShared& queries, const size_t k,
-                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
-        KNNResult result;
-        knn_search_async<MAX_K, MAX_DEPTH>(queries.data(), queries.size(), k, result, depends).wait();
+        knn_search_async<MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends).wait();
         return result;
     }
 
@@ -525,7 +528,7 @@ public:
     sycl_utils::events nearest_neighbor_search_async(
         const PointCloudShared& queries, KNNResult& result,
         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
-        return knn_search_async<1, MAX_DEPTH>(queries, 1, result, depends);
+        return knn_search_async<MAX_DEPTH>(queries, 1, result, depends);
     }
 
     /// @brief nearest neighbor search

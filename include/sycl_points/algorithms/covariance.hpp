@@ -96,17 +96,13 @@ inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueu
     return events;
 }
 
-/// @brief Async compute covariance using SYCL
-/// @param kdtree KDTree
-/// @param points Point Container
-/// @param k_correspondences Number of neighbor points
-/// @param covs Covariance Container
+/// @brief Compute covariance using SYCL
+/// @param neightbors KNN search result
+/// @param points Point Cloud
 /// @return events
-inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kdtree,
-                                                    const PointContainerShared& points, const size_t k_correspondences,
-                                                    CovarianceContainerShared& covs) {
-    const auto neightbors = kdtree.knn_search(points, k_correspondences);
-    return compute_covariances_async(kdtree.queue, neightbors, points, covs);
+inline sycl_utils::events compute_covariances_async(const knn_search::KNNResult& neightbors,
+                                                    const PointCloudShared& points) {
+    return compute_covariances_async(points.queue, neightbors, *points.points, *points.covs);
 }
 
 /// @brief Async compute covariance using SYCL
@@ -116,16 +112,8 @@ inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kd
 /// @return events
 inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kdtree, const PointCloudShared& points,
                                                     const size_t k_correspondences) {
-    return compute_covariances_async(kdtree, *points.points, k_correspondences, *points.covs);
-}
-
-/// @brief Compute covariance using SYCL
-/// @param neightbors KNN search result
-/// @param points Point Cloud
-/// @return events
-inline sycl_utils::events compute_covariances_async(const knn_search::KNNResult& neightbors,
-                                                    const PointCloudShared& points) {
-    return compute_covariances_async(points.queue, neightbors, *points.points, *points.covs);
+    const auto neightbors = kdtree.knn_search(points, k_correspondences);
+    return compute_covariances_async(neightbors, points);
 }
 
 /// @brief Compute normal vector using SYCL
