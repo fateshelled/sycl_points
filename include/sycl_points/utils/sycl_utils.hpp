@@ -509,6 +509,14 @@ public:
                 constexpr auto backoff = std::chrono::microseconds(50);
                 const auto now = std::chrono::steady_clock::now();
                 const auto end_time = now + lock_timeout;
+                if (lock_timeout == std::chrono::steady_clock::duration::zero()) {
+                    if (is_write) {
+                        mtx.lock();
+                    } else {
+                        mtx.lock_shared();
+                    }
+                    return;
+                }
                 while (std::chrono::steady_clock::now() < end_time) {
                     bool locked = false;
                     if (is_write) {

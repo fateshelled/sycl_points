@@ -336,7 +336,14 @@ public:
             });
         };
 
-        this->queue.execute_with_mutex(this->mutex_, remove_task, {}, true).wait();
+        static bool is_first_time = true;
+        std::chrono::steady_clock::duration timeout = std::chrono::milliseconds(100);
+        if (is_first_time) {
+            is_first_time = false;
+            timeout = std::chrono::steady_clock::duration(0);
+        }
+
+        this->queue.execute_with_mutex(this->mutex_, remove_task, {}, true, timeout).wait();
 
         // mem_advise clear
         {
@@ -470,8 +477,16 @@ public:
                 }
             });
         };
+
+        static bool is_first_time = true;
+        std::chrono::steady_clock::duration timeout = std::chrono::milliseconds(100);
+        if (is_first_time) {
+            is_first_time = false;
+            timeout = std::chrono::steady_clock::duration(0);
+        }
+
         sycl_utils::events events;
-        events += this->queue.execute_with_mutex(this->mutex_, search_task, depends);
+        events += this->queue.execute_with_mutex(this->mutex_, search_task, depends, false, timeout);
         return events;
     }
 
