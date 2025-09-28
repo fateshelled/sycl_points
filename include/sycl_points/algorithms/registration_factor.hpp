@@ -123,7 +123,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_point(const std::arra
 /// @param source_pt Source Point
 /// @param target_pt Target point
 /// @return error
-SYCL_EXTERNAL inline float calculate_error_point_to_point(const std::array<sycl::float4, 4>& T,
+SYCL_EXTERNAL inline float calculate_point_to_point_error(const std::array<sycl::float4, 4>& T,
                                                           const PointType& source_pt, const PointType& target_pt) {
     PointType transform_source;
     transform::kernel::transform_point(source_pt, transform_source, T);
@@ -170,7 +170,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_plane(const std::arra
 /// @param target_pt Target point
 /// @param target_normal Target normal
 /// @return error
-SYCL_EXTERNAL inline float calculate_error_point_to_plane(const std::array<sycl::float4, 4>& T,
+SYCL_EXTERNAL inline float calculate_point_to_plane_error(const std::array<sycl::float4, 4>& T,
                                                           const PointType& source_pt, const PointType& target_pt,
                                                           const Normal& target_normal) {
     PointType transform_source;
@@ -225,7 +225,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_gicp(const std::array<sycl::fl
 /// @param target_pt Target point
 /// @param target_cov Target covariance
 /// @return error
-SYCL_EXTERNAL inline float calculate_error_gicp(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                 const Covariance& source_cov, const PointType& target_pt,
                                                 const Covariance& target_cov) {
     PointType transform_source_pt;
@@ -257,10 +257,10 @@ SYCL_EXTERNAL inline float calculate_error_gicp(const std::array<sycl::float4, 4
 /// @param residual_norm L2 norm of residual vector
 /// @return linearlized result
 template <ICPType icp = ICPType::GICP>
-SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T,  //
-                                                  const PointType& source_pt, const Covariance& source_cov,
-                                                  const PointType& target_pt, const Covariance& target_cov,
-                                                  const Normal& target_normal, float& residual_norm) {
+SYCL_EXTERNAL inline LinearlizedResult linearlize_geometry(const std::array<sycl::float4, 4>& T,  //
+                                                           const PointType& source_pt, const Covariance& source_cov,
+                                                           const PointType& target_pt, const Covariance& target_cov,
+                                                           const Normal& target_normal, float& residual_norm) {
     if constexpr (icp == ICPType::POINT_TO_POINT) {
         return linearlize_point_to_point(T, source_pt, target_pt, residual_norm);
     } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
@@ -272,20 +272,115 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
     }
 }
 
-/// @brief Linearlization
+/// @brief Compute Error
 /// @tparam icp icp type
 /// @param T transform matrix
 /// @param source_pt Source Point
 /// @param source_cov Source covariance
 /// @param target_pt Target point
 /// @param target_cov Target covariance
-/// @return linearlized result
+/// @return error
 template <ICPType icp = ICPType::GICP>
-SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
-                                                  const Covariance& source_cov, const PointType& target_pt,
-                                                  const Covariance& target_cov, const Normal& target_normal) {
-    float residual_norm = 0.0f;
-    return linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, residual_norm);
+SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float4, 4>& T,                      //
+                                                    const PointType& source_pt, const Covariance& source_cov,  //
+                                                    const PointType& target_pt, const Covariance& target_cov,  //
+                                                    const Normal& target_normal) {
+    if constexpr (icp == ICPType::POINT_TO_POINT) {
+        return calculate_point_to_point_error(T, source_pt, target_pt);
+    } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
+        return calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
+    } else if constexpr (icp == ICPType::GICP) {
+        return calculate_gicp_error(T, source_pt, source_cov, target_pt, target_cov);
+    } else {
+        static_assert("not support type");
+    }
+}
+
+/// @brief Linearize color residual using RGB gradient
+/// @note reference:
+/// https://github.com/koide3/gtsam_points/blob/master/include/gtsam_points/factors/impl/integrated_colored_gicp_factor_impl.hpp
+/// (MIT License)
+/// @param T SE(3) transform applied to the source point
+/// @param source_pt Source point before transformation
+/// @param target_pt Target point associated with the source point
+/// @param source_rgb Color observed at the source point
+/// @param target_rgb Color observed at the target point
+/// @param target_rgb_grad Spatial gradient of the target color
+SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
+    const std::array<sycl::float4, 4>& T,    ///< SE(3) transform
+    const PointType& source_pt,              ///< Source point
+    const PointType& target_pt,              ///< Target point
+    const RGBType& source_rgb,               ///< Source color
+    const RGBType& target_rgb,               ///< Target color
+    const Normal& target_normal,             ///< Target normal
+    const ColorGradient& target_rgb_grad) {  ///< Target RGB gradient
+
+    // Transform source point to compute geometric residual
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T);
+    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
+
+    // Project the transformed source point onto the plane defined by the target normal
+    // to decouple the color error from the geometric error along the normal.
+    const Eigen::Vector3f projected =
+        transform_source.template head<3>() -
+        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
+
+    // The offset is the in-plane difference between the projected source and the target.
+    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+
+    // The color residual is the difference between the source and target colors,
+    // compensated by the geometric misalignment in the tangent plane.
+    // residual = (c_s - c_t) + G_t * (p_proj - p_t)
+    const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
+    const Eigen::Vector3f residual_color =
+        color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);  // G_t * offset
+
+    // SE(3) Jacobian of the source point
+    const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
+
+    // Color Jacobian: gradient * J_geo
+    const Eigen::Matrix<float, 3, 6> J_color = eigen_utils::multiply<3, 3, 6>(target_rgb_grad, J_geo);
+
+    LinearlizedResult ret;
+    // H = J.T * J
+    // b = J.T * residual
+    // error = 0.5 * norm(residual)
+    ret.H = eigen_utils::multiply<6, 3, 6>(eigen_utils::transpose<3, 6>(J_color), J_color);
+    ret.b = eigen_utils::multiply<6, 3, 1>(eigen_utils::transpose<3, 6>(J_color), residual_color);
+    ret.error = 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
+    ret.inlier = 1;
+
+    return ret;
+}
+
+/// @brief Evaluate photometric error including geometric correction
+/// @param T SE(3) transform applied to the source point
+/// @param source_pt Source point before transformation
+/// @param target_pt Target point associated with the source point
+/// @param source_rgb Color observed at the source point
+/// @param target_rgb Color observed at the target point
+/// @param target_rgb_grad Spatial gradient of the target color
+SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 4>& T,    ///< SE(3) transform
+                                                 const PointType& source_pt,              ///< Source point
+                                                 const PointType& target_pt,              ///< Target point
+                                                 const RGBType& source_rgb,               ///< Source color
+                                                 const RGBType& target_rgb,               ///< Target color
+                                                 const Normal& target_normal,             ///< Target normal
+                                                 const ColorGradient& target_rgb_grad) {  ///< Target RGB gradient
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T);
+
+    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
+
+    const Eigen::Vector3f projected =
+        transform_source.template head<3>() -
+        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
+    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+    const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
+    const Eigen::Vector3f residual_color = color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);
+
+    return 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
 }
 
 /// @brief Robust Linearlization
@@ -301,14 +396,40 @@ template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType:
 SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::float4, 4>& T,
                                                          const PointType& source_pt, const Covariance& source_cov,
                                                          const PointType& target_pt, const Covariance& target_cov,
-                                                         const Normal& target_normal, float robust_scale) {
-    float residual_norm = 0.0f;
-    auto result = linearlize<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, residual_norm);
-    const auto weight = kernel::compute_robust_weight<LossType>(residual_norm, robust_scale);
-    result.error = kernel::compute_robust_error<LossType>(residual_norm, robust_scale);
+                                                         const Normal& target_normal, float robust_scale,
+                                                         const RGBType& source_rgb, const RGBType& target_rgb,
+                                                         const ColorGradient& target_grad, float photometric_weight) {
+    float geo_residual_norm = 0.0f;
+    LinearlizedResult result =
+        linearlize_geometry<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, geo_residual_norm);
 
-    eigen_utils::multiply_inplace<6, 1>(result.b, weight);
-    eigen_utils::multiply_inplace<6, 6>(result.H, weight);
+    float total_error = result.error;
+
+    if (0.0f < photometric_weight && photometric_weight <= 1.0f) {
+        const float geo_weight = 1.0f - photometric_weight;
+        auto color_result =
+            linearlize_color(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_grad);
+
+        eigen_utils::multiply_inplace<6, 6>(result.H, geo_weight);
+        eigen_utils::multiply_inplace<6, 6>(color_result.H, photometric_weight);
+        eigen_utils::add_inplace<6, 6>(result.H, color_result.H);
+
+        eigen_utils::multiply_inplace<6, 1>(result.b, geo_weight);
+        eigen_utils::multiply_inplace<6, 1>(color_result.b, photometric_weight);
+        eigen_utils::add_inplace<6, 1>(result.b, color_result.b);
+
+        total_error = sycl::fma(geo_weight, result.error, photometric_weight * color_result.error);
+    }
+
+    if constexpr (LossType != RobustLossType::NONE) {
+        const float total_residual_norm = sycl::sqrt(2.0f * total_error);
+        const float robust_weight = kernel::compute_robust_weight<LossType>(total_residual_norm, robust_scale);
+        eigen_utils::multiply_inplace<6, 6>(result.H, robust_weight);
+        eigen_utils::multiply_inplace<6, 1>(result.b, robust_weight);
+        result.error = kernel::compute_robust_error<LossType>(total_residual_norm, robust_scale);
+    } else {
+        result.error = total_error;
+    }
 
     return result;
 }
@@ -320,24 +441,36 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
 /// @param source_cov Source covariance
 /// @param target_pt Target point
 /// @param target_cov Target covariance
+/// @param target_normal Target normal
+/// @param robust_scale Robust kernel scale
+/// @param source_rgb Source RGB
+/// @param target_rgb Target RGB
+/// @param target_rgb_grad Target RGB gradient
+/// @param photometric_weight Photometric term weight (0.0 ~ 1.0). 0.0 is geometric term only
 /// @return error
 template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType::NONE>
 SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
-                                           const Covariance& source_cov, const Normal& source_normal,
-                                           const PointType& target_pt, const Covariance& target_cov,
-                                           const Normal& target_normal, float robust_scale) {
-    float residual_norm = 0.0f;
+                                           const Covariance& source_cov, const PointType& target_pt,
+                                           const Covariance& target_cov, const Normal& target_normal,
+                                           float robust_scale, const RGBType& source_rgb, const RGBType& target_rgb,
+                                           const ColorGradient& target_rgb_grad, float photometric_weight) {
+    const float geo_error =
+        calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal);
 
-    if constexpr (icp == ICPType::POINT_TO_POINT) {
-        residual_norm = calculate_error_point_to_point(T, source_pt, target_pt);
-    } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
-        residual_norm = calculate_error_point_to_plane(T, source_pt, target_pt, target_normal);
-    } else if constexpr (icp == ICPType::GICP) {
-        residual_norm = calculate_error_gicp(T, source_pt, source_cov, target_pt, target_cov);
-    } else {
-        static_assert("not support type");
+    float total_error = geo_error;
+    if (0.0f < photometric_weight && photometric_weight <= 1.0f) {
+        const float geo_weight = 1.0f - photometric_weight;
+        const float color_error =
+            calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_rgb_grad);
+        total_error = sycl::fma(geo_weight, geo_error, photometric_weight * color_error);
     }
-    return kernel::compute_robust_error<LossType>(residual_norm, robust_scale);
+
+    if constexpr (LossType != RobustLossType::NONE) {
+        const float total_residual_norm = sycl::sqrt(2.0f * total_error);
+        return kernel::compute_robust_error<LossType>(total_residual_norm, robust_scale);
+    }
+
+    return total_error;
 }
 
 }  // namespace kernel

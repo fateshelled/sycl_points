@@ -14,21 +14,36 @@ namespace algorithms {
 namespace registration {
 
 struct RegistrationParams {
+    struct Criteria {
+        float translation = 1e-3f;  // translation tolerance
+        float rotation = 1e-3f;     // rotation tolerance [rad]
+    };
+    struct Robust {
+        RobustLossType type = RobustLossType::NONE;  // robust loss function type
+        float scale = 1.0f;                          // scale for robust loss function
+    };
+    struct PhotometricTerm {
+        bool enable = false;              // If true, use photometric term.
+        float photometric_weight = 0.2f;  // weight for photometric term (0.0f ~ 1.0f)
+    };
+    struct LevenbergMarquardt {
+        bool enable = false;               // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
+        size_t max_inner_iterations = 10;  // (for LM method)
+        float lambda_factor = 10.0f;       // lambda increase factor (for LM method)
+    };
+
     size_t max_iterations = 20;                     // max iteration
-    float lambda = 1e-6f;                           // initial damping factor
+    float lambda = 1e-6f;                           // damping factor
     float max_correspondence_distance = 2.0f;       // max correspondence distance
     bool adaptive_correspondence_distance = false;  // use adaptive max correspondence distance
     float inlier_ratio = 0.7f;                      // adaptive max correspondence distance by inlier point ratio
-    float translation_eps = 1e-3f;                  // translation tolerance
-    float rotation_eps = 1e-3f;                     // rotation tolerance [rad]
 
-    RobustLossType robust_loss = RobustLossType::NONE;  // robust loss function type
-    float robust_scale = 1.0f;                          // scale for robust loss function
+    Criteria crireria;
+    Robust robust;
+    PhotometricTerm photometric;
+    LevenbergMarquardt lm;
 
-    bool verbose = false;              // If true, print debug messages
-    bool optimize_lm = false;          // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
-    size_t max_inner_iterations = 10;  // (for LM method)
-    float lambda_factor = 10.0f;       // lambda increase factor (for LM method)
+    bool verbose = false;  // If true, print debug messages
 };
 
 namespace {
@@ -157,6 +172,28 @@ public:
                 throw std::runtime_error("Covariance matrices must be pre-computed before performing GICP matching.");
             }
         }
+        if (this->params_.photometric.enable) {
+            if (!source.has_rgb() || !target.has_rgb()) {
+                throw std::runtime_error("RGB fields is required for photometric matching.");
+            }
+            if (!target.has_color_gradient() || !target.has_normal()) {
+                throw std::runtime_error(
+                    "Target color gradient and target normal vector must be pre-computed before performing "
+                    "photometric matching.");
+            }
+            if (this->params_.photometric.photometric_weight == 0.0f) {
+                std::cout << "[Caution] `photometric_weight` is set to zero. Disable photometric matching."
+                          << std::endl;
+                this->params_.photometric.enable = false;
+            }
+            if (this->params_.photometric.photometric_weight < 0.0f ||
+                this->params_.photometric.photometric_weight > 1.0f) {
+                std::cout << "[Caution] `photometric_weight` must be in range [0.0f, 1.0f]. Disable photometric "
+                             "matching."
+                          << std::endl;
+                this->params_.photometric.enable = false;
+            }
+        }
 
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
         // copy
@@ -173,7 +210,6 @@ public:
 
         float max_dist = this->params_.max_correspondence_distance;
         const auto verbose = this->params_.verbose;
-        const size_t inlier_threshold = this->params_.inlier_ratio * N;
 
         sycl_utils::events transform_events;
         float lambda = this->params_.lambda;
@@ -190,7 +226,7 @@ public:
                 this->linearlize(source, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
             // Optimize on Host
-            if (this->params_.optimize_lm) {
+            if (this->params_.lm.enable) {
                 this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result, lambda,
                                                    iter);
 
@@ -208,7 +244,6 @@ public:
 
             // adaptive max correspondence distance
             if (this->params_.adaptive_correspondence_distance) {
-                // if (result.inlier > inlier_threshold) {
                 if (static_cast<float>(result.inlier) / N > this->params_.inlier_ratio) {
                     max_dist *= 0.95f;
                 } else {
@@ -240,8 +275,8 @@ private:
     shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
     bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
-        return delta.template head<3>().norm() < this->params_.rotation_eps &&
-               delta.template tail<3>().norm() < this->params_.translation_eps;
+        return delta.template head<3>().norm() < this->params_.crireria.rotation &&
+               delta.template tail<3>().norm() < this->params_.crireria.translation;
     }
 
     template <RobustLossType loss = RobustLossType::NONE>
@@ -257,7 +292,7 @@ private:
             const size_t work_group_size = queue_.get_work_group_size();
             const size_t global_size = queue_.get_global_size(N);
 
-            const auto robust_scale = this->params_.robust_scale;
+            const auto robust_scale = this->params_.robust.scale;
 
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
@@ -269,6 +304,11 @@ private:
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
             const auto target_normal_ptr = target.normals_ptr();
+            const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
+            const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
+            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
+            const float photometric_weight =
+                this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
             // output
@@ -291,10 +331,14 @@ private:
                     const auto source_cov = source_cov_ptr ? source_cov_ptr[i] : Covariance::Identity();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
-                    linearlized_ptr[i] = kernel::linearlize_robust<icp, loss>(  //
-                        cur_T, source_ptr[i], source_cov,                       //
-                        target_ptr[target_idx], target_cov, target_normal,      //
-                        robust_scale);
+                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[i] : RGBType::Zero();
+                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
+                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
+                    linearlized_ptr[i] =                                                                         //
+                        kernel::linearlize_robust<icp, loss>(cur_T, source_ptr[i], source_cov,                   //
+                                                             target_ptr[target_idx], target_cov, target_normal,  //
+                                                             robust_scale,                                       //
+                                                             source_rgb, target_rgb, target_grad, photometric_weight);
                 }
             });
         });
@@ -332,7 +376,7 @@ private:
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
 
-            const auto robust_scale = this->params_.robust_scale;
+            const auto robust_scale = this->params_.robust.scale;
 
             // get pointers
             // input
@@ -341,6 +385,11 @@ private:
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+            const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
+            const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
+            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
+            const float photometric_weight =
+                this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
@@ -372,10 +421,15 @@ private:
                     const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
+                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
+                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
 
-                    const LinearlizedResult result = kernel::linearlize_robust<icp, loss>(
-                        cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
-                        robust_scale);
+                    const LinearlizedResult result =
+                        kernel::linearlize_robust<icp, loss>(cur_T, source_ptr[index], source_cov,               //
+                                                             target_ptr[target_idx], target_cov, target_normal,  //
+                                                             robust_scale,                                       //
+                                                             source_rgb, target_rgb, target_grad, photometric_weight);
                     if (result.inlier == 1U) {
                         // reduction on device
                         const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
@@ -398,19 +452,19 @@ private:
                                  const std::vector<sycl::event>& depends) {
         if (this->queue_.is_nvidia()) {
             sycl_utils::events events;
-            if (this->params_.robust_loss == RobustLossType::NONE) {
+            if (this->params_.robust.type == RobustLossType::NONE) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::NONE>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::HUBER) {
+            } else if (this->params_.robust.type == RobustLossType::HUBER) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::HUBER>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::TUKEY) {
+            } else if (this->params_.robust.type == RobustLossType::TUKEY) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::TUKEY>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
+            } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::CAUCHY>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::GEMAN_MCCLURE) {
+            } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
                 events += this->linearlize_parallel_reduction_async<RobustLossType::GEMAN_MCCLURE>(
                     source, target, transT, max_correspondence_distance_2, depends);
             } else {
@@ -419,19 +473,19 @@ private:
             events.wait();
             return this->linearlized_on_device_->toCPU(0);
         } else {
-            if (this->params_.robust_loss == RobustLossType::NONE) {
+            if (this->params_.robust.type == RobustLossType::NONE) {
                 return this->linearlize_sequential_reduction<RobustLossType::NONE>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::HUBER) {
+            } else if (this->params_.robust.type == RobustLossType::HUBER) {
                 return this->linearlize_sequential_reduction<RobustLossType::HUBER>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::TUKEY) {
+            } else if (this->params_.robust.type == RobustLossType::TUKEY) {
                 return this->linearlize_sequential_reduction<RobustLossType::TUKEY>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
+            } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
                 return this->linearlize_sequential_reduction<RobustLossType::CAUCHY>(
                     source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust_loss == RobustLossType::GEMAN_MCCLURE) {
+            } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
                 return this->linearlize_sequential_reduction<RobustLossType::GEMAN_MCCLURE>(
                     source, target, transT, max_correspondence_distance_2, depends);
             }
@@ -460,7 +514,7 @@ private:
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
 
-            const auto robust_scale = this->params_.robust_scale;
+            const auto robust_scale = this->params_.robust.scale;
 
             // get pointers
             // input
@@ -470,6 +524,11 @@ private:
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+            const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
+            const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
+            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
+            const float photometric_weight =
+                this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
@@ -490,15 +549,18 @@ private:
                     }
                     const auto target_idx = neighbors_index_ptr[index];
                     const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
-                    const auto source_normal = source_normal_ptr ? source_normal_ptr[target_idx] : Normal::Zero();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
+                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
+                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
 
                     const float err =
                         kernel::calculate_error<icp, loss>(cur_T,                                              //
-                                                           source_ptr[index], source_cov, source_normal,       // source
+                                                           source_ptr[index], source_cov,                      // source
                                                            target_ptr[target_idx], target_cov, target_normal,  // target
-                                                           robust_scale);
+                                                           robust_scale,                                       //
+                                                           source_rgb, target_rgb, target_grad, photometric_weight);
 
                     error_ptr[index] = err;
                     inlier_ptr[index] = 1;
@@ -528,7 +590,7 @@ private:
             // convert to sycl::float4
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
 
-            const auto robust_scale = this->params_.robust_scale;
+            const auto robust_scale = this->params_.robust.scale;
 
             // get pointers
             // input
@@ -538,6 +600,11 @@ private:
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+            const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
+            const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
+            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
+            const float photometric_weight =
+                this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
@@ -557,15 +624,18 @@ private:
                     }
                     const auto target_idx = neighbors_index_ptr[index];
                     const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
-                    const auto source_normal = source_normal_ptr ? source_normal_ptr[target_idx] : Normal::Zero();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
+                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
+                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
 
                     const float err =
                         kernel::calculate_error<icp, loss>(cur_T,                                              //
-                                                           source_ptr[index], source_cov, source_normal,       // source
+                                                           source_ptr[index], source_cov,                      // source
                                                            target_ptr[target_idx], target_cov, target_normal,  // target
-                                                           robust_scale);
+                                                           robust_scale,                                       //
+                                                           source_rgb, target_rgb, target_grad, photometric_weight);
 
                     reduction_error_arg += err;
                     ++reduction_inlier_arg;
@@ -579,38 +649,38 @@ private:
                                               const knn_search::KNNResult& knn_results, const Eigen::Matrix4f transT,
                                               float max_correspondence_distance_2) {
         if (this->queue_.is_nvidia()) {
-            if (this->params_.robust_loss == RobustLossType::NONE) {
+            if (this->params_.robust.type == RobustLossType::NONE) {
                 return this->compute_error_parallel_reduction<RobustLossType::NONE>(  //
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::HUBER) {
+            } else if (this->params_.robust.type == RobustLossType::HUBER) {
                 return this->compute_error_parallel_reduction<RobustLossType::HUBER>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::TUKEY) {
+            } else if (this->params_.robust.type == RobustLossType::TUKEY) {
                 return this->compute_error_parallel_reduction<RobustLossType::TUKEY>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
+            } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
                 return this->compute_error_parallel_reduction<RobustLossType::CAUCHY>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::GEMAN_MCCLURE) {
+            } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
                 return this->compute_error_parallel_reduction<RobustLossType::GEMAN_MCCLURE>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
             }
             throw std::runtime_error("Unknown robust loss type.");
 
         } else {
-            if (this->params_.robust_loss == RobustLossType::NONE) {
+            if (this->params_.robust.type == RobustLossType::NONE) {
                 return this->compute_error_sequential_reduction<RobustLossType::NONE>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::HUBER) {
+            } else if (this->params_.robust.type == RobustLossType::HUBER) {
                 return this->compute_error_sequential_reduction<RobustLossType::HUBER>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::TUKEY) {
+            } else if (this->params_.robust.type == RobustLossType::TUKEY) {
                 return this->compute_error_sequential_reduction<RobustLossType::TUKEY>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::CAUCHY) {
+            } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
                 return this->compute_error_sequential_reduction<RobustLossType::CAUCHY>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust_loss == RobustLossType::GEMAN_MCCLURE) {
+            } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
                 return this->compute_error_sequential_reduction<RobustLossType::GEMAN_MCCLURE>(
                     source, target, knn_results, transT, max_correspondence_distance_2);
             }
@@ -647,7 +717,7 @@ private:
         bool updated = false;
         float last_error = std::numeric_limits<float>::max();
 
-        for (size_t i = 0; i < this->params_.max_inner_iterations; ++i) {
+        for (size_t i = 0; i < this->params_.lm.max_inner_iterations; ++i) {
             const Eigen::Matrix<float, 6, 1> delta =
                 (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
                     .ldlt()
@@ -673,7 +743,7 @@ private:
                 result.inlier = inlier;
                 updated = true;
 
-                lambda /= this->params_.lambda_factor;
+                lambda /= this->params_.lm.lambda_factor;
 
                 break;
             } else if (std::fabs(new_error - last_error) <= 1e-6f) {
@@ -685,7 +755,7 @@ private:
 
                 break;
             } else {
-                lambda *= this->params_.lambda_factor;
+                lambda *= this->params_.lm.lambda_factor;
             }
             last_error = new_error;
         }
