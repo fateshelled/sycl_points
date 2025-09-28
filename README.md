@@ -7,8 +7,9 @@ A C++ header-only point cloud processing library accelerated with SYCL for heter
 
 sycl_points provides efficient implementations of common point cloud processing operations using Intel's SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on CPUs, Intel iGPU and NVIDIA GPUs supported by SYCL.
 
-This project was developed with reference to small_gicp, a lightweight point cloud registration library.
+This project was developed with reference to small_gicp and gtsam_points
 - https://github.com/koide3/small_gicp
+- https://github.com/koide3/gtsam_points
 
 ### Key features
 - Efficient point cloud data structures for CPU and accelerator memory
@@ -157,39 +158,6 @@ ONEAPI_DEVICE_SELECTOR=opencl:1 ./example_registration
 # run example with CUDA device
 ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 ```
-
-### Benchmark
-
-#### example_registration
-
-- Intel Core Ultra 7 265K (Power Mode: Performance) + RTX 5060 Ti
-
-| process                |        CPU |       iGPU | RTX 5060 Ti |
-| ---------------------- | ---------: | ---------: | ----------: |
-| 1. to PointCloudShared |  217.30 us |  969.01 us |   182.22 us |
-| 2. Downsampling        | 1253.82 us | 1617.40 us |  1416.13 us |
-| 3. KDTree build        |  680.91 us |  697.72 us |   703.85 us |
-| 4. KDTree kNN Search   | 1324.21 us | 1670.28 us |  1052.88 us |
-| 5. compute Covariances |  105.07 us |  213.71 us |    22.50 us |
-| 6. compute Normals     |  104.69 us |  183.16 us |    20.86 us |
-| 7. update Covariance   |   98.06 us |  180.06 us |    16.75 us |
-| 8. Registration        | 1008.41 us | 2640.56 us |   639.36 us |
-| Total                  | 4792.47 us | 8171.90 us |  4054.55 us |
-
-
-- Intel Core i5 12600H (Power Mode: Performance)
-
-| process                |        CPU |       iGPU |
-| ---------------------- | ---------: | ---------: |
-| 1. to PointCloudShared |  366.30 us |  693.97 us |
-| 2. Downsampling        | 2263.52 us | 1508.10 us |
-| 3. KDTree build        |  875.13 us |  765.88 us |
-| 4. KDTree kNN Search   | 3543.59 us | 1908.59 us |
-| 5. compute Covariances |  198.80 us |  155.44 us |
-| 6. compute Normals     |  153.70 us |  136.87 us |
-| 7. update Covariance   |  122.71 us |  115.23 us |
-| 8. Registration        | 2336.41 us | 2388.69 us |
-| Total                  | 9860.16 us | 7672.77 us |
 
 #### device_query
 
