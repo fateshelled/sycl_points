@@ -390,15 +390,17 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
 /// @param source_cov Source covariance
 /// @param target_pt Target point
 /// @param target_cov Target covariance
-/// @param robust_scale Robust estimation scale parameter
-/// @return linearlized result
-template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType::NONE>
-SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::float4, 4>& T,
-                                                         const PointType& source_pt, const Covariance& source_cov,
-                                                         const PointType& target_pt, const Covariance& target_cov,
-                                                         const Normal& target_normal, float robust_scale,
-                                                         const RGBType& source_rgb, const RGBType& target_rgb,
-                                                         const ColorGradient& target_grad, float photometric_weight) {
+/// @param target_normal Target normal
+/// @param source_rgb Source RGB
+/// @param target_rgb Target RGB
+/// @param target_rgb_grad Target RGB gradient
+/// @param photometric_weight Photometric term weight (0.0 ~ 1.0). 0.0 is geometric term only/// @return linearlized result
+template <ICPType icp = ICPType::GICP>
+SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+                                                  const Covariance& source_cov, const PointType& target_pt,
+                                                  const Covariance& target_cov, const Normal& target_normal,
+                                                  const RGBType& source_rgb, const RGBType& target_rgb,
+                                                  const ColorGradient& target_grad, float photometric_weight) {
     float geo_residual_norm = 0.0f;
     LinearlizedResult result =
         linearlize_geometry<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, geo_residual_norm);
@@ -421,15 +423,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
         total_error = sycl::fma(geo_weight, result.error, photometric_weight * color_result.error);
     }
 
-    if constexpr (LossType != RobustLossType::NONE) {
-        const float total_residual_norm = sycl::sqrt(2.0f * total_error);
-        const float robust_weight = kernel::compute_robust_weight<LossType>(total_residual_norm, robust_scale);
-        eigen_utils::multiply_inplace<6, 6>(result.H, robust_weight);
-        eigen_utils::multiply_inplace<6, 1>(result.b, robust_weight);
-        result.error = kernel::compute_robust_error<LossType>(total_residual_norm, robust_scale);
-    } else {
-        result.error = total_error;
-    }
+    result.error = sycl::sqrt(2.0f * total_error);
 
     return result;
 }
@@ -442,17 +436,16 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_robust(const std::array<sycl::
 /// @param target_pt Target point
 /// @param target_cov Target covariance
 /// @param target_normal Target normal
-/// @param robust_scale Robust kernel scale
 /// @param source_rgb Source RGB
 /// @param target_rgb Target RGB
 /// @param target_rgb_grad Target RGB gradient
 /// @param photometric_weight Photometric term weight (0.0 ~ 1.0). 0.0 is geometric term only
 /// @return error
-template <ICPType icp = ICPType::GICP, RobustLossType LossType = RobustLossType::NONE>
+template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                            const Covariance& source_cov, const PointType& target_pt,
                                            const Covariance& target_cov, const Normal& target_normal,
-                                           float robust_scale, const RGBType& source_rgb, const RGBType& target_rgb,
+                                           const RGBType& source_rgb, const RGBType& target_rgb,
                                            const ColorGradient& target_rgb_grad, float photometric_weight) {
     const float geo_error =
         calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal);
@@ -464,13 +457,7 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
             calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_rgb_grad);
         total_error = sycl::fma(geo_weight, geo_error, photometric_weight * color_error);
     }
-
-    if constexpr (LossType != RobustLossType::NONE) {
-        const float total_residual_norm = sycl::sqrt(2.0f * total_error);
-        return kernel::compute_robust_error<LossType>(total_residual_norm, robust_scale);
-    }
-
-    return total_error;
+    return sycl::sqrt(2.0f * total_error);
 }
 
 }  // namespace kernel

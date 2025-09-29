@@ -343,21 +343,23 @@ private:
                     const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
                     const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
 
-                    const LinearlizedResult result =
-                        kernel::linearlize_robust<icp, loss>(cur_T, source_ptr[index], source_cov,               //
-                                                             target_ptr[target_idx], target_cov, target_normal,  //
-                                                             robust_scale,                                       //
-                                                             source_rgb, target_rgb, target_grad, photometric_weight);
-                    if (result.inlier == 1U) {
+                    const LinearlizedResult linearlized =
+                        kernel::linearlize<icp>(cur_T, source_ptr[index], source_cov,               //
+                                                target_ptr[target_idx], target_cov, target_normal,  //
+                                                source_rgb, target_rgb, target_grad, photometric_weight);
+                    if (linearlized.inlier == 1U) {
+                        const float robust_weight =
+                            kernel::compute_robust_weight<loss>(linearlized.error, robust_scale);
+
                         // reduction on device
-                        const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(result.H);
-                        const auto& [b0, b1] = eigen_utils::to_sycl_vec(result.b);
-                        sum_H0_arg += H0;
-                        sum_H1_arg += H1;
-                        sum_H2_arg += H2;
-                        sum_b0_arg += b0;
-                        sum_b1_arg += b1;
-                        sum_error_arg += result.error;
+                        const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearlized.H);
+                        const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearlized.b);
+                        sum_H0_arg += H0 * robust_weight;
+                        sum_H1_arg += H1 * robust_weight;
+                        sum_H2_arg += H2 * robust_weight;
+                        sum_b0_arg += b0 * robust_weight;
+                        sum_b1_arg += b1 * robust_weight;
+                        sum_error_arg += kernel::compute_robust_error<loss>(linearlized.error, robust_weight);
                         ++sum_inlier_arg;
                     }
                 });
@@ -397,7 +399,7 @@ private:
                                                                  const knn_search::KNNResult& knn_results,
                                                                  const Eigen::Matrix4f transT,
                                                                  float max_correspondence_distance_2) {
-        shared_vector<float> sum_error(1, 0.0f, shared_allocator<float>(*this->queue_.ptr));
+        shared_vector<float> error(1, 0.0f, shared_allocator<float>(*this->queue_.ptr));
         shared_vector<uint32_t> inlier(1, 0, shared_allocator<uint32_t>(*this->queue_.ptr));
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
@@ -428,13 +430,13 @@ private:
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
             // output
-            auto reduction_error = sycl::reduction(sum_error.data(), sycl::plus<float>());
-            auto reduction_inlier = sycl::reduction(inlier.data(), sycl::plus<uint32_t>());
+            auto sum_error = sycl::reduction(error.data(), sycl::plus<float>());
+            auto sum_inlier = sycl::reduction(inlier.data(), sycl::plus<uint32_t>());
 
             h.parallel_for(                                       //
                 sycl::nd_range<1>(global_size, work_group_size),  // range
-                reduction_error, reduction_inlier,                // reduction
-                [=](sycl::nd_item<1> item, auto& reduction_error_arg, auto& reduction_inlier_arg) {
+                sum_error, sum_inlier,                            // reduction
+                [=](sycl::nd_item<1> item, auto& sum_error_arg, auto& sum_inlier_arg) {
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
@@ -450,18 +452,18 @@ private:
                     const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
 
                     const float err =
-                        kernel::calculate_error<icp, loss>(cur_T,                                              //
-                                                           source_ptr[index], source_cov,                      // source
-                                                           target_ptr[target_idx], target_cov, target_normal,  // target
-                                                           robust_scale,                                       //
-                                                           source_rgb, target_rgb, target_grad, photometric_weight);
+                        kernel::calculate_error<icp>(cur_T,                                              //
+                                                     source_ptr[index], source_cov,                      // source
+                                                     target_ptr[target_idx], target_cov, target_normal,  // target
+                                                     source_rgb, target_rgb, target_grad, photometric_weight);
 
-                    reduction_error_arg += err;
-                    ++reduction_inlier_arg;
+                    sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
+                    ;
+                    ++sum_inlier_arg;
                 });
         });
         event.wait();
-        return {sum_error[0], inlier[0]};
+        return {error[0], inlier[0]};
     }
 
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
