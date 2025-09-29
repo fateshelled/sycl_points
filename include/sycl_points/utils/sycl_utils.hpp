@@ -21,9 +21,9 @@ constexpr uint32_t AMD = 0x1002;     // 4098
 /// @param device SYCL device
 /// @param work_group_size if greater than 0, return this value clamped at upper limit.
 /// @return optimized work_group_size
-inline size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 0) {
+inline size_t get_work_group_size(const sycl::device& device, size_t work_group_size = 0UL) {
     const size_t max_work_group_size = device.get_info<sycl::info::device::max_work_group_size>();
-    if (work_group_size > 0) {
+    if (work_group_size > 0UL) {
         return std::min(work_group_size, max_work_group_size);
     }
 
@@ -32,7 +32,7 @@ inline size_t get_work_group_size(const sycl::device& device, size_t work_group_
         // CPU's max_compute_units is number of total thread.
         return std::min(max_compute_unit, max_work_group_size);
     }
-    return std::min(max_compute_unit * 4, max_work_group_size);
+    return std::min(max_compute_unit * 4UL, max_work_group_size);
 
     // const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
     // switch (vendor_id) {
@@ -50,8 +50,24 @@ inline size_t get_work_group_size(const sycl::device& device, size_t work_group_
 /// @param queue SYCL queue
 /// @param work_group_size if greater than 0, return this value clamped at upper limit.
 /// @return optimized work_group_size
-inline size_t get_work_group_size(const sycl::queue& queue, size_t work_group_size = 0) {
+inline size_t get_work_group_size(const sycl::queue& queue, size_t work_group_size = 0UL) {
     return get_work_group_size(queue.get_device(), work_group_size);
+}
+
+inline size_t get_work_group_size_for_parallel_reduction(const sycl::device& device, size_t work_group_size = 0UL) {
+    const size_t max_work_group_size = 128UL;  // conservative value
+    if (work_group_size > 0) {
+        return std::min(work_group_size, max_work_group_size);
+    }
+    const size_t max_compute_unit = static_cast<size_t>(device.get_info<sycl::info::device::max_compute_units>());
+    if (device.is_cpu()) {
+        return std::min(max_compute_unit, max_work_group_size);
+    }
+    return std::min(max_compute_unit * 4UL, max_work_group_size);
+}
+
+inline size_t get_work_group_size_for_parallel_reduction(const sycl::queue& queue, size_t work_group_size = 0UL) {
+    return get_work_group_size_for_parallel_reduction(queue.get_device(), work_group_size);
 }
 
 /// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.
@@ -378,7 +394,7 @@ public:
             throw std::runtime_error(error_msg);
         }
         this->work_group_size = sycl_utils::get_work_group_size(device);
-        this->work_group_size_for_parallel_reduction = sycl_utils::get_work_group_size(device);
+        this->work_group_size_for_parallel_reduction = sycl_utils::get_work_group_size_for_parallel_reduction(device);
     }
 
     /// @brief Print device info
@@ -501,9 +517,10 @@ public:
     /// @note The task execution order is guaranteed as: lock → task → unlock through event dependencies
     /// @note For write operations (is_write=true): uses exclusive lock, blocks all other operations
     /// @note For read operations (is_write=false): uses shared lock, allows concurrent readers
-    sycl::event execute_with_mutex(std::shared_timed_mutex& mtx, const std::function<void(sycl::handler&)>& task,
-                                   const std::vector<sycl::event>& depends = {}, bool is_write = false,
-                                   const std::chrono::steady_clock::duration& lock_timeout = std::chrono::milliseconds(50)) const {
+    sycl::event execute_with_mutex(
+        std::shared_timed_mutex& mtx, const std::function<void(sycl::handler&)>& task,
+        const std::vector<sycl::event>& depends = {}, bool is_write = false,
+        const std::chrono::steady_clock::duration& lock_timeout = std::chrono::milliseconds(50)) const {
         auto lock_event = this->ptr->submit([&mtx, is_write, &lock_timeout](sycl::handler& h) {
             h.host_task([&mtx, is_write, &lock_timeout]() {
                 constexpr auto backoff = std::chrono::microseconds(50);

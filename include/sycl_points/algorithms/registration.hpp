@@ -280,88 +280,6 @@ private:
     }
 
     template <RobustLossType loss = RobustLossType::NONE>
-    LinearlizedResult linearlize_sequential_reduction(const PointCloudShared& source, const PointCloudShared& target,
-                                                      const Eigen::Matrix4f transT, float max_correspondence_distance_2,
-                                                      const std::vector<sycl::event>& depends) {
-        const size_t N = source.size();
-        sycl_utils::events events;
-        events += this->queue_.ptr->submit([&](sycl::handler& h) {
-            if (this->linearlized_on_host_->size()) {
-                this->linearlized_on_host_->resize(N);
-            }
-            const size_t work_group_size = queue_.get_work_group_size();
-            const size_t global_size = queue_.get_global_size(N);
-
-            const auto robust_scale = this->params_.robust.scale;
-
-            // convert to sycl::float4
-            const auto cur_T = eigen_utils::to_sycl_vec(transT);
-
-            // get pointers
-            // input
-            const auto source_ptr = source.points_ptr();
-            const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
-            const auto target_ptr = target.points_ptr();
-            const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
-            const auto target_normal_ptr = target.normals_ptr();
-            const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
-            const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
-            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
-            const float photometric_weight =
-                this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
-            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
-            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
-            // output
-            const auto linearlized_ptr = this->linearlized_on_host_->data();
-
-            // wait for knn search
-            h.depends_on(depends);
-
-            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                const size_t i = item.get_global_id(0);
-                if (i >= N) return;
-
-                if (neighbors_distances_ptr[i] > max_correspondence_distance_2) {
-                    linearlized_ptr[i].H.setZero();
-                    linearlized_ptr[i].b.setZero();
-                    linearlized_ptr[i].error = 0.0f;
-                    linearlized_ptr[i].inlier = 0;
-                } else {
-                    const auto target_idx = neighbors_index_ptr[i];
-                    const auto source_cov = source_cov_ptr ? source_cov_ptr[i] : Covariance::Identity();
-                    const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
-                    const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
-                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[i] : RGBType::Zero();
-                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
-                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
-                    linearlized_ptr[i] =                                                                         //
-                        kernel::linearlize_robust<icp, loss>(cur_T, source_ptr[i], source_cov,                   //
-                                                             target_ptr[target_idx], target_cov, target_normal,  //
-                                                             robust_scale,                                       //
-                                                             source_rgb, target_rgb, target_grad, photometric_weight);
-                }
-            });
-        });
-        events.wait();
-
-        LinearlizedResult linearlized_result;
-        linearlized_result.H.setZero();
-        linearlized_result.b.setZero();
-        linearlized_result.error = 0.0f;
-        linearlized_result.inlier = 0;
-        // reduction on host
-        for (size_t i = 0; i < N; ++i) {
-            if ((*this->linearlized_on_host_)[i].inlier > 0) {
-                linearlized_result.H += (*this->linearlized_on_host_)[i].H;
-                linearlized_result.b += (*this->linearlized_on_host_)[i].b;
-                linearlized_result.error += (*this->linearlized_on_host_)[i].error;
-                ++linearlized_result.inlier;
-            }
-        }
-        return linearlized_result;
-    }
-
-    template <RobustLossType loss = RobustLossType::NONE>
     sycl_utils::events linearlize_parallel_reduction_async(const PointCloudShared& source,
                                                            const PointCloudShared& target, const Eigen::Matrix4f transT,
                                                            float max_correspondence_distance_2,
@@ -450,126 +368,27 @@ private:
     LinearlizedResult linearlize(const PointCloudShared& source, const PointCloudShared& target,
                                  const Eigen::Matrix4f transT, float max_correspondence_distance_2,
                                  const std::vector<sycl::event>& depends) {
-        if (this->queue_.is_nvidia()) {
-            sycl_utils::events events;
-            if (this->params_.robust.type == RobustLossType::NONE) {
-                events += this->linearlize_parallel_reduction_async<RobustLossType::NONE>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust.type == RobustLossType::HUBER) {
-                events += this->linearlize_parallel_reduction_async<RobustLossType::HUBER>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust.type == RobustLossType::TUKEY) {
-                events += this->linearlize_parallel_reduction_async<RobustLossType::TUKEY>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
-                events += this->linearlize_parallel_reduction_async<RobustLossType::CAUCHY>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
-                events += this->linearlize_parallel_reduction_async<RobustLossType::GEMAN_MCCLURE>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else {
-                throw std::runtime_error("Unknown robust loss type.");
-            }
-            events.wait();
-            return this->linearlized_on_device_->toCPU(0);
+        sycl_utils::events events;
+        if (this->params_.robust.type == RobustLossType::NONE) {
+            events += this->linearlize_parallel_reduction_async<RobustLossType::NONE>(
+                source, target, transT, max_correspondence_distance_2, depends);
+        } else if (this->params_.robust.type == RobustLossType::HUBER) {
+            events += this->linearlize_parallel_reduction_async<RobustLossType::HUBER>(
+                source, target, transT, max_correspondence_distance_2, depends);
+        } else if (this->params_.robust.type == RobustLossType::TUKEY) {
+            events += this->linearlize_parallel_reduction_async<RobustLossType::TUKEY>(
+                source, target, transT, max_correspondence_distance_2, depends);
+        } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
+            events += this->linearlize_parallel_reduction_async<RobustLossType::CAUCHY>(
+                source, target, transT, max_correspondence_distance_2, depends);
+        } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
+            events += this->linearlize_parallel_reduction_async<RobustLossType::GEMAN_MCCLURE>(
+                source, target, transT, max_correspondence_distance_2, depends);
         } else {
-            if (this->params_.robust.type == RobustLossType::NONE) {
-                return this->linearlize_sequential_reduction<RobustLossType::NONE>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust.type == RobustLossType::HUBER) {
-                return this->linearlize_sequential_reduction<RobustLossType::HUBER>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust.type == RobustLossType::TUKEY) {
-                return this->linearlize_sequential_reduction<RobustLossType::TUKEY>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
-                return this->linearlize_sequential_reduction<RobustLossType::CAUCHY>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
-                return this->linearlize_sequential_reduction<RobustLossType::GEMAN_MCCLURE>(
-                    source, target, transT, max_correspondence_distance_2, depends);
-            }
             throw std::runtime_error("Unknown robust loss type.");
         }
-    }
-
-    template <RobustLossType loss = RobustLossType::NONE>
-    std::tuple<float, uint32_t> compute_error_sequential_reduction(const PointCloudShared& source,
-                                                                   const PointCloudShared& target,
-                                                                   const knn_search::KNNResult& knn_results,
-                                                                   const Eigen::Matrix4f transT,
-                                                                   float max_correspondence_distance_2) {
-        const size_t N = source.size();
-        if (this->error_on_host_->size() < N) {
-            this->error_on_host_->resize(N);
-            this->inlier_on_host_->resize(N);
-        }
-
-        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            const size_t N = source.size();
-
-            const size_t work_group_size = this->queue_.get_work_group_size();
-            const size_t global_size = this->queue_.get_global_size(N);
-
-            // convert to sycl::float4
-            const auto cur_T = eigen_utils::to_sycl_vec(transT);
-
-            const auto robust_scale = this->params_.robust.scale;
-
-            // get pointers
-            // input
-            const auto source_ptr = source.points_ptr();
-            const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
-            const auto source_normal_ptr = source.has_normal() ? source.normals_ptr() : nullptr;
-            const auto target_ptr = target.points_ptr();
-            const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
-            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
-            const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
-            const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
-            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
-            const float photometric_weight =
-                this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
-            const auto neighbors_index_ptr = knn_results.indices->data();
-            const auto neighbors_distances_ptr = knn_results.distances->data();
-
-            // output
-            const auto error_ptr = this->error_on_host_->data();
-            const auto inlier_ptr = this->inlier_on_host_->data();
-
-            h.parallel_for(                                       //
-                sycl::nd_range<1>(global_size, work_group_size),  // range
-                [=](sycl::nd_item<1> item) {
-                    const size_t index = item.get_global_id(0);
-                    if (index >= N) return;
-
-                    if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
-                        error_ptr[index] = 0.0f;
-                        inlier_ptr[index] = 0;
-                        return;
-                    }
-                    const auto target_idx = neighbors_index_ptr[index];
-                    const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
-                    const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
-                    const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
-                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
-                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
-                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
-
-                    const float err =
-                        kernel::calculate_error<icp, loss>(cur_T,                                              //
-                                                           source_ptr[index], source_cov,                      // source
-                                                           target_ptr[target_idx], target_cov, target_normal,  // target
-                                                           robust_scale,                                       //
-                                                           source_rgb, target_rgb, target_grad, photometric_weight);
-
-                    error_ptr[index] = err;
-                    inlier_ptr[index] = 1;
-                });
-        });
-        event.wait();
-        const auto sum_error = std::accumulate(this->error_on_host_->begin(), this->error_on_host_->end(), 0.0f);
-        const auto sum_inlier = std::accumulate(this->inlier_on_host_->begin(), this->inlier_on_host_->end(), 0U);
-        return {sum_error, sum_inlier};
+        events.wait();
+        return this->linearlized_on_device_->toCPU(0);
     }
 
     template <RobustLossType loss = RobustLossType::NONE>
@@ -648,44 +467,23 @@ private:
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
                                               const knn_search::KNNResult& knn_results, const Eigen::Matrix4f transT,
                                               float max_correspondence_distance_2) {
-        if (this->queue_.is_nvidia()) {
-            if (this->params_.robust.type == RobustLossType::NONE) {
-                return this->compute_error_parallel_reduction<RobustLossType::NONE>(  //
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust.type == RobustLossType::HUBER) {
-                return this->compute_error_parallel_reduction<RobustLossType::HUBER>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust.type == RobustLossType::TUKEY) {
-                return this->compute_error_parallel_reduction<RobustLossType::TUKEY>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
-                return this->compute_error_parallel_reduction<RobustLossType::CAUCHY>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
-                return this->compute_error_parallel_reduction<RobustLossType::GEMAN_MCCLURE>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            }
-            throw std::runtime_error("Unknown robust loss type.");
-
-        } else {
-            if (this->params_.robust.type == RobustLossType::NONE) {
-                return this->compute_error_sequential_reduction<RobustLossType::NONE>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust.type == RobustLossType::HUBER) {
-                return this->compute_error_sequential_reduction<RobustLossType::HUBER>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust.type == RobustLossType::TUKEY) {
-                return this->compute_error_sequential_reduction<RobustLossType::TUKEY>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
-                return this->compute_error_sequential_reduction<RobustLossType::CAUCHY>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
-                return this->compute_error_sequential_reduction<RobustLossType::GEMAN_MCCLURE>(
-                    source, target, knn_results, transT, max_correspondence_distance_2);
-            }
-            throw std::runtime_error("Unknown robust loss type.");
+        if (this->params_.robust.type == RobustLossType::NONE) {
+            return this->compute_error_parallel_reduction<RobustLossType::NONE>(  //
+                source, target, knn_results, transT, max_correspondence_distance_2);
+        } else if (this->params_.robust.type == RobustLossType::HUBER) {
+            return this->compute_error_parallel_reduction<RobustLossType::HUBER>(source, target, knn_results, transT,
+                                                                                 max_correspondence_distance_2);
+        } else if (this->params_.robust.type == RobustLossType::TUKEY) {
+            return this->compute_error_parallel_reduction<RobustLossType::TUKEY>(source, target, knn_results, transT,
+                                                                                 max_correspondence_distance_2);
+        } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
+            return this->compute_error_parallel_reduction<RobustLossType::CAUCHY>(source, target, knn_results, transT,
+                                                                                  max_correspondence_distance_2);
+        } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
+            return this->compute_error_parallel_reduction<RobustLossType::GEMAN_MCCLURE>(
+                source, target, knn_results, transT, max_correspondence_distance_2);
         }
+        throw std::runtime_error("Unknown robust loss type.");
     }
 
     void optimize_gauss_newton(RegistrationResult& result, const LinearlizedResult& linearlized_result, float lambda,

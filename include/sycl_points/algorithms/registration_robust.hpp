@@ -8,10 +8,10 @@ namespace registration {
 
 /// @brief Robust loss function types for M-estimation
 enum class RobustLossType {
-    NONE,           // No robust loss (standard least squares)
-    HUBER,          // Huber loss
-    TUKEY,          // Tukey bi-weight
-    CAUCHY,         // Cauchy loss
+    NONE,          // No robust loss (standard least squares)
+    HUBER,         // Huber loss
+    TUKEY,         // Tukey bi-weight
+    CAUCHY,        // Cauchy loss
     GEMAN_MCCLURE  // Geman-McClure loss
 };
 
