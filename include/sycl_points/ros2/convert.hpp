@@ -74,20 +74,15 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         std::cerr << "Not supported intensity field type" << std::endl;
     }
 
-    // prepare container
-    {
-        cloud->clear();
-        cloud->resize_points(point_size);
-        if (has_rgb_field) {
-            cloud->resize_rgb(point_size);
-        }
-        if (has_intensity_field) {
-            cloud->resize_intensities(point_size);
-        }
-    };
-
-    auto submit_device_conversion = [&](auto scalar_tag, uint8_t* msg_data, const sycl::event& copy_event) {
+    auto submit_device_conversion = [&](auto scalar_tag) {
         using ScalarT = decltype(scalar_tag);
+
+        if (msg_buffer->size() < msg.data.size()) {
+            msg_buffer->resize(msg.data.size());
+        }
+        uint8_t* msg_data = msg_buffer->data();
+        auto copy_event = queue.ptr->memcpy(msg_data, msg.data.data(), sizeof(uint8_t) * msg.data.size());
+
         sycl_utils::events events;
         events += queue.ptr->submit([&](sycl::handler& h) {
             const size_t work_group_size = queue.get_work_group_size();
@@ -127,22 +122,26 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         events.wait();
     };
 
-    if (msg_buffer->size() < msg.data.size()) {
-        msg_buffer->resize(msg.data.size());
-    }
+    // prepare container
+    {
+        cloud->clear();
+        cloud->resize_points(point_size);
+        if (has_rgb_field) {
+            cloud->resize_rgb(point_size);
+        }
+        if (has_intensity_field) {
+            cloud->resize_intensities(point_size);
+        }
+    };
 
     if (x_type == sensor_msgs::msg::PointField::FLOAT32) {
-        uint8_t* msg_data = msg_buffer->data();
-        auto copy_event = queue.ptr->memcpy(msg_data, msg.data.data(), sizeof(uint8_t) * msg.data.size());
-        submit_device_conversion(float{}, msg_data, copy_event);
+        submit_device_conversion(float{});
         return true;
     }
 
     if (x_type == sensor_msgs::msg::PointField::FLOAT64) {
         if (queue.is_supported_double()) {
-            uint8_t* msg_data = msg_buffer->data();
-            auto copy_event = queue.ptr->memcpy(msg_data, msg.data.data(), sizeof(uint8_t) * msg.data.size());
-            submit_device_conversion(double{}, msg_data, copy_event);
+            submit_device_conversion(double{});
             return true;
         }
 
