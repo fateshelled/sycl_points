@@ -7,7 +7,7 @@ namespace sycl_points {
 namespace ros2 {
 
 inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const sensor_msgs::msg::PointCloud2& msg,
-                        PointCloudShared::Ptr& cloud) {
+                        PointCloudShared::Ptr& cloud, sycl_points::shared_vector_ptr<uint8_t>& msg_buffer) {
     uint8_t x_type = 0;
     uint8_t y_type = 0;
     uint8_t z_type = 0;
@@ -58,124 +58,132 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
     const size_t point_step = msg.point_step;
     const size_t point_size = msg.width * msg.height;
 
-    uint8_t* msg_data = sycl::malloc_shared<uint8_t>(msg.data.size(), *queue.ptr);
-    auto copy_event = queue.ptr->memcpy(msg_data, msg.data.data(), sizeof(uint8_t) * msg.data.size());
+    if (point_size == 0) {
+        cloud->clear();
+        return true;
+    }
 
-    sycl_utils::events parse_events;
-    if (x_type == sensor_msgs::msg::PointField::FLOAT32) {
-        cloud->covs->clear();
-        cloud->resize_points(point_size);
-        parse_events += queue.ptr->submit([&](sycl::handler& h) {
+    const bool has_rgb_field = (rgb_offset >= 0) && (rgb_type == sensor_msgs::msg::PointField::FLOAT32 ||
+                                                     rgb_type == sensor_msgs::msg::PointField::UINT32);
+    if (rgb_offset >= 0 && !has_rgb_field) {
+        std::cerr << "Not supported rgb field type" << std::endl;
+    }
+
+    const bool has_intensity_field = (intensity_offset >= 0) && intensity_type == sensor_msgs::msg::PointField::FLOAT32;
+    if (intensity_offset >= 0 && !has_intensity_field) {
+        std::cerr << "Not supported intensity field type" << std::endl;
+    }
+
+    auto submit_device_conversion = [&](auto scalar_tag) {
+        using ScalarT = decltype(scalar_tag);
+
+        if (msg_buffer->size() < msg.data.size()) {
+            msg_buffer->resize(msg.data.size());
+        }
+        uint8_t* msg_data = msg_buffer->data();
+        auto copy_event = queue.ptr->memcpy(msg_data, msg.data.data(), sizeof(uint8_t) * msg.data.size());
+
+        sycl_utils::events events;
+        events += queue.ptr->submit([&](sycl::handler& h) {
             const size_t work_group_size = queue.get_work_group_size();
             const size_t global_size = queue.get_global_size(point_size);
 
             const uint8_t* msg_data_ptr = msg_data;
-            PointType* ret_data_ptr = cloud->points->data();
+            PointType* points_ptr = cloud->points->data();
+            RGBType* rgb_ptr = has_rgb_field ? cloud->rgb->data() : nullptr;
+            float* intensity_ptr = has_intensity_field ? cloud->intensities->data() : nullptr;
+            const bool write_rgb = has_rgb_field;
+            const bool write_intensity = has_intensity_field;
+
             h.depends_on(copy_event);
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
                 if (i >= point_size) return;
-                const auto x = reinterpret_cast<const float*>(&msg_data_ptr[point_step * i + x_offset])[0];
-                const auto y = reinterpret_cast<const float*>(&msg_data_ptr[point_step * i + y_offset])[0];
-                const auto z = reinterpret_cast<const float*>(&msg_data_ptr[point_step * i + z_offset])[0];
-                ret_data_ptr[i] = {x, y, z, 1.0f};
+                const size_t base = point_step * i;
+                const float x = static_cast<float>(reinterpret_cast<const ScalarT*>(&msg_data_ptr[base + x_offset])[0]);
+                const float y = static_cast<float>(reinterpret_cast<const ScalarT*>(&msg_data_ptr[base + y_offset])[0]);
+                const float z = static_cast<float>(reinterpret_cast<const ScalarT*>(&msg_data_ptr[base + z_offset])[0]);
+                points_ptr[i] = {x, y, z, 1.0f};
+
+                if (write_rgb) {
+                    const auto rgb = reinterpret_cast<const uint8_t*>(&msg_data_ptr[base + rgb_offset]);
+                    auto& dst = rgb_ptr[i];
+                    dst.x() = static_cast<float>(rgb[0]) / 255.0f;
+                    dst.y() = static_cast<float>(rgb[1]) / 255.0f;
+                    dst.z() = static_cast<float>(rgb[2]) / 255.0f;
+                    dst.w() = static_cast<float>(rgb[3]) / 255.0f;
+                }
+
+                if (write_intensity) {
+                    intensity_ptr[i] = reinterpret_cast<const float*>(&msg_data_ptr[base + intensity_offset])[0];
+                }
             });
         });
-    } else if (x_type == sensor_msgs::msg::PointField::FLOAT64) {
-        if (queue.is_supported_double()) {
-            cloud->covs->clear();
-            cloud->resize_points(point_size);
-            parse_events += queue.ptr->submit([&](sycl::handler& h) {
-                const size_t work_group_size = queue.get_work_group_size();
-                const size_t global_size = queue.get_global_size(point_size);
+        events.wait();
+    };
 
-                const uint8_t* msg_data_ptr = msg_data;
-                PointType* ret_data_ptr = cloud->points->data();
-                h.depends_on(copy_event);
-                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                    const size_t i = item.get_global_id(0);
-                    if (i >= point_size) return;
-                    const auto x = static_cast<float>(
-                        reinterpret_cast<const double*>(&msg_data_ptr[point_step * i + x_offset])[0]);
-                    const auto y = static_cast<float>(
-                        reinterpret_cast<const double*>(&msg_data_ptr[point_step * i + y_offset])[0]);
-                    const auto z = static_cast<float>(
-                        reinterpret_cast<const double*>(&msg_data_ptr[point_step * i + z_offset])[0]);
-                    ret_data_ptr[i] = {x, y, z, 1.0f};
-                });
-            });
-        } else {
-            cloud->clear();
-            cloud->points->reserve(point_size);
-            for (size_t i = 0; i < point_size; ++i) {
-                const auto x =
-                    static_cast<float>(reinterpret_cast<const double*>(&msg.data[point_step * i + x_offset])[0]);
-                const auto y =
-                    static_cast<float>(reinterpret_cast<const double*>(&msg.data[point_step * i + y_offset])[0]);
-                const auto z =
-                    static_cast<float>(reinterpret_cast<const double*>(&msg.data[point_step * i + z_offset])[0]);
-                cloud->points->emplace_back(x, y, z, 1.0f);
+    // prepare container
+    {
+        cloud->clear();
+        cloud->resize_points(point_size);
+        if (has_rgb_field) {
+            cloud->resize_rgb(point_size);
+        }
+        if (has_intensity_field) {
+            cloud->resize_intensities(point_size);
+        }
+    };
+
+    if (x_type == sensor_msgs::msg::PointField::FLOAT32) {
+        submit_device_conversion(float{});
+        return true;
+    }
+
+    if (x_type == sensor_msgs::msg::PointField::FLOAT64) {
+        if (queue.is_supported_double()) {
+            submit_device_conversion(double{});
+            return true;
+        }
+
+        for (size_t i = 0; i < point_size; ++i) {
+            const size_t base = point_step * i;
+
+            {
+                const auto x = static_cast<float>(reinterpret_cast<const double*>(&msg.data[base + x_offset])[0]);
+                const auto y = static_cast<float>(reinterpret_cast<const double*>(&msg.data[base + y_offset])[0]);
+                const auto z = static_cast<float>(reinterpret_cast<const double*>(&msg.data[base + z_offset])[0]);
+                auto& dst = (*cloud->points)[i];
+                dst.x() = x;
+                dst.y() = y;
+                dst.z() = z;
+                dst.w() = 1.0f;
+            }
+
+            if (has_rgb_field) {
+                const auto rgb = reinterpret_cast<const uint8_t*>(&msg.data[base + rgb_offset]);
+                auto& dst = (*cloud->rgb)[i];
+                dst.x() = static_cast<float>(rgb[0]) / 255.0f;
+                dst.y() = static_cast<float>(rgb[1]) / 255.0f;
+                dst.z() = static_cast<float>(rgb[2]) / 255.0f;
+                dst.w() = static_cast<float>(rgb[3]) / 255.0f;
+            }
+
+            if (has_intensity_field) {
+                const auto intensity = reinterpret_cast<const float*>(&msg.data[base + intensity_offset])[0];
+                (*cloud->intensities)[i] = intensity;
             }
         }
+        return true;
     }
 
-    // RGB field
-    if (rgb_offset >= 0) {
-        if (rgb_type == sensor_msgs::msg::PointField::FLOAT32 || rgb_type == sensor_msgs::msg::PointField::UINT32) {
-            cloud->resize_rgb(point_size);
-            parse_events += queue.ptr->submit([&](sycl::handler& h) {
-                const size_t work_group_size = queue.get_work_group_size();
-                const size_t global_size = queue.get_global_size(point_size);
-
-                const uint8_t* msg_data_ptr = msg_data;
-                RGBType* ret_data_ptr = cloud->rgb->data();
-                h.depends_on(copy_event);
-                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                    const size_t i = item.get_global_id(0);
-                    if (i >= point_size) return;
-                    const auto rgb = reinterpret_cast<const uint8_t*>(&msg_data_ptr[point_step * i + rgb_offset]);
-                    ret_data_ptr[i].x() = rgb[0] / 255.0f;
-                    ret_data_ptr[i].y() = rgb[1] / 255.0f;
-                    ret_data_ptr[i].z() = rgb[2] / 255.0f;
-                    ret_data_ptr[i].w() = rgb[3] / 255.0f;
-                });
-            });
-        } else {
-            std::cerr << "Not supported rgb field type" << std::endl;
-        }
-    }
-
-    if (intensity_offset >= 0) {
-        if (intensity_type == sensor_msgs::msg::PointField::FLOAT32) {
-            cloud->resize_intensities(point_size);
-            parse_events += queue.ptr->submit([&](sycl::handler& h) {
-                const size_t work_group_size = queue.get_work_group_size();
-                const size_t global_size = queue.get_global_size(point_size);
-
-                const uint8_t* msg_data_ptr = msg_data;
-                float* ret_data_ptr = cloud->intensities->data();
-                h.depends_on(copy_event);
-                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                    const size_t i = item.get_global_id(0);
-                    if (i >= point_size) return;
-                    const auto intensity =
-                        reinterpret_cast<const float*>(&msg_data_ptr[point_step * i + intensity_offset])[0];
-                    ret_data_ptr[i] = intensity;
-                });
-            });
-        } else {
-            std::cerr << "Not supported intensity field type" << std::endl;
-        }
-    }
-    parse_events.wait();
-    sycl::free(msg_data, *queue.ptr);
-    return true;
+    return false;
 }
 
 inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue,
-                                         const sensor_msgs::msg::PointCloud2& msg) {
+                                         const sensor_msgs::msg::PointCloud2& msg,
+                                         sycl_points::shared_vector_ptr<uint8_t>& msg_buffer) {
     PointCloudShared::Ptr ret = nullptr;
-    fromROS2msg(queue, msg, ret);
+    fromROS2msg(queue, msg, ret, msg_buffer);
     return ret;
 }
 
