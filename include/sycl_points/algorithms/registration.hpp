@@ -35,8 +35,6 @@ struct RegistrationParams {
     size_t max_iterations = 20;                     // max iteration
     float lambda = 1e-6f;                           // damping factor
     float max_correspondence_distance = 2.0f;       // max correspondence distance
-    bool adaptive_correspondence_distance = false;  // use adaptive max correspondence distance
-    float inlier_ratio = 0.7f;                      // adaptive max correspondence distance by inlier point ratio
 
     Criteria crireria;
     Robust robust;
@@ -208,7 +206,7 @@ public:
         // transform
         transform::transform(*this->aligned_, init_T);
 
-        float max_dist = this->params_.max_correspondence_distance;
+        const float max_dist = this->params_.max_correspondence_distance;
         const auto verbose = this->params_.verbose;
 
         sycl_utils::events transform_events;
@@ -240,17 +238,6 @@ public:
 
             if (result.converged) {
                 break;
-            }
-
-            // adaptive max correspondence distance
-            if (this->params_.adaptive_correspondence_distance) {
-                if (static_cast<float>(result.inlier) / N > this->params_.inlier_ratio) {
-                    max_dist *= 0.95f;
-                } else {
-                    max_dist *= 1.05f;
-                }
-                max_dist = std::min(std::max(max_dist, this->params_.max_correspondence_distance * 0.5f),
-                                    this->params_.max_correspondence_distance * 2.0f);
             }
         }
         transform_events.wait();

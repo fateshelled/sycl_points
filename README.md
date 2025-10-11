@@ -25,7 +25,6 @@ This project was developed with reference to small_gicp and gtsam_points
     - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
     - Colored ICP
         - Set `0.0 < photometric_weight <= 1.0` in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB fields, and the target cloud requires pre-computed color gradients and geometric normal vector.
-    - Adaptive max correspondence distance by inlier points ratio
 - Preprocessing filter
     - L∞ distance (chebyshev distance) filter
     - Random sampling
