@@ -32,9 +32,9 @@ struct RegistrationParams {
         float lambda_factor = 10.0f;       // lambda increase factor (for LM method)
     };
 
-    size_t max_iterations = 20;                     // max iteration
-    float lambda = 1e-6f;                           // damping factor
-    float max_correspondence_distance = 2.0f;       // max correspondence distance
+    size_t max_iterations = 20;                // max iteration
+    float lambda = 1e-6f;                      // damping factor
+    float max_correspondence_distance = 2.0f;  // max correspondence distance
 
     Criteria crireria;
     Robust robust;
@@ -261,7 +261,7 @@ private:
     shared_vector_ptr<float> error_on_host_ = nullptr;
     shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
-    bool is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
+    bool is_converged(const Eigen::Vector<float, 6>& delta) const {
         return delta.template head<3>().norm() < this->params_.crireria.rotation &&
                delta.template tail<3>().norm() < this->params_.crireria.translation;
     }
@@ -477,10 +477,9 @@ private:
 
     void optimize_gauss_newton(RegistrationResult& result, const LinearlizedResult& linearlized_result, float lambda,
                                size_t iter) {
-        const Eigen::Matrix<float, 6, 1> delta =
-            (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
-                .ldlt()
-                .solve(-linearlized_result.b);
+        const Eigen::Vector<float, 6> delta = (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
+                                                  .ldlt()
+                                                  .solve(-linearlized_result.b);
         result.converged = this->is_converged(delta);
         result.T = result.T * eigen_utils::lie::se3_exp(delta);
         result.iterations = iter;
@@ -505,7 +504,7 @@ private:
         float last_error = std::numeric_limits<float>::max();
 
         for (size_t i = 0; i < this->params_.lm.max_inner_iterations; ++i) {
-            const Eigen::Matrix<float, 6, 1> delta =
+            const Eigen::Vector<float, 6> delta =
                 (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
                     .ldlt()
                     .solve(-linearlized_result.b);

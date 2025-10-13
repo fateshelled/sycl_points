@@ -14,7 +14,7 @@ struct RegistrationResult {
     bool converged = false;                                             // Optimization converged or not
     size_t iterations = 0;                                              // Number of opmitization iterations
     Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();  // Final hessian
-    Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();  // Final gradient
+    Eigen::Vector<float, 6> b = Eigen::Vector<float, 6>::Zero();        // Final gradient
     float error = std::numeric_limits<float>::max();                    // Final error
     uint32_t inlier = 0;                                                // Inlier point num;
 

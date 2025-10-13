@@ -19,7 +19,7 @@ struct LinearlizedResult {
     /// @brief Hessian, Information Matrix
     Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
     /// @brief Gradient, Information Vector
-    Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
+    Eigen::Vector<float, 6> b = Eigen::Vector<float, 6>::Zero();
     /// @brief Error value
     float error = std::numeric_limits<float>::max();
     /// @brief inlier point num
@@ -394,7 +394,8 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
 /// @param source_rgb Source RGB
 /// @param target_rgb Target RGB
 /// @param target_rgb_grad Target RGB gradient
-/// @param photometric_weight Photometric term weight (0.0 ~ 1.0). 0.0 is geometric term only/// @return linearlized result
+/// @param photometric_weight Photometric term weight (0.0 ~ 1.0). 0.0 is geometric term only
+/// @return linearlized result
 template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                   const Covariance& source_cov, const PointType& target_pt,

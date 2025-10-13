@@ -542,8 +542,8 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
 /// @param A 6×6 coefficient matrix
 /// @param b 6×1 right-hand side vector
 /// @return Solution vector x
-SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Matrix<float, 6, 6>& A,
-                                                                 const Eigen::Matrix<float, 6, 1>& b) {
+SYCL_EXTERNAL inline Eigen::Vector<float, 6> solve_system_6x6(const Eigen::Matrix<float, 6, 6>& A,
+                                                              const Eigen::Vector<float, 6>& b) {
     // Cholesky decomposition
     Eigen::Matrix<float, 6, 6> L = Eigen::Matrix<float, 6, 6>::Zero();
     constexpr float EPSILON = 1e-7f;
@@ -574,7 +574,7 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
         }
     }
 
-    Eigen::Matrix<float, 6, 1> y = Eigen::Matrix<float, 6, 1>::Zero();
+    Eigen::Vector<float, 6> y = Eigen::Vector<float, 6>::Zero();
     for (size_t i = 0; i < 6; ++i) {
         float sum = 0.0f;
         for (size_t j = 0; j < i; ++j) {
@@ -585,7 +585,7 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 6, 1> solve_system_6x6(const Eigen::Ma
         y(i) = (b(i) - sum) * inv_Lii;
     }
 
-    Eigen::Matrix<float, 6, 1> x = Eigen::Matrix<float, 6, 1>::Zero();
+    Eigen::Vector<float, 6> x = Eigen::Vector<float, 6>::Zero();
     for (int32_t i = 5; i >= 0; --i) {
         float sum = 0.0f;
         for (size_t j = i + 1; j < 6; ++j) {

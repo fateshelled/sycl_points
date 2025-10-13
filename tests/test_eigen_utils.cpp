@@ -709,9 +709,9 @@ TEST_F(EigenUtilsTest, so3_exp_log) {
 
 TEST_F(EigenUtilsTest, se3_exp_log) {
     for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
-        Eigen::Matrix<float, 6, 1> twist = Eigen::Matrix<float, 6, 1>::Random();
+        Eigen::Vector<float, 6> twist = Eigen::Vector<float, 6>::Random();
         const Eigen::Isometry3f T = lie::se3_exp(twist);
-        const Eigen::Matrix<float, 6, 1> back = lie::se3_log(T);
+        const Eigen::Vector<float, 6> back = lie::se3_log(T);
         EXPECT_VECTOR_NEAR(twist, back, BASE_EPSILON);
     }
 }
