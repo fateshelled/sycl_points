@@ -53,6 +53,45 @@ public:
         data.resize(new_size);
     }
 
+    /// @brief Filter data synchronously on host
+    /// @tparam T Data type (PointType or Covariance)
+    /// @tparam AllocSize Optional allocator size
+    /// @param source Source data
+    /// @param output Data to be filtered
+    /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove
+    template <typename T, size_t AllocSize = 0>
+    void filter_by_flags(const shared_vector<T, AllocSize>& source, shared_vector<T, AllocSize>& output, const shared_vector<uint8_t>& flags) const {
+        const size_t N = source.size();
+        if (N == 0) return;
+
+        output.resize(N);
+        // mem_advise to host
+        {
+            this->queue_.set_accessed_by_host(source.data(), N);
+            this->queue_.set_accessed_by_host(source.data(), N);
+            this->queue_.set_accessed_by_host(output.data(), N);
+            this->queue_.set_accessed_by_host(output.data(), N);
+            this->queue_.set_accessed_by_host(flags.data(), N);
+        }
+
+        // Filter data on host (compact elements with INCLUDE_FLAG)
+        size_t new_size = 0;
+        for (size_t i = 0; i < N; ++i) {
+            if (flags[i] == INCLUDE_FLAG) {
+                output[new_size++] = source[i];
+            }
+        }
+        // mem_advise clear
+        {
+            this->queue_.clear_accessed_by_host(source.data(), N);
+            this->queue_.clear_accessed_by_host(source.data(), N);
+            this->queue_.clear_accessed_by_host(output.data(), N);
+            this->queue_.clear_accessed_by_host(output.data(), N);
+            this->queue_.clear_accessed_by_host(flags.data(), N);
+        }
+        output.resize(new_size);
+    }
+
     /// @brief Calculates new indices based on flags.
     /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove.
     /// @param indices Output vector to store the new indices for elements to be kept, or -1 for elements to be removed.
