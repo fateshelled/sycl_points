@@ -25,37 +25,6 @@ public:
     /// @brief Filter data synchronously on host
     /// @tparam T Data type (PointType or Covariance)
     /// @tparam AllocSize Optional allocator size
-    /// @param data Data to be filtered
-    /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove
-    template <typename T, size_t AllocSize = 0>
-    void filter_by_flags(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) const {
-        const size_t N = data.size();
-        if (N == 0) return;
-
-        // mem_advise to host
-        {
-            this->queue_.set_accessed_by_host(data.data(), N);
-            this->queue_.set_accessed_by_host(flags.data(), N);
-        }
-
-        // Filter data on host (compact elements with INCLUDE_FLAG)
-        size_t new_size = 0;
-        for (size_t i = 0; i < N; ++i) {
-            if (flags[i] == INCLUDE_FLAG) {
-                data[new_size++] = data[i];
-            }
-        }
-        // mem_advise clear
-        {
-            this->queue_.clear_accessed_by_host(data.data(), N);
-            this->queue_.clear_accessed_by_host(flags.data(), N);
-        }
-        data.resize(new_size);
-    }
-
-    /// @brief Filter data synchronously on host
-    /// @tparam T Data type (PointType or Covariance)
-    /// @tparam AllocSize Optional allocator size
     /// @param source Source data
     /// @param output Data to be filtered
     /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove
@@ -90,6 +59,17 @@ public:
             this->queue_.clear_accessed_by_host(flags.data(), N);
         }
         output.resize(new_size);
+    }
+
+
+    /// @brief Filter data synchronously on host
+    /// @tparam T Data type (PointType or Covariance)
+    /// @tparam AllocSize Optional allocator size
+    /// @param data Data to be filtered
+    /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove
+    template <typename T, size_t AllocSize = 0>
+    void filter_by_flags(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) const {
+        this->filter_by_flags(data, data, flags);
     }
 
     /// @brief Calculates new indices based on flags.

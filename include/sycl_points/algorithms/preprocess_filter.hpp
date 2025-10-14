@@ -50,12 +50,13 @@ public:
     void set_random_seed(uint_fast32_t seed) { this->mt_.seed(seed); }
 
     /// @brief L∞ distance (chebyshev distance) to the point cloud
-    /// @param data Point cloud to be filtered (modified in-place)
+    /// @param source Source point cloud to be filtered
+    /// @param output Output point cloud
     /// @param min_distance Minimum distance threshold (points closer than this are removed)
     /// @param max_distance Maximum distance threshold (points farther than this are removed)
-    void box_filter(PointCloudShared& data, float min_distance = 1.0f,
+    void box_filter(const PointCloudShared& source, PointCloudShared& output, float min_distance = 1.0f,
                     float max_distance = std::numeric_limits<float>::max()) {
-        const size_t N = data.size();
+        const size_t N = source.size();
         if (N == 0) return;
 
         this->initialize_flags(N).wait();
@@ -63,14 +64,14 @@ public:
         // mem_advise set to device
         {
             this->queue_.set_accessed_by_device(this->flags_->data(), N);
-            this->queue_.set_accessed_by_device(data.points_ptr(), N);
+            this->queue_.set_accessed_by_device(source.points_ptr(), N);
         }
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t work_group_size = this->queue_.get_work_group_size();
             const size_t global_size = this->queue_.get_global_size(N);
             // memory ptr
-            const auto point_ptr = data.points_ptr();
+            const auto point_ptr = source.points_ptr();
             const auto flag_ptr = this->flags_->data();
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
@@ -87,17 +88,18 @@ public:
         // mem_advise clear
         {
             this->queue_.clear_accessed_by_device(this->flags_->data(), N);
-            this->queue_.clear_accessed_by_device(data.points_ptr(), N);
+            this->queue_.clear_accessed_by_device(source.points_ptr(), N);
         }
 
-        this->filter_by_flags(data);
+        this->filter_by_flags(source, output);
     }
 
     /// @brief Randomly samples a specified number of points from the point cloud
-    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
     /// @param sampling_num Number of points to retain after sampling
-    void random_sampling(PointCloudShared& data, size_t sampling_num) {
-        const size_t N = data.size();
+    void random_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+        const size_t N = source.size();
         if (N == 0) return;
         if (N <= sampling_num) return;
 
@@ -125,14 +127,15 @@ public:
         // mem_advise clear
         this->queue_.clear_accessed_by_host(this->flags_->data(), N);
 
-        this->filter_by_flags(data);
+        this->filter_by_flags(source, output);
     }
 
     /// @brief Farthest Point Sampling (FPS)
-    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
     /// @param sampling_num Number of points to retain after sampling
-    void farthest_point_sampling(PointCloudShared& data, size_t sampling_num) {
-        const size_t N = data.size();
+    void farthest_point_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+        const size_t N = source.size();
         if (N == 0) return;
         if (N <= sampling_num) return;
 
@@ -142,7 +145,7 @@ public:
 
         // mem_advise set to device
         {
-            this->queue_.set_accessed_by_device(data.points_ptr(), N);
+            this->queue_.set_accessed_by_device(source.points_ptr(), N);
             this->queue_.set_accessed_by_device(this->dist_sq_->data(), N);
         }
 
@@ -167,7 +170,7 @@ public:
                     const size_t work_group_size = this->queue_.get_work_group_size();
                     const size_t global_size = this->queue_.get_global_size(N);
                     // memory ptr
-                    const auto point_ptr = data.points_ptr();
+                    const auto point_ptr = source.points_ptr();
                     const auto flag_ptr = this->flags_->data();
                     const auto dist_sq_ptr = this->dist_sq_->data();
 
@@ -200,13 +203,37 @@ public:
                 this->flags_->at(max_elem_idx) = INCLUDE_FLAG;
             }
         }
-        this->filter_by_flags(data);
 
         // mem_advise clear
         {
-            this->queue_.clear_accessed_by_device(data.points_ptr(), N);
+            this->queue_.clear_accessed_by_device(source.points_ptr(), N);
             this->queue_.clear_accessed_by_device(this->dist_sq_->data(), N);
         }
+
+        this->filter_by_flags(source, output);
+    }
+
+    /// @brief L∞ distance (chebyshev distance) to the point cloud
+    /// @param data Point cloud to be filtered (modified in-place)
+    /// @param min_distance Minimum distance threshold (points closer than this are removed)
+    /// @param max_distance Maximum distance threshold (points farther than this are removed)
+    void box_filter(PointCloudShared& data, float min_distance = 1.0f,
+                    float max_distance = std::numeric_limits<float>::max()) {
+        this->box_filter(data,data, min_distance, max_distance);
+    }
+
+    /// @brief Randomly samples a specified number of points from the point cloud
+    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param sampling_num Number of points to retain after sampling
+    void random_sampling(PointCloudShared& data, size_t sampling_num) {
+        this->random_sampling(data, data, sampling_num);
+    }
+
+    /// @brief Farthest Point Sampling (FPS)
+    /// @param source Source point cloud to be sampled (modified in-place)
+    /// @param sampling_num Number of points to retain after sampling
+    void farthest_point_sampling(PointCloudShared& data, size_t sampling_num) {
+        this->farthest_point_sampling(data, data, sampling_num);
     }
 
 private:
@@ -231,20 +258,20 @@ private:
 
     /// @brief Applies filtering based on the current flags
     /// @param data Point cloud to be filtered (modified in-place)
-    void filter_by_flags(PointCloudShared& data) {
-        if (data.has_cov()) {
-            this->filter_->filter_by_flags(*data.covs, *this->flags_);
+    void filter_by_flags(const PointCloudShared& source, PointCloudShared& output) {
+        if (source.has_cov()) {
+            this->filter_->filter_by_flags(*source.covs, *output.covs, *this->flags_);
         }
-        if (data.has_normal()) {
-            this->filter_->filter_by_flags(*data.normals, *this->flags_);
+        if (source.has_normal()) {
+            this->filter_->filter_by_flags(*source.normals, *output.normals, *this->flags_);
         }
-        if (data.has_rgb()) {
-            this->filter_->filter_by_flags(*data.rgb, *this->flags_);
+        if (source.has_rgb()) {
+            this->filter_->filter_by_flags(*source.rgb, *output.rgb, *this->flags_);
         }
-        if (data.has_intensity()) {
-            this->filter_->filter_by_flags(*data.intensities, *this->flags_);
+        if (source.has_intensity()) {
+            this->filter_->filter_by_flags(*source.intensities, *output.intensities, *this->flags_);
         }
-        this->filter_->filter_by_flags(*data.points, *this->flags_);
+        this->filter_->filter_by_flags(*source.points, *output.points, *this->flags_);
     }
 };
 
