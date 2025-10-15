@@ -429,7 +429,7 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
     const size_t node_count = nodes_.size();
 
     if (target_size > 0 && (node_count == 0 || point_indices_.empty())) {
-        throw std::runtime_error("Octree structure has not been initialised");
+        throw std::runtime_error("Octree structure has not been initialized");
     }
 
     const size_t global_size = std::max<size_t>(query_size, 1);
