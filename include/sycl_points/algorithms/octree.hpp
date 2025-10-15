@@ -34,14 +34,19 @@ public:
     using Ptr = std::shared_ptr<Octree>;
 
     struct Node {
-        sycl::float3 min_bounds;
-        sycl::float3 max_bounds;
-        uint32_t start_index;
-        uint32_t point_count;
-        int32_t children[8];
-        uint8_t is_leaf;
-        uint8_t padding[3];
+        std::array<float, 3> min_bounds;
+        std::array<float, 3> max_bounds;
+        union {
+            struct {
+                uint32_t start_index;
+                uint32_t point_count;
+            } leaf;
+            int32_t children[8];
+        } data;
+        uint32_t is_leaf;
+        uint32_t padding;
     };
+    static_assert(sizeof(Node) == 64, "Octree::Node must be 64 bytes");
 
     /// @brief Construct an empty Octree instance that is ready to be built.
     /// @param queue Device queue used for all SYCL operations.
@@ -82,8 +87,10 @@ private:
     int32_t build_node_recursive(const sycl::float3& min_bounds, const sycl::float3& max_bounds, size_t start,
                                  size_t count, size_t depth, std::vector<Node>& host_nodes,
                                  std::vector<int32_t>& indices, std::vector<int32_t>& scratch) const;
-    [[nodiscard]] static float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
+    [[nodiscard]] static float distance_to_aabb(const std::array<float, 3>& min_bounds,
+                                                const std::array<float, 3>& max_bounds,
                                                 const sycl::float3& point);
+    [[nodiscard]] static std::array<float, 3> to_array(const sycl::float3& vec);
 
     const sycl_utils::DeviceQueue* queue_;
     PointCloudShared::Ptr target_cloud_;
@@ -219,25 +226,83 @@ inline void Octree::finalize_structure() {
         return;
     }
 
-    sycl::float3 min_bounds(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
-                            std::numeric_limits<float>::infinity());
-    sycl::float3 max_bounds(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
-                            std::numeric_limits<float>::lowest());
+    const size_t group_count = bbox_group_mins_->size();
+    shared_allocator<sycl::float3> float3_alloc(*queue_->ptr);
+    shared_vector<sycl::float3> final_bounds(2, sycl::float3(0.0f, 0.0f, 0.0f), float3_alloc);
+    final_bounds[0] = sycl::float3(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                                   std::numeric_limits<float>::infinity());
+    final_bounds[1] = sycl::float3(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                                   std::numeric_limits<float>::lowest());
 
-    for (const auto& partial_min : *bbox_group_mins_) {
-        min_bounds.x() = std::min(min_bounds.x(), partial_min.x());
-        min_bounds.y() = std::min(min_bounds.y(), partial_min.y());
-        min_bounds.z() = std::min(min_bounds.z(), partial_min.z());
+    const auto group_mins_ptr = bbox_group_mins_->data();
+    const auto group_maxs_ptr = bbox_group_maxs_->data();
+    auto final_bounds_ptr = final_bounds.data();
+
+    const size_t max_group_size = std::max<size_t>(size_t{1}, queue_->get_work_group_size_for_parallel_reduction());
+    const size_t target_size = std::max<size_t>(group_count, size_t{1});
+    size_t reduction_work_group_size = 1;
+    while ((reduction_work_group_size << 1) <= max_group_size && (reduction_work_group_size << 1) <= target_size) {
+        reduction_work_group_size <<= 1;
     }
+    const size_t reduction_global_size = reduction_work_group_size;
 
-    for (const auto& partial_max : *bbox_group_maxs_) {
-        max_bounds.x() = std::max(max_bounds.x(), partial_max.x());
-        max_bounds.y() = std::max(max_bounds.y(), partial_max.y());
-        max_bounds.z() = std::max(max_bounds.z(), partial_max.z());
-    }
+    auto reduction_event = queue_->ptr->submit([=](sycl::handler& handler) {
+        sycl::local_accessor<sycl::float3, 1> local_mins(sycl::range<1>(reduction_work_group_size), handler);
+        sycl::local_accessor<sycl::float3, 1> local_maxs(sycl::range<1>(reduction_work_group_size), handler);
 
-    bbox_min_ = min_bounds;
-    bbox_max_ = max_bounds;
+        handler.parallel_for(
+            sycl::nd_range<1>(sycl::range<1>(reduction_global_size), sycl::range<1>(reduction_work_group_size)),
+            [=](sycl::nd_item<1> item) {
+                const size_t local_id = item.get_local_linear_id();
+                const size_t global_range = item.get_global_range(0);
+                sycl::float3 local_min(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                                       std::numeric_limits<float>::infinity());
+                sycl::float3 local_max(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                                       std::numeric_limits<float>::lowest());
+
+                for (size_t idx = item.get_global_linear_id(); idx < group_count; idx += global_range) {
+                    const auto partial_min = group_mins_ptr[idx];
+                    const auto partial_max = group_maxs_ptr[idx];
+                    local_min.x() = sycl::min(local_min.x(), partial_min.x());
+                    local_min.y() = sycl::min(local_min.y(), partial_min.y());
+                    local_min.z() = sycl::min(local_min.z(), partial_min.z());
+                    local_max.x() = sycl::max(local_max.x(), partial_max.x());
+                    local_max.y() = sycl::max(local_max.y(), partial_max.y());
+                    local_max.z() = sycl::max(local_max.z(), partial_max.z());
+                }
+
+                local_mins[local_id] = local_min;
+                local_maxs[local_id] = local_max;
+                item.barrier(sycl::access::fence_space::local_space);
+
+                for (size_t stride = reduction_work_group_size / 2; stride > 0; stride >>= 1) {
+                    if (local_id < stride) {
+                        auto other_min = local_mins[local_id + stride];
+                        auto other_max = local_maxs[local_id + stride];
+                        auto current_min = local_mins[local_id];
+                        auto current_max = local_maxs[local_id];
+                        current_min.x() = sycl::min(current_min.x(), other_min.x());
+                        current_min.y() = sycl::min(current_min.y(), other_min.y());
+                        current_min.z() = sycl::min(current_min.z(), other_min.z());
+                        current_max.x() = sycl::max(current_max.x(), other_max.x());
+                        current_max.y() = sycl::max(current_max.y(), other_max.y());
+                        current_max.z() = sycl::max(current_max.z(), other_max.z());
+                        local_mins[local_id] = current_min;
+                        local_maxs[local_id] = current_max;
+                    }
+                    item.barrier(sycl::access::fence_space::local_space);
+                }
+
+                if (local_id == 0) {
+                    final_bounds_ptr[0] = local_mins[0];
+                    final_bounds_ptr[1] = local_maxs[0];
+                }
+            });
+    });
+    reduction_event.wait();
+
+    bbox_min_ = final_bounds[0];
+    bbox_max_ = final_bounds[1];
 
     bbox_group_mins_.reset();
     bbox_group_maxs_.reset();
@@ -281,12 +346,12 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
                                             size_t start, size_t count, size_t depth, std::vector<Node>& host_nodes,
                                             std::vector<int32_t>& indices, std::vector<int32_t>& scratch) const {
     Node node{};
-    node.min_bounds = min_bounds;
-    node.max_bounds = max_bounds;
-    node.start_index = static_cast<uint32_t>(start);
-    node.point_count = static_cast<uint32_t>(count);
+    node.min_bounds = to_array(min_bounds);
+    node.max_bounds = to_array(max_bounds);
     node.is_leaf = 1;
-    std::fill(std::begin(node.children), std::end(node.children), -1);
+    node.data.leaf.start_index = static_cast<uint32_t>(start);
+    node.data.leaf.point_count = static_cast<uint32_t>(count);
+    node.padding = 0;
 
     const int32_t node_index = static_cast<int32_t>(host_nodes.size());
     host_nodes.push_back(node);
@@ -349,7 +414,11 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
         indices[start + i] = scratch[start + i];
     }
 
-    host_nodes[node_index].is_leaf = 0;
+    Node& stored_node = host_nodes[node_index];
+    stored_node.is_leaf = 0;
+    for (auto& child : stored_node.data.children) {
+        child = -1;
+    }
 
     for (size_t child = 0; child < counts.size(); ++child) {
         const size_t child_count = counts[child];
@@ -368,31 +437,30 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
         child_min.z() = (child & 4) ? center.z() : min_bounds.z();
         child_max.z() = (child & 4) ? max_bounds.z() : center.z();
 
-        const int32_t child_index = build_node_recursive(child_min, child_max, child_start, child_count, depth + 1,
-                                                         host_nodes, indices, scratch);
-        host_nodes[node_index].children[child] = child_index;
-    }
-
-    if (std::all_of(std::begin(host_nodes[node_index].children), std::end(host_nodes[node_index].children),
-                    [](int32_t idx) { return idx < 0; })) {
-        host_nodes[node_index].is_leaf = 1;
+        const int32_t child_index =
+            build_node_recursive(child_min, child_max, child_start, child_count, depth + 1, host_nodes, indices, scratch);
+        stored_node.data.children[child] = child_index;
     }
 
     return node_index;
 }
 
-inline float Octree::distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
-                                      const sycl::float3& point) {
-    const float dx = (point.x() < min_bounds.x()) ? (min_bounds.x() - point.x())
-                    : (point.x() > max_bounds.x()) ? (point.x() - max_bounds.x())
+inline float Octree::distance_to_aabb(const std::array<float, 3>& min_bounds,
+                                      const std::array<float, 3>& max_bounds, const sycl::float3& point) {
+    const float dx = (point.x() < min_bounds[0]) ? (min_bounds[0] - point.x())
+                    : (point.x() > max_bounds[0]) ? (point.x() - max_bounds[0])
                                                    : 0.0f;
-    const float dy = (point.y() < min_bounds.y()) ? (min_bounds.y() - point.y())
-                    : (point.y() > max_bounds.y()) ? (point.y() - max_bounds.y())
+    const float dy = (point.y() < min_bounds[1]) ? (min_bounds[1] - point.y())
+                    : (point.y() > max_bounds[1]) ? (point.y() - max_bounds[1])
                                                    : 0.0f;
-    const float dz = (point.z() < min_bounds.z()) ? (min_bounds.z() - point.z())
-                    : (point.z() > max_bounds.z()) ? (point.z() - max_bounds.z())
+    const float dz = (point.z() < min_bounds[2]) ? (min_bounds[2] - point.z())
+                    : (point.z() > max_bounds[2]) ? (point.z() - max_bounds[2])
                                                    : 0.0f;
     return dx * dx + dy * dy + dz * dz;
+}
+
+inline std::array<float, 3> Octree::to_array(const sycl::float3& vec) {
+    return {vec.x(), vec.y(), vec.z()};
 }
 
 inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points, float resolution,
@@ -451,9 +519,8 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 query_distances[neighbour_idx] = std::numeric_limits<float>::infinity();
             }
 
-            constexpr size_t kMaxStackSize = 512;
+            constexpr size_t kMaxStackSize = 1024;
             int32_t node_stack[kMaxStackSize];
-            float node_stack_distance[kMaxStackSize];
             size_t stack_size = 0;
             size_t neighbour_count = 0;
 
@@ -513,24 +580,9 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 }
             };
 
-            auto push_node = [&](int32_t node_idx, float distance_sq) {
+            auto push_node = [&](int32_t node_idx) {
                 if (stack_size < kMaxStackSize) {
-                    node_stack[stack_size] = node_idx;
-                    node_stack_distance[stack_size] = distance_sq;
-                    ++stack_size;
-                } else {
-                    size_t worst_pos = 0;
-                    float worst_dist = node_stack_distance[0];
-                    for (size_t i = 1; i < stack_size; ++i) {
-                        if (node_stack_distance[i] > worst_dist) {
-                            worst_dist = node_stack_distance[i];
-                            worst_pos = i;
-                        }
-                    }
-                    if (distance_sq < worst_dist) {
-                        node_stack[worst_pos] = node_idx;
-                        node_stack_distance[worst_pos] = distance_sq;
-                    }
+                    node_stack[stack_size++] = node_idx;
                 }
             };
 
@@ -538,31 +590,20 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 return;
             }
 
-            push_node(0, distance_to_aabb(nodes_ptr[0].min_bounds, nodes_ptr[0].max_bounds, query_point));
+            push_node(0);
 
             while (stack_size > 0) {
-                size_t best_pos = 0;
-                float best_dist = node_stack_distance[0];
-                for (size_t i = 1; i < stack_size; ++i) {
-                    if (node_stack_distance[i] < best_dist) {
-                        best_dist = node_stack_distance[i];
-                        best_pos = i;
-                    }
-                }
-
-                const int32_t current_node_idx = node_stack[best_pos];
-                --stack_size;
-                node_stack[best_pos] = node_stack[stack_size];
-                node_stack_distance[best_pos] = node_stack_distance[stack_size];
-
-                if (best_dist > current_worst()) {
+                const int32_t current_node_idx = node_stack[--stack_size];
+                const Node node = nodes_ptr[current_node_idx];
+                const float node_distance = distance_to_aabb(node.min_bounds, node.max_bounds, query_point);
+                if (node_distance > current_worst()) {
                     continue;
                 }
-
-                const Node node = nodes_ptr[current_node_idx];
-                if (node.is_leaf) {
-                    for (size_t i = 0; i < node.point_count; ++i) {
-                        const int32_t point_index = ordered_indices_ptr[node.start_index + i];
+                if (node.is_leaf != 0) {
+                    const uint32_t start_index = node.data.leaf.start_index;
+                    const uint32_t point_count = node.data.leaf.point_count;
+                    for (uint32_t i = 0; i < point_count; ++i) {
+                        const int32_t point_index = ordered_indices_ptr[start_index + i];
                         const auto target_point = target_points_ptr[point_index];
                         const float dx = query_point.x() - target_point.x();
                         const float dy = query_point.y() - target_point.y();
@@ -572,15 +613,14 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                     }
                 } else {
                     for (size_t child = 0; child < 8; ++child) {
-                        const int32_t child_idx = node.children[child];
+                        const int32_t child_idx = node.data.children[child];
                         if (child_idx < 0) {
                             continue;
                         }
                         const float child_dist =
-                            distance_to_aabb(nodes_ptr[child_idx].min_bounds, nodes_ptr[child_idx].max_bounds,
-                                             query_point);
+                            distance_to_aabb(nodes_ptr[child_idx].min_bounds, nodes_ptr[child_idx].max_bounds, query_point);
                         if (child_dist <= current_worst()) {
-                            push_node(child_idx, child_dist);
+                            push_node(child_idx);
                         }
                     }
                 }
