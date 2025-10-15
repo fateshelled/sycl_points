@@ -85,7 +85,7 @@ private:
     [[nodiscard]] static float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                                 const sycl::float3& point);
 
-    const sycl_utils::DeviceQueue* queue_;
+    sycl_utils::DeviceQueue queue_;
     PointCloudShared::Ptr target_cloud_;
     float resolution_;
     size_t max_points_per_node_;
@@ -98,7 +98,7 @@ private:
 };
 
 inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, size_t max_points_per_node)
-    : queue_(&queue),
+    : queue_(queue),
       target_cloud_(nullptr),
       resolution_(resolution),
       max_points_per_node_(max_points_per_node),
@@ -106,16 +106,65 @@ inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, si
                 std::numeric_limits<float>::infinity()),
       bbox_max_(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
                 std::numeric_limits<float>::lowest()),
-      nodes_(shared_allocator<Node>(*queue.ptr)),
-      point_indices_(shared_allocator<int32_t>(*queue.ptr)) {}
+      nodes_(shared_allocator<Node>(*queue_.ptr)),
+      point_indices_(shared_allocator<int32_t>(*queue_.ptr)) {}
 
 inline void Octree::copy_point_cloud(const PointCloudShared& points) {
-    target_cloud_ = std::make_shared<PointCloudShared>(points);
+    if (!queue_.ptr) {
+        throw std::runtime_error("Octree queue is not initialised");
+    }
+    if (!points.queue.ptr) {
+        throw std::runtime_error("Source point cloud queue is not initialised");
+    }
+    if (!points.points) {
+        throw std::runtime_error("Source point cloud points are not initialised");
+    }
+
+    const bool same_context = queue_.ptr->get_context() == points.queue.ptr->get_context();
+    if (same_context) {
+        target_cloud_ = std::make_shared<PointCloudShared>(points);
+        return;
+    }
+
+    auto cloned_cloud = std::make_shared<PointCloudShared>(queue_);
+    cloned_cloud->points->assign(points.points->begin(), points.points->end());
+
+    if (points.covs && points.has_cov()) {
+        cloned_cloud->covs->assign(points.covs->begin(), points.covs->end());
+    } else {
+        cloned_cloud->covs->clear();
+    }
+
+    if (points.normals && points.has_normal()) {
+        cloned_cloud->normals->assign(points.normals->begin(), points.normals->end());
+    } else {
+        cloned_cloud->normals->clear();
+    }
+
+    if (points.rgb && points.has_rgb()) {
+        cloned_cloud->rgb->assign(points.rgb->begin(), points.rgb->end());
+    } else {
+        cloned_cloud->rgb->clear();
+    }
+
+    if (points.color_gradients && points.has_color_gradient()) {
+        cloned_cloud->color_gradients->assign(points.color_gradients->begin(), points.color_gradients->end());
+    } else {
+        cloned_cloud->color_gradients->clear();
+    }
+
+    if (points.intensities && points.has_intensity()) {
+        cloned_cloud->intensities->assign(points.intensities->begin(), points.intensities->end());
+    } else {
+        cloned_cloud->intensities->clear();
+    }
+
+    target_cloud_ = std::move(cloned_cloud);
 }
 
 inline sycl::event Octree::build_structure_async() {
     const size_t point_count = size();
-    if (queue_ == nullptr || !queue_->ptr) {
+    if (!queue_.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
     }
     if (!target_cloud_ || !target_cloud_->points) {
@@ -137,19 +186,19 @@ inline sycl::event Octree::build_structure_async() {
                                                                      sycl::float3(std::numeric_limits<float>::infinity(),
                                                                                   std::numeric_limits<float>::infinity(),
                                                                                   std::numeric_limits<float>::infinity()),
-                                                                     *queue_->ptr);
+                                                                     *queue_.ptr);
     bbox_group_maxs_ = std::make_shared<shared_vector<sycl::float3>>(group_count,
                                                                      sycl::float3(std::numeric_limits<float>::lowest(),
                                                                                   std::numeric_limits<float>::lowest(),
                                                                                   std::numeric_limits<float>::lowest()),
-                                                                     *queue_->ptr);
+                                                                     *queue_.ptr);
 
     auto points_ptr = target_cloud_->points->data();
     auto group_mins_ptr = bbox_group_mins_->data();
     auto group_maxs_ptr = bbox_group_maxs_->data();
 
     const size_t global_size = group_count * work_group_size;
-    auto bbox_event = queue_->ptr->submit([=](sycl::handler& handler) {
+    auto bbox_event = queue_.ptr->submit([=](sycl::handler& handler) {
         sycl::local_accessor<sycl::float3, 1> local_mins(sycl::range<1>(work_group_size), handler);
         sycl::local_accessor<sycl::float3, 1> local_maxs(sycl::range<1>(work_group_size), handler);
 
@@ -270,11 +319,11 @@ inline void Octree::build_octree() {
 
     build_node_recursive(bbox_min_, bbox_max_, 0, point_count, 0, host_nodes, indices, scratch);
 
-    shared_allocator<Node> node_alloc(*queue_->ptr);
+    shared_allocator<Node> node_alloc(*queue_.ptr);
     nodes_ = shared_vector<Node>(host_nodes.size(), Node{}, node_alloc);
     std::copy(host_nodes.begin(), host_nodes.end(), nodes_.begin());
 
-    shared_allocator<int32_t> index_alloc(*queue_->ptr);
+    shared_allocator<int32_t> index_alloc(*queue_.ptr);
     point_indices_ = shared_vector<int32_t>(indices.size(), 0, index_alloc);
     std::copy(indices.begin(), indices.end(), point_indices_.begin());
 }
@@ -408,7 +457,7 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
 }
 
 inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) const {
-    if (queue_ == nullptr || !queue_->ptr) {
+    if (!queue_.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
     }
     if (target_cloud_ == nullptr || target_cloud_->points == nullptr) {
@@ -417,7 +466,7 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
 
     KNNResult result;
     const size_t query_size = queries.points->size();
-    result.allocate(*queue_, query_size, k);
+    result.allocate(queue_, query_size, k);
 
     auto indices_ptr = result.indices->data();
     auto distances_ptr = result.distances->data();
@@ -433,7 +482,7 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
     }
 
     const size_t global_size = std::max<size_t>(query_size, 1);
-    auto event = queue_->ptr->submit([=](sycl::handler& handler) {
+    auto event = queue_.ptr->submit([=](sycl::handler& handler) {
         handler.parallel_for(sycl::range<1>(global_size), [=](sycl::id<1> idx) {
             const size_t query_idx = idx[0];
             if (query_idx >= query_size) {
