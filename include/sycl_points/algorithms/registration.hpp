@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <random>
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/knn_search.hpp>
@@ -14,6 +17,11 @@ namespace algorithms {
 namespace registration {
 
 struct RegistrationParams {
+    enum class OptimizationMethod {
+        GAUSS_NEWTON = 0,
+        LEVENBERG_MARQUARDT,
+        POWELL_DOGLEG,
+    };
     struct Criteria {
         float translation = 1e-3f;  // translation tolerance
         float rotation = 1e-3f;     // rotation tolerance [rad]
@@ -27,9 +35,18 @@ struct RegistrationParams {
         float photometric_weight = 0.2f;  // weight for photometric term (0.0f ~ 1.0f)
     };
     struct LevenbergMarquardt {
-        bool enable = false;               // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
         size_t max_inner_iterations = 10;  // (for LM method)
         float lambda_factor = 10.0f;       // lambda increase factor (for LM method)
+    };
+    struct Dogleg {
+        float initial_trust_region_radius = 1.0f;  // Initial trust region radius (for Powell's dogleg method)
+        float min_trust_region_radius = 1e-4f;     // Minimum trust region radius (for Powell's dogleg method)
+        float max_trust_region_radius = 10.0f;     // Maximum trust region radius (for Powell's dogleg method)
+        float eta1 = 0.25f;                        // Lower acceptance threshold for ratio (for Powell's dogleg method)
+        float eta2 = 0.75f;                        // Upper acceptance threshold for ratio (for Powell's dogleg method)
+        float gamma_decrease = 0.25f;              // Shrink factor for trust region (for Powell's dogleg method)
+        float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
+        size_t max_inner_iterations = 10;          // Max inner iterations (for Powell's dogleg method)
     };
 
     size_t max_iterations = 20;                // max iteration
@@ -40,6 +57,8 @@ struct RegistrationParams {
     Robust robust;
     PhotometricTerm photometric;
     LevenbergMarquardt lm;
+    Dogleg dogleg;
+    OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
 
     bool verbose = false;  // If true, print debug messages
 };
@@ -211,6 +230,7 @@ public:
 
         sycl_utils::events transform_events;
         float lambda = this->params_.lambda;
+        float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
         for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
             prev_T = result.T;
 
@@ -224,12 +244,19 @@ public:
                 this->linearlize(source, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
             // Optimize on Host
-            if (this->params_.lm.enable) {
-                this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result, lambda,
-                                                   iter);
-
-            } else {
-                this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
+            switch (this->params_.optimization_method) {
+                case RegistrationParams::OptimizationMethod::LEVENBERG_MARQUARDT:
+                    this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result, lambda,
+                                                       iter);
+                    break;
+                case RegistrationParams::OptimizationMethod::POWELL_DOGLEG:
+                    this->optimize_powell_dogleg(source, target, max_dist_2, result, linearlized_result,
+                                                 trust_region_radius, iter);
+                    break;
+                case RegistrationParams::OptimizationMethod::GAUSS_NEWTON:
+                default:
+                    this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
+                    break;
             }
 
             // Async transform source points on device
@@ -549,6 +576,140 @@ private:
         result.iterations = iter;
         result.H = linearlized_result.H;
         result.b = linearlized_result.b;
+        return updated;
+    }
+
+    bool optimize_powell_dogleg(const PointCloudShared& source, const PointCloudShared& target,
+                                float max_correspondence_distance_2, RegistrationResult& result,
+                                const LinearlizedResult& linearlized_result, float& trust_region_radius,
+                                size_t iter) {
+        bool updated = false;
+        const auto& H = linearlized_result.H;
+        const auto& g = linearlized_result.b;
+        const float current_error = linearlized_result.error;
+
+        const auto clamp_radius = [&](float radius) {
+            return std::clamp(radius, this->params_.dogleg.min_trust_region_radius,
+                              this->params_.dogleg.max_trust_region_radius);
+        };
+
+        trust_region_radius = clamp_radius(trust_region_radius);
+
+        Eigen::Vector<float, 6> p_gn = Eigen::Vector<float, 6>::Zero();
+        float norm_p_gn = 0.0f;
+        bool has_valid_gn = false;
+        {
+            Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt;
+            ldlt.compute(H);
+            if (ldlt.info() == Eigen::Success) {
+                p_gn = ldlt.solve(-g);
+                norm_p_gn = p_gn.norm();
+                has_valid_gn = std::isfinite(norm_p_gn);
+            }
+        }
+
+        const float g_norm_sq = g.squaredNorm();
+        const Eigen::Vector<float, 6> Hg = H * g;
+        const float g_H_g = g.dot(Hg);
+        Eigen::Vector<float, 6> p_sd = -g;
+        if (g_H_g > std::numeric_limits<float>::epsilon()) {
+            const float alpha = g_norm_sq / g_H_g;
+            if (std::isfinite(alpha)) {
+                p_sd = -alpha * g;
+            }
+        }
+        const float norm_p_sd = p_sd.norm();
+
+        for (size_t inner = 0; inner < this->params_.dogleg.max_inner_iterations; ++inner) {
+            Eigen::Vector<float, 6> p_dl = Eigen::Vector<float, 6>::Zero();
+            float step_norm = 0.0f;
+            if (has_valid_gn && norm_p_gn <= trust_region_radius) {
+                p_dl = p_gn;
+                step_norm = norm_p_gn;
+            } else if (norm_p_sd >= trust_region_radius) {
+                if (norm_p_sd > std::numeric_limits<float>::epsilon()) {
+                    p_dl = (trust_region_radius / norm_p_sd) * p_sd;
+                }
+                step_norm = trust_region_radius;
+            } else if (has_valid_gn) {
+                const Eigen::Vector<float, 6> diff = p_gn - p_sd;
+                const float a = diff.squaredNorm();
+                const float b = 2.0f * p_sd.dot(diff);
+                const float c = p_sd.squaredNorm() - trust_region_radius * trust_region_radius;
+                float discriminant = b * b - 4.0f * a * c;
+                discriminant = std::max(discriminant, 0.0f);
+                float tau = 0.0f;
+                if (a > std::numeric_limits<float>::epsilon()) {
+                    tau = (-b + std::sqrt(discriminant)) / (2.0f * a);
+                }
+                tau = std::clamp(tau, 0.0f, 1.0f);
+                p_dl = p_sd + tau * diff;
+                step_norm = p_dl.norm();
+            } else {
+                p_dl = p_sd;
+                if (norm_p_sd > trust_region_radius && norm_p_sd > std::numeric_limits<float>::epsilon()) {
+                    const float scale = trust_region_radius / norm_p_sd;
+                    p_dl *= scale;
+                    step_norm = trust_region_radius;
+                } else {
+                    step_norm = norm_p_sd;
+                }
+            }
+
+            const float predicted_reduction =
+                -(g.dot(p_dl) + 0.5f * p_dl.dot(H * p_dl));
+
+            if (predicted_reduction <= 0.0f) {
+                trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
+                continue;
+            }
+
+            const Eigen::Isometry3f new_T = result.T * eigen_utils::lie::se3_exp(p_dl);
+            const auto [new_error, inlier] =
+                compute_error(source, target, this->neighbors_->at(0), new_T.matrix(), max_correspondence_distance_2);
+
+            const float actual_reduction = current_error - new_error;
+            const float rho = actual_reduction / predicted_reduction;
+
+            if (this->params_.verbose) {
+                std::cout << "iter [" << iter << "] ";
+                std::cout << "inner: " << inner << ", ";
+                std::cout << "radius: " << trust_region_radius << ", ";
+                std::cout << "rho: " << rho << ", ";
+                std::cout << "error: " << new_error << ", ";
+                std::cout << "inlier: " << inlier << ", ";
+                std::cout << "dt: " << p_dl.tail<3>().norm() << ", ";
+                std::cout << "dr: " << p_dl.head<3>().norm() << std::endl;
+            }
+
+            if (rho < this->params_.dogleg.eta1) {
+                trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
+                continue;
+            }
+
+            result.converged = this->is_converged(p_dl);
+            result.T = new_T;
+            result.error = new_error;
+            result.inlier = inlier;
+            result.iterations = iter;
+            result.H = H;
+            result.b = linearlized_result.b;
+            updated = true;
+
+            if (rho > this->params_.dogleg.eta2 && step_norm >= trust_region_radius * 0.99f) {
+                trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_increase);
+            }
+            break;
+        }
+
+        if (!updated) {
+            result.iterations = iter;
+            result.H = linearlized_result.H;
+            result.b = linearlized_result.b;
+            result.error = linearlized_result.error;
+            result.inlier = linearlized_result.inlier;
+        }
+
         return updated;
     }
 };
