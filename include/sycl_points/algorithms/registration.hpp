@@ -16,12 +16,30 @@ namespace algorithms {
 
 namespace registration {
 
+enum class OptimizationMethod {
+    GAUSS_NEWTON = 0,
+    LEVENBERG_MARQUARDT,
+    POWELL_DOGLEG,
+};
+
+OptimizationMethod OptimizationMethod_from_string(const std::string& str) {
+    std::string upper = str;
+    std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
+
+    if (upper.compare("GN") == 0 || upper.compare("GAUSS_NEWTON") == 0) {
+        return OptimizationMethod::GAUSS_NEWTON;
+    } else if (upper.compare("LM") == 0 || upper.compare("LEVENBERG_MARQUARDT") == 0) {
+        return OptimizationMethod::LEVENBERG_MARQUARDT;
+    } else if (upper.compare("DOGLEG") == 0 || upper.compare("POWELL_DOGLEG") == 0) {
+        return OptimizationMethod::POWELL_DOGLEG;
+    }
+    std::string error_str = "Invalid OptimizationMethod str [";
+    error_str += str;
+    error_str += "]";
+    throw std::runtime_error(error_str);
+}
+
 struct RegistrationParams {
-    enum class OptimizationMethod {
-        GAUSS_NEWTON = 0,
-        LEVENBERG_MARQUARDT,
-        POWELL_DOGLEG,
-    };
     struct Criteria {
         float translation = 1e-3f;  // translation tolerance
         float rotation = 1e-3f;     // rotation tolerance [rad]
@@ -245,15 +263,15 @@ public:
 
             // Optimize on Host
             switch (this->params_.optimization_method) {
-                case RegistrationParams::OptimizationMethod::LEVENBERG_MARQUARDT:
+                case OptimizationMethod::LEVENBERG_MARQUARDT:
                     this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result, lambda,
                                                        iter);
                     break;
-                case RegistrationParams::OptimizationMethod::POWELL_DOGLEG:
+                case OptimizationMethod::POWELL_DOGLEG:
                     this->optimize_powell_dogleg(source, target, max_dist_2, result, linearlized_result,
                                                  trust_region_radius, iter);
                     break;
-                case RegistrationParams::OptimizationMethod::GAUSS_NEWTON:
+                case OptimizationMethod::GAUSS_NEWTON:
                     this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
                     break;
             }
@@ -580,8 +598,7 @@ private:
 
     bool optimize_powell_dogleg(const PointCloudShared& source, const PointCloudShared& target,
                                 float max_correspondence_distance_2, RegistrationResult& result,
-                                const LinearlizedResult& linearlized_result, float& trust_region_radius,
-                                size_t iter) {
+                                const LinearlizedResult& linearlized_result, float& trust_region_radius, size_t iter) {
         bool updated = false;
         const auto& H = linearlized_result.H;
         const auto& g = linearlized_result.b;
@@ -661,8 +678,7 @@ private:
                 }
             }
 
-            const float predicted_reduction =
-                -(g.dot(p_dl) + 0.5f * p_dl.dot(H * p_dl));
+            const float predicted_reduction = -(g.dot(p_dl) + 0.5f * p_dl.dot(H * p_dl));
 
             if (predicted_reduction <= 0.0f) {
                 trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
