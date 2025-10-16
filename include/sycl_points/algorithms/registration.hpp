@@ -588,6 +588,12 @@ private:
         const auto& g = linearlized_result.b;
         const float current_error = linearlized_result.error;
 
+        result.H = H;
+        result.b = g;
+        result.error = current_error;
+        result.inlier = linearlized_result.inlier;
+        result.iterations = iter;
+
         const auto clamp_radius = [&](float radius) {
             return std::clamp(radius, this->params_.dogleg.min_trust_region_radius,
                               this->params_.dogleg.max_trust_region_radius);
@@ -691,23 +697,12 @@ private:
             result.T = new_T;
             result.error = new_error;
             result.inlier = inlier;
-            result.iterations = iter;
-            result.H = H;
-            result.b = linearlized_result.b;
             updated = true;
 
             if (rho > this->params_.dogleg.eta2 && step_norm >= trust_region_radius * 0.99f) {
                 trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_increase);
             }
             break;
-        }
-
-        if (!updated) {
-            result.iterations = iter;
-            result.H = linearlized_result.H;
-            result.b = linearlized_result.b;
-            result.error = linearlized_result.error;
-            result.inlier = linearlized_result.inlier;
         }
 
         return updated;
