@@ -13,6 +13,23 @@ namespace algorithms {
 
 namespace registration {
 
+enum class OptimizationMethod { GAUSS_NEWTON = 0, LEVENBERG_MARQUARDT };
+
+OptimizationMethod OptimizationMethod_from_string(const std::string& str) {
+    std::string upper = str;
+    std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
+
+    if (upper.compare("GN") == 0 || upper.compare("GAUSS_NEWTON") == 0) {
+        return OptimizationMethod::GAUSS_NEWTON;
+    } else if (upper.compare("LM") == 0 || upper.compare("LEVENBERG_MARQUARDT") == 0) {
+        return OptimizationMethod::LEVENBERG_MARQUARDT;
+    }
+    std::string error_str = "Invalid OptimizationMethod str [";
+    error_str += str;
+    error_str += "]";
+    throw std::runtime_error(error_str);
+}
+
 struct RegistrationParams {
     struct Criteria {
         float translation = 1e-3f;  // translation tolerance
@@ -27,9 +44,10 @@ struct RegistrationParams {
         float photometric_weight = 0.2f;  // weight for photometric term (0.0f ~ 1.0f)
     };
     struct LevenbergMarquardt {
-        bool enable = false;               // If true, use Levenberg-Marquardt method, else use Gauss-Newton method.
         size_t max_inner_iterations = 10;  // (for LM method)
-        float lambda_factor = 10.0f;       // lambda increase factor (for LM method)
+        float lambda_factor = 2.0f;        // lambda increase factor (for LM method)
+        float max_lambda = 1e3f;           // max lambda (for LM method)
+        float min_lambda = 1e-6f;          // min lambda (for LM method)
     };
 
     size_t max_iterations = 20;                // max iteration
@@ -40,6 +58,7 @@ struct RegistrationParams {
     Robust robust;
     PhotometricTerm photometric;
     LevenbergMarquardt lm;
+    OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
 
     bool verbose = false;  // If true, print debug messages
 };
@@ -224,12 +243,14 @@ public:
                 this->linearlize(source, target, result.T.matrix(), max_dist_2, knn_event.evs);
 
             // Optimize on Host
-            if (this->params_.lm.enable) {
-                this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result, lambda,
-                                                   iter);
-
-            } else {
-                this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
+            switch (this->params_.optimization_method) {
+                case OptimizationMethod::LEVENBERG_MARQUARDT:
+                    this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result, lambda,
+                                                       iter);
+                    break;
+                case OptimizationMethod::GAUSS_NEWTON:
+                    this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
+                    break;
             }
 
             // Async transform source points on device
@@ -500,14 +521,16 @@ private:
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
                                       float max_correspondence_distance_2, RegistrationResult& result,
                                       const LinearlizedResult& linearlized_result, float& lambda, size_t iter) {
+        const auto& H = linearlized_result.H;
+        const auto& g = linearlized_result.b;
+        const float current_error = linearlized_result.error;
+
         bool updated = false;
         float last_error = std::numeric_limits<float>::max();
 
         for (size_t i = 0; i < this->params_.lm.max_inner_iterations; ++i) {
             const Eigen::Vector<float, 6> delta =
-                (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
-                    .ldlt()
-                    .solve(-linearlized_result.b);
+                (H + lambda * Eigen::Matrix<float, 6, 6>::Identity()).ldlt().solve(-g);
             const Eigen::Isometry3f new_T = result.T * eigen_utils::lie::se3_exp(delta);
 
             const auto [new_error, inlier] =
@@ -529,7 +552,8 @@ private:
                 result.inlier = inlier;
                 updated = true;
 
-                lambda /= this->params_.lm.lambda_factor;
+                lambda = std::clamp(lambda / this->params_.lm.lambda_factor, this->params_.lm.min_lambda,
+                                    this->params_.lm.max_lambda);
 
                 break;
             } else if (std::fabs(new_error - last_error) <= 1e-6f) {
@@ -541,14 +565,15 @@ private:
 
                 break;
             } else {
-                lambda *= this->params_.lm.lambda_factor;
+                lambda = std::clamp(lambda * this->params_.lm.lambda_factor, this->params_.lm.min_lambda,
+                                    this->params_.lm.max_lambda);
             }
             last_error = new_error;
         }
 
         result.iterations = iter;
-        result.H = linearlized_result.H;
-        result.b = linearlized_result.b;
+        result.H = H;
+        result.b = g;
         return updated;
     }
 };
