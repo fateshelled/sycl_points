@@ -54,7 +54,9 @@ struct RegistrationParams {
     };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)
-        float lambda_factor = 10.0f;       // lambda increase factor (for LM method)
+        float lambda_factor = 2.0f;        // lambda increase factor (for LM method)
+        float max_lambda = 1e3f;           // max lambda (for LM method)
+        float min_lambda = 1e-6f;          // min lambda (for LM method)
     };
     struct Dogleg {
         float initial_trust_region_radius = 1.0f;  // Initial trust region radius (for Powell's dogleg method)
@@ -544,14 +546,16 @@ private:
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
                                       float max_correspondence_distance_2, RegistrationResult& result,
                                       const LinearlizedResult& linearlized_result, float& lambda, size_t iter) {
+        const auto& H = linearlized_result.H;
+        const auto& g = linearlized_result.b;
+        const float current_error = linearlized_result.error;
+
         bool updated = false;
         float last_error = std::numeric_limits<float>::max();
 
         for (size_t i = 0; i < this->params_.lm.max_inner_iterations; ++i) {
             const Eigen::Vector<float, 6> delta =
-                (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
-                    .ldlt()
-                    .solve(-linearlized_result.b);
+                (H + lambda * Eigen::Matrix<float, 6, 6>::Identity()).ldlt().solve(-g);
             const Eigen::Isometry3f new_T = result.T * eigen_utils::lie::se3_exp(delta);
 
             const auto [new_error, inlier] =
@@ -573,7 +577,8 @@ private:
                 result.inlier = inlier;
                 updated = true;
 
-                lambda /= this->params_.lm.lambda_factor;
+                lambda = std::clamp(lambda / this->params_.lm.lambda_factor, this->params_.lm.min_lambda,
+                                    this->params_.lm.max_lambda);
 
                 break;
             } else if (std::fabs(new_error - last_error) <= 1e-6f) {
@@ -585,14 +590,15 @@ private:
 
                 break;
             } else {
-                lambda *= this->params_.lm.lambda_factor;
+                lambda = std::clamp(lambda * this->params_.lm.lambda_factor, this->params_.lm.min_lambda,
+                                    this->params_.lm.max_lambda);
             }
             last_error = new_error;
         }
 
         result.iterations = iter;
-        result.H = linearlized_result.H;
-        result.b = linearlized_result.b;
+        result.H = H;
+        result.b = g;
         return updated;
     }
 
