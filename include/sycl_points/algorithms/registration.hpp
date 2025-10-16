@@ -254,7 +254,6 @@ public:
                                                  trust_region_radius, iter);
                     break;
                 case RegistrationParams::OptimizationMethod::GAUSS_NEWTON:
-                default:
                     this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
                     break;
             }
