@@ -392,7 +392,7 @@ private:
                         sum_H2_arg += H2 * robust_weight;
                         sum_b0_arg += b0 * robust_weight;
                         sum_b1_arg += b1 * robust_weight;
-                        sum_error_arg += kernel::compute_robust_error<loss>(linearlized.error, robust_weight);
+                        sum_error_arg += kernel::compute_robust_error<loss>(linearlized.error, robust_scale);
                         ++sum_inlier_arg;
                     }
                 });
