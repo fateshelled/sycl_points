@@ -66,7 +66,6 @@ struct RegistrationParams {
         float eta2 = 0.75f;                        // Upper acceptance threshold for ratio (for Powell's dogleg method)
         float gamma_decrease = 0.25f;              // Shrink factor for trust region (for Powell's dogleg method)
         float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
-        size_t max_inner_iterations = 10;          // Max inner iterations (for Powell's dogleg method)
     };
 
     size_t max_iterations = 20;                // max iteration
@@ -648,82 +647,78 @@ private:
         }
         const float norm_p_sd = p_sd.norm();
 
-        for (size_t inner = 0; inner < this->params_.dogleg.max_inner_iterations; ++inner) {
-            Eigen::Vector<float, 6> p_dl = Eigen::Vector<float, 6>::Zero();
-            float step_norm = 0.0f;
-            if (has_valid_gn && norm_p_gn <= trust_region_radius) {
-                p_dl = p_gn;
-                step_norm = norm_p_gn;
-            } else if (norm_p_sd >= trust_region_radius) {
-                if (norm_p_sd > std::numeric_limits<float>::epsilon()) {
-                    p_dl = (trust_region_radius / norm_p_sd) * p_sd;
-                }
+        Eigen::Vector<float, 6> p_dl = Eigen::Vector<float, 6>::Zero();
+        float step_norm = 0.0f;
+        if (has_valid_gn && norm_p_gn <= trust_region_radius) {
+            p_dl = p_gn;
+            step_norm = norm_p_gn;
+        } else if (norm_p_sd >= trust_region_radius) {
+            if (norm_p_sd > std::numeric_limits<float>::epsilon()) {
+                p_dl = (trust_region_radius / norm_p_sd) * p_sd;
+            }
+            step_norm = trust_region_radius;
+        } else if (has_valid_gn) {
+            const Eigen::Vector<float, 6> diff = p_gn - p_sd;
+            const float a = diff.squaredNorm();
+            const float b = 2.0f * p_sd.dot(diff);
+            const float c = p_sd.squaredNorm() - trust_region_radius * trust_region_radius;
+            float discriminant = b * b - 4.0f * a * c;
+            discriminant = std::max(discriminant, 0.0f);
+            float tau = 0.0f;
+            if (a > std::numeric_limits<float>::epsilon()) {
+                tau = (-b + std::sqrt(discriminant)) / (2.0f * a);
+            }
+            tau = std::clamp(tau, 0.0f, 1.0f);
+            p_dl = p_sd + tau * diff;
+            step_norm = p_dl.norm();
+        } else {
+            p_dl = p_sd;
+            if (norm_p_sd > trust_region_radius && norm_p_sd > std::numeric_limits<float>::epsilon()) {
+                const float scale = trust_region_radius / norm_p_sd;
+                p_dl *= scale;
                 step_norm = trust_region_radius;
-            } else if (has_valid_gn) {
-                const Eigen::Vector<float, 6> diff = p_gn - p_sd;
-                const float a = diff.squaredNorm();
-                const float b = 2.0f * p_sd.dot(diff);
-                const float c = p_sd.squaredNorm() - trust_region_radius * trust_region_radius;
-                float discriminant = b * b - 4.0f * a * c;
-                discriminant = std::max(discriminant, 0.0f);
-                float tau = 0.0f;
-                if (a > std::numeric_limits<float>::epsilon()) {
-                    tau = (-b + std::sqrt(discriminant)) / (2.0f * a);
-                }
-                tau = std::clamp(tau, 0.0f, 1.0f);
-                p_dl = p_sd + tau * diff;
-                step_norm = p_dl.norm();
             } else {
-                p_dl = p_sd;
-                if (norm_p_sd > trust_region_radius && norm_p_sd > std::numeric_limits<float>::epsilon()) {
-                    const float scale = trust_region_radius / norm_p_sd;
-                    p_dl *= scale;
-                    step_norm = trust_region_radius;
-                } else {
-                    step_norm = norm_p_sd;
-                }
+                step_norm = norm_p_sd;
             }
+        }
 
-            const float predicted_reduction = -(g.dot(p_dl) + 0.5f * p_dl.dot(H * p_dl));
+        const float predicted_reduction = -(g.dot(p_dl) + 0.5f * p_dl.dot(H * p_dl));
 
-            if (predicted_reduction <= 0.0f) {
-                trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
-                continue;
-            }
+        if (predicted_reduction <= 0.0f) {
+            trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
+            return updated;
+        }
 
-            const Eigen::Isometry3f new_T = result.T * eigen_utils::lie::se3_exp(p_dl);
-            const auto [new_error, inlier] =
-                compute_error(source, target, this->neighbors_->at(0), new_T.matrix(), max_correspondence_distance_2);
+        const Eigen::Isometry3f new_T = result.T * eigen_utils::lie::se3_exp(p_dl);
+        const auto [new_error, inlier] =
+            compute_error(source, target, this->neighbors_->at(0), new_T.matrix(), max_correspondence_distance_2);
 
-            const float actual_reduction = current_error - new_error;
-            const float rho = actual_reduction / predicted_reduction;
+        const float actual_reduction = current_error - new_error;
+        const float rho = actual_reduction / predicted_reduction;
 
-            if (this->params_.verbose) {
-                std::cout << "iter [" << iter << "] ";
-                std::cout << "inner: " << inner << ", ";
-                std::cout << "radius: " << trust_region_radius << ", ";
-                std::cout << "rho: " << rho << ", ";
-                std::cout << "error: " << new_error << ", ";
-                std::cout << "inlier: " << inlier << ", ";
-                std::cout << "dt: " << p_dl.tail<3>().norm() << ", ";
-                std::cout << "dr: " << p_dl.head<3>().norm() << std::endl;
-            }
+        if (this->params_.verbose) {
+            std::cout << "iter [" << iter << "] ";
+            std::cout << "radius: " << trust_region_radius << ", ";
+            std::cout << "rho: " << rho << ", ";
+            std::cout << "error: " << new_error << ", ";
+            std::cout << "inlier: " << inlier << ", ";
+            std::cout << "dt: " << p_dl.tail<3>().norm() << ", ";
+            std::cout << "dr: " << p_dl.head<3>().norm() << std::endl;
+        }
 
-            if (rho < this->params_.dogleg.eta1) {
-                trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
-                continue;
-            }
+        if (rho < this->params_.dogleg.eta1) {
+            trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
+            return updated;
+        }
 
-            result.converged = this->is_converged(p_dl);
-            result.T = new_T;
-            result.error = new_error;
-            result.inlier = inlier;
-            updated = true;
+        result.converged = this->is_converged(p_dl);
+        result.T = new_T;
+        result.error = new_error;
+        result.inlier = inlier;
+        updated = true;
 
-            if (rho > this->params_.dogleg.eta2 && step_norm >= trust_region_radius * 0.99f) {
-                trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_increase);
-            }
-            break;
+        if (rho > this->params_.dogleg.eta2 && step_norm >= trust_region_radius * 0.99f) {
+            trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_increase);
         }
 
         return updated;
