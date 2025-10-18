@@ -513,9 +513,6 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
             int32_t node_stack[kMaxStackSize];
             float node_stack_distance[kMaxStackSize];
             size_t stack_size = 0;
-            size_t worst_node_index = 0;
-            float worst_node_distance = 0.0f;
-            bool worst_node_valid = false;
             size_t neighbour_count = 0;
 
             auto heap_swap = [&](size_t a, size_t b) {
@@ -567,67 +564,11 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                     query_indices[neighbour_count] = index;
                     ++neighbour_count;
                     sift_up(neighbour_count - 1);
-                    return;
+                } else if (distance_sq < query_distances[0]) {
+                    query_distances[0] = distance_sq;
+                    query_indices[0] = index;
+                    sift_down(0, neighbour_count);
                 }
-
-                if (distance_sq >= query_distances[0]) {
-                    return;
-                }
-
-                query_distances[0] = distance_sq;
-                query_indices[0] = index;
-                sift_down(0, neighbour_count);
-            };
-
-            auto node_heap_swap = [&](size_t a, size_t b) {
-                const float dist_tmp = node_stack_distance[a];
-                const int32_t idx_tmp = node_stack[a];
-                node_stack_distance[a] = node_stack_distance[b];
-                node_stack[a] = node_stack[b];
-                node_stack_distance[b] = dist_tmp;
-                node_stack[b] = idx_tmp;
-            };
-
-            auto node_sift_up = [&](size_t idx) {
-                while (idx > 0) {
-                    const size_t parent = (idx - 1) / 2;
-                    if (node_stack_distance[parent] <= node_stack_distance[idx]) {
-                        break;
-                    }
-                    node_heap_swap(parent, idx);
-                    idx = parent;
-                }
-            };
-
-            auto node_sift_down = [&](size_t idx) {
-                while (true) {
-                    const size_t left = idx * 2 + 1;
-                    if (left >= stack_size) {
-                        break;
-                    }
-                    size_t smallest = left;
-                    const size_t right = left + 1;
-                    if (right < stack_size && node_stack_distance[right] < node_stack_distance[smallest]) {
-                        smallest = right;
-                    }
-                    if (node_stack_distance[idx] <= node_stack_distance[smallest]) {
-                        break;
-                    }
-                    node_heap_swap(idx, smallest);
-                    idx = smallest;
-                }
-            };
-
-            auto recompute_worst_node = [&]() {
-                worst_node_index = 0;
-                worst_node_distance = stack_size > 0 ? node_stack_distance[0] : 0.0f;
-                for (size_t i = 1; i < stack_size; ++i) {
-                    if (node_stack_distance[i] > worst_node_distance) {
-                        worst_node_distance = node_stack_distance[i];
-                        worst_node_index = i;
-                    }
-                }
-                worst_node_valid = true;
             };
 
             auto push_node = [&](int32_t node_idx, float distance_sq) {
@@ -635,38 +576,20 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                     node_stack[stack_size] = node_idx;
                     node_stack_distance[stack_size] = distance_sq;
                     ++stack_size;
-                    node_sift_up(stack_size - 1);
-                    if (stack_size == kMaxStackSize) {
-                        worst_node_valid = false;
+                } else {
+                    size_t worst_pos = 0;
+                    float worst_dist = node_stack_distance[0];
+                    for (size_t i = 1; i < stack_size; ++i) {
+                        if (node_stack_distance[i] > worst_dist) {
+                            worst_dist = node_stack_distance[i];
+                            worst_pos = i;
+                        }
                     }
-                    return;
+                    if (distance_sq < worst_dist) {
+                        node_stack[worst_pos] = node_idx;
+                        node_stack_distance[worst_pos] = distance_sq;
+                    }
                 }
-
-                if (!worst_node_valid) {
-                    recompute_worst_node();
-                }
-
-                if (distance_sq >= worst_node_distance) {
-                    return;
-                }
-
-                node_stack[worst_node_index] = node_idx;
-                node_stack_distance[worst_node_index] = distance_sq;
-                node_sift_up(worst_node_index);
-                node_sift_down(worst_node_index);
-                worst_node_valid = false;
-            };
-
-            auto pop_node = [&](int32_t& node_idx, float& node_distance) {
-                node_idx = node_stack[0];
-                node_distance = node_stack_distance[0];
-                --stack_size;
-                if (stack_size > 0) {
-                    node_stack[0] = node_stack[stack_size];
-                    node_stack_distance[0] = node_stack_distance[stack_size];
-                    node_sift_down(0);
-                }
-                worst_node_valid = false;
             };
 
             if (node_count == 0) {
@@ -676,12 +599,22 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
             push_node(0, distance_to_aabb(nodes_ptr[0].min_bounds, nodes_ptr[0].max_bounds, query_point_vec));
 
             while (stack_size > 0) {
-                int32_t current_node_idx = -1;
-                float best_dist = 0.0f;
-                pop_node(current_node_idx, best_dist);
+                size_t best_pos = 0;
+                float best_dist = node_stack_distance[0];
+                for (size_t i = 1; i < stack_size; ++i) {
+                    if (node_stack_distance[i] < best_dist) {
+                        best_dist = node_stack_distance[i];
+                        best_pos = i;
+                    }
+                }
+
+                const int32_t current_node_idx = node_stack[best_pos];
+                --stack_size;
+                node_stack[best_pos] = node_stack[stack_size];
+                node_stack_distance[best_pos] = node_stack_distance[stack_size];
 
                 if (best_dist > current_worst()) {
-                    break;
+                    continue;
                 }
 
                 const Node node = nodes_ptr[current_node_idx];
