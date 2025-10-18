@@ -61,7 +61,9 @@ public:
     /// @brief Execute a k-nearest neighbour query for the supplied queries.
     /// @param queries Query point cloud.
     /// @param k Number of neighbours to gather.
+    /// @tparam MaxStackSize Maximum number of nodes kept on the traversal stack.
     /// @return Result container that stores neighbour indices and squared distances.
+    template <size_t MaxStackSize = 32>
     [[nodiscard]] KNNResult knn_search(const PointCloudShared& queries, size_t k) const;
 
     /// @brief Accessor for the resolution that was requested at build time.
@@ -81,7 +83,8 @@ private:
     [[nodiscard]] static sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
     int32_t build_node_recursive(const sycl::float3& min_bounds, const sycl::float3& max_bounds, size_t start,
                                  size_t count, size_t depth, std::vector<Node>& host_nodes,
-                                 std::vector<int32_t>& indices, std::vector<int32_t>& scratch) const;
+                                 std::vector<int32_t>& indices, std::vector<int32_t>& scratch,
+                                 const std::vector<PointType>& host_points) const;
     [[nodiscard]] static float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                                 const sycl::float3& point);
 
@@ -317,7 +320,11 @@ inline void Octree::build_octree() {
     std::iota(indices.begin(), indices.end(), 0);
     std::vector<int32_t> scratch(point_count);
 
-    build_node_recursive(bbox_min_, bbox_max_, 0, point_count, 0, host_nodes, indices, scratch);
+    // Creating a CPU-local copy significantly reduces shared USM page migrations during recursion.
+    std::vector<PointType> host_points(point_count);
+    std::copy(target_cloud_->points->begin(), target_cloud_->points->end(), host_points.begin());
+
+    build_node_recursive(bbox_min_, bbox_max_, 0, point_count, 0, host_nodes, indices, scratch, host_points);
 
     shared_allocator<Node> node_alloc(*queue_.ptr);
     nodes_ = shared_vector<Node>(host_nodes.size(), Node{}, node_alloc);
@@ -330,7 +337,8 @@ inline void Octree::build_octree() {
 
 inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                             size_t start, size_t count, size_t depth, std::vector<Node>& host_nodes,
-                                            std::vector<int32_t>& indices, std::vector<int32_t>& scratch) const {
+                                            std::vector<int32_t>& indices, std::vector<int32_t>& scratch,
+                                            const std::vector<PointType>& host_points) const {
     Node node{};
     node.min_bounds = min_bounds;
     node.max_bounds = max_bounds;
@@ -356,7 +364,7 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
                               (min_bounds.z() + max_bounds.z()) * 0.5f);
 
     std::array<size_t, 8> counts{};
-    const auto* points_ptr = target_cloud_->points->data();
+    const auto* points_ptr = host_points.data();
     for (size_t i = 0; i < count; ++i) {
         const auto point = points_ptr[indices[start + i]];
         int octant = 0;
@@ -420,7 +428,7 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
         child_max.z() = (child & 4) ? max_bounds.z() : center.z();
 
         const int32_t child_index = build_node_recursive(child_min, child_max, child_start, child_count, depth + 1,
-                                                         host_nodes, indices, scratch);
+                                                         host_nodes, indices, scratch, host_points);
         host_nodes[node_index].children[child] = child_index;
     }
 
@@ -456,7 +464,9 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
     return tree;
 }
 
+template <size_t MaxStackSize>
 inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) const {
+    static_assert(MaxStackSize > 0, "MaxStackSize must be greater than zero");
     if (!queue_.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
     }
@@ -503,7 +513,7 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 query_distances[neighbour_idx] = std::numeric_limits<float>::infinity();
             }
 
-            constexpr size_t kMaxStackSize = 512;
+            constexpr size_t kMaxStackSize = MaxStackSize;
             int32_t node_stack[kMaxStackSize];
             float node_stack_distance[kMaxStackSize];
             size_t stack_size = 0;
@@ -645,6 +655,7 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 --heap_size;
                 sift_down(0, heap_size);
             }
+
         });
     });
     event.wait();
