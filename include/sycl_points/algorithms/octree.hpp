@@ -61,7 +61,9 @@ public:
     /// @brief Execute a k-nearest neighbour query for the supplied queries.
     /// @param queries Query point cloud.
     /// @param k Number of neighbours to gather.
+    /// @tparam MaxStackSize Maximum number of nodes kept on the traversal stack.
     /// @return Result container that stores neighbour indices and squared distances.
+    template <size_t MaxStackSize = 32>
     [[nodiscard]] KNNResult knn_search(const PointCloudShared& queries, size_t k) const;
 
     /// @brief Accessor for the resolution that was requested at build time.
@@ -462,7 +464,9 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
     return tree;
 }
 
+template <size_t MaxStackSize>
 inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) const {
+    static_assert(MaxStackSize > 0, "MaxStackSize must be greater than zero");
     if (!queue_.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
     }
@@ -509,7 +513,7 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 query_distances[neighbour_idx] = std::numeric_limits<float>::infinity();
             }
 
-            constexpr size_t kMaxStackSize = 512;
+            constexpr size_t kMaxStackSize = MaxStackSize;
             int32_t node_stack[kMaxStackSize];
             float node_stack_distance[kMaxStackSize];
             size_t stack_size = 0;
