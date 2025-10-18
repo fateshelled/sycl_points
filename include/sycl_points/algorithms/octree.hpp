@@ -518,38 +518,65 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
             bool worst_node_valid = false;
             size_t neighbour_count = 0;
 
+            auto heap_swap = [&](size_t a, size_t b) {
+                const float dist_tmp = query_distances[a];
+                const int32_t idx_tmp = query_indices[a];
+                query_distances[a] = query_distances[b];
+                query_indices[a] = query_indices[b];
+                query_distances[b] = dist_tmp;
+                query_indices[b] = idx_tmp;
+            };
+
+            auto sift_up = [&](size_t idx) {
+                while (idx > 0) {
+                    const size_t parent = (idx - 1) / 2;
+                    if (query_distances[parent] >= query_distances[idx]) {
+                        break;
+                    }
+                    heap_swap(parent, idx);
+                    idx = parent;
+                }
+            };
+
+            auto sift_down = [&](size_t idx, size_t heap_size) {
+                while (true) {
+                    const size_t left = idx * 2 + 1;
+                    if (left >= heap_size) {
+                        break;
+                    }
+                    size_t largest = left;
+                    const size_t right = left + 1;
+                    if (right < heap_size && query_distances[right] > query_distances[largest]) {
+                        largest = right;
+                    }
+                    if (query_distances[idx] >= query_distances[largest]) {
+                        break;
+                    }
+                    heap_swap(idx, largest);
+                    idx = largest;
+                }
+            };
+
             auto current_worst = [&]() {
-                return neighbour_count < k ? std::numeric_limits<float>::infinity()
-                                           : query_distances[neighbour_count - 1];
+                return neighbour_count < k ? std::numeric_limits<float>::infinity() : query_distances[0];
             };
 
             auto push_candidate = [&](float distance_sq, int32_t index) {
-                if (neighbour_count == k && distance_sq >= query_distances[neighbour_count - 1]) {
-                    return;
-                }
-
-                size_t insert_pos = 0;
-                while (insert_pos < neighbour_count && query_distances[insert_pos] <= distance_sq) {
-                    ++insert_pos;
-                }
-
                 if (neighbour_count < k) {
-                    for (size_t shift = neighbour_count; shift > insert_pos; --shift) {
-                        query_distances[shift] = query_distances[shift - 1];
-                        query_indices[shift] = query_indices[shift - 1];
-                    }
-                    query_distances[insert_pos] = distance_sq;
-                    query_indices[insert_pos] = index;
+                    query_distances[neighbour_count] = distance_sq;
+                    query_indices[neighbour_count] = index;
                     ++neighbour_count;
+                    sift_up(neighbour_count - 1);
                     return;
                 }
 
-                for (size_t shift = neighbour_count - 1; shift > insert_pos; --shift) {
-                    query_distances[shift] = query_distances[shift - 1];
-                    query_indices[shift] = query_indices[shift - 1];
+                if (distance_sq >= query_distances[0]) {
+                    return;
                 }
-                query_distances[insert_pos] = distance_sq;
-                query_indices[insert_pos] = index;
+
+                query_distances[0] = distance_sq;
+                query_indices[0] = index;
+                sift_down(0, neighbour_count);
             };
 
             auto node_heap_swap = [&](size_t a, size_t b) {
@@ -682,6 +709,14 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                         }
                     }
                 }
+            }
+
+            size_t heap_size = neighbour_count;
+            while (heap_size > 1) {
+                const size_t last = heap_size - 1;
+                heap_swap(0, last);
+                --heap_size;
+                sift_down(0, heap_size);
             }
 
         });
