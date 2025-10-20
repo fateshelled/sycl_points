@@ -1,7 +1,7 @@
 #pragma once
 
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/knn_search.hpp>
+#include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 

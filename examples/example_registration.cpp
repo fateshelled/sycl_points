@@ -3,6 +3,7 @@
 #include <iostream>
 #include <map>
 #include <sycl_points/algorithms/covariance.hpp>
+#include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/algorithms/preprocess_filter.hpp>
 #include <sycl_points/algorithms/registration.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
@@ -12,8 +13,10 @@ int main() {
     std::string source_filename = "../data/source.ply";
     std::string target_filename = "../data/target.ply";
 
-    const sycl_points::PointCloudCPU source_points = sycl_points::PointCloudReader::readFile(source_filename, false, false);
-    const sycl_points::PointCloudCPU target_points = sycl_points::PointCloudReader::readFile(target_filename, false, false);
+    const sycl_points::PointCloudCPU source_points =
+        sycl_points::PointCloudReader::readFile(source_filename, false, false);
+    const sycl_points::PointCloudCPU target_points =
+        sycl_points::PointCloudReader::readFile(target_filename, false, false);
 
     /* Specity device */
     const auto device_selector = sycl_points::sycl_utils::device_selector::default_selector_v;

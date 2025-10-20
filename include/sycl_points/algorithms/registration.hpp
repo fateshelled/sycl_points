@@ -5,7 +5,7 @@
 #include <limits>
 #include <random>
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/knn_search.hpp>
+#include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/algorithms/registration_factor.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
