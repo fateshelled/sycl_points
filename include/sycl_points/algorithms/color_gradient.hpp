@@ -1,7 +1,7 @@
 #pragma once
 
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/knn_search.hpp>
+#include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
@@ -49,7 +49,7 @@ SYCL_EXTERNAL inline void compute_gradient(ColorGradient& ret, const PointType* 
 }  // namespace kernel
 
 inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& cloud,
-                                                        const knn_search::KNNResult& neighbors) {
+                                                        const knn::KNNResult& neighbors) {
     const size_t N = cloud.size();
     if (!cloud.has_rgb()) {
         throw std::runtime_error("RGB field not found");
@@ -80,7 +80,7 @@ inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& 
     return events;
 }
 
-inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& cloud, const knn_search::KDTree& kdtree,
+inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& cloud, const knn::KDTree& kdtree,
                                                         size_t k_correspondences) {
     const auto neighbors = kdtree.knn_search(cloud, k_correspondences);
     return compute_color_gradients_async(cloud, neighbors);

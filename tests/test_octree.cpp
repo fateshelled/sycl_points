@@ -2,12 +2,14 @@
 
 #include <chrono>
 #include <random>
-#include <tuple>
-#include <vector>
-#include <sycl_points/algorithms/knn_search.hpp>
+#include <sycl_points/algorithms/knn/bruteforce.hpp>
+#include <sycl_points/algorithms/knn/kdtree.hpp>
+#include <sycl_points/algorithms/knn/result.hpp>
 #include <sycl_points/algorithms/octree.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
+#include <tuple>
+#include <vector>
 
 namespace {
 
@@ -19,8 +21,8 @@ void generateRandomPoints(std::shared_ptr<sycl_points::PointContainerCPU> points
     }
 }
 
-void compareKNNResults(const sycl_points::algorithms::knn_search::KNNResult& lhs,
-                       const sycl_points::algorithms::knn_search::KNNResult& rhs, size_t k, float epsilon = 1e-4f) {
+void compareKNNResults(const sycl_points::algorithms::knn::KNNResult& lhs,
+                       const sycl_points::algorithms::knn::KNNResult& rhs, size_t k, float epsilon = 1e-4f) {
     ASSERT_EQ(lhs.query_size, rhs.query_size);
     ASSERT_EQ(lhs.k, rhs.k);
 
@@ -63,7 +65,7 @@ TEST(OctreeTest, CompareWithBruteForceInterfaceOnly) {
         auto octree = sycl_points::algorithms::octree::Octree::build(queue, target_cloud, 0.5f);
         auto octree_result = octree->knn_search(query_cloud, k);
         auto bruteforce_result =
-            sycl_points::algorithms::knn_search::knn_search_bruteforce(queue, query_cloud, target_cloud, k);
+            sycl_points::algorithms::knn::knn_search_bruteforce(queue, query_cloud, target_cloud, k);
 
         compareKNNResults(octree_result, bruteforce_result, k);
     } catch (const sycl::exception& e) {
@@ -114,26 +116,22 @@ TEST(OctreeTest, BenchmarkOctreeAgainstKDTree) {
                 auto result = tree->knn_search(query_cloud, knn_k);
                 const auto search_end = Clock::now();
 
-                const double build_ms =
-                    std::chrono::duration<double, std::milli>(build_end - build_start).count();
-                const double search_ms =
-                    std::chrono::duration<double, std::milli>(search_end - search_start).count();
+                const double build_ms = std::chrono::duration<double, std::milli>(build_end - build_start).count();
+                const double search_ms = std::chrono::duration<double, std::milli>(search_end - search_start).count();
 
                 return std::make_tuple(build_ms, search_ms, result);
             };
 
             auto run_kdtree_iteration = [&](size_t knn_k) {
                 const auto build_start = Clock::now();
-                auto tree = sycl_points::algorithms::knn_search::KDTree::build(queue, target_cloud);
+                auto tree = sycl_points::algorithms::knn::KDTree::build(queue, target_cloud);
                 const auto build_end = Clock::now();
                 const auto search_start = Clock::now();
                 auto result = tree->knn_search(query_cloud, knn_k);
                 const auto search_end = Clock::now();
 
-                const double build_ms =
-                    std::chrono::duration<double, std::milli>(build_end - build_start).count();
-                const double search_ms =
-                    std::chrono::duration<double, std::milli>(search_end - search_start).count();
+                const double build_ms = std::chrono::duration<double, std::milli>(build_end - build_start).count();
+                const double search_ms = std::chrono::duration<double, std::milli>(search_end - search_start).count();
 
                 return std::make_tuple(build_ms, search_ms, result);
             };
@@ -165,25 +163,21 @@ TEST(OctreeTest, BenchmarkOctreeAgainstKDTree) {
                     total_kdtree_search_ms += search_ms;
                 }
 
-                const double average_octree_build_ms =
-                    total_octree_build_ms / static_cast<double>(benchmark_runs);
-                const double average_octree_search_ms =
-                    total_octree_search_ms / static_cast<double>(benchmark_runs);
-                const double average_kdtree_build_ms =
-                    total_kdtree_build_ms / static_cast<double>(benchmark_runs);
-                const double average_kdtree_search_ms =
-                    total_kdtree_search_ms / static_cast<double>(benchmark_runs);
+                const double average_octree_build_ms = total_octree_build_ms / static_cast<double>(benchmark_runs);
+                const double average_octree_search_ms = total_octree_search_ms / static_cast<double>(benchmark_runs);
+                const double average_kdtree_build_ms = total_kdtree_build_ms / static_cast<double>(benchmark_runs);
+                const double average_kdtree_search_ms = total_kdtree_search_ms / static_cast<double>(benchmark_runs);
 
                 std::cout << "Benchmark case " << case_index + 1 << ": target_points=" << num_target_points
                           << ", query_points=" << num_query_points << ", k=" << k << std::endl;
-                std::cout << "  Average Octree build time over " << benchmark_runs << " runs: "
-                          << average_octree_build_ms << " ms" << std::endl;
-                std::cout << "  Average Octree search time over " << benchmark_runs << " runs: "
-                          << average_octree_search_ms << " ms" << std::endl;
-                std::cout << "  Average KDTree build time over " << benchmark_runs << " runs: "
-                          << average_kdtree_build_ms << " ms" << std::endl;
-                std::cout << "  Average KDTree search time over " << benchmark_runs << " runs: "
-                          << average_kdtree_search_ms << " ms" << std::endl;
+                std::cout << "  Average Octree build time over " << benchmark_runs
+                          << " runs: " << average_octree_build_ms << " ms" << std::endl;
+                std::cout << "  Average Octree search time over " << benchmark_runs
+                          << " runs: " << average_octree_search_ms << " ms" << std::endl;
+                std::cout << "  Average KDTree build time over " << benchmark_runs
+                          << " runs: " << average_kdtree_build_ms << " ms" << std::endl;
+                std::cout << "  Average KDTree search time over " << benchmark_runs
+                          << " runs: " << average_kdtree_search_ms << " ms" << std::endl;
             }
         }
 
@@ -192,4 +186,3 @@ TEST(OctreeTest, BenchmarkOctreeAgainstKDTree) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
 }
-
