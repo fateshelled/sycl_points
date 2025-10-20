@@ -25,7 +25,7 @@ public:
         this->local_mean_distance_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->distance_threshold_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
 
-        this->neighbors_ = std::make_shared<knn_search::KNNResult>();
+        this->neighbors_ = std::make_shared<knn::KNNResult>();
     }
 
     /// @brief Filters outliers from a point cloud based on statistical analysis of the neighborhood of each point.
@@ -37,7 +37,7 @@ public:
     /// @param stddev_mul_thresh The standard deviation multiplier threshold. A point is an outlier if its mean distance
     /// is > (global_mean + stddev_mul_thresh * global_stddev).
     /// @param remove_from_tree If true, removes the outlier nodes from the KD-Tree as well.
-    void statistical(PointCloudShared& cloud, knn_search::KDTree& tree, size_t mean_k, float stddev_mul_thresh,
+    void statistical(PointCloudShared& cloud, knn::KDTree& tree, size_t mean_k, float stddev_mul_thresh,
                      bool remove_from_tree = false) {
         const size_t N = cloud.size();
         if (N < mean_k) {
@@ -154,7 +154,7 @@ public:
     /// @param min_k The minimum number of neighbors a point must have within the radius to be considered an inlier.
     /// @param radius The radius to search for neighbors.
     /// @param remove_from_tree If true, removes the outlier nodes from the KD-Tree as well.
-    void radius(PointCloudShared& cloud, knn_search::KDTree& tree, size_t min_k, float radius,
+    void radius(PointCloudShared& cloud, knn::KDTree& tree, size_t min_k, float radius,
                 bool remove_from_tree = false) {
         const size_t N = cloud.size();
         if (N < min_k) {
@@ -215,7 +215,7 @@ public:
 
 private:
     sycl_utils::DeviceQueue queue_;
-    knn_search::KNNResult::Ptr neighbors_;
+    knn::KNNResult::Ptr neighbors_;
     FilterByFlags::Ptr filter_;
     shared_vector_ptr<uint8_t> flags_;
     shared_vector_ptr<int32_t> indices_;

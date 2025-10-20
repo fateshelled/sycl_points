@@ -6,7 +6,7 @@ namespace sycl_points {
 
 namespace algorithms {
 
-namespace knn_search {
+namespace knn {
 
 /// @brief Structure to store K nearest neighbors and their distances
 struct KNNResult {

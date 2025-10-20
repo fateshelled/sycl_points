@@ -12,7 +12,7 @@ protected:
     sycl_points::sycl_utils::DeviceQueue::Ptr queue;
     sycl_points::PointCloudShared::Ptr target_cloud;
     sycl_points::PointCloudShared::Ptr query_cloud;
-    std::shared_ptr<sycl_points::algorithms::knn_search::KDTree> kdtree;
+    std::shared_ptr<sycl_points::algorithms::knn::KDTree> kdtree;
 
     // Parameters for testing
     const size_t num_target_points = 1000;
@@ -50,7 +50,7 @@ protected:
             *query_cloud = sycl_points::PointCloudShared(*queue, query_cpu);
 
             // Build KDTree
-            kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, *target_cloud);
+            kdtree = sycl_points::algorithms::knn::KDTree::build(*queue, *target_cloud);
 
         } catch (const sycl::exception& e) {
             std::cerr << "SYCL exception caught: " << e.what() << std::endl;
@@ -72,8 +72,8 @@ protected:
     }
 
     // Helper function to compare KNN search results
-    void compareKNNResults(const sycl_points::algorithms::knn_search::KNNResult& kdtree_result,
-                           const sycl_points::algorithms::knn_search::KNNResult& bruteforce_result, size_t k,
+    void compareKNNResults(const sycl_points::algorithms::knn::KNNResult& kdtree_result,
+                           const sycl_points::algorithms::knn::KNNResult& bruteforce_result, size_t k,
                            float epsilon = 1e-4f) {
         ASSERT_EQ(kdtree_result.query_size, bruteforce_result.query_size);
         ASSERT_EQ(kdtree_result.k, bruteforce_result.k);
@@ -150,7 +150,7 @@ TEST_F(KDTreeTest, CompareWithBruteForce) {
 
         // Run kNN search with brute force
         auto bruteforce_result =
-            sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, *query_cloud, *target_cloud, k);
+            sycl_points::algorithms::knn::knn_search_bruteforce(*queue, *query_cloud, *target_cloud, k);
 
         // Compare results
         compareKNNResults(kdtree_result, bruteforce_result, k);
@@ -180,14 +180,14 @@ TEST_F(KDTreeTest, VariousSizePointClouds) {
             auto test_query = sycl_points::PointCloudShared(*queue, query_cpu);
 
             // Build KDTree
-            auto test_kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, test_target);
+            auto test_kdtree = sycl_points::algorithms::knn::KDTree::build(*queue, test_target);
 
             // Run kNN search with KDTree
             auto kdtree_result = test_kdtree->knn_search(test_query, k);
 
             // Run kNN search with brute force
             auto bruteforce_result =
-                sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, test_query, test_target, k);
+                sycl_points::algorithms::knn::knn_search_bruteforce(*queue, test_query, test_target, k);
 
             // Compare results
             compareKNNResults(kdtree_result, bruteforce_result, k);
@@ -214,14 +214,14 @@ TEST_F(KDTreeTest, SinglePoint) {
     auto single_query = sycl_points::PointCloudShared(*queue, query_cpu);
 
     // Build KDTree
-    auto single_kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, single_target);
+    auto single_kdtree = sycl_points::algorithms::knn::KDTree::build(*queue, single_target);
 
     // Run kNN search with KDTree
     auto kdtree_result = single_kdtree->knn_search(single_query, k);
 
     // Run kNN search with brute force
     auto bruteforce_result =
-        sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, single_query, single_target, k);
+        sycl_points::algorithms::knn::knn_search_bruteforce(*queue, single_query, single_target, k);
 
     // Compare results
     compareKNNResults(kdtree_result, bruteforce_result, k);
@@ -241,7 +241,7 @@ TEST_F(KDTreeTest, AccuracyWithDifferentK) {
 
         // Run kNN search with brute force
         auto bruteforce_result =
-            sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, *query_cloud, *target_cloud, k);
+            sycl_points::algorithms::knn::knn_search_bruteforce(*queue, *query_cloud, *target_cloud, k);
 
         // Compare results
         compareKNNResults(kdtree_result, bruteforce_result, k);
@@ -271,7 +271,7 @@ TEST_F(KDTreeTest, PerformanceLargeDataset) {
 
     // Time measurement - KDTree construction
     auto build_start = std::chrono::high_resolution_clock::now();
-    auto large_kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, large_target);
+    auto large_kdtree = sycl_points::algorithms::knn::KDTree::build(*queue, large_target);
     auto build_end = std::chrono::high_resolution_clock::now();
     auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
 
@@ -283,7 +283,7 @@ TEST_F(KDTreeTest, PerformanceLargeDataset) {
 
     // Time measurement - Brute force search
     auto bf_start = std::chrono::high_resolution_clock::now();
-    auto bf_result = sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, large_query, large_target, k);
+    auto bf_result = sycl_points::algorithms::knn::knn_search_bruteforce(*queue, large_query, large_target, k);
     auto bf_end = std::chrono::high_resolution_clock::now();
     auto bf_duration = std::chrono::duration_cast<std::chrono::milliseconds>(bf_end - bf_start);
 
@@ -309,7 +309,7 @@ TEST_F(KDTreeTest, RemoveByFlags) {
     generateRandomPoints(target_cpu.points, target_size, point_range);
 
     auto test_target = sycl_points::PointCloudShared(*queue, target_cpu);
-    auto test_kdtree = sycl_points::algorithms::knn_search::KDTree::build(*queue, test_target);
+    auto test_kdtree = sycl_points::algorithms::knn::KDTree::build(*queue, test_target);
 
     // Initial search - all points find themselves
     auto initial_result = test_kdtree->knn_search(test_target, k);
@@ -340,7 +340,7 @@ TEST_F(KDTreeTest, RemoveByFlags) {
 
     // Search BruteForce with removed points
     const auto bf_result =
-        sycl_points::algorithms::knn_search::knn_search_bruteforce(*queue, removed_target, removed_target, k);
+        sycl_points::algorithms::knn::knn_search_bruteforce(*queue, removed_target, removed_target, k);
 
     // Verify that removed points are not in results
     auto removed_result = test_kdtree->knn_search(removed_target, k);

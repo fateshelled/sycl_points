@@ -12,7 +12,7 @@ namespace sycl_points {
 
 namespace algorithms {
 
-namespace knn_search {
+namespace knn {
 
 /// @brief kNN search by brute force
 /// @param queue SYCL queue

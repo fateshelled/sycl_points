@@ -71,8 +71,8 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        const auto source_tree = sycl_points::algorithms::knn_search::KDTree::build(queue, source_downsampled);
-        const auto target_tree = sycl_points::algorithms::knn_search::KDTree::build(queue, target_downsampled);
+        const auto source_tree = sycl_points::algorithms::knn::KDTree::build(queue, source_downsampled);
+        const auto target_tree = sycl_points::algorithms::knn::KDTree::build(queue, target_downsampled);
         auto dt_build_kdtree =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();

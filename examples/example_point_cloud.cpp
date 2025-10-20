@@ -27,7 +27,7 @@ int main() {
     double dt_build_kdtree = 0.0;
     for (size_t i = 0; i < 10; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto tmp = sycl_points::algorithms::knn_search::KDTree::build(queue, shared_points);
+        auto tmp = sycl_points::algorithms::knn::KDTree::build(queue, shared_points);
         dt_build_kdtree +=
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
@@ -37,7 +37,7 @@ int main() {
     // Covariance
     double dt_covariances = 0.0;
     const size_t k_correspondence_covariance = 10;
-    auto kdtree = sycl_points::algorithms::knn_search::KDTree::build(queue, shared_points);
+    auto kdtree = sycl_points::algorithms::knn::KDTree::build(queue, shared_points);
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::covariance::compute_covariances_async(*kdtree, shared_points, k_correspondence_covariance).wait();

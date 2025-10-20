@@ -16,7 +16,7 @@ namespace sycl_points {
 
 namespace algorithms {
 
-namespace knn_search {
+namespace knn {
 
 namespace {
 

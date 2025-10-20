@@ -69,7 +69,7 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 /// @param covs Covariance Container
 /// @return eventscd
 inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueue& queue,
-                                                    const knn_search::KNNResult& neightbors,
+                                                    const knn::KNNResult& neightbors,
                                                     const PointContainerShared& points,
                                                     CovarianceContainerShared& covs) {
     const size_t N = points.size();
@@ -100,7 +100,7 @@ inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueu
 /// @param neightbors KNN search result
 /// @param points Point Cloud
 /// @return events
-inline sycl_utils::events compute_covariances_async(const knn_search::KNNResult& neightbors,
+inline sycl_utils::events compute_covariances_async(const knn::KNNResult& neightbors,
                                                     const PointCloudShared& points) {
     return compute_covariances_async(points.queue, neightbors, *points.points, *points.covs);
 }
@@ -110,7 +110,7 @@ inline sycl_utils::events compute_covariances_async(const knn_search::KNNResult&
 /// @param points Point Cloud
 /// @param k_correspondences Number of neighbor points
 /// @return events
-inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kdtree, const PointCloudShared& points,
+inline sycl_utils::events compute_covariances_async(const knn::KDTree& kdtree, const PointCloudShared& points,
                                                     const size_t k_correspondences) {
     const auto neightbors = kdtree.knn_search(points, k_correspondences);
     return compute_covariances_async(neightbors, points);
@@ -120,7 +120,7 @@ inline sycl_utils::events compute_covariances_async(const knn_search::KDTree& kd
 /// @param neightbors KNN search result
 /// @param points Point Cloud
 /// @return events
-inline sycl_utils::events compute_normals_async(const knn_search::KNNResult& neightbors,
+inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors,
                                                 const PointCloudShared& points) {
     const size_t N = points.size();
     if (points.normals->size() != N) {
@@ -153,7 +153,7 @@ inline sycl_utils::events compute_normals_async(const knn_search::KNNResult& nei
 /// @param points Point Cloud
 /// @param k_correspondences Number of neighbor points
 /// @return events
-inline sycl_utils::events compute_normals_async(const knn_search::KDTree& kdtree, const PointCloudShared& points,
+inline sycl_utils::events compute_normals_async(const knn::KDTree& kdtree, const PointCloudShared& points,
                                                 const size_t k_correspondences) {
     const auto neightbors = kdtree.knn_search(points, k_correspondences);
     return compute_normals_async(neightbors, points);

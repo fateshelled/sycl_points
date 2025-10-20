@@ -158,8 +158,8 @@ public:
     /// @param params Registration parameters
     Registration(const sycl_utils::DeviceQueue& queue, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_(queue) {
-        this->neighbors_ = std::make_shared<shared_vector<knn_search::KNNResult>>(
-            1, knn_search::KNNResult(), shared_allocator<knn_search::KNNResult>(*this->queue_.ptr));
+        this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(
+            1, knn::KNNResult(), shared_allocator<knn::KNNResult>(*this->queue_.ptr));
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
 
         this->aligned_ = std::make_shared<PointCloudShared>(this->queue_);
@@ -181,7 +181,7 @@ public:
     /// @param init_T Initial transformation matrix
     /// @return Registration result
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
-                             const knn_search::KDTree& target_tree,
+                             const knn::KDTree& target_tree,
                              const TransformMatrix& init_T = TransformMatrix::Identity()) {
         const size_t N = source.size();
         const size_t TARGET_SIZE = target.size();
@@ -300,7 +300,7 @@ private:
     RegistrationParams params_;
     sycl_utils::DeviceQueue queue_;
     PointCloudShared::Ptr aligned_ = nullptr;
-    shared_vector_ptr<knn_search::KNNResult> neighbors_ = nullptr;
+    shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
     shared_vector_ptr<LinearlizedResult> linearlized_on_host_ = nullptr;
     shared_vector_ptr<float> error_on_host_ = nullptr;
@@ -428,7 +428,7 @@ private:
     template <RobustLossType loss = RobustLossType::NONE>
     std::tuple<float, uint32_t> compute_error_parallel_reduction(const PointCloudShared& source,
                                                                  const PointCloudShared& target,
-                                                                 const knn_search::KNNResult& knn_results,
+                                                                 const knn::KNNResult& knn_results,
                                                                  const Eigen::Matrix4f transT,
                                                                  float max_correspondence_distance_2) {
         shared_vector<float> error(1, 0.0f, shared_allocator<float>(*this->queue_.ptr));
@@ -499,7 +499,7 @@ private:
     }
 
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
-                                              const knn_search::KNNResult& knn_results, const Eigen::Matrix4f transT,
+                                              const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
                                               float max_correspondence_distance_2) {
         if (this->params_.robust.type == RobustLossType::NONE) {
             return this->compute_error_parallel_reduction<RobustLossType::NONE>(  //
