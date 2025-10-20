@@ -8,25 +8,17 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
-#include <vector>
-
 #include <sycl/sycl.hpp>
-
-#include <sycl_points/algorithms/knn_search.hpp>
+#include <sycl_points/algorithms/knn/result.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
+#include <vector>
 
 namespace sycl_points {
 
 namespace algorithms {
 
-namespace octree {
-
-/// @brief Result container for radius or k-nearest neighbor queries executed on the Octree.
-/// @details The interface mirrors the KNNResult structure so that the callers can reuse
-///          existing post-processing utilities. Only the allocation routine is provided here;
-///          the actual search logic will be implemented in a later change.
-using KNNResult = knn_search::KNNResult;
+namespace knn {
 
 /// @brief Octree data structure that will support parallel construction and neighbour search on SYCL devices.
 class Octree {
@@ -185,16 +177,16 @@ inline sycl::event Octree::build_structure_async() {
     const size_t work_group_size = 128;
     const size_t group_count = (point_count + work_group_size - 1) / work_group_size;
 
-    bbox_group_mins_ = std::make_shared<shared_vector<sycl::float3>>(group_count,
-                                                                     sycl::float3(std::numeric_limits<float>::infinity(),
-                                                                                  std::numeric_limits<float>::infinity(),
-                                                                                  std::numeric_limits<float>::infinity()),
-                                                                     *queue_.ptr);
-    bbox_group_maxs_ = std::make_shared<shared_vector<sycl::float3>>(group_count,
-                                                                     sycl::float3(std::numeric_limits<float>::lowest(),
-                                                                                  std::numeric_limits<float>::lowest(),
-                                                                                  std::numeric_limits<float>::lowest()),
-                                                                     *queue_.ptr);
+    bbox_group_mins_ = std::make_shared<shared_vector<sycl::float3>>(
+        group_count,
+        sycl::float3(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                     std::numeric_limits<float>::infinity()),
+        *queue_.ptr);
+    bbox_group_maxs_ = std::make_shared<shared_vector<sycl::float3>>(
+        group_count,
+        sycl::float3(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                     std::numeric_limits<float>::lowest()),
+        *queue_.ptr);
 
     auto points_ptr = target_cloud_->points->data();
     auto group_mins_ptr = bbox_group_mins_->data();
@@ -211,11 +203,9 @@ inline sycl::event Octree::build_structure_async() {
                 const size_t local_id = item.get_local_linear_id();
                 const size_t group_id = item.get_group_linear_id();
                 const size_t global_range = item.get_global_range(0);
-                sycl::float3 local_min(std::numeric_limits<float>::infinity(),
-                                       std::numeric_limits<float>::infinity(),
+                sycl::float3 local_min(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
                                        std::numeric_limits<float>::infinity());
-                sycl::float3 local_max(std::numeric_limits<float>::lowest(),
-                                       std::numeric_limits<float>::lowest(),
+                sycl::float3 local_max(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
                                        std::numeric_limits<float>::lowest());
 
                 for (size_t idx = item.get_global_linear_id(); idx < point_count; idx += global_range) {
@@ -442,15 +432,15 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
 
 inline float Octree::distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                       const sycl::float3& point) {
-    const float dx = (point.x() < min_bounds.x()) ? (min_bounds.x() - point.x())
-                    : (point.x() > max_bounds.x()) ? (point.x() - max_bounds.x())
-                                                   : 0.0f;
-    const float dy = (point.y() < min_bounds.y()) ? (min_bounds.y() - point.y())
-                    : (point.y() > max_bounds.y()) ? (point.y() - max_bounds.y())
-                                                   : 0.0f;
-    const float dz = (point.z() < min_bounds.z()) ? (min_bounds.z() - point.z())
-                    : (point.z() > max_bounds.z()) ? (point.z() - max_bounds.z())
-                                                   : 0.0f;
+    const float dx = (point.x() < min_bounds.x())   ? (min_bounds.x() - point.x())
+                     : (point.x() > max_bounds.x()) ? (point.x() - max_bounds.x())
+                                                    : 0.0f;
+    const float dy = (point.y() < min_bounds.y())   ? (min_bounds.y() - point.y())
+                     : (point.y() > max_bounds.y()) ? (point.y() - max_bounds.y())
+                                                    : 0.0f;
+    const float dz = (point.z() < min_bounds.z())   ? (min_bounds.z() - point.z())
+                     : (point.z() > max_bounds.z()) ? (point.z() - max_bounds.z())
+                                                    : 0.0f;
     return dx * dx + dy * dy + dz * dz;
 }
 
@@ -638,9 +628,8 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                         if (child_idx < 0) {
                             continue;
                         }
-                        const float child_dist =
-                            distance_to_aabb(nodes_ptr[child_idx].min_bounds, nodes_ptr[child_idx].max_bounds,
-                                             query_point_vec);
+                        const float child_dist = distance_to_aabb(nodes_ptr[child_idx].min_bounds,
+                                                                  nodes_ptr[child_idx].max_bounds, query_point_vec);
                         if (child_dist <= current_worst()) {
                             push_node(child_idx, child_dist);
                         }
@@ -655,7 +644,6 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 --heap_size;
                 sift_down(0, heap_size);
             }
-
         });
     });
     event.wait();
@@ -663,9 +651,8 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
     return result;
 }
 
-}  // namespace octree
+}  // namespace knn
 
 }  // namespace algorithms
 
 }  // namespace sycl_points
-

@@ -4,8 +4,8 @@
 #include <random>
 #include <sycl_points/algorithms/knn/bruteforce.hpp>
 #include <sycl_points/algorithms/knn/kdtree.hpp>
+#include <sycl_points/algorithms/knn/octree.hpp>
 #include <sycl_points/algorithms/knn/result.hpp>
-#include <sycl_points/algorithms/octree.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
 #include <tuple>
@@ -62,7 +62,7 @@ TEST(OctreeTest, CompareWithBruteForceInterfaceOnly) {
         sycl_points::PointCloudShared target_cloud(queue, target_cpu);
         sycl_points::PointCloudShared query_cloud(queue, query_cpu);
 
-        auto octree = sycl_points::algorithms::octree::Octree::build(queue, target_cloud, 0.5f);
+        auto octree = sycl_points::algorithms::knn::Octree::build(queue, target_cloud, 0.5f);
         auto octree_result = octree->knn_search(query_cloud, k);
         auto bruteforce_result =
             sycl_points::algorithms::knn::knn_search_bruteforce(queue, query_cloud, target_cloud, k);
@@ -110,7 +110,7 @@ TEST(OctreeTest, BenchmarkOctreeAgainstKDTree) {
 
             auto run_octree_iteration = [&](size_t knn_k) {
                 const auto build_start = Clock::now();
-                auto tree = sycl_points::algorithms::octree::Octree::build(queue, target_cloud, leaf_size);
+                auto tree = sycl_points::algorithms::knn::Octree::build(queue, target_cloud, leaf_size);
                 const auto build_end = Clock::now();
                 const auto search_start = Clock::now();
                 auto result = tree->knn_search(query_cloud, knn_k);
