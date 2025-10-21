@@ -27,7 +27,6 @@ int main() {
 
     const float voxel_size = 0.25f;
     const size_t num_neighbors = 10;
-    constexpr size_t MAX_K = 10;
 
     sycl_points::algorithms::registration::RegistrationParams param;
     param.max_iterations = 10;
@@ -78,8 +77,8 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        const auto source_neighbors = source_tree->knn_search<MAX_K>(source_downsampled, num_neighbors);
-        const auto target_neighbors = target_tree->knn_search<MAX_K>(target_downsampled, num_neighbors);
+        const auto source_neighbors = source_tree->knn_search(source_downsampled, num_neighbors);
+        const auto target_neighbors = target_tree->knn_search(target_downsampled, num_neighbors);
         auto dt_knn_search_for_covs =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
