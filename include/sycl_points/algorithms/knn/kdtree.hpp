@@ -500,38 +500,6 @@ public:
         }
     }
 
-    /// @brief kNN search
-    /// @param queries query points
-    /// @param k number of search nearrest neightbor
-    /// @param depends depends sycl events
-    /// @return knn search result
-    KNNResult knn_search(const PointCloudShared& queries, const size_t k,
-                         const std::vector<sycl::event>& depends = std::vector<sycl::event>())  const {
-        KNNResult result;
-        knn_search_async(queries.points_ptr(), queries.size(), k, result, depends).wait();
-        return result;
-    }
-
-    /// @brief async nearest neighbor search
-    /// @param queries query points
-    /// @param result Search result
-    /// @param depends depends sycl events
-    /// @return knn search event
-    sycl_utils::events nearest_neighbor_search_async(
-        const PointCloudShared& queries, KNNResult& result,
-        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
-        return knn_search_async(queries, 1, result, depends);
-    }
-
-    /// @brief nearest neighbor search
-    /// @param queries query points
-    /// @param result Search result
-    /// @param depends depends sycl events
-    /// @return knn search event
-    void nearest_neighbor_search(const PointCloudShared& queries, KNNResult& result,
-                                 const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
-        nearest_neighbor_search_async(queries, result, depends).wait();
-    }
 };
 
 }  // namespace knn
