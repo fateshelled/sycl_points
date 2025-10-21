@@ -170,52 +170,93 @@ struct PointCloudShared {
         copy_events.wait();
     }
 
-    /// @brief Copy from other shared point cloud
+    /// @brief Copy from other shared point cloud using the same queue as the source.
     /// @param other shared point cloud
-    PointCloudShared(const PointCloudShared& other) : queue(other.queue) {
+    PointCloudShared(const PointCloudShared& other) : PointCloudShared(other.queue, other) {}
+
+    /// @brief Copy from other shared point cloud onto the specified queue
+    /// @param target_queue destination queue
+    /// @param other shared point cloud
+    PointCloudShared(const sycl_utils::DeviceQueue& target_queue, const PointCloudShared& other) : queue(target_queue) {
         const size_t N = other.size();
+        const bool same_context = this->queue.ptr && other.queue.ptr &&
+                                  this->queue.ptr->get_context() == other.queue.ptr->get_context();
         sycl_utils::events copy_events;
 
         if (other.has_cov()) {
             this->covs = std::make_shared<CovarianceContainerShared>(N, *this->queue.ptr);
-            copy_events += this->queue.ptr->memcpy(this->covs->data(), other.covs->data(), N * sizeof(Covariance));
+            if (same_context) {
+                copy_events +=
+                    this->queue.ptr->memcpy(this->covs->data(), other.covs->data(), N * sizeof(Covariance));
+            } else {
+                this->covs->assign(other.covs->begin(), other.covs->end());
+            }
         } else {
             this->covs = std::make_shared<CovarianceContainerShared>(0, *this->queue.ptr);
         }
 
         if (other.has_normal()) {
             this->normals = std::make_shared<NormalContainerShared>(N, *this->queue.ptr);
-            copy_events += this->queue.ptr->memcpy(this->normals->data(), other.normals->data(), N * sizeof(Normal));
+            if (same_context) {
+                copy_events +=
+                    this->queue.ptr->memcpy(this->normals->data(), other.normals->data(), N * sizeof(Normal));
+            } else {
+                this->normals->assign(other.normals->begin(), other.normals->end());
+            }
         } else {
             this->normals = std::make_shared<NormalContainerShared>(0, *this->queue.ptr);
         }
+
         if (other.has_rgb()) {
             this->rgb = std::make_shared<RGBContainerShared>(N, *this->queue.ptr);
-            copy_events += this->queue.ptr->memcpy(this->rgb->data(), other.rgb->data(), N * sizeof(RGBType));
+            if (same_context) {
+                copy_events +=
+                    this->queue.ptr->memcpy(this->rgb->data(), other.rgb->data(), N * sizeof(RGBType));
+            } else {
+                this->rgb->assign(other.rgb->begin(), other.rgb->end());
+            }
         } else {
             this->rgb = std::make_shared<RGBContainerShared>(0, *this->queue.ptr);
         }
+
         if (other.has_color_gradient()) {
             this->color_gradients = std::make_shared<ColorGradientContainerShared>(N, *this->queue.ptr);
-            copy_events += this->queue.ptr->memcpy(this->color_gradients->data(), other.color_gradients->data(),
-                                                   N * sizeof(ColorGradient));
+            if (same_context) {
+                copy_events += this->queue.ptr->memcpy(this->color_gradients->data(),
+                                                       other.color_gradients->data(),
+                                                       N * sizeof(ColorGradient));
+            } else {
+                this->color_gradients->assign(other.color_gradients->begin(), other.color_gradients->end());
+            }
         } else {
             this->color_gradients = std::make_shared<ColorGradientContainerShared>(0, *this->queue.ptr);
         }
+
         if (other.has_intensity()) {
             this->intensities = std::make_shared<IntensityContainerShared>(N, *this->queue.ptr);
-            copy_events +=
-                this->queue.ptr->memcpy(this->intensities->data(), other.intensities->data(), N * sizeof(float));
+            if (same_context) {
+                copy_events += this->queue.ptr->memcpy(
+                    this->intensities->data(), other.intensities->data(), N * sizeof(float));
+            } else {
+                this->intensities->assign(other.intensities->begin(), other.intensities->end());
+            }
         } else {
             this->intensities = std::make_shared<IntensityContainerShared>(0, *this->queue.ptr);
         }
 
         this->points = std::make_shared<PointContainerShared>(N, *this->queue.ptr);
         if (N > 0) {
-            copy_events += this->queue.ptr->memcpy(this->points->data(), other.points->data(), N * sizeof(PointType));
+            if (same_context) {
+                copy_events +=
+                    this->queue.ptr->memcpy(this->points->data(), other.points->data(), N * sizeof(PointType));
+            } else {
+                this->points->assign(other.points->begin(), other.points->end());
+            }
         }
 
-        copy_events.wait();
+        if (same_context) {
+            copy_events.wait();
+        }
     }
 
     /// @brief destructor
