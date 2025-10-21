@@ -68,7 +68,6 @@ public:
     [[nodiscard]] size_t size() const { return target_cloud_ ? target_cloud_->size() : 0; }
 
 private:
-    void copy_point_cloud(const PointCloudShared& points);
     sycl::event build_structure_async();
     void finalize_structure();
     void build_octree();
@@ -103,59 +102,6 @@ inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, si
                 std::numeric_limits<float>::lowest()),
       nodes_(shared_allocator<Node>(*queue_.ptr)),
       point_indices_(shared_allocator<int32_t>(*queue_.ptr)) {}
-
-inline void Octree::copy_point_cloud(const PointCloudShared& points) {
-    if (!queue_.ptr) {
-        throw std::runtime_error("Octree queue is not initialised");
-    }
-    if (!points.queue.ptr) {
-        throw std::runtime_error("Source point cloud queue is not initialised");
-    }
-    if (!points.points) {
-        throw std::runtime_error("Source point cloud points are not initialised");
-    }
-
-    const bool same_context = queue_.ptr->get_context() == points.queue.ptr->get_context();
-    if (same_context) {
-        target_cloud_ = std::make_shared<PointCloudShared>(points);
-        return;
-    }
-
-    auto cloned_cloud = std::make_shared<PointCloudShared>(queue_);
-    cloned_cloud->points->assign(points.points->begin(), points.points->end());
-
-    if (points.covs && points.has_cov()) {
-        cloned_cloud->covs->assign(points.covs->begin(), points.covs->end());
-    } else {
-        cloned_cloud->covs->clear();
-    }
-
-    if (points.normals && points.has_normal()) {
-        cloned_cloud->normals->assign(points.normals->begin(), points.normals->end());
-    } else {
-        cloned_cloud->normals->clear();
-    }
-
-    if (points.rgb && points.has_rgb()) {
-        cloned_cloud->rgb->assign(points.rgb->begin(), points.rgb->end());
-    } else {
-        cloned_cloud->rgb->clear();
-    }
-
-    if (points.color_gradients && points.has_color_gradient()) {
-        cloned_cloud->color_gradients->assign(points.color_gradients->begin(), points.color_gradients->end());
-    } else {
-        cloned_cloud->color_gradients->clear();
-    }
-
-    if (points.intensities && points.has_intensity()) {
-        cloned_cloud->intensities->assign(points.intensities->begin(), points.intensities->end());
-    } else {
-        cloned_cloud->intensities->clear();
-    }
-
-    target_cloud_ = std::move(cloned_cloud);
-}
 
 inline sycl::event Octree::build_structure_async() {
     const size_t point_count = size();
@@ -447,7 +393,11 @@ inline float Octree::distance_to_aabb(const sycl::float3& min_bounds, const sycl
 inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points, float resolution,
                                  size_t max_points_per_node) {
     auto tree = std::make_shared<Octree>(queue, resolution, max_points_per_node);
-    tree->copy_point_cloud(points);
+    if (!queue.ptr) {
+        throw std::runtime_error("Octree queue is not initialised");
+    }
+
+    tree->target_cloud_ = std::make_shared<PointCloudShared>(queue, points);
     auto event = tree->build_structure_async();
     event.wait();
     tree->finalize_structure();
