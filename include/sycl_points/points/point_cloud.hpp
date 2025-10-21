@@ -345,7 +345,7 @@ private:
         }
 
         if (!src) {
-            throw std::runtime_error("Source point cloud attribute is not initialised");
+            return;
         }
 
         if (same_context) {
