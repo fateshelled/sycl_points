@@ -396,12 +396,6 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
     if (!queue.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
     }
-    if (!points.queue.ptr) {
-        throw std::runtime_error("Source point cloud queue is not initialised");
-    }
-    if (!points.points) {
-        throw std::runtime_error("Source point cloud points are not initialised");
-    }
 
     tree->target_cloud_ = std::make_shared<PointCloudShared>(queue, points);
     auto event = tree->build_structure_async();
