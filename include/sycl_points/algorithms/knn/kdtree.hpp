@@ -157,15 +157,17 @@ public:
                              size_t leaf_threshold = 16) {
         const size_t n = points.size();
 
-        KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
         if (n == 0) {
+            KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
             flatTree->tree_->resize(0);
             return flatTree;
         }
 
+        std::vector<FlatKDNode> tree;
+
         // Estimate tree size with some margin
         const size_t estimatedSize = n * 2;
-        flatTree->tree_->resize(estimatedSize);
+        tree.resize(estimatedSize);
 
         std::vector<uint32_t> globalIndices(n);
         std::iota(globalIndices.begin(), globalIndices.end(), 0);
@@ -190,7 +192,7 @@ public:
 
             if (startIdx > endIdx || indices_size == 0) continue;
 
-            auto& node = (*flatTree->tree_)[nodeIdx];
+            auto& node = tree[nodeIdx];
 
             // Check if this should be a leaf node
             if (indices_size <= leaf_threshold) {
@@ -199,7 +201,7 @@ public:
 
                 for (size_t i = 0; i < indices_size; ++i) {
                     const auto pointIdx = globalIndices[startIdx + i];
-                    auto& leafNode = (*flatTree->tree_)[currentLeafIdx];
+                    auto& leafNode = tree[currentLeafIdx];
 
                     leafNode.pt = points[pointIdx];
                     leafNode.idx = pointIdx;
@@ -263,7 +265,10 @@ public:
         }
 
         // Trim the tree to actual used size
-        flatTree->tree_->resize(nextNodeIdx);
+        tree.resize(nextNodeIdx);
+        KDTree::Ptr flatTree = std::make_shared<KDTree>(q);
+        flatTree->tree_ = std::make_shared<FlatKDNodeVector>(nextNodeIdx, *q.ptr);
+        std::copy(tree.begin(), tree.end(), flatTree->tree_->begin());
         return flatTree;
     }
 
