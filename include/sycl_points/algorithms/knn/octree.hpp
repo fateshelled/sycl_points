@@ -85,8 +85,6 @@ private:
     size_t max_points_per_node_;
     sycl::float3 bbox_min_;
     sycl::float3 bbox_max_;
-    shared_vector_ptr<sycl::float3> bbox_group_mins_ = nullptr;
-    shared_vector_ptr<sycl::float3> bbox_group_maxs_ = nullptr;
     shared_vector<Node> nodes_;
     shared_vector<int32_t> point_indices_;
 };
@@ -123,72 +121,43 @@ inline sycl::event Octree::build_structure_async() {
     const size_t work_group_size = 128;
     const size_t group_count = (point_count + work_group_size - 1) / work_group_size;
 
-    bbox_group_mins_ = std::make_shared<shared_vector<sycl::float3>>(
-        group_count,
-        sycl::float3(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
-                     std::numeric_limits<float>::infinity()),
-        *queue_.ptr);
-    bbox_group_maxs_ = std::make_shared<shared_vector<sycl::float3>>(
-        group_count,
-        sycl::float3(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
-                     std::numeric_limits<float>::lowest()),
-        *queue_.ptr);
+    const auto min_identity = sycl::float3(std::numeric_limits<float>::infinity(),
+                                           std::numeric_limits<float>::infinity(),
+                                           std::numeric_limits<float>::infinity());
+    const auto max_identity = sycl::float3(std::numeric_limits<float>::lowest(),
+                                           std::numeric_limits<float>::lowest(),
+                                           std::numeric_limits<float>::lowest());
+
+    bbox_min_ = min_identity;
+    bbox_max_ = max_identity;
 
     auto points_ptr = target_cloud_->points->data();
-    auto group_mins_ptr = bbox_group_mins_->data();
-    auto group_maxs_ptr = bbox_group_maxs_->data();
+    sycl::buffer<sycl::float3, 1> min_buffer(&bbox_min_, sycl::range<1>(1));
+    sycl::buffer<sycl::float3, 1> max_buffer(&bbox_max_, sycl::range<1>(1));
 
     const size_t global_size = group_count * work_group_size;
     auto bbox_event = queue_.ptr->submit([=](sycl::handler& handler) {
-        sycl::local_accessor<sycl::float3, 1> local_mins(sycl::range<1>(work_group_size), handler);
-        sycl::local_accessor<sycl::float3, 1> local_maxs(sycl::range<1>(work_group_size), handler);
+        auto min_reduction = sycl::reduction(min_buffer, handler, min_identity, [](const sycl::float3& a,
+                                                                                   const sycl::float3& b) {
+            return sycl::float3(sycl::min(a.x(), b.x()), sycl::min(a.y(), b.y()), sycl::min(a.z(), b.z()));
+        });
+        auto max_reduction = sycl::reduction(max_buffer, handler, max_identity, [](const sycl::float3& a,
+                                                                                   const sycl::float3& b) {
+            return sycl::float3(sycl::max(a.x(), b.x()), sycl::max(a.y(), b.y()), sycl::max(a.z(), b.z()));
+        });
 
         handler.parallel_for(
             sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(work_group_size)),
-            [=](sycl::nd_item<1> item) {
-                const size_t local_id = item.get_local_linear_id();
-                const size_t group_id = item.get_group_linear_id();
+            min_reduction, max_reduction,
+            [=](sycl::nd_item<1> item, auto& min_acc, auto& max_acc) {
+                const size_t global_id = item.get_global_linear_id();
                 const size_t global_range = item.get_global_range(0);
-                sycl::float3 local_min(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
-                                       std::numeric_limits<float>::infinity());
-                sycl::float3 local_max(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
-                                       std::numeric_limits<float>::lowest());
 
-                for (size_t idx = item.get_global_linear_id(); idx < point_count; idx += global_range) {
+                for (size_t idx = global_id; idx < point_count; idx += global_range) {
                     const auto point = points_ptr[idx];
-                    local_min.x() = sycl::min(local_min.x(), point.x());
-                    local_min.y() = sycl::min(local_min.y(), point.y());
-                    local_min.z() = sycl::min(local_min.z(), point.z());
-                    local_max.x() = sycl::max(local_max.x(), point.x());
-                    local_max.y() = sycl::max(local_max.y(), point.y());
-                    local_max.z() = sycl::max(local_max.z(), point.z());
-                }
-
-                local_mins[local_id] = local_min;
-                local_maxs[local_id] = local_max;
-                item.barrier(sycl::access::fence_space::local_space);
-
-                for (size_t stride = work_group_size / 2; stride > 0; stride >>= 1) {
-                    if (local_id < stride) {
-                        auto other_min = local_mins[local_id + stride];
-                        auto other_max = local_maxs[local_id + stride];
-                        auto current_min = local_mins[local_id];
-                        auto current_max = local_maxs[local_id];
-                        current_min.x() = sycl::min(current_min.x(), other_min.x());
-                        current_min.y() = sycl::min(current_min.y(), other_min.y());
-                        current_min.z() = sycl::min(current_min.z(), other_min.z());
-                        current_max.x() = sycl::max(current_max.x(), other_max.x());
-                        current_max.y() = sycl::max(current_max.y(), other_max.y());
-                        current_max.z() = sycl::max(current_max.z(), other_max.z());
-                        local_mins[local_id] = current_min;
-                        local_maxs[local_id] = current_max;
-                    }
-                    item.barrier(sycl::access::fence_space::local_space);
-                }
-
-                if (local_id == 0) {
-                    group_mins_ptr[group_id] = local_mins[0];
-                    group_maxs_ptr[group_id] = local_maxs[0];
+                    const sycl::float3 point_vec(point.x(), point.y(), point.z());
+                    min_acc.combine(point_vec);
+                    max_acc.combine(point_vec);
                 }
             });
     });
@@ -199,38 +168,11 @@ inline sycl::event Octree::build_structure_async() {
 inline void Octree::finalize_structure() {
     const size_t point_count = size();
 
-    if (point_count == 0 || !bbox_group_mins_ || !bbox_group_maxs_) {
-        bbox_group_mins_.reset();
-        bbox_group_maxs_.reset();
-        if (point_count == 0) {
-            nodes_.clear();
-            point_indices_.clear();
-        }
+    if (point_count == 0) {
+        nodes_.clear();
+        point_indices_.clear();
         return;
     }
-
-    sycl::float3 min_bounds(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
-                            std::numeric_limits<float>::infinity());
-    sycl::float3 max_bounds(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
-                            std::numeric_limits<float>::lowest());
-
-    for (const auto& partial_min : *bbox_group_mins_) {
-        min_bounds.x() = std::min(min_bounds.x(), partial_min.x());
-        min_bounds.y() = std::min(min_bounds.y(), partial_min.y());
-        min_bounds.z() = std::min(min_bounds.z(), partial_min.z());
-    }
-
-    for (const auto& partial_max : *bbox_group_maxs_) {
-        max_bounds.x() = std::max(max_bounds.x(), partial_max.x());
-        max_bounds.y() = std::max(max_bounds.y(), partial_max.y());
-        max_bounds.z() = std::max(max_bounds.z(), partial_max.z());
-    }
-
-    bbox_min_ = min_bounds;
-    bbox_max_ = max_bounds;
-
-    bbox_group_mins_.reset();
-    bbox_group_maxs_.reset();
 
     build_octree();
 }
