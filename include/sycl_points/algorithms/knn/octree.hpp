@@ -73,8 +73,9 @@ private:
     void build_octree();
     [[nodiscard]] static sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
     int32_t build_node_recursive(const sycl::float3& min_bounds, const sycl::float3& max_bounds, size_t start,
-                                 size_t count, size_t depth, std::vector<int32_t>& scratch,
-                                 const std::vector<PointType>& host_points);
+                                 size_t count, size_t depth, std::vector<Node>& host_nodes,
+                                 std::vector<int32_t>& indices, std::vector<int32_t>& scratch,
+                                 const std::vector<PointType>& host_points) const;
     [[nodiscard]] static float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                                 const sycl::float3& point);
 
@@ -190,21 +191,32 @@ inline void Octree::build_octree() {
         return;
     }
 
-    nodes_.reserve(point_count);
-    point_indices_.resize(point_count);
-    std::iota(point_indices_.begin(), point_indices_.end(), 0);
+    std::vector<Node> host_nodes;
+    host_nodes.reserve(point_count);
+
+    std::vector<int32_t> indices(point_count);
+    std::iota(indices.begin(), indices.end(), 0);
     std::vector<int32_t> scratch(point_count);
 
     // Creating a CPU-local copy significantly reduces shared USM page migrations during recursion.
     std::vector<PointType> host_points(point_count);
     std::copy(target_cloud_->points->begin(), target_cloud_->points->end(), host_points.begin());
 
-    build_node_recursive(bbox_min_, bbox_max_, 0, point_count, 0, scratch, host_points);
+    build_node_recursive(bbox_min_, bbox_max_, 0, point_count, 0, host_nodes, indices, scratch, host_points);
+
+    shared_allocator<Node> node_alloc(*queue_.ptr);
+    nodes_ = shared_vector<Node>(host_nodes.size(), Node{}, node_alloc);
+    std::copy(host_nodes.begin(), host_nodes.end(), nodes_.begin());
+
+    shared_allocator<int32_t> index_alloc(*queue_.ptr);
+    point_indices_ = shared_vector<int32_t>(indices.size(), 0, index_alloc);
+    std::copy(indices.begin(), indices.end(), point_indices_.begin());
 }
 
 inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
-                                            size_t start, size_t count, size_t depth, std::vector<int32_t>& scratch,
-                                            const std::vector<PointType>& host_points) {
+                                            size_t start, size_t count, size_t depth, std::vector<Node>& host_nodes,
+                                            std::vector<int32_t>& indices, std::vector<int32_t>& scratch,
+                                            const std::vector<PointType>& host_points) const {
     Node node{};
     node.min_bounds = min_bounds;
     node.max_bounds = max_bounds;
@@ -213,8 +225,8 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
     node.is_leaf = 1;
     std::fill(std::begin(node.children), std::end(node.children), -1);
 
-    const int32_t node_index = static_cast<int32_t>(nodes_.size());
-    nodes_.push_back(node);
+    const int32_t node_index = static_cast<int32_t>(host_nodes.size());
+    host_nodes.push_back(node);
 
     if (count == 0) {
         return node_index;
@@ -232,7 +244,7 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
     std::array<size_t, 8> counts{};
     const auto* points_ptr = host_points.data();
     for (size_t i = 0; i < count; ++i) {
-        const auto point = points_ptr[point_indices_[start + i]];
+        const auto point = points_ptr[indices[start + i]];
         int octant = 0;
         if (point.x() >= center.x()) {
             octant |= 1;
@@ -255,7 +267,7 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
 
     auto write_offsets = offsets;
     for (size_t i = 0; i < count; ++i) {
-        const int32_t point_index = point_indices_[start + i];
+        const int32_t point_index = indices[start + i];
         const auto point = points_ptr[point_index];
         int octant = 0;
         if (point.x() >= center.x()) {
@@ -271,10 +283,10 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
     }
 
     for (size_t i = 0; i < count; ++i) {
-        point_indices_[start + i] = scratch[start + i];
+        indices[start + i] = scratch[start + i];
     }
 
-    nodes_[node_index].is_leaf = 0;
+    host_nodes[node_index].is_leaf = 0;
 
     for (size_t child = 0; child < counts.size(); ++child) {
         const size_t child_count = counts[child];
@@ -293,14 +305,14 @@ inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, cons
         child_min.z() = (child & 4) ? center.z() : min_bounds.z();
         child_max.z() = (child & 4) ? max_bounds.z() : center.z();
 
-        const int32_t child_index =
-            build_node_recursive(child_min, child_max, child_start, child_count, depth + 1, scratch, host_points);
-        nodes_[node_index].children[child] = child_index;
+        const int32_t child_index = build_node_recursive(child_min, child_max, child_start, child_count, depth + 1,
+                                                         host_nodes, indices, scratch, host_points);
+        host_nodes[node_index].children[child] = child_index;
     }
 
-    if (std::all_of(std::begin(nodes_[node_index].children), std::end(nodes_[node_index].children),
+    if (std::all_of(std::begin(host_nodes[node_index].children), std::end(host_nodes[node_index].children),
                     [](int32_t idx) { return idx < 0; })) {
-        nodes_[node_index].is_leaf = 1;
+        host_nodes[node_index].is_leaf = 1;
     }
 
     return node_index;
