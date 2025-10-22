@@ -741,6 +741,7 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
 
     const size_t target_size = total_point_count_;
     const size_t node_count = nodes_.size();
+    const int32_t root_index = root_index_;
 
     KNNResult result;
     const size_t query_size = queries.points->size();
@@ -865,11 +866,13 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 }
             };
 
-            if (node_count == 0) {
+            if (node_count == 0 || root_index < 0) {
                 return;
             }
 
-            push_node(0, distance_to_aabb(nodes_ptr[0].min_bounds, nodes_ptr[0].max_bounds, query_point_vec));
+            push_node(root_index,
+                      distance_to_aabb(nodes_ptr[root_index].min_bounds, nodes_ptr[root_index].max_bounds,
+                                       query_point_vec));
 
             while (stack_size > 0) {
                 size_t best_pos = 0;
