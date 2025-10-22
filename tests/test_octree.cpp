@@ -95,11 +95,12 @@ TEST(OctreeTest, BenchmarkOctreeAgainstKDTree) {
         const float point_range = 50.0f;
         const float leaf_size = 0.5f;
         const size_t random_seed = 1337;
-        const size_t benchmark_runs = 1;
+        const size_t benchmark_runs = 100;
 
         const std::vector<std::pair<size_t, size_t>> benchmark_cases = {
-            {2000, 200},
             {10000, 1000},
+            {50000, 5000},
+            {100000, 10000},
         };
 
         const std::vector<size_t> k_values = {1, 10, 20, 30};
