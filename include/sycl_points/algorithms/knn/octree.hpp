@@ -70,10 +70,6 @@ public:
 private:
     sycl::event build_structure_async();
     void build_octree();
-    int32_t build_node_recursive(const sycl::float3& min_bounds, const sycl::float3& max_bounds, size_t start,
-                                 size_t count, size_t depth, std::vector<Node>& host_nodes,
-                                 std::vector<int32_t>& indices, std::vector<int32_t>& scratch,
-                                 const std::vector<PointType>& host_points) const;
     SYCL_EXTERNAL static sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
     SYCL_EXTERNAL static float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                                 const sycl::float3& point);
@@ -178,11 +174,143 @@ inline void Octree::build_octree() {
     std::iota(indices.begin(), indices.end(), 0);
     std::vector<int32_t> scratch(point_count);
 
-    // Creating a CPU-local copy significantly reduces shared USM page migrations during recursion.
+    // Creating a CPU-local copy significantly reduces shared USM page migrations during iterative subdivision.
     std::vector<PointType> host_points(point_count);
     std::copy(target_cloud_->points->begin(), target_cloud_->points->end(), host_points.begin());
 
-    build_node_recursive(bbox_min_, bbox_max_, 0, point_count, 0, host_nodes, indices, scratch, host_points);
+    // Build the tree incrementally by expanding nodes in a frontier, following the i-octree strategy.
+    struct BuildTask {
+        sycl::float3 min_bounds;
+        sycl::float3 max_bounds;
+        size_t start;
+        size_t count;
+        size_t depth;
+        int32_t node_index;
+    };
+
+    host_nodes.push_back(Node{});
+    host_nodes[0].min_bounds = bbox_min_;
+    host_nodes[0].max_bounds = bbox_max_;
+    host_nodes[0].start_index = 0;
+    host_nodes[0].point_count = static_cast<uint32_t>(point_count);
+    host_nodes[0].is_leaf = 1;
+    std::fill(std::begin(host_nodes[0].children), std::end(host_nodes[0].children), -1);
+
+    std::vector<BuildTask> frontier;
+    frontier.push_back({bbox_min_, bbox_max_, 0, point_count, 0, 0});
+
+    const auto* points_ptr = host_points.data();
+
+    while (!frontier.empty()) {
+        const BuildTask task = frontier.back();
+        frontier.pop_back();
+
+        Node& current_node = host_nodes[task.node_index];
+        current_node.min_bounds = task.min_bounds;
+        current_node.max_bounds = task.max_bounds;
+        current_node.start_index = static_cast<uint32_t>(task.start);
+        current_node.point_count = static_cast<uint32_t>(task.count);
+        current_node.is_leaf = 1;
+        std::fill(std::begin(current_node.children), std::end(current_node.children), -1);
+
+        if (task.count == 0) {
+            continue;
+        }
+
+        const auto lengths = axis_lengths(task.min_bounds, task.max_bounds);
+        const float max_axis = std::max({lengths.x(), lengths.y(), lengths.z()});
+        if (task.count <= max_points_per_node_ || max_axis <= resolution_ || task.depth >= 32) {
+            continue;
+        }
+
+        const sycl::float3 center((task.min_bounds.x() + task.max_bounds.x()) * 0.5f,
+                                  (task.min_bounds.y() + task.max_bounds.y()) * 0.5f,
+                                  (task.min_bounds.z() + task.max_bounds.z()) * 0.5f);
+
+        std::array<size_t, 8> counts{};
+        for (size_t i = 0; i < task.count; ++i) {
+            const auto point = points_ptr[indices[task.start + i]];
+            int octant = 0;
+            if (point.x() >= center.x()) {
+                octant |= 1;
+            }
+            if (point.y() >= center.y()) {
+                octant |= 2;
+            }
+            if (point.z() >= center.z()) {
+                octant |= 4;
+            }
+            counts[octant]++;
+        }
+
+        size_t total = 0;
+        std::array<size_t, 8> offsets{};
+        for (size_t i = 0; i < counts.size(); ++i) {
+            offsets[i] = total;
+            total += counts[i];
+        }
+
+        auto write_offsets = offsets;
+        for (size_t i = 0; i < task.count; ++i) {
+            const int32_t point_index = indices[task.start + i];
+            const auto point = points_ptr[point_index];
+            int octant = 0;
+            if (point.x() >= center.x()) {
+                octant |= 1;
+            }
+            if (point.y() >= center.y()) {
+                octant |= 2;
+            }
+            if (point.z() >= center.z()) {
+                octant |= 4;
+            }
+            scratch[task.start + write_offsets[octant]++] = point_index;
+        }
+
+        for (size_t i = 0; i < task.count; ++i) {
+            indices[task.start + i] = scratch[task.start + i];
+        }
+
+        current_node.is_leaf = 0;
+
+        bool has_children = false;
+        for (size_t child = 0; child < counts.size(); ++child) {
+            const size_t child_count = counts[child];
+            if (child_count == 0) {
+                continue;
+            }
+
+            const size_t child_start = task.start + offsets[child];
+            sycl::float3 child_min = task.min_bounds;
+            sycl::float3 child_max = task.max_bounds;
+
+            child_min.x() = (child & 1) ? center.x() : task.min_bounds.x();
+            child_max.x() = (child & 1) ? task.max_bounds.x() : center.x();
+            child_min.y() = (child & 2) ? center.y() : task.min_bounds.y();
+            child_max.y() = (child & 2) ? task.max_bounds.y() : center.y();
+            child_min.z() = (child & 4) ? center.z() : task.min_bounds.z();
+            child_max.z() = (child & 4) ? task.max_bounds.z() : center.z();
+
+            Node child_node{};
+            child_node.min_bounds = child_min;
+            child_node.max_bounds = child_max;
+            child_node.start_index = static_cast<uint32_t>(child_start);
+            child_node.point_count = static_cast<uint32_t>(child_count);
+            child_node.is_leaf = 1;
+            std::fill(std::begin(child_node.children), std::end(child_node.children), -1);
+
+            const int32_t child_index = static_cast<int32_t>(host_nodes.size());
+            host_nodes.push_back(child_node);
+            host_nodes[task.node_index].children[child] = child_index;
+            has_children = true;
+
+            frontier.push_back({child_min, child_max, child_start, child_count, task.depth + 1, child_index});
+        }
+
+        if (!has_children) {
+            host_nodes[task.node_index].is_leaf = 1;
+        }
+    }
 
     shared_allocator<Node> node_alloc(*queue_.ptr);
     nodes_ = shared_vector<Node>(host_nodes.size(), Node{}, node_alloc);
@@ -191,111 +319,6 @@ inline void Octree::build_octree() {
     shared_allocator<int32_t> index_alloc(*queue_.ptr);
     point_indices_ = shared_vector<int32_t>(indices.size(), 0, index_alloc);
     std::copy(indices.begin(), indices.end(), point_indices_.begin());
-}
-
-inline int32_t Octree::build_node_recursive(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
-                                            size_t start, size_t count, size_t depth, std::vector<Node>& host_nodes,
-                                            std::vector<int32_t>& indices, std::vector<int32_t>& scratch,
-                                            const std::vector<PointType>& host_points) const {
-    Node node{};
-    node.min_bounds = min_bounds;
-    node.max_bounds = max_bounds;
-    node.start_index = static_cast<uint32_t>(start);
-    node.point_count = static_cast<uint32_t>(count);
-    node.is_leaf = 1;
-    std::fill(std::begin(node.children), std::end(node.children), -1);
-
-    const int32_t node_index = static_cast<int32_t>(host_nodes.size());
-    host_nodes.push_back(node);
-
-    if (count == 0) {
-        return node_index;
-    }
-
-    const auto lengths = axis_lengths(min_bounds, max_bounds);
-    const float max_axis = std::max({lengths.x(), lengths.y(), lengths.z()});
-    if (count <= max_points_per_node_ || max_axis <= resolution_ || depth >= 32) {
-        return node_index;
-    }
-
-    const sycl::float3 center((min_bounds.x() + max_bounds.x()) * 0.5f, (min_bounds.y() + max_bounds.y()) * 0.5f,
-                              (min_bounds.z() + max_bounds.z()) * 0.5f);
-
-    std::array<size_t, 8> counts{};
-    const auto* points_ptr = host_points.data();
-    for (size_t i = 0; i < count; ++i) {
-        const auto point = points_ptr[indices[start + i]];
-        int octant = 0;
-        if (point.x() >= center.x()) {
-            octant |= 1;
-        }
-        if (point.y() >= center.y()) {
-            octant |= 2;
-        }
-        if (point.z() >= center.z()) {
-            octant |= 4;
-        }
-        counts[octant]++;
-    }
-
-    size_t total = 0;
-    std::array<size_t, 8> offsets{};
-    for (size_t i = 0; i < counts.size(); ++i) {
-        offsets[i] = total;
-        total += counts[i];
-    }
-
-    auto write_offsets = offsets;
-    for (size_t i = 0; i < count; ++i) {
-        const int32_t point_index = indices[start + i];
-        const auto point = points_ptr[point_index];
-        int octant = 0;
-        if (point.x() >= center.x()) {
-            octant |= 1;
-        }
-        if (point.y() >= center.y()) {
-            octant |= 2;
-        }
-        if (point.z() >= center.z()) {
-            octant |= 4;
-        }
-        scratch[start + write_offsets[octant]++] = point_index;
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        indices[start + i] = scratch[start + i];
-    }
-
-    host_nodes[node_index].is_leaf = 0;
-
-    for (size_t child = 0; child < counts.size(); ++child) {
-        const size_t child_count = counts[child];
-        if (child_count == 0) {
-            continue;
-        }
-
-        const size_t child_start = start + offsets[child];
-        sycl::float3 child_min = min_bounds;
-        sycl::float3 child_max = max_bounds;
-
-        child_min.x() = (child & 1) ? center.x() : min_bounds.x();
-        child_max.x() = (child & 1) ? max_bounds.x() : center.x();
-        child_min.y() = (child & 2) ? center.y() : min_bounds.y();
-        child_max.y() = (child & 2) ? max_bounds.y() : center.y();
-        child_min.z() = (child & 4) ? center.z() : min_bounds.z();
-        child_max.z() = (child & 4) ? max_bounds.z() : center.z();
-
-        const int32_t child_index = build_node_recursive(child_min, child_max, child_start, child_count, depth + 1,
-                                                         host_nodes, indices, scratch, host_points);
-        host_nodes[node_index].children[child] = child_index;
-    }
-
-    if (std::all_of(std::begin(host_nodes[node_index].children), std::end(host_nodes[node_index].children),
-                    [](int32_t idx) { return idx < 0; })) {
-        host_nodes[node_index].is_leaf = 1;
-    }
-
-    return node_index;
 }
 
 SYCL_EXTERNAL float Octree::distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
