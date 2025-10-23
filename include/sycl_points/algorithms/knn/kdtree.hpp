@@ -107,9 +107,9 @@ inline uint8_t find_axis_variance(const std::vector<PointType, ALLOCATOR>& point
     return 2;
 }
 
-template <size_t MAX_K>
-void insert_to_bestK(NodeEntry* bestK, float dist_sq, int32_t nodeIdx, size_t k, size_t found_num) {
-    if constexpr (MAX_K == 1) {
+inline void insert_to_bestK(NodeEntry* bestK, float dist_sq, int32_t nodeIdx, size_t k, size_t found_num) {
+    // Fast path when only the closest neighbor is requested
+    if (k == 1) {
         bestK[0].nodeIdx = dist_sq < bestK[0].dist_sq ? nodeIdx : bestK[0].nodeIdx;
         bestK[0].dist_sq = dist_sq < bestK[0].dist_sq ? dist_sq : bestK[0].dist_sq;
         return;
@@ -336,7 +336,6 @@ public:
     }
 
     /// @brief async kNN search
-    /// @tparam MAX_K maximum of k
     /// @tparam MAX_DEPTH maximum of search depth
     /// @param queries query points
     /// @param query_size query num
@@ -344,10 +343,14 @@ public:
     /// @param result Search result
     /// @param depends depends sycl events
     /// @return knn search event
-    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
+    template <size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointType* queries, const size_t query_size, const size_t k,
                                         KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
+        if (k == 0) {
+            throw std::runtime_error("`k` must be at least 1.");
+        }
+
         if (query_size == 0) {
             if (result.indices == nullptr || result.distances == nullptr) {
                 result.allocate(this->queue, 0, 0);
@@ -357,14 +360,10 @@ public:
             return sycl_utils::events();
         }
         constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;
-        if (MAX_K < k) {
-            throw std::runtime_error("template arg `MAX_K` must be larger than `k`.");
-        }
 
         const size_t treeSize = this->tree_->size();
 
         // Initialize result structure
-        const size_t total_size = query_size * k;
         if (result.indices == nullptr || result.distances == nullptr) {
             result.allocate(this->queue, query_size, k);
         } else {
@@ -381,18 +380,23 @@ public:
             const auto index_ptr = result.indices->data();
             const auto tree_ptr = (*this->tree_).data();
 
+            // Local memory buffer for per-item best K results (each work-item receives k slots)
+            sycl::local_accessor<NodeEntry, 1> bestK_acc(sycl::range<1>(work_group_size * k), h);
+
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t queryIdx = item.get_global_id(0);
 
                 if (queryIdx >= query_size) return;  // Early return for extra threads
 
+                // Compute pointer to the local portion of bestK for this work-item
+                const size_t local_offset = item.get_local_linear_id() * k;
+                auto bestK = bestK_acc.template get_multi_ptr<sycl::access::decorated::no>().get() + local_offset;
+
                 // Query point
                 const PointType query = query_ptr[queryIdx];
 
-                // Arrays to store K nearest points
-                NodeEntry bestK[MAX_K];
-                // Initialize
-                std::fill(bestK, bestK + MAX_K, NodeEntry{-1, std::numeric_limits<float>::max()});
+                // Initialize the local memory buffer for nearest points
+                std::fill(bestK, bestK + k, NodeEntry{-1, std::numeric_limits<float>::max()});
 
                 // Stack
                 NodeEntry nearStack[MAX_DEPTH_HALF];
@@ -425,7 +429,7 @@ public:
                     const float dist_sq =
                         is_valid ? eigen_utils::dot<4>(diff, diff) : std::numeric_limits<float>::max();
                     found_num = is_valid ? found_num + 1 : found_num;
-                    insert_to_bestK<MAX_K>(bestK, dist_sq, node.idx, k, found_num);
+                    insert_to_bestK(bestK, dist_sq, node.idx, k, found_num);
 
                     // Calculate distance along split axis
                     const float axisDistance = diff[node.axis];
@@ -481,23 +485,13 @@ public:
     sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         constexpr size_t MAX_DEPTH = 32;
-        if (k == 1) {
-            return knn_search_async<1, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
-        } else if (k <= 10) {
-            return knn_search_async<10, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
-        } else if (k <= 20) {
-            return knn_search_async<20, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
-        } else if (k <= 30) {
-            return knn_search_async<30, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
-        } else if (k <= 40) {
-            return knn_search_async<40, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
-        } else if (k <= 50) {
-            return knn_search_async<50, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
-        } else if (k <= 100) {
-            return knn_search_async<100, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
-        } else {
+        constexpr size_t MAX_SUPPORTED_K = 100;  // Prevent excessive local memory consumption
+
+        if (k > MAX_SUPPORTED_K) {
             throw std::runtime_error("`k` is too large. not support.");
         }
+
+        return knn_search_async<MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
     }
 
 };
