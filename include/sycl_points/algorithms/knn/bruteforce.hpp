@@ -4,7 +4,8 @@
 #include <limits>
 #include <memory>
 #include <numeric>
-#include <sycl_points/algorithms/knn/result.hpp>
+#include <string>
+#include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
@@ -22,7 +23,15 @@ namespace knn {
 /// @return knn search result
 inline KNNResult knn_search_bruteforce(const sycl_utils::DeviceQueue& queue, const PointCloudShared& queries,
                                        const PointCloudShared& targets, const size_t k) {
-    constexpr size_t MAX_K = 20;
+    if (k == 0) {
+        throw std::runtime_error("`k` must be at least 1.");
+    }
+
+    if (k > MAX_SUPPORTED_K) {
+        throw std::runtime_error("`k` must not exceed " + std::to_string(MAX_SUPPORTED_K) + ".");
+    }
+
+    constexpr size_t MAX_K = MAX_SUPPORTED_K;
 
     const size_t n = targets.points->size();  // Number of dataset points
     const size_t q = queries.points->size();  // Number of query points
@@ -49,6 +58,7 @@ inline KNNResult knn_search_bruteforce(const sycl_utils::DeviceQueue& queue, con
             const auto query = queries_ptr[queryIdx];
 
             // Arrays to store K nearest points
+            // Private arrays sized by the supported maximum.
             float kDistances[MAX_K];
             int32_t kIndices[MAX_K];
 

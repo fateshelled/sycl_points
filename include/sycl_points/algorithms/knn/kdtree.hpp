@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <string>
 #include <sycl_points/algorithms/common/filter_by_flags.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/algorithms/knn/result.hpp>
@@ -351,6 +352,10 @@ public:
             throw std::runtime_error("`k` must be at least 1.");
         }
 
+        if (k > MAX_SUPPORTED_K) {
+            throw std::runtime_error("`k` must not exceed " + std::to_string(MAX_SUPPORTED_K) + ".");
+        }
+
         if (query_size == 0) {
             if (result.indices == nullptr || result.distances == nullptr) {
                 result.allocate(this->queue, 0, 0);
@@ -370,8 +375,20 @@ public:
             result.resize(query_size, k);
         }
 
-        const size_t work_group_size = this->queue.get_work_group_size();
-        const size_t global_size = this->queue.get_global_size(query_size);
+        const sycl::device device = this->queue.get_device();
+        size_t work_group_size = this->queue.get_work_group_size();
+
+        // Ensure the local accessor fits inside the available local memory.
+        const size_t bytes_per_work_item = k * sizeof(NodeEntry);
+        const size_t local_mem_size = device.get_info<sycl::info::device::local_mem_size>();
+        if (bytes_per_work_item > local_mem_size) {
+            throw std::runtime_error("Requested `k` requires more local memory than the device provides.");
+        }
+
+        const size_t max_items_per_group = std::max<size_t>(1, local_mem_size / bytes_per_work_item);
+        work_group_size = std::max<size_t>(1, std::min(work_group_size, max_items_per_group));
+
+        const size_t global_size = sycl_utils::get_global_size(query_size, work_group_size);
 
         auto search_task = [&](sycl::handler& h) {
             // Get pointers

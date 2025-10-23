@@ -18,6 +18,9 @@ namespace algorithms {
 
 namespace knn {
 
+/// @brief Maximum supported number of neighbors for kNN queries.
+inline constexpr size_t MAX_SUPPORTED_K = 100;
+
 /// @brief KNN search base class
 class KNNBase {
 public:
