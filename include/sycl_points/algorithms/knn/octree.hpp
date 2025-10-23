@@ -149,6 +149,7 @@ private:
     void ensure_root_bounds(const PointType& point);
     BoundingBox child_bounds(const HostNode& node, size_t child_index) const;
     void recompute_subtree_size(int32_t node_index);
+    void sync_device_buffers();
     void sync_device_buffers() const;
     static float squared_distance(const PointType& a, const PointType& b);
     SYCL_EXTERNAL static sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
@@ -631,7 +632,7 @@ inline void Octree::recompute_subtree_size(int32_t node_index) {
     }
 }
 
-inline void Octree::sync_device_buffers() const {
+inline void Octree::sync_device_buffers() {
     if (!device_dirty_) {
         return;
     }
@@ -689,6 +690,10 @@ inline void Octree::sync_device_buffers() const {
     }
 
     device_dirty_ = false;
+}
+
+inline void Octree::sync_device_buffers() const {
+    const_cast<Octree*>(this)->sync_device_buffers();
 }
 
 inline std::vector<PointType> Octree::snapshot_points() const {
