@@ -1,7 +1,7 @@
 #pragma once
 
 #include <sycl_points/algorithms/common/filter_by_flags.hpp>
-#include <sycl_points/algorithms/knn_search.hpp>
+#include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
 
@@ -25,17 +25,20 @@ public:
         this->local_mean_distance_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->distance_threshold_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
 
-        this->neighbors_ = std::make_shared<knn_search::KNNResult>();
+        this->neighbors_ = std::make_shared<knn::KNNResult>();
     }
 
     /// @brief Filters outliers from a point cloud based on statistical analysis of the neighborhood of each point.
-    /// @details For each point, it computes the mean distance to its k-nearest neighbors. Points whose mean distance is outside a threshold (mean + std_dev_multiplier * std_dev) are considered outliers and removed.
+    /// @details For each point, it computes the mean distance to its k-nearest neighbors. Points whose mean distance is
+    /// outside a threshold (mean + std_dev_multiplier * std_dev) are considered outliers and removed.
     /// @param cloud The point cloud to filter (modified in-place).
     /// @param tree The KD-Tree for nearest neighbor search.
     /// @param mean_k The number of nearest neighbors to use for mean distance calculation.
-    /// @param stddev_mul_thresh The standard deviation multiplier threshold. A point is an outlier if its mean distance is > (global_mean + stddev_mul_thresh * global_stddev).
+    /// @param stddev_mul_thresh The standard deviation multiplier threshold. A point is an outlier if its mean distance
+    /// is > (global_mean + stddev_mul_thresh * global_stddev).
     /// @param remove_from_tree If true, removes the outlier nodes from the KD-Tree as well.
-    void statistical(PointCloudShared& cloud, knn_search::KDTree& tree, size_t mean_k, float stddev_mul_thresh, bool remove_from_tree = false) {
+    void statistical(PointCloudShared& cloud, knn::KDTree& tree, size_t mean_k, float stddev_mul_thresh,
+                     bool remove_from_tree = false) {
         const size_t N = cloud.size();
         if (N < mean_k) {
             std::cerr << "Not enough points in the cloud [ points = " << N << ", mean_k = " << mean_k << " ]"
@@ -144,13 +147,15 @@ public:
     }
 
     /// @brief Filters outliers from a point cloud based on the number of neighbors within a given radius.
-    /// @details For each point, it counts the number of neighbors within a specified radius. If the number of neighbors is less than a given threshold, the point is considered an outlier and removed.
+    /// @details For each point, it counts the number of neighbors within a specified radius. If the number of neighbors
+    /// is less than a given threshold, the point is considered an outlier and removed.
     /// @param cloud The point cloud to filter (modified in-place).
     /// @param tree The KD-Tree for nearest neighbor search.
     /// @param min_k The minimum number of neighbors a point must have within the radius to be considered an inlier.
     /// @param radius The radius to search for neighbors.
     /// @param remove_from_tree If true, removes the outlier nodes from the KD-Tree as well.
-    void radius(PointCloudShared& cloud, knn_search::KDTree& tree, size_t min_k, float radius, bool remove_from_tree = false) {
+    void radius(PointCloudShared& cloud, knn::KDTree& tree, size_t min_k, float radius,
+                bool remove_from_tree = false) {
         const size_t N = cloud.size();
         if (N < min_k) {
             std::cerr << "Not enough points in the cloud [ points = " << N << ", min_k = " << min_k << " ]"
@@ -210,7 +215,7 @@ public:
 
 private:
     sycl_utils::DeviceQueue queue_;
-    knn_search::KNNResult::Ptr neighbors_;
+    knn::KNNResult::Ptr neighbors_;
     FilterByFlags::Ptr filter_;
     shared_vector_ptr<uint8_t> flags_;
     shared_vector_ptr<int32_t> indices_;
