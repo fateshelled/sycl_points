@@ -233,7 +233,8 @@ TEST_F(KDTreeTest, SinglePoint) {
 
 // Test accuracy with different k values
 TEST_F(KDTreeTest, AccuracyWithDifferentK) {
-    const std::vector<size_t> k_values = {1, 3, 5, 10, 20};
+    // Verify that varying k values produce correct results compared to brute force implementation
+    const std::vector<size_t> k_values = {1, 3, 5, 10, 20, 50, 100};
 
     for (size_t k : k_values) {
         // Run kNN search with KDTree
@@ -248,6 +249,12 @@ TEST_F(KDTreeTest, AccuracyWithDifferentK) {
 
         std::cout << "Accuracy test passed for k=" << k << std::endl;
     }
+}
+
+TEST_F(KDTreeTest, InvalidKValues) {
+    // Confirm that invalid k values trigger the expected runtime errors
+    EXPECT_THROW(kdtree->knn_search(*query_cloud, 0), std::runtime_error);
+    EXPECT_THROW(kdtree->knn_search(*query_cloud, 101), std::runtime_error);
 }
 
 // Performance test (large dataset)
