@@ -358,7 +358,6 @@ inline void Octree::insert_recursive(int32_t node_index, const PointType& point,
     }
 
     const size_t child_index = static_cast<size_t>(octant);
-    HostNode& node = host_nodes_[static_cast<size_t>(node_index)];
     if (child_index >= node.children.size()) {
         throw std::out_of_range("Octree child index out of bounds");
     }
@@ -369,7 +368,7 @@ inline void Octree::insert_recursive(int32_t node_index, const PointType& point,
         const auto child_bounds_value = child_bounds(node, child_index);
         const int32_t new_child = create_host_node(child_bounds_value.min_bounds, child_bounds_value.max_bounds,
                                                    std::move(new_points), depth + 1);
-        host_nodes_[static_cast<size_t>(node_index)].children[child_index] = new_child;
+        node.children[child_index] = new_child;
     } else {
         insert_recursive(existing_child, point, id, depth + 1);
     }
