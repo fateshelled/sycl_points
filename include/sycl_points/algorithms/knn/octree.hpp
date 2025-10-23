@@ -637,6 +637,10 @@ inline void Octree::recompute_subtree_size(int32_t node_index) {
 }
 
 inline void Octree::sync_device_buffers() {
+    const_cast<const Octree*>(this)->sync_device_buffers();
+}
+
+inline void Octree::sync_device_buffers() const {
     if (!device_dirty_) {
         return;
     }
@@ -694,10 +698,6 @@ inline void Octree::sync_device_buffers() {
     }
 
     device_dirty_ = false;
-}
-
-inline void Octree::sync_device_buffers() const {
-    const_cast<Octree*>(this)->sync_device_buffers();
 }
 
 inline std::vector<PointType> Octree::snapshot_points() const {
