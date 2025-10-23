@@ -8,11 +8,11 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
-#include <utility>
 #include <sycl/sycl.hpp>
 #include <sycl_points/algorithms/knn/result.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
+#include <utility>
 #include <vector>
 
 namespace sycl_points {
@@ -80,9 +80,10 @@ public:
     /// @brief Execute a k-nearest neighbour query for the supplied queries.
     /// @param queries Query point cloud.
     /// @param k Number of neighbours to gather.
-    /// @tparam MaxStackSize Maximum number of nodes kept on the traversal stack.
+    /// @tparam MAX_DEPTH Maximum number of nodes kept on the traversal stack.
+    /// @tparam MAX_K Maximum number of neighbours that can be requested.
     /// @return Result container that stores neighbour indices and squared distances.
-    template <size_t MaxStackSize = 128>
+    template <size_t MAX_K = 128, size_t MAX_DEPTH = 128>
     [[nodiscard]] KNNResult knn_search(const PointCloudShared& queries, size_t k) const;
 
     /// @brief Accessor for the resolution that was requested at build time.
@@ -132,9 +133,15 @@ private:
         HostNode() { children.fill(-1); }
     };
 
+    // Stack to track nodes that need to be explored
+    struct NodeEntry {
+        int32_t nodeIdx;  // node index
+        float dist_sq;    // squared distance to splitting plane
+    };
+
     void build_from_cloud(const PointCloudShared& points);
-    int32_t create_host_node(const sycl::float3& min_bounds, const sycl::float3& max_bounds, std::vector<PointRecord>&& points,
-                             size_t depth);
+    int32_t create_host_node(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
+                             std::vector<PointRecord>&& points, size_t depth);
     void subdivide_leaf(int32_t node_index, size_t depth);
     void insert_recursive(int32_t node_index, const PointType& point, int32_t id, size_t depth);
     bool remove_recursive(int32_t node_index, const PointType& point, float tolerance_sq);
@@ -208,9 +215,9 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
     }
 
     bbox_min_ = sycl::float3(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
-                              std::numeric_limits<float>::infinity());
+                             std::numeric_limits<float>::infinity());
     bbox_max_ = sycl::float3(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
-                              std::numeric_limits<float>::lowest());
+                             std::numeric_limits<float>::lowest());
 
     std::vector<PointRecord> records(point_count);
     for (size_t i = 0; i < point_count; ++i) {
@@ -302,7 +309,8 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
         bounds.min_bounds.z() = (child & 4) ? center.z() : min_bounds.z();
         bounds.max_bounds.z() = (child & 4) ? max_bounds.z() : center.z();
 
-        const int32_t child_index = create_host_node(bounds.min_bounds, bounds.max_bounds, std::move(child_points[child]), depth + 1);
+        const int32_t child_index =
+            create_host_node(bounds.min_bounds, bounds.max_bounds, std::move(child_points[child]), depth + 1);
         HostNode& updated_node = host_nodes_[static_cast<size_t>(node_index)];
         updated_node.children[child] = child_index;
         updated_node.subtree_size += host_nodes_[static_cast<size_t>(child_index)].subtree_size;
@@ -353,7 +361,8 @@ inline void Octree::insert_recursive(int32_t node_index, const PointType& point,
         std::vector<PointRecord> new_points;
         new_points.push_back(PointRecord{point, id});
         const auto child_bounds_value = child_bounds(host_nodes_[static_cast<size_t>(node_index)], child_index);
-        const int32_t new_child = create_host_node(child_bounds_value.min_bounds, child_bounds_value.max_bounds, std::move(new_points), depth + 1);
+        const int32_t new_child = create_host_node(child_bounds_value.min_bounds, child_bounds_value.max_bounds,
+                                                   std::move(new_points), depth + 1);
         host_nodes_[static_cast<size_t>(node_index)].children[child_index] = new_child;
     } else {
         const int32_t next_index = host_nodes_[static_cast<size_t>(node_index)].children[child_index];
@@ -400,8 +409,8 @@ inline bool Octree::remove_recursive(int32_t node_index, const PointType& point,
             }
             const auto& child_node = host_nodes_[static_cast<size_t>(child_index)];
             const BoundingBox bounds{child_node.min_bounds, child_node.max_bounds};
-            const float aabb_distance = distance_to_aabb(bounds.min_bounds, bounds.max_bounds,
-                                                        sycl::float3(point.x(), point.y(), point.z()));
+            const float aabb_distance =
+                distance_to_aabb(bounds.min_bounds, bounds.max_bounds, sycl::float3(point.x(), point.y(), point.z()));
             if (aabb_distance > tolerance_sq) {
                 continue;
             }
@@ -457,9 +466,8 @@ inline bool Octree::delete_box_recursive(int32_t node_index, const BoundingBox& 
 
     if (node.is_leaf) {
         auto& pts = node.points;
-        auto it = std::remove_if(pts.begin(), pts.end(), [&](const PointRecord& record) {
-            return region.contains(record.point);
-        });
+        auto it = std::remove_if(pts.begin(), pts.end(),
+                                 [&](const PointRecord& record) { return region.contains(record.point); });
         if (it != pts.end()) {
             total_point_count_ -= static_cast<size_t>(std::distance(it, pts.end()));
             pts.erase(it, pts.end());
@@ -500,8 +508,8 @@ inline std::vector<int32_t> Octree::radius_search(const PointType& query, float 
         stack.pop_back();
         const HostNode& node = host_nodes_[static_cast<size_t>(node_index)];
         const BoundingBox bounds{node.min_bounds, node.max_bounds};
-        const float dist_sq = distance_to_aabb(bounds.min_bounds, bounds.max_bounds,
-                                               sycl::float3(query.x(), query.y(), query.z()));
+        const float dist_sq =
+            distance_to_aabb(bounds.min_bounds, bounds.max_bounds, sycl::float3(query.x(), query.y(), query.z()));
         if (dist_sq > radius_sq) {
             continue;
         }
@@ -727,14 +735,19 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
     return tree;
 }
 
-template <size_t MaxStackSize>
+template <size_t MAX_DEPTH, size_t MAX_K>
 inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) const {
-    static_assert(MaxStackSize > 0, "MaxStackSize must be greater than zero");
+    static_assert(MAX_DEPTH > 0, "MAX_DEPTH must be greater than zero");
+    static_assert(MAX_K > 0, "MAX_K must be greater than zero");
     if (!queue_.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
     }
     if (!queries.points) {
         throw std::runtime_error("Query cloud is not initialised");
+    }
+
+    if (k > MAX_K) {
+        throw std::runtime_error("Requested neighbour count exceeds the compile-time limit");
     }
 
     sync_device_buffers();
@@ -775,33 +788,19 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
             const auto query_point = query_points_ptr[query_idx];
             const sycl::float3 query_point_vec(query_point.x(), query_point.y(), query_point.z());
 
-            auto* query_indices = indices_ptr + query_idx * k;
-            auto* query_distances = distances_ptr + query_idx * k;
+            NodeEntry bestK[MAX_K];
+            std::fill(bestK, bestK + MAX_K, NodeEntry{-1, std::numeric_limits<float>::max()});
 
-            for (size_t neighbour_idx = 0; neighbour_idx < k; ++neighbour_idx) {
-                query_indices[neighbour_idx] = -1;
-                query_distances[neighbour_idx] = std::numeric_limits<float>::infinity();
-            }
-
-            constexpr size_t kMaxStackSize = MaxStackSize;
-            int32_t node_stack[kMaxStackSize];
-            float node_stack_distance[kMaxStackSize];
+            NodeEntry stack[MAX_DEPTH];
             size_t stack_size = 0;
             size_t neighbour_count = 0;
 
-            auto heap_swap = [&](size_t a, size_t b) {
-                const float dist_tmp = query_distances[a];
-                const int32_t idx_tmp = query_indices[a];
-                query_distances[a] = query_distances[b];
-                query_indices[a] = query_indices[b];
-                query_distances[b] = dist_tmp;
-                query_indices[b] = idx_tmp;
-            };
+            auto heap_swap = [&](size_t a, size_t b) { std::swap(bestK[a], bestK[b]); };
 
             auto sift_up = [&](size_t idx) {
                 while (idx > 0) {
                     const size_t parent = (idx - 1) / 2;
-                    if (query_distances[parent] >= query_distances[idx]) {
+                    if (bestK[parent].dist_sq >= bestK[idx].dist_sq) {
                         break;
                     }
                     heap_swap(parent, idx);
@@ -817,10 +816,10 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                     }
                     size_t largest = left;
                     const size_t right = left + 1;
-                    if (right < heap_size && query_distances[right] > query_distances[largest]) {
+                    if (right < heap_size && bestK[right].dist_sq > bestK[largest].dist_sq) {
                         largest = right;
                     }
-                    if (query_distances[idx] >= query_distances[largest]) {
+                    if (bestK[idx].dist_sq >= bestK[largest].dist_sq) {
                         break;
                     }
                     heap_swap(idx, largest);
@@ -829,39 +828,34 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
             };
 
             auto current_worst = [&]() {
-                return neighbour_count < k ? std::numeric_limits<float>::infinity() : query_distances[0];
+                return neighbour_count < k ? std::numeric_limits<float>::infinity() : bestK[0].dist_sq;
             };
 
             auto push_candidate = [&](float distance_sq, int32_t index) {
                 if (neighbour_count < k) {
-                    query_distances[neighbour_count] = distance_sq;
-                    query_indices[neighbour_count] = index;
+                    bestK[neighbour_count] = {index, distance_sq};
                     ++neighbour_count;
                     sift_up(neighbour_count - 1);
-                } else if (distance_sq < query_distances[0]) {
-                    query_distances[0] = distance_sq;
-                    query_indices[0] = index;
+                } else if (distance_sq < bestK[0].dist_sq) {
+                    bestK[0] = {index, distance_sq};
                     sift_down(0, neighbour_count);
                 }
             };
 
             auto push_node = [&](int32_t node_idx, float distance_sq) {
-                if (stack_size < kMaxStackSize) {
-                    node_stack[stack_size] = node_idx;
-                    node_stack_distance[stack_size] = distance_sq;
-                    ++stack_size;
+                if (stack_size < MAX_DEPTH) {
+                    stack[stack_size++] = {node_idx, distance_sq};
                 } else {
                     size_t worst_pos = 0;
-                    float worst_dist = node_stack_distance[0];
+                    float worst_dist = stack[0].dist_sq;
                     for (size_t i = 1; i < stack_size; ++i) {
-                        if (node_stack_distance[i] > worst_dist) {
-                            worst_dist = node_stack_distance[i];
+                        if (stack[i].dist_sq > worst_dist) {
+                            worst_dist = stack[i].dist_sq;
                             worst_pos = i;
                         }
                     }
                     if (distance_sq < worst_dist) {
-                        node_stack[worst_pos] = node_idx;
-                        node_stack_distance[worst_pos] = distance_sq;
+                        stack[worst_pos] = {node_idx, distance_sq};
                     }
                 }
             };
@@ -870,24 +864,22 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 return;
             }
 
-            push_node(root_index,
-                      distance_to_aabb(nodes_ptr[root_index].min_bounds, nodes_ptr[root_index].max_bounds,
-                                       query_point_vec));
+            push_node(root_index, distance_to_aabb(nodes_ptr[root_index].min_bounds, nodes_ptr[root_index].max_bounds,
+                                                   query_point_vec));
 
             while (stack_size > 0) {
                 size_t best_pos = 0;
-                float best_dist = node_stack_distance[0];
+                float best_dist = stack[0].dist_sq;
                 for (size_t i = 1; i < stack_size; ++i) {
-                    if (node_stack_distance[i] < best_dist) {
-                        best_dist = node_stack_distance[i];
+                    if (stack[i].dist_sq < best_dist) {
+                        best_dist = stack[i].dist_sq;
                         best_pos = i;
                     }
                 }
 
-                const int32_t current_node_idx = node_stack[best_pos];
+                const int32_t current_node_idx = stack[best_pos].nodeIdx;
                 --stack_size;
-                node_stack[best_pos] = node_stack[stack_size];
-                node_stack_distance[best_pos] = node_stack_distance[stack_size];
+                stack[best_pos] = stack[stack_size];
 
                 if (best_dist > current_worst()) {
                     continue;
@@ -923,6 +915,11 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 heap_swap(0, last);
                 --heap_size;
                 sift_down(0, heap_size);
+            }
+
+            for (size_t i = 0; i < k; ++i) {
+                indices_ptr[query_idx * k + i] = bestK[i].nodeIdx;
+                distances_ptr[query_idx * k + i] = bestK[i].dist_sq;
             }
         });
     });
