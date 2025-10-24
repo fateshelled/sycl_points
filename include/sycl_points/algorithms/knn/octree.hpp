@@ -21,10 +21,10 @@ namespace algorithms {
 
 namespace knn {
 
-SYCL_EXTERNAL sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
-SYCL_EXTERNAL float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
-                                     const sycl::float3& point);
-float squared_distance(const PointType& a, const PointType& b);
+SYCL_EXTERNAL inline sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
+SYCL_EXTERNAL inline float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
+                                            const sycl::float3& point);
+inline float squared_distance(const PointType& a, const PointType& b);
 
 /// @brief Octree data structure that will support parallel construction and neighbour search on SYCL devices.
 class Octree {
