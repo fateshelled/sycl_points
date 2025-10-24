@@ -367,7 +367,8 @@ inline void Octree::insert_recursive(int32_t node_index, const PointType& point,
         const auto child_bounds_value = this->child_bounds(node, child_index);
         const int32_t new_child = this->create_host_node(child_bounds_value.min_bounds, child_bounds_value.max_bounds,
                                                          std::move(new_points), depth + 1);
-        node.children[child_index] = new_child;
+        HostNode& refreshed_node = this->host_nodes_[static_cast<size_t>(node_index)];
+        refreshed_node.children[child_index] = new_child;
     } else {
         this->insert_recursive(existing_child, point, id, depth + 1);
     }
