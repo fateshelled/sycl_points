@@ -21,6 +21,7 @@ namespace algorithms {
 
 namespace knn {
 
+// These helpers are declared inline to keep their definitions in the header ODR-safe across translation units.
 SYCL_EXTERNAL inline sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
 SYCL_EXTERNAL inline float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                             const sycl::float3& point);
