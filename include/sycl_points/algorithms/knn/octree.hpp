@@ -21,6 +21,11 @@ namespace algorithms {
 
 namespace knn {
 
+SYCL_EXTERNAL sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
+SYCL_EXTERNAL float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
+                                     const sycl::float3& point);
+float squared_distance(const PointType& a, const PointType& b);
+
 /// @brief Octree data structure that will support parallel construction and neighbour search on SYCL devices.
 class Octree {
 public:
@@ -151,11 +156,6 @@ private:
     void recompute_subtree_size(int32_t node_index);
     void sync_device_buffers();
     void sync_device_buffers() const;
-    static float squared_distance(const PointType& a, const PointType& b);
-    SYCL_EXTERNAL static sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
-    SYCL_EXTERNAL static float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
-                                                const sycl::float3& point);
-
     sycl_utils::DeviceQueue queue_;
     float resolution_;
     size_t max_points_per_node_;
@@ -199,8 +199,6 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
     this->total_point_count_ = 0;
     this->root_index_ = -1;
     this->device_dirty_ = true;
-    this->snapshot_ids_.clear();
-
     if (!points.points) {
         throw std::runtime_error("Point cloud is not initialised");
     }
@@ -212,7 +210,6 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
         this->nodes_.clear();
         this->device_points_.clear();
         this->device_point_ids_.clear();
-        this->snapshot_ids_.clear();
         return;
     }
 
@@ -264,7 +261,7 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
         return;
     }
 
-    const auto lengths = this->axis_lengths(node.min_bounds, node.max_bounds);
+    const auto lengths = axis_lengths(node.min_bounds, node.max_bounds);
     const float max_axis = std::max({lengths.x(), lengths.y(), lengths.z()});
     if (node.points.size() <= this->max_points_per_node_ || max_axis <= this->resolution_ || depth >= 32) {
         node.subtree_size = node.points.size();
@@ -396,7 +393,7 @@ inline bool Octree::remove_recursive(int32_t node_index, const PointType& point,
     if (node.is_leaf) {
         auto& pts = node.points;
         auto it = std::find_if(pts.begin(), pts.end(), [&](const PointRecord& record) {
-            return this->squared_distance(record.point, point) <= tolerance_sq;
+            return squared_distance(record.point, point) <= tolerance_sq;
         });
         if (it != pts.end()) {
             pts.erase(it);
@@ -415,8 +412,8 @@ inline bool Octree::remove_recursive(int32_t node_index, const PointType& point,
             const auto& child_node = this->host_nodes_[static_cast<size_t>(child_index)];
             const BoundingBox bounds{child_node.min_bounds, child_node.max_bounds};
             const float aabb_distance =
-                this->distance_to_aabb(bounds.min_bounds, bounds.max_bounds,
-                                       sycl::float3(point.x(), point.y(), point.z()));
+                distance_to_aabb(bounds.min_bounds, bounds.max_bounds,
+                                 sycl::float3(point.x(), point.y(), point.z()));
             if (aabb_distance > tolerance_sq) {
                 continue;
             }
@@ -515,15 +512,15 @@ inline std::vector<int32_t> Octree::radius_search(const PointType& query, float 
         const HostNode& node = this->host_nodes_[static_cast<size_t>(node_index)];
         const BoundingBox bounds{node.min_bounds, node.max_bounds};
         const float dist_sq =
-            this->distance_to_aabb(bounds.min_bounds, bounds.max_bounds,
-                                   sycl::float3(query.x(), query.y(), query.z()));
+            distance_to_aabb(bounds.min_bounds, bounds.max_bounds,
+                             sycl::float3(query.x(), query.y(), query.z()));
         if (dist_sq > radius_sq) {
             continue;
         }
 
         if (node.is_leaf) {
             for (size_t i = 0; i < node.points.size(); ++i) {
-                if (this->squared_distance(node.points[i].point, query) <= radius_sq) {
+                if (squared_distance(node.points[i].point, query) <= radius_sq) {
                     result.push_back(node.points[i].id);
                 }
             }
@@ -713,17 +710,17 @@ inline std::vector<int32_t> Octree::snapshot_ids() const {
     return this->snapshot_ids_;
 }
 
-inline float Octree::squared_distance(const PointType& a, const PointType& b) {
+inline float squared_distance(const PointType& a, const PointType& b) {
     const PointType diff = eigen_utils::subtract<4, 1>(a, b);
     return eigen_utils::dot<4>(diff, diff);
 }
 
-SYCL_EXTERNAL inline sycl::float3 Octree::axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds) {
+SYCL_EXTERNAL inline sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds) {
     return max_bounds - min_bounds;
 }
 
-SYCL_EXTERNAL float Octree::distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
-                                             const sycl::float3& point) {
+SYCL_EXTERNAL inline float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
+                                            const sycl::float3& point) {
     const float dx = (point.x() < min_bounds.x())   ? (min_bounds.x() - point.x())
                      : (point.x() > max_bounds.x()) ? (point.x() - max_bounds.x())
                                                     : 0.0f;
@@ -876,8 +873,8 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 return;
             }
 
-            push_node(root_index, this->distance_to_aabb(nodes_ptr[root_index].min_bounds,
-                                                         nodes_ptr[root_index].max_bounds, query_point_vec));
+            push_node(root_index, distance_to_aabb(nodes_ptr[root_index].min_bounds,
+                                                  nodes_ptr[root_index].max_bounds, query_point_vec));
 
             while (stack_size > 0) {
                 size_t best_pos = 0;
@@ -912,9 +909,9 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                         if (child_idx < 0) {
                             continue;
                         }
-                        const float child_dist = this->distance_to_aabb(nodes_ptr[child_idx].min_bounds,
-                                                                        nodes_ptr[child_idx].max_bounds,
-                                                                        query_point_vec);
+                        const float child_dist = distance_to_aabb(nodes_ptr[child_idx].min_bounds,
+                                                                   nodes_ptr[child_idx].max_bounds,
+                                                                   query_point_vec);
                         if (child_dist <= current_worst()) {
                             push_node(child_idx, child_dist);
                         }
