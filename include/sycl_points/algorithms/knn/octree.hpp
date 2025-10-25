@@ -10,6 +10,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <sycl/sycl.hpp>
+#include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/algorithms/knn/result.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
@@ -30,7 +31,7 @@ SYCL_EXTERNAL inline float distance_to_aabb(const sycl::float3& min_bounds, cons
 inline float squared_distance(const PointType& a, const PointType& b);
 
 /// @brief Octree data structure that will support parallel construction and neighbour search on SYCL devices.
-class Octree {
+class Octree : public KNNBase {
 public:
     using Ptr = std::shared_ptr<Octree>;
 
@@ -101,8 +102,13 @@ public:
     /// @tparam MAX_DEPTH Maximum number of nodes kept on the traversal stack.
     /// @tparam MAX_K Maximum number of neighbours that can be requested.
     /// @return Result container that stores neighbour indices and squared distances.
-    template <size_t MAX_K = 30, size_t MAX_DEPTH = 32>
-    [[nodiscard]] KNNResult knn_search(const PointCloudShared& queries, size_t k) const;
+    sycl_utils::events knn_search_async(
+        const PointCloudShared& queries, const size_t k, KNNResult& result,
+        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const override;
+
+    [[nodiscard]] KNNResult knn_search(const PointCloudShared& queries, size_t k) const {
+        return KNNBase::knn_search(queries, k);
+    }
 
     /// @brief Accessor for the resolution that was requested at build time.
     [[nodiscard]] float resolution() const { return this->resolution_; }
@@ -183,6 +189,11 @@ private:
     mutable shared_vector<int32_t> device_point_ids_;
     mutable std::vector<int32_t> snapshot_ids_;
     mutable bool device_dirty_;
+
+    template <size_t MAX_K, size_t MAX_DEPTH>
+    sycl_utils::events knn_search_async_impl(
+        const PointCloudShared& queries, size_t k, KNNResult& result,
+        const std::vector<sycl::event>& depends) const;
 };
 
 inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, size_t max_points_per_node)
@@ -751,17 +762,54 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
     return tree;
 }
 
-template <size_t MAX_DEPTH, size_t MAX_K>
-inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) const {
+// Dispatch helper that selects an appropriate MAX_K bound at compile time.
+inline sycl_utils::events Octree::knn_search_async(
+    const PointCloudShared& queries, const size_t k, KNNResult& result,
+    const std::vector<sycl::event>& depends) const {
+    constexpr size_t MAX_STACK_DEPTH = 32;
+    if (k == 0) {
+        const size_t query_size = queries.points ? queries.points->size() : 0;
+        if (result.indices == nullptr || result.distances == nullptr) {
+            result.allocate(this->queue_, query_size, 0);
+        } else {
+            result.resize(query_size, 0);
+        }
+        return sycl_utils::events();
+    }
+
+    if (k == 1) {
+        return knn_search_async_impl<1, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 10) {
+        return knn_search_async_impl<10, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 20) {
+        return knn_search_async_impl<20, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 30) {
+        return knn_search_async_impl<30, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 40) {
+        return knn_search_async_impl<40, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 50) {
+        return knn_search_async_impl<50, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 100) {
+        return knn_search_async_impl<100, MAX_STACK_DEPTH>(queries, k, result, depends);
+    }
+
+    throw std::runtime_error("Requested neighbour count exceeds the supported maximum");
+}
+
+template <size_t MAX_K, size_t MAX_DEPTH>
+// Core implementation of the octree kNN search.
+inline sycl_utils::events Octree::knn_search_async_impl(
+    const PointCloudShared& queries, size_t k, KNNResult& result,
+    const std::vector<sycl::event>& depends) const {
     static_assert(MAX_DEPTH > 0, "MAX_DEPTH must be greater than zero");
     static_assert(MAX_K > 0, "MAX_K must be greater than zero");
+
     if (!this->queue_.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
     }
     if (!queries.points) {
         throw std::runtime_error("Query cloud is not initialised");
     }
-
     if (k > MAX_K) {
         throw std::runtime_error("Requested neighbour count exceeds the compile-time limit");
     }
@@ -772,17 +820,25 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
     const size_t node_count = this->nodes_.size();
     const int32_t root_index = this->root_index_;
 
-    KNNResult result;
     const size_t query_size = queries.points->size();
-    result.allocate(this->queue_, query_size, k);
+    if (result.indices == nullptr || result.distances == nullptr) {
+        result.allocate(this->queue_, query_size, k);
+    } else {
+        result.resize(query_size, k);
+    }
 
     if (target_size > 0 && (node_count == 0 || this->device_points_.empty())) {
         throw std::runtime_error("Octree structure has not been initialized");
     }
 
-    auto event = this->queue_.ptr->submit([=](sycl::handler& handler) {
+    const auto depends_copy = depends;
+    auto search_task = [=](sycl::handler& handler) {
         const size_t work_group_size = this->queue_.get_work_group_size();
         const size_t global_size = this->queue_.get_global_size(query_size);
+
+        if (!depends_copy.empty()) {
+            handler.depends_on(depends_copy);
+        }
 
         auto indices_ptr = result.indices->data();
         auto distances_ptr = result.distances->data();
@@ -797,7 +853,7 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
             if (query_idx >= query_size) {
                 return;
             }
-            if (target_size == 0 || k == 0) {
+            if (target_size == 0) {
                 return;
             }
 
@@ -940,10 +996,11 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
                 distances_ptr[query_idx * k + i] = bestK[i].dist_sq;
             }
         });
-    });
-    event.wait();
+    };
 
-    return result;
+    sycl_utils::events events;
+    events += this->queue_.ptr->submit(search_task);
+    return events;
 }
 
 }  // namespace knn
