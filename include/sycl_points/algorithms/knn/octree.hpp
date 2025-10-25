@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Eigen/Core>
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -12,6 +13,7 @@
 #include <sycl_points/algorithms/knn/result.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -33,14 +35,23 @@ public:
     using Ptr = std::shared_ptr<Octree>;
 
     struct Node {
-        sycl::float3 min_bounds;
-        sycl::float3 max_bounds;
-        uint32_t start_index;
-        uint32_t point_count;
-        int32_t children[8];
-        uint8_t is_leaf;
-        uint8_t padding[3];
+        Eigen::Vector3f min_bounds;
+        Eigen::Vector3f max_bounds;
+        uint32_t is_leaf;
+        // Union stores either the metadata for leaf nodes or the child indices for internal nodes.
+        union {
+            struct {
+                uint32_t start_index;
+                uint32_t point_count;
+            } leaf;
+            int32_t children[8];
+        } data;
+        uint32_t padding;
     };
+
+    static_assert(std::is_standard_layout_v<Node>, "Octree::Node must remain standard-layout");
+
+    static_assert(sizeof(Node) == 64, "Octree::Node must remain 64 bytes");
 
     struct BoundingBox {
         sycl::float3 min_bounds;
@@ -676,13 +687,15 @@ inline void Octree::sync_device_buffers() const {
     for (size_t idx = 0; idx < node_count; ++idx) {
         HostNode& host_node = this->host_nodes_[idx];
         Node device_node{};
-        device_node.min_bounds = host_node.min_bounds;
-        device_node.max_bounds = host_node.max_bounds;
-        device_node.is_leaf = host_node.is_leaf ? 1 : 0;
-        std::copy(host_node.children.begin(), host_node.children.end(), std::begin(device_node.children));
+        device_node.min_bounds = Eigen::Vector3f(host_node.min_bounds.x(), host_node.min_bounds.y(),
+                                                 host_node.min_bounds.z());
+        device_node.max_bounds = Eigen::Vector3f(host_node.max_bounds.x(), host_node.max_bounds.y(),
+                                                 host_node.max_bounds.z());
+        device_node.is_leaf = host_node.is_leaf ? 1u : 0u;
         if (host_node.is_leaf) {
-            device_node.start_index = static_cast<uint32_t>(offset);
-            device_node.point_count = static_cast<uint32_t>(host_node.points.size());
+            device_node.data.leaf.start_index = static_cast<uint32_t>(offset);
+            device_node.data.leaf.point_count = static_cast<uint32_t>(host_node.points.size());
+            device_node.padding = 0u;
             host_node.start_index = offset;
             for (size_t i = 0; i < host_node.points.size(); ++i) {
                 const auto& record = host_node.points[i];
@@ -692,8 +705,10 @@ inline void Octree::sync_device_buffers() const {
             }
             offset += host_node.points.size();
         } else {
-            device_node.start_index = 0;
-            device_node.point_count = 0;
+            for (size_t child = 0; child < host_node.children.size(); ++child) {
+                device_node.data.children[child] = host_node.children[child];
+            }
+            device_node.padding = 0u;
             host_node.start_index = 0;
         }
         this->nodes_[idx] = device_node;
@@ -721,18 +736,29 @@ SYCL_EXTERNAL inline sycl::float3 axis_lengths(const sycl::float3& min_bounds, c
     return max_bounds - min_bounds;
 }
 
+template <typename Vec3>
+SYCL_EXTERNAL inline float distance_to_aabb_generic(const Vec3& min_bounds, const Vec3& max_bounds,
+                                                    const sycl::float3& point) {
+    // Cache the query coordinates to avoid recomputing point.x()/y()/z().
+    const float px = point.x();
+    const float py = point.y();
+    const float pz = point.z();
+    // Clamp the query position against the bounding box extents along each axis.
+    const float dx = sycl::fmax(0.0f, sycl::fmax(min_bounds.x() - px, px - max_bounds.x()));
+    const float dy = sycl::fmax(0.0f, sycl::fmax(min_bounds.y() - py, py - max_bounds.y()));
+    const float dz = sycl::fmax(0.0f, sycl::fmax(min_bounds.z() - pz, pz - max_bounds.z()));
+    // Return the squared Euclidean distance from the query point to the box surface.
+    return dx * dx + dy * dy + dz * dz;
+}
+
 SYCL_EXTERNAL inline float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                             const sycl::float3& point) {
-    const float dx = (point.x() < min_bounds.x())   ? (min_bounds.x() - point.x())
-                     : (point.x() > max_bounds.x()) ? (point.x() - max_bounds.x())
-                                                    : 0.0f;
-    const float dy = (point.y() < min_bounds.y())   ? (min_bounds.y() - point.y())
-                     : (point.y() > max_bounds.y()) ? (point.y() - max_bounds.y())
-                                                    : 0.0f;
-    const float dz = (point.z() < min_bounds.z())   ? (min_bounds.z() - point.z())
-                     : (point.z() > max_bounds.z()) ? (point.z() - max_bounds.z())
-                                                    : 0.0f;
-    return dx * dx + dy * dy + dz * dz;
+    return distance_to_aabb_generic(min_bounds, max_bounds, point);
+}
+
+SYCL_EXTERNAL inline float distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                            const sycl::float3& point) {
+    return distance_to_aabb_generic(min_bounds, max_bounds, point);
 }
 
 inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points, float resolution,
@@ -898,16 +924,18 @@ inline KNNResult Octree::knn_search(const PointCloudShared& queries, size_t k) c
 
                 const Node node = nodes_ptr[current_node_idx];
                 if (node.is_leaf) {
-                    for (size_t i = 0; i < node.point_count; ++i) {
-                        const auto target_point = leaf_points_ptr[node.start_index + i];
-                        const int32_t point_id = leaf_ids_ptr[node.start_index + i];
+                    const uint32_t leaf_start = node.data.leaf.start_index;
+                    const uint32_t leaf_count = node.data.leaf.point_count;
+                    for (uint32_t i = 0; i < leaf_count; ++i) {
+                        const auto target_point = leaf_points_ptr[leaf_start + i];
+                        const int32_t point_id = leaf_ids_ptr[leaf_start + i];
                         const PointType diff = eigen_utils::subtract<4, 1>(query_point, target_point);
                         const float dist_sq = eigen_utils::dot<4>(diff, diff);
                         push_candidate(dist_sq, point_id);
                     }
                 } else {
                     for (size_t child = 0; child < 8; ++child) {
-                        const int32_t child_idx = node.children[child];
+                        const int32_t child_idx = node.data.children[child];
                         if (child_idx < 0) {
                             continue;
                         }
