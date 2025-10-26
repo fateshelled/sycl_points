@@ -1005,21 +1005,26 @@ inline sycl_utils::events Octree::knn_search_async_impl(
             };
 
             auto push_node_to_stack = [&](int32_t node_idx, float distance_sq) {
-                if (stack_size < MAX_DEPTH) {
-                    stack[stack_size++] = {node_idx, distance_sq};
-                } else {
-                    size_t worst_pos = 0;
-                    float worst_dist = stack[0].dist_sq;
-                    for (size_t i = 1; i < stack_size; ++i) {
-                        if (stack[i].dist_sq > worst_dist) {
-                            worst_dist = stack[i].dist_sq;
-                            worst_pos = i;
-                        }
-                    }
-                    if (distance_sq < worst_dist) {
-                        stack[worst_pos] = {node_idx, distance_sq};
-                    }
+                if (stack_size == MAX_DEPTH && distance_sq >= stack[0].dist_sq) {
+                    return;
                 }
+
+                if (stack_size == MAX_DEPTH) {
+                    // Drop the farthest node to make room for the new candidate.
+                    for (size_t i = 1; i < stack_size; ++i) {
+                        stack[i - 1] = stack[i];
+                    }
+                    --stack_size;
+                }
+
+                // Insert the new node while keeping the stack sorted in descending order by distance.
+                size_t insert_pos = stack_size;
+                while (insert_pos > 0 && stack[insert_pos - 1].dist_sq < distance_sq) {
+                    stack[insert_pos] = stack[insert_pos - 1];
+                    --insert_pos;
+                }
+                stack[insert_pos] = {node_idx, distance_sq};
+                ++stack_size;
             };
 
             if (node_count == 0 || root_index < 0) {
@@ -1030,24 +1035,14 @@ inline sycl_utils::events Octree::knn_search_async_impl(
                                                             nodes_ptr[root_index].max_bounds, query_point_vec));
 
             while (stack_size > 0) {
-                size_t best_pos = 0;
-                float best_dist = stack[0].dist_sq;
-                for (size_t i = 1; i < stack_size; ++i) {
-                    if (stack[i].dist_sq < best_dist) {
-                        best_dist = stack[i].dist_sq;
-                        best_pos = i;
-                    }
-                }
-
-                const int32_t current_node_idx = stack[best_pos].nodeIdx;
-                --stack_size;
-                stack[best_pos] = stack[stack_size];
+                const NodeEntry current_entry = stack[--stack_size];
+                const float best_dist = current_entry.dist_sq;
 
                 if (best_dist > current_worst()) {
                     continue;
                 }
 
-                const Node node = nodes_ptr[current_node_idx];
+                const Node node = nodes_ptr[current_entry.nodeIdx];
                 if (node.is_leaf) {
                     const uint32_t leaf_start = node.data.leaf.start_index;
                     const uint32_t leaf_count = node.data.leaf.point_count;
