@@ -1009,22 +1009,26 @@ inline sycl_utils::events Octree::knn_search_async_impl(
                     return;
                 }
 
-                if (stack_size == MAX_DEPTH) {
-                    // Drop the farthest node to make room for the new candidate.
-                    for (size_t i = 1; i < stack_size; ++i) {
+                if (stack_size < MAX_DEPTH) {
+                    // Standard insertion sort into a non-full array.
+                    size_t insert_pos = stack_size;
+                    while (insert_pos > 0 && stack[insert_pos - 1].dist_sq < distance_sq) {
+                        stack[insert_pos] = stack[insert_pos - 1];
+                        --insert_pos;
+                    }
+                    stack[insert_pos] = {node_idx, distance_sq};
+                    ++stack_size;
+                } else {
+                    // Stack is full: shift left to drop the farthest node and insert the new one.
+                    size_t insert_pos = 1;
+                    while (insert_pos < MAX_DEPTH && stack[insert_pos].dist_sq > distance_sq) {
+                        ++insert_pos;
+                    }
+                    for (size_t i = 1; i < insert_pos; ++i) {
                         stack[i - 1] = stack[i];
                     }
-                    --stack_size;
+                    stack[insert_pos - 1] = {node_idx, distance_sq};
                 }
-
-                // Insert the new node while keeping the stack sorted in descending order by distance.
-                size_t insert_pos = stack_size;
-                while (insert_pos > 0 && stack[insert_pos - 1].dist_sq < distance_sq) {
-                    stack[insert_pos] = stack[insert_pos - 1];
-                    --insert_pos;
-                }
-                stack[insert_pos] = {node_idx, distance_sq};
-                ++stack_size;
             };
 
             if (node_count == 0 || root_index < 0) {
