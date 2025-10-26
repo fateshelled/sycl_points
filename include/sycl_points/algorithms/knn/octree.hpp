@@ -790,7 +790,7 @@ inline std::vector<int32_t> Octree::snapshot_ids() const {
     return this->snapshot_ids_;
 }
 
-/// @brief Compute the squared Euclidean distance between two points in homogeneous form.
+/// @brief Compute the squared Euclidean distance between two 4D points.
 /// @param a The first point.
 /// @param b The second point.
 /// @return The squared Euclidean distance.
