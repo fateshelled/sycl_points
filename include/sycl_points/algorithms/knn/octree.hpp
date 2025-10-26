@@ -164,8 +164,8 @@ private:
         HostNode() { children.fill(-1); }
     };
 
-    // Stack to track nodes that need to be explored
     /// @brief Work item stored in traversal stacks during neighbour searches.
+    /// @details Encodes the node index and the squared distance used to prioritise traversal.
     struct NodeEntry {
         int32_t nodeIdx;  // node index
         float dist_sq;    // squared distance to splitting plane
@@ -216,6 +216,9 @@ private:
 };
 
 /// @brief Initialise the octree with the provided execution queue and parameters.
+/// @param queue Device queue used for all SYCL operations.
+/// @param resolution Leaf node resolution expressed in metres.
+/// @param max_points_per_node Maximum number of points per leaf node before subdivision.
 inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, size_t max_points_per_node)
     : queue_(queue),
       resolution_(resolution),
@@ -235,6 +238,7 @@ inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, si
 
 /// @brief Populate the octree from an entire point cloud.
 /// @details The method resets any previously stored data and rebuilds the hierarchy from scratch.
+/// @param points Input point cloud.
 inline void Octree::build_from_cloud(const PointCloudShared& points) {
     if (!this->queue_.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
@@ -377,6 +381,7 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
 }
 
 /// @brief Insert a single point into the octree.
+/// @param point The point to insert.
 inline void Octree::insert(const PointType& point) {
     this->ensure_root_bounds(point);
     const int32_t id = this->next_point_id_++;
@@ -616,6 +621,7 @@ inline std::vector<int32_t> Octree::radius_search(const PointType& query, float 
 }
 
 /// @brief Grow the root bounding box until it encloses the provided point.
+/// @param point The point to be enclosed by the root bounding box.
 inline void Octree::ensure_root_bounds(const PointType& point) {
     const sycl::float3 point_vec(point.x(), point.y(), point.z());
     if (this->root_index_ < 0) {
@@ -689,6 +695,7 @@ inline Octree::BoundingBox Octree::child_bounds(const HostNode& node, size_t chi
 }
 
 /// @brief Recalculate the number of points contained inside the subtree rooted at @p node_index.
+/// @param node_index Index of the subtree's root node.
 inline void Octree::recompute_subtree_size(int32_t node_index) {
     HostNode& node = this->host_nodes_[static_cast<size_t>(node_index)];
     if (node.is_leaf) {
@@ -711,7 +718,7 @@ inline void Octree::recompute_subtree_size(int32_t node_index) {
     }
 }
 
-/// @brief Ensure the device buffers reflect the latest host-side representation.
+/// @brief Non-const overload for device buffer synchronisation that calls the const version.
 inline void Octree::sync_device_buffers() { const_cast<const Octree*>(this)->sync_device_buffers(); }
 
 /// @brief Upload host nodes and leaf points to the device buffers on demand.
@@ -784,6 +791,9 @@ inline std::vector<int32_t> Octree::snapshot_ids() const {
 }
 
 /// @brief Compute the squared Euclidean distance between two points in homogeneous form.
+/// @param a The first point.
+/// @param b The second point.
+/// @return The squared Euclidean distance.
 inline float squared_distance(const PointType& a, const PointType& b) {
     const PointType diff = eigen_utils::subtract<4, 1>(a, b);
     return eigen_utils::dot<4>(diff, diff);
@@ -794,6 +804,11 @@ SYCL_EXTERNAL inline sycl::float3 axis_lengths(const sycl::float3& min_bounds, c
 }
 
 /// @brief Generic implementation of @ref distance_to_aabb usable with different vector types.
+/// @tparam Vec3 A 3D vector type for the bounding box (e.g., `sycl::float3` or `Eigen::Vector3f`).
+/// @param min_bounds Minimum coordinates of the bounding box.
+/// @param max_bounds Maximum coordinates of the bounding box.
+/// @param point The point to measure distance from.
+/// @return The squared distance to the bounding box.
 template <typename Vec3>
 SYCL_EXTERNAL inline float distance_to_aabb_generic(const Vec3& min_bounds, const Vec3& max_bounds,
                                                     const sycl::float3& point) {
@@ -809,7 +824,11 @@ SYCL_EXTERNAL inline float distance_to_aabb_generic(const Vec3& min_bounds, cons
     return dx * dx + dy * dy + dz * dz;
 }
 
-/// @copydoc distance_to_aabb(const sycl::float3&, const sycl::float3&, const sycl::float3&)
+/// @brief Compute the squared distance from a point to an axis-aligned bounding box.
+/// @param min_bounds Minimum coordinates of the bounding box.
+/// @param max_bounds Maximum coordinates of the bounding box.
+/// @param point The point to measure distance from.
+/// @return The squared distance from the point to the bounding box.
 SYCL_EXTERNAL inline float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                             const sycl::float3& point) {
     return distance_to_aabb_generic(min_bounds, max_bounds, point);
