@@ -1106,20 +1106,10 @@ namespace algorithms {
 
 namespace knn {
 
-/// @brief Float3 helper used by the linear octree implementation.
-struct LinearFloat3 {
-    float x;
-    float y;
-    float z;
-
-    LinearFloat3() : x(0.0f), y(0.0f), z(0.0f) {}
-    LinearFloat3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
-};
-
 /// @brief Linear octree node representation suitable for USM allocations.
 struct LinearOctreeNode {
-    LinearFloat3 aabb_min;
-    LinearFloat3 aabb_max;
+    Eigen::Vector3f aabb_min;
+    Eigen::Vector3f aabb_max;
     int32_t child_base_index;
     int32_t point_start_index;
     int32_t point_count;
@@ -1156,14 +1146,14 @@ public:
 
 private:
     struct MortonPoint {
-        LinearFloat3 position;
+        Eigen::Vector3f position;
         uint64_t morton_code;
         int32_t id;
     };
 
     struct HostNode {
-        LinearFloat3 min_bounds;
-        LinearFloat3 max_bounds;
+        Eigen::Vector3f min_bounds;
+        Eigen::Vector3f max_bounds;
         std::array<int32_t, 8> children;
         int32_t point_start;
         int32_t point_count;
@@ -1182,59 +1172,43 @@ private:
     void build_from_cloud(const PointCloudShared& points);
     void release_device_memory();
 
-    int32_t build_host_subtree(int32_t start_index, int32_t end_index, const LinearFloat3& min_bounds,
-                               const LinearFloat3& max_bounds, size_t depth, std::vector<HostNode>& host_nodes,
-                               std::vector<LinearFloat3>& sorted_points, std::vector<LinearFloat3>& scratch_points,
+    int32_t build_host_subtree(int32_t start_index, int32_t end_index, const Eigen::Vector3f& min_bounds,
+                               const Eigen::Vector3f& max_bounds, size_t depth, std::vector<HostNode>& host_nodes,
+                               std::vector<Eigen::Vector3f>& sorted_points, std::vector<Eigen::Vector3f>& scratch_points,
                                std::vector<int32_t>& sorted_ids, std::vector<int32_t>& scratch_ids,
                                std::vector<uint64_t>& sorted_morton, std::vector<uint64_t>& scratch_morton);
 
     void linearise_tree(const std::vector<HostNode>& host_nodes, int32_t root_index,
                         std::vector<LinearOctreeNode>& linear_nodes) const;
 
-    static LinearFloat3 compute_child_min(const LinearFloat3& parent_min, const LinearFloat3& parent_max,
+    static Eigen::Vector3f compute_child_min(const Eigen::Vector3f& parent_min, const Eigen::Vector3f& parent_max,
                                           size_t child_index);
-    static LinearFloat3 compute_child_max(const LinearFloat3& parent_min, const LinearFloat3& parent_max,
+    static Eigen::Vector3f compute_child_max(const Eigen::Vector3f& parent_min, const Eigen::Vector3f& parent_max,
                                           size_t child_index);
-    static LinearFloat3 point_from_type(const PointType& point);
-    static LinearFloat3 make_safe_lengths(const LinearFloat3& min_bounds, const LinearFloat3& max_bounds);
-    static float distance_to_aabb(const LinearFloat3& min_bounds, const LinearFloat3& max_bounds,
-                                  const LinearFloat3& point);
-    static float squared_distance(const LinearFloat3& a, const LinearFloat3& b);
-    static uint64_t morton_encode(const LinearFloat3& point, const LinearFloat3& min_bounds,
-                                  const LinearFloat3& max_bounds);
+    static Eigen::Vector3f point_from_type(const PointType& point);
+    static Eigen::Vector3f make_safe_lengths(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds);
+    static float distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                  const Eigen::Vector3f& point);
+    static float squared_distance(const Eigen::Vector3f& a, const Eigen::Vector3f& b);
+    static uint64_t morton_encode(const Eigen::Vector3f& point, const Eigen::Vector3f& min_bounds,
+                                  const Eigen::Vector3f& max_bounds);
 
     sycl_utils::DeviceQueue queue_;
     float resolution_;
     size_t max_points_per_node_;
     LinearOctreeNode* nodes_usm_;
-    LinearFloat3* points_usm_;
+    Eigen::Vector3f* points_usm_;
     int32_t* point_ids_usm_;
     size_t node_count_;
     size_t point_count_;
 };
 
-inline LinearFloat3 operator+(const LinearFloat3& lhs, const LinearFloat3& rhs) {
-    return LinearFloat3(lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z);
+inline Eigen::Vector3f min_components(const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
+    return Eigen::Vector3f(std::min(lhs.x(), rhs.x()), std::min(lhs.y(), rhs.y()), std::min(lhs.z(), rhs.z()));
 }
 
-inline LinearFloat3 operator-(const LinearFloat3& lhs, const LinearFloat3& rhs) {
-    return LinearFloat3(lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z);
-}
-
-inline LinearFloat3 operator*(const LinearFloat3& lhs, float rhs) {
-    return LinearFloat3(lhs.x * rhs, lhs.y * rhs, lhs.z * rhs);
-}
-
-inline LinearFloat3 operator*(float lhs, const LinearFloat3& rhs) {
-    return rhs * lhs;
-}
-
-inline LinearFloat3 min_components(const LinearFloat3& lhs, const LinearFloat3& rhs) {
-    return LinearFloat3(std::min(lhs.x, rhs.x), std::min(lhs.y, rhs.y), std::min(lhs.z, rhs.z));
-}
-
-inline LinearFloat3 max_components(const LinearFloat3& lhs, const LinearFloat3& rhs) {
-    return LinearFloat3(std::max(lhs.x, rhs.x), std::max(lhs.y, rhs.y), std::max(lhs.z, rhs.z));
+inline Eigen::Vector3f max_components(const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
+    return Eigen::Vector3f(std::max(lhs.x(), rhs.x()), std::max(lhs.y(), rhs.y()), std::max(lhs.z(), rhs.z()));
 }
 
 inline LinearOctree::LinearOctree(const sycl_utils::DeviceQueue& queue, float resolution, size_t max_points_per_node)
@@ -1304,74 +1278,74 @@ inline void LinearOctree::release_device_memory() {
     point_count_ = 0;
 }
 
-inline LinearFloat3 LinearOctree::point_from_type(const PointType& point) {
-    return LinearFloat3(point.x(), point.y(), point.z());
+inline Eigen::Vector3f LinearOctree::point_from_type(const PointType& point) {
+    return Eigen::Vector3f(point.x(), point.y(), point.z());
 }
 
-inline LinearFloat3 LinearOctree::make_safe_lengths(const LinearFloat3& min_bounds, const LinearFloat3& max_bounds) {
+inline Eigen::Vector3f LinearOctree::make_safe_lengths(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds) {
     const float epsilon = 1e-6f;
-    const float dx = std::max(max_bounds.x - min_bounds.x, epsilon);
-    const float dy = std::max(max_bounds.y - min_bounds.y, epsilon);
-    const float dz = std::max(max_bounds.z - min_bounds.z, epsilon);
-    return LinearFloat3(dx, dy, dz);
+    const float dx = std::max(max_bounds.x() - min_bounds.x(), epsilon);
+    const float dy = std::max(max_bounds.y() - min_bounds.y(), epsilon);
+    const float dz = std::max(max_bounds.z() - min_bounds.z(), epsilon);
+    return Eigen::Vector3f(dx, dy, dz);
 }
 
-inline float LinearOctree::distance_to_aabb(const LinearFloat3& min_bounds, const LinearFloat3& max_bounds,
-                                            const LinearFloat3& point) {
-    const float dx = std::max({0.0f, min_bounds.x - point.x, point.x - max_bounds.x});
-    const float dy = std::max({0.0f, min_bounds.y - point.y, point.y - max_bounds.y});
-    const float dz = std::max({0.0f, min_bounds.z - point.z, point.z - max_bounds.z});
+inline float LinearOctree::distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                            const Eigen::Vector3f& point) {
+    const float dx = std::max({0.0f, min_bounds.x() - point.x(), point.x() - max_bounds.x()});
+    const float dy = std::max({0.0f, min_bounds.y() - point.y(), point.y() - max_bounds.y()});
+    const float dz = std::max({0.0f, min_bounds.z() - point.z(), point.z() - max_bounds.z()});
     return dx * dx + dy * dy + dz * dz;
 }
 
-inline float LinearOctree::squared_distance(const LinearFloat3& a, const LinearFloat3& b) {
-    const float dx = a.x - b.x;
-    const float dy = a.y - b.y;
-    const float dz = a.z - b.z;
+inline float LinearOctree::squared_distance(const Eigen::Vector3f& a, const Eigen::Vector3f& b) {
+    const float dx = a.x() - b.x();
+    const float dy = a.y() - b.y();
+    const float dz = a.z() - b.z();
     return dx * dx + dy * dy + dz * dz;
 }
 
-inline LinearFloat3 LinearOctree::compute_child_min(const LinearFloat3& parent_min, const LinearFloat3& parent_max,
+inline Eigen::Vector3f LinearOctree::compute_child_min(const Eigen::Vector3f& parent_min, const Eigen::Vector3f& parent_max,
                                                     size_t child_index) {
-    const LinearFloat3 center = 0.5f * (parent_min + parent_max);
-    LinearFloat3 child_min = parent_min;
+    const Eigen::Vector3f center = 0.5f * (parent_min + parent_max);
+    Eigen::Vector3f child_min = parent_min;
     if (child_index & 1u) {
-        child_min.x = center.x;
+        child_min.x() = center.x();
     }
     if (child_index & 2u) {
-        child_min.y = center.y;
+        child_min.y() = center.y();
     }
     if (child_index & 4u) {
-        child_min.z = center.z;
+        child_min.z() = center.z();
     }
     return child_min;
 }
 
-inline LinearFloat3 LinearOctree::compute_child_max(const LinearFloat3& parent_min, const LinearFloat3& parent_max,
+inline Eigen::Vector3f LinearOctree::compute_child_max(const Eigen::Vector3f& parent_min, const Eigen::Vector3f& parent_max,
                                                     size_t child_index) {
-    const LinearFloat3 center = 0.5f * (parent_min + parent_max);
-    LinearFloat3 child_max = parent_max;
+    const Eigen::Vector3f center = 0.5f * (parent_min + parent_max);
+    Eigen::Vector3f child_max = parent_max;
     if ((child_index & 1u) == 0u) {
-        child_max.x = center.x;
+        child_max.x() = center.x();
     }
     if ((child_index & 2u) == 0u) {
-        child_max.y = center.y;
+        child_max.y() = center.y();
     }
     if ((child_index & 4u) == 0u) {
-        child_max.z = center.z;
+        child_max.z() = center.z();
     }
     return child_max;
 }
 
-inline uint64_t LinearOctree::morton_encode(const LinearFloat3& point, const LinearFloat3& min_bounds,
-                                            const LinearFloat3& max_bounds) {
+inline uint64_t LinearOctree::morton_encode(const Eigen::Vector3f& point, const Eigen::Vector3f& min_bounds,
+                                            const Eigen::Vector3f& max_bounds) {
     constexpr uint32_t MORTON_BITS = 21;
     constexpr uint32_t MAX_COORD = (1u << MORTON_BITS) - 1u;
 
-    const LinearFloat3 lengths = make_safe_lengths(min_bounds, max_bounds);
-    const float nx = (point.x - min_bounds.x) / lengths.x;
-    const float ny = (point.y - min_bounds.y) / lengths.y;
-    const float nz = (point.z - min_bounds.z) / lengths.z;
+    const Eigen::Vector3f lengths = make_safe_lengths(min_bounds, max_bounds);
+    const float nx = (point.x() - min_bounds.x()) / lengths.x();
+    const float ny = (point.y() - min_bounds.y()) / lengths.y();
+    const float nz = (point.z() - min_bounds.z()) / lengths.z();
 
     const uint32_t ix = static_cast<uint32_t>(std::clamp(nx, 0.0f, 1.0f) * static_cast<float>(MAX_COORD));
     const uint32_t iy = static_cast<uint32_t>(std::clamp(ny, 0.0f, 1.0f) * static_cast<float>(MAX_COORD));
@@ -1407,22 +1381,22 @@ inline void LinearOctree::build_from_cloud(const PointCloudShared& points) {
     }
 
     std::vector<MortonPoint> morton_points(count);
-    LinearFloat3 bbox_min(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+    Eigen::Vector3f bbox_min(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
                           std::numeric_limits<float>::infinity());
-    LinearFloat3 bbox_max(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+    Eigen::Vector3f bbox_max(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
                           std::numeric_limits<float>::lowest());
 
     for (size_t i = 0; i < count; ++i) {
         const PointType& pt = (*points.points)[i];
-        const LinearFloat3 converted = point_from_type(pt);
+        const Eigen::Vector3f converted = point_from_type(pt);
         bbox_min = min_components(bbox_min, converted);
         bbox_max = max_components(bbox_max, converted);
         morton_points[i] = MortonPoint{converted, 0ULL, static_cast<int32_t>(i)};
     }
 
     const float epsilon = std::max(1e-5f, resolution_ * 0.5f);
-    bbox_min = bbox_min - LinearFloat3(epsilon, epsilon, epsilon);
-    bbox_max = bbox_max + LinearFloat3(epsilon, epsilon, epsilon);
+    bbox_min = bbox_min - Eigen::Vector3f(epsilon, epsilon, epsilon);
+    bbox_max = bbox_max + Eigen::Vector3f(epsilon, epsilon, epsilon);
 
     for (auto& entry : morton_points) {
         entry.morton_code = morton_encode(entry.position, bbox_min, bbox_max);
@@ -1431,7 +1405,7 @@ inline void LinearOctree::build_from_cloud(const PointCloudShared& points) {
     std::sort(morton_points.begin(), morton_points.end(),
               [](const MortonPoint& a, const MortonPoint& b) { return a.morton_code < b.morton_code; });
 
-    std::vector<LinearFloat3> sorted_points(count);
+    std::vector<Eigen::Vector3f> sorted_points(count);
     std::vector<int32_t> sorted_ids(count);
     std::vector<uint64_t> sorted_morton(count);
     for (size_t i = 0; i < count; ++i) {
@@ -1440,7 +1414,7 @@ inline void LinearOctree::build_from_cloud(const PointCloudShared& points) {
         sorted_morton[i] = morton_points[i].morton_code;
     }
 
-    std::vector<LinearFloat3> scratch_points(count);
+    std::vector<Eigen::Vector3f> scratch_points(count);
     std::vector<int32_t> scratch_ids(count);
     std::vector<uint64_t> scratch_morton(count);
 
@@ -1457,7 +1431,7 @@ inline void LinearOctree::build_from_cloud(const PointCloudShared& points) {
 
     node_count_ = linear_nodes.size();
     nodes_usm_ = sycl::malloc_shared<LinearOctreeNode>(node_count_, *queue_.ptr);
-    points_usm_ = sycl::malloc_shared<LinearFloat3>(count, *queue_.ptr);
+    points_usm_ = sycl::malloc_shared<Eigen::Vector3f>(count, *queue_.ptr);
     point_ids_usm_ = sycl::malloc_shared<int32_t>(count, *queue_.ptr);
 
     std::copy(linear_nodes.begin(), linear_nodes.end(), nodes_usm_);
@@ -1465,11 +1439,11 @@ inline void LinearOctree::build_from_cloud(const PointCloudShared& points) {
     std::copy(sorted_ids.begin(), sorted_ids.end(), point_ids_usm_);
 }
 
-inline int32_t LinearOctree::build_host_subtree(int32_t start_index, int32_t end_index, const LinearFloat3& min_bounds,
-                                                const LinearFloat3& max_bounds, size_t depth,
+inline int32_t LinearOctree::build_host_subtree(int32_t start_index, int32_t end_index, const Eigen::Vector3f& min_bounds,
+                                                const Eigen::Vector3f& max_bounds, size_t depth,
                                                 std::vector<HostNode>& host_nodes,
-                                                std::vector<LinearFloat3>& sorted_points,
-                                                std::vector<LinearFloat3>& scratch_points,
+                                                std::vector<Eigen::Vector3f>& sorted_points,
+                                                std::vector<Eigen::Vector3f>& scratch_points,
                                                 std::vector<int32_t>& sorted_ids, std::vector<int32_t>& scratch_ids,
                                                 std::vector<uint64_t>& sorted_morton,
                                                 std::vector<uint64_t>& scratch_morton) {
@@ -1486,8 +1460,8 @@ inline int32_t LinearOctree::build_host_subtree(int32_t start_index, int32_t end
         return node_index;
     }
 
-    const LinearFloat3 extents = max_bounds - min_bounds;
-    const float max_axis = std::max({extents.x, extents.y, extents.z});
+    const Eigen::Vector3f extents = max_bounds - min_bounds;
+    const float max_axis = std::max({extents.x(), extents.y(), extents.z()});
     const bool depth_limit = depth >= 32;
 
     if (node.point_count <= static_cast<int32_t>(max_points_per_node_) || max_axis <= resolution_ || depth_limit) {
@@ -1495,18 +1469,18 @@ inline int32_t LinearOctree::build_host_subtree(int32_t start_index, int32_t end
         return node_index;
     }
 
-    const LinearFloat3 center = 0.5f * (min_bounds + max_bounds);
+    const Eigen::Vector3f center = 0.5f * (min_bounds + max_bounds);
     std::array<int32_t, 8> counts{};
     for (int32_t idx = start_index; idx < end_index; ++idx) {
-        const LinearFloat3& p = sorted_points[static_cast<size_t>(idx)];
+        const Eigen::Vector3f& p = sorted_points[static_cast<size_t>(idx)];
         size_t child = 0;
-        if (p.x >= center.x) {
+        if (p.x() >= center.x()) {
             child |= 1u;
         }
-        if (p.y >= center.y) {
+        if (p.y() >= center.y()) {
             child |= 2u;
         }
-        if (p.z >= center.z) {
+        if (p.z() >= center.z()) {
             child |= 4u;
         }
         counts[child] += 1;
@@ -1533,15 +1507,15 @@ inline int32_t LinearOctree::build_host_subtree(int32_t start_index, int32_t end
 
     for (int32_t idx = start_index; idx < end_index; ++idx) {
         const size_t local_idx = static_cast<size_t>(idx - start_index);
-        const LinearFloat3& point = sorted_points[static_cast<size_t>(idx)];
+        const Eigen::Vector3f& point = sorted_points[static_cast<size_t>(idx)];
         size_t child = 0;
-        if (point.x >= center.x) {
+        if (point.x() >= center.x()) {
             child |= 1u;
         }
-        if (point.y >= center.y) {
+        if (point.y() >= center.y()) {
             child |= 2u;
         }
-        if (point.z >= center.z) {
+        if (point.z() >= center.z()) {
             child |= 4u;
         }
         const int32_t dest = offsets[child]++;
@@ -1569,8 +1543,8 @@ inline int32_t LinearOctree::build_host_subtree(int32_t start_index, int32_t end
         }
         const int32_t child_start = start_index + offsets[child];
         const int32_t child_end = child_start + child_count;
-        const LinearFloat3 child_min = compute_child_min(min_bounds, max_bounds, child);
-        const LinearFloat3 child_max = compute_child_max(min_bounds, max_bounds, child);
+        const Eigen::Vector3f child_min = compute_child_min(min_bounds, max_bounds, child);
+        const Eigen::Vector3f child_max = compute_child_max(min_bounds, max_bounds, child);
         const int32_t child_index = build_host_subtree(child_start, child_end, child_min, child_max, depth + 1,
                                                        host_nodes, sorted_points, scratch_points, sorted_ids,
                                                        scratch_ids, sorted_morton, scratch_morton);
@@ -1723,7 +1697,7 @@ inline sycl_utils::events LinearOctree::knn_search_async_impl(
             }
 
             const PointType query_point = query_points_ptr[query_idx];
-            const LinearFloat3 query_vec(query_point.x(), query_point.y(), query_point.z());
+            const Eigen::Vector3f query_vec(query_point.x(), query_point.y(), query_point.z());
 
             struct Candidate {
                 int32_t index;
@@ -1832,7 +1806,7 @@ inline sycl_utils::events LinearOctree::knn_search_async_impl(
                 if (node.isLeaf()) {
                     for (int32_t i = 0; i < node.point_count; ++i) {
                         const int32_t point_idx = node.point_start_index + i;
-                        const LinearFloat3 target_point = leaf_points_ptr[point_idx];
+                        const Eigen::Vector3f target_point = leaf_points_ptr[point_idx];
                         const int32_t target_id = leaf_ids_ptr[point_idx];
                         const float dist_sq = squared_distance(query_vec, target_point);
                         push_candidate(dist_sq, target_id);
