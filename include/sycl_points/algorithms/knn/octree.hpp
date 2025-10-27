@@ -127,6 +127,9 @@ public:
     /// @return True when a point was removed.
     bool remove(const PointType& point, float tolerance = 1e-5f);
 
+    /// @brief Compact the tree by removing nodes flagged for deletion.
+    void remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices);
+
     /// @brief Delete all points inside the provided bounding box.
     /// @return Number of points removed.
     size_t delete_box(const BoundingBox& region);
@@ -455,6 +458,99 @@ inline bool Octree::remove(const PointType& point, float tolerance) {
         this->device_dirty_ = true;
     }
     return removed;
+}
+
+/// @brief Remove nodes according to externally computed flags and remap surviving identifiers.
+/// @param flags Inclusion flags where zero indicates removal and non-zero keeps the point.
+/// @param indices Mapping from old identifiers to compacted indices for kept points.
+inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags,
+                                          const shared_vector<int32_t>& indices) {
+    const size_t current_size = this->total_point_count_;
+    if (flags.size() != current_size || indices.size() != current_size) {
+        throw std::runtime_error("flags size must match octree point count.");
+    }
+
+    if (current_size == 0 || this->root_index_ < 0) {
+        return;
+    }
+
+    // Hint that the flag buffers will be accessed on the host prior to compaction.
+    this->queue_.set_accessed_by_host(flags.data(), current_size);
+    this->queue_.set_accessed_by_host(indices.data(), current_size);
+
+    const auto* flags_ptr = flags.data();
+    const auto* indices_ptr = indices.data();
+
+    size_t new_total = 0;
+    int32_t max_identifier = -1;
+
+    for (size_t node_idx = 0; node_idx < this->host_nodes_.size(); ++node_idx) {
+        Node& node = this->host_nodes_[node_idx];
+        if (!node.is_leaf) {
+            continue;
+        }
+
+        auto& points = this->host_leaf_points_[node_idx];
+        size_t write_idx = 0;
+
+        for (size_t read_idx = 0; read_idx < points.size(); ++read_idx) {
+            PointRecord& record = points[read_idx];
+            const int32_t record_id = record.id;
+
+            if (record_id < 0 || static_cast<size_t>(record_id) >= current_size) {
+                // Preserve points that fall outside of the provided flag range.
+                points[write_idx++] = record;
+                max_identifier = std::max(max_identifier, record.id);
+                ++new_total;
+                continue;
+            }
+
+            if (flags_ptr[record_id] == 0) {
+                continue;
+            }
+
+            const int32_t remapped_id = indices_ptr[record_id];
+            if (remapped_id < 0) {
+                throw std::runtime_error("indices must provide non-negative ids for kept points.");
+            }
+
+            record.id = remapped_id;
+            points[write_idx++] = record;
+            max_identifier = std::max(max_identifier, remapped_id);
+            ++new_total;
+        }
+
+        points.resize(write_idx);
+        this->host_subtree_sizes_[node_idx] = write_idx;
+        node.data.leaf.point_count = static_cast<uint32_t>(write_idx);
+    }
+
+    // Release the host access hints as compaction is complete.
+    this->queue_.clear_accessed_by_host(flags.data(), current_size);
+    this->queue_.clear_accessed_by_host(indices.data(), current_size);
+
+    this->total_point_count_ = new_total;
+    this->next_point_id_ = std::max<int32_t>(max_identifier + 1, 0);
+
+    if (new_total == 0) {
+        this->root_index_ = -1;
+        this->host_nodes_.clear();
+        this->host_leaf_points_.clear();
+        this->host_subtree_sizes_.clear();
+        this->bbox_min_ = Eigen::Vector3f::Zero();
+        this->bbox_max_ = Eigen::Vector3f::Zero();
+        this->snapshot_ids_.clear();
+        this->device_points_.clear();
+        this->device_point_ids_.clear();
+        this->device_dirty_ = true;
+        return;
+    }
+
+    for (size_t node_idx = this->host_nodes_.size(); node_idx-- > 0;) {
+        this->recompute_subtree_size(static_cast<int32_t>(node_idx));
+    }
+
+    this->device_dirty_ = true;
 }
 
 /// @brief Recursive removal routine that prunes empty nodes on the way back up.
