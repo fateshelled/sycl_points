@@ -111,10 +111,6 @@ public:
         const PointCloudShared& queries, const size_t k, KNNResult& result,
         const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const override;
 
-    [[nodiscard]] KNNResult knn_search(const PointCloudShared& queries, size_t k) const {
-        return KNNBase::knn_search(queries, k);
-    }
-
     /// @brief Accessor for the resolution that was requested at build time.
     [[nodiscard]] float resolution() const { return this->resolution_; }
 
@@ -190,13 +186,13 @@ private:
     size_t total_point_count_;
     int32_t next_point_id_;
     /// @brief Host-side mirror of the node array shared with device buffers.
-    mutable std::vector<Node, Eigen::aligned_allocator<Node>> host_nodes_;
+    mutable std::vector<Node> host_nodes_;
     /// @brief Points stored per leaf node for host-side updates.
     mutable std::vector<std::vector<PointRecord>> host_leaf_points_;
     /// @brief Cached subtree sizes used to accelerate host queries and updates.
     mutable std::vector<size_t> host_subtree_sizes_;
     mutable shared_vector<Node> nodes_;
-    mutable shared_vector<PointType> device_points_;
+    mutable PointContainerShared device_points_;
     mutable shared_vector<int32_t> device_point_ids_;
     mutable std::vector<int32_t> snapshot_ids_;
     mutable bool device_dirty_;
@@ -224,9 +220,9 @@ inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, si
       host_nodes_(),
       host_leaf_points_(),
       host_subtree_sizes_(),
-      nodes_(shared_allocator<Node>(*queue_.ptr)),
-      device_points_(shared_allocator<PointType>(*queue_.ptr)),
-      device_point_ids_(shared_allocator<int32_t>(*queue_.ptr)),
+      nodes_(*queue_.ptr),
+      device_points_(*queue_.ptr),
+      device_point_ids_(*queue_.ptr),
       device_dirty_(true) {}
 
 /// @brief Populate the octree from an entire point cloud.
@@ -643,7 +639,7 @@ inline void Octree::ensure_root_bounds(const PointType& point) {
         return;
     }
 
-    Node& root = this->host_nodes_[static_cast<size_t>(this->root_index_)];
+    const Node& root = this->host_nodes_[static_cast<size_t>(this->root_index_)];
     BoundingBox root_bounds{root.min_bounds, root.max_bounds};
     if (root_bounds.contains(point_vec)) {
         return;
@@ -762,9 +758,9 @@ inline void Octree::sync_device_buffers() const {
     const size_t point_count = this->total_point_count_;
 
     // Allocate fresh shared memory buffers for the current host-side tree snapshot.
-    this->nodes_ = shared_vector<Node>(node_count, Node{}, *this->queue_.ptr);
-    this->device_points_ = shared_vector<PointType>(point_count, PointType(), *this->queue_.ptr);
-    this->device_point_ids_ = shared_vector<int32_t>(point_count, 0, *this->queue_.ptr);
+    this->nodes_ = {node_count, Node{}, *this->queue_.ptr};
+    this->device_points_ = {point_count, PointType(), *this->queue_.ptr};
+    this->device_point_ids_ = {point_count, 0, *this->queue_.ptr};
 
     this->snapshot_ids_.clear();
     this->snapshot_ids_.reserve(point_count);
@@ -915,13 +911,12 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
         throw std::runtime_error("Octree structure has not been initialized");
     }
 
-    const auto depends_copy = depends;
     auto search_task = [=](sycl::handler& handler) {
         const size_t work_group_size = this->queue_.get_work_group_size();
         const size_t global_size = this->queue_.get_global_size(query_size);
 
-        if (!depends_copy.empty()) {
-            handler.depends_on(depends_copy);
+        if (!depends.empty()) {
+            handler.depends_on(depends);
         }
 
         auto indices_ptr = result.indices->data();
@@ -944,10 +939,10 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
             const auto query_point = query_points_ptr[query_idx];
             const Eigen::Vector3f query_point_vec(query_point.x(), query_point.y(), query_point.z());
 
-            NodeEntry bestK[MAX_K];
+            NodeEntry bestK[MAX_K];  // descending order. head data is largest dist_sq
             std::fill(bestK, bestK + MAX_K, NodeEntry{-1, std::numeric_limits<float>::max()});
 
-            NodeEntry stack[MAX_DEPTH];
+            NodeEntry stack[MAX_DEPTH + 1];
             size_t stack_size = 0;
             size_t neighbour_count = 0;
 
@@ -989,8 +984,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
 
             auto push_candidate = [&](float distance_sq, int32_t index) {
                 if (neighbour_count < k) {
-                    bestK[neighbour_count] = {index, distance_sq};
-                    ++neighbour_count;
+                    bestK[neighbour_count++] = {index, distance_sq};
                     sift_up(neighbour_count - 1);
                 } else if (distance_sq < bestK[0].dist_sq) {
                     bestK[0] = {index, distance_sq};

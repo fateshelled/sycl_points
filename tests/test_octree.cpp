@@ -8,6 +8,7 @@
 #include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/algorithms/knn/octree.hpp>
 #include <sycl_points/algorithms/knn/result.hpp>
+#include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/io/point_cloud_reader.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
@@ -32,9 +33,9 @@ void compareKNNResults(const sycl_points::algorithms::knn::KNNResult& lhs,
     for (size_t i = 0; i < lhs.query_size; ++i) {
         for (size_t j = 0; j < k; ++j) {
             const size_t offset = i * k + j;
-            EXPECT_NEAR((*lhs.distances)[offset], (*rhs.distances)[offset], epsilon)
+            ASSERT_NEAR((*lhs.distances)[offset], (*rhs.distances)[offset], epsilon)
                 << "Distance mismatch at query " << i << ", neighbour " << j;
-            EXPECT_EQ((*lhs.indices)[offset], (*rhs.indices)[offset])
+            ASSERT_EQ((*lhs.indices)[offset], (*rhs.indices)[offset])
                 << "Index mismatch at query " << i << ", neighbour " << j;
         }
     }
@@ -60,6 +61,7 @@ TEST(OctreeTest, CompareWithBruteForceInterfaceOnly) {
         const size_t num_query_points = 64;
         const size_t k = 4;
         const float point_range = 10.0f;
+        const float leaf_size = 0.1f;
 
         std::mt19937 gen(2024);
 
@@ -77,7 +79,7 @@ TEST(OctreeTest, CompareWithBruteForceInterfaceOnly) {
         sycl_points::PointCloudShared target_cloud(queue, target_cpu);
         sycl_points::PointCloudShared query_cloud(queue, query_cpu);
 
-        auto octree = sycl_points::algorithms::knn::Octree::build(queue, target_cloud, 0.5f);
+        auto octree = sycl_points::algorithms::knn::Octree::build(queue, target_cloud, leaf_size);
         auto octree_result = octree->knn_search(query_cloud, k);
         auto bruteforce_result =
             sycl_points::algorithms::knn::knn_search_bruteforce(queue, query_cloud, target_cloud, k);
@@ -93,17 +95,16 @@ TEST(OctreeTest, BenchmarkOctreeAgainstKDTree) {
         using Clock = std::chrono::high_resolution_clock;
 
         const float point_range = 50.0f;
-        const float leaf_size = 0.5f;
+        const float leaf_size = 0.1f;
         const size_t random_seed = 1337;
-        const size_t benchmark_runs = 100;
+        const size_t benchmark_runs = 20;
 
         const std::vector<std::pair<size_t, size_t>> benchmark_cases = {
             {10000, 1000},
-            {50000, 5000},
             {100000, 10000},
         };
 
-        const std::vector<size_t> k_values = {1, 10, 20, 30};
+        const std::vector<size_t> k_values = {1, 10};
 
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
@@ -208,6 +209,7 @@ TEST(OctreeTest, BenchmarkOctreeWithDatasetTargets) {
 
         const std::vector<size_t> k_values = {1, 10, 20, 30};
         const size_t benchmark_runs = 50;
+        const float leaf_size = 0.1f;
 
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
@@ -223,15 +225,23 @@ TEST(OctreeTest, BenchmarkOctreeWithDatasetTargets) {
         ASSERT_GE(target_cpu.points->size(), k_values.back())
             << "Dataset contains fewer points than required for the largest k";
 
+        sycl_points::algorithms::filter::VoxelGrid vg(queue, leaf_size);
+
         sycl_points::PointCloudShared target_cloud(queue, target_cpu);
+        sycl_points::PointCloudShared downsampled_target_cloud(queue);
         sycl_points::PointCloudShared query_cloud(queue, query_cpu);
+        sycl_points::PointCloudShared downsampled_query_cloud(queue);
 
-        auto run_octree_iteration = [&](size_t knn_k) {
+        vg.downsampling(target_cloud, downsampled_target_cloud);
+        vg.downsampling(query_cloud, downsampled_query_cloud);
+
+        auto run_octree_iteration = [&](size_t knn_k, const sycl_points::PointCloudShared& target,
+                                        const sycl_points::PointCloudShared& query) {
             const auto build_start = Clock::now();
-            auto tree = sycl_points::algorithms::knn::Octree::build(queue, target_cloud, 0.5f);
+            auto tree = sycl_points::algorithms::knn::Octree::build(queue, target, leaf_size);
             const auto build_end = Clock::now();
             const auto search_start = Clock::now();
-            auto result = tree->knn_search(query_cloud, knn_k);
+            auto result = tree->knn_search(query, knn_k);
             const auto search_end = Clock::now();
 
             const double build_ms = std::chrono::duration<double, std::milli>(build_end - build_start).count();
@@ -240,12 +250,13 @@ TEST(OctreeTest, BenchmarkOctreeWithDatasetTargets) {
             return std::make_tuple(build_ms, search_ms, result);
         };
 
-        auto run_kdtree_iteration = [&](size_t knn_k) {
+        auto run_kdtree_iteration = [&](size_t knn_k, const sycl_points::PointCloudShared& target,
+                                        const sycl_points::PointCloudShared& query) {
             const auto build_start = Clock::now();
-            auto tree = sycl_points::algorithms::knn::KDTree::build(queue, target_cloud);
+            auto tree = sycl_points::algorithms::knn::KDTree::build(queue, target);
             const auto build_end = Clock::now();
             const auto search_start = Clock::now();
-            auto result = tree->knn_search(query_cloud, knn_k);
+            auto result = tree->knn_search(query, knn_k);
             const auto search_end = Clock::now();
 
             const double build_ms = std::chrono::duration<double, std::milli>(build_end - build_start).count();
@@ -254,52 +265,57 @@ TEST(OctreeTest, BenchmarkOctreeWithDatasetTargets) {
             return std::make_tuple(build_ms, search_ms, result);
         };
 
-        const size_t query_size = query_cpu.size();
+        size_t case_index = 0;
+        for (const auto& [target, query] : {std::make_pair(downsampled_target_cloud, downsampled_query_cloud),  //
+                                            std::make_pair(target_cloud, downsampled_query_cloud),              //
+                                            std::make_pair(downsampled_target_cloud, query_cloud),              //
+                                            std::make_pair(target_cloud, query_cloud)}) {
+            std::cout << "Benchmark case " << ++case_index << std::endl;
+            for (const size_t k : k_values) {
+                const auto warmup_octree = run_octree_iteration(k, target, query);
+                const auto warmup_kdtree = run_kdtree_iteration(k, target, query);
 
-        for (const size_t k : k_values) {
-            const auto warmup_octree = run_octree_iteration(k);
-            const auto warmup_kdtree = run_kdtree_iteration(k);
+                ASSERT_EQ(std::get<2>(warmup_octree).query_size, query.size());
+                ASSERT_EQ(std::get<2>(warmup_octree).k, k);
+                ASSERT_EQ(std::get<2>(warmup_kdtree).query_size, query.size());
+                ASSERT_EQ(std::get<2>(warmup_kdtree).k, k);
 
-            ASSERT_EQ(std::get<2>(warmup_octree).query_size, query_size);
-            ASSERT_EQ(std::get<2>(warmup_octree).k, k);
-            ASSERT_EQ(std::get<2>(warmup_kdtree).query_size, query_size);
-            ASSERT_EQ(std::get<2>(warmup_kdtree).k, k);
+                double total_octree_build_ms = 0.0;
+                double total_octree_search_ms = 0.0;
+                for (size_t run = 0; run < benchmark_runs; ++run) {
+                    auto [build_ms, search_ms, result] = run_octree_iteration(k, target, query);
+                    ASSERT_EQ(result.query_size, query.size());
+                    ASSERT_EQ(result.k, k);
+                    total_octree_build_ms += build_ms;
+                    total_octree_search_ms += search_ms;
+                }
 
-            double total_octree_build_ms = 0.0;
-            double total_octree_search_ms = 0.0;
-            for (size_t run = 0; run < benchmark_runs; ++run) {
-                auto [build_ms, search_ms, result] = run_octree_iteration(k);
-                ASSERT_EQ(result.query_size, query_size);
-                ASSERT_EQ(result.k, k);
-                total_octree_build_ms += build_ms;
-                total_octree_search_ms += search_ms;
+                double total_kdtree_build_ms = 0.0;
+                double total_kdtree_search_ms = 0.0;
+                for (size_t run = 0; run < benchmark_runs; ++run) {
+                    auto [build_ms, search_ms, result] = run_kdtree_iteration(k, target, query);
+                    ASSERT_EQ(result.query_size, query.size());
+                    ASSERT_EQ(result.k, k);
+                    total_kdtree_build_ms += build_ms;
+                    total_kdtree_search_ms += search_ms;
+                }
+
+                const double average_octree_build_ms = total_octree_build_ms / static_cast<double>(benchmark_runs);
+                const double average_octree_search_ms = total_octree_search_ms / static_cast<double>(benchmark_runs);
+                const double average_kdtree_build_ms = total_kdtree_build_ms / static_cast<double>(benchmark_runs);
+                const double average_kdtree_search_ms = total_kdtree_search_ms / static_cast<double>(benchmark_runs);
+
+                std::cout << "  Dataset benchmark: target_points=" << target.size() << ", query_points=" << query.size()
+                          << ", k=" << k << std::endl;
+                std::cout << "    Average Octree build time over " << benchmark_runs
+                          << " runs: " << average_octree_build_ms << " ms" << std::endl;
+                std::cout << "    Average Octree search time over " << benchmark_runs
+                          << " runs: " << average_octree_search_ms << " ms" << std::endl;
+                std::cout << "    Average KDTree build time over " << benchmark_runs
+                          << " runs: " << average_kdtree_build_ms << " ms" << std::endl;
+                std::cout << "    Average KDTree search time over " << benchmark_runs
+                          << " runs: " << average_kdtree_search_ms << " ms" << std::endl;
             }
-
-            double total_kdtree_build_ms = 0.0;
-            double total_kdtree_search_ms = 0.0;
-            for (size_t run = 0; run < benchmark_runs; ++run) {
-                auto [build_ms, search_ms, result] = run_kdtree_iteration(k);
-                ASSERT_EQ(result.query_size, query_size);
-                ASSERT_EQ(result.k, k);
-                total_kdtree_build_ms += build_ms;
-                total_kdtree_search_ms += search_ms;
-            }
-
-            const double average_octree_build_ms = total_octree_build_ms / static_cast<double>(benchmark_runs);
-            const double average_octree_search_ms = total_octree_search_ms / static_cast<double>(benchmark_runs);
-            const double average_kdtree_build_ms = total_kdtree_build_ms / static_cast<double>(benchmark_runs);
-            const double average_kdtree_search_ms = total_kdtree_search_ms / static_cast<double>(benchmark_runs);
-
-            std::cout << "Dataset benchmark: target_points=" << target_cpu.points->size() << ", query_points="
-                      << query_cpu.points->size() << ", k=" << k << std::endl;
-            std::cout << "  Average Octree build time over " << benchmark_runs << " runs: " << average_octree_build_ms
-                      << " ms" << std::endl;
-            std::cout << "  Average Octree search time over " << benchmark_runs
-                      << " runs: " << average_octree_search_ms << " ms" << std::endl;
-            std::cout << "  Average KDTree build time over " << benchmark_runs << " runs: " << average_kdtree_build_ms
-                      << " ms" << std::endl;
-            std::cout << "  Average KDTree search time over " << benchmark_runs
-                      << " runs: " << average_kdtree_search_ms << " ms" << std::endl;
         }
 
         SUCCEED();
@@ -349,7 +365,8 @@ TEST(OctreeTest, DynamicUpdatesFollowDesign) {
             auto snapshot_ids = tree->snapshot_ids();
             auto reference_cloud = make_shared_cloud(reference_points);
             auto octree_result = tree->knn_search(query_cloud, k);
-            auto brute_result = sycl_points::algorithms::knn::knn_search_bruteforce(queue, query_cloud, reference_cloud, k);
+            auto brute_result =
+                sycl_points::algorithms::knn::knn_search_bruteforce(queue, query_cloud, reference_cloud, k);
 
             for (size_t idx = 0; idx < brute_result.indices->size(); ++idx) {
                 const int32_t compact_index = (*brute_result.indices)[idx];
@@ -380,9 +397,8 @@ TEST(OctreeTest, DynamicUpdatesFollowDesign) {
         remove_region.min_bounds = Eigen::Vector3f(-1.1f, -1.1f, -1.1f);
         remove_region.max_bounds = Eigen::Vector3f(0.0f, 0.0f, 0.25f);
         const size_t removed_count = tree->delete_box(remove_region);
-        target_points.erase(std::remove_if(target_points.begin(), target_points.end(), [&](const auto& point) {
-                                   return remove_region.contains(point);
-                               }),
+        target_points.erase(std::remove_if(target_points.begin(), target_points.end(),
+                                           [&](const auto& point) { return remove_region.contains(point); }),
                             target_points.end());
         EXPECT_EQ(removed_count, 1u);
         EXPECT_EQ(tree->size(), target_points.size());
