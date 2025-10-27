@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <queue>
 #include <stdexcept>
 #include <sycl/sycl.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
@@ -1090,6 +1091,784 @@ inline sycl_utils::events Octree::knn_search_async_impl(
 
     sycl_utils::events events;
     events += this->queue_.ptr->submit(search_task);
+    return events;
+}
+
+}  // namespace knn
+
+}  // namespace algorithms
+
+}  // namespace sycl_points
+
+namespace sycl_points {
+
+namespace algorithms {
+
+namespace knn {
+
+/// @brief Float3 helper used by the linear octree implementation.
+struct LinearFloat3 {
+    float x;
+    float y;
+    float z;
+
+    LinearFloat3() : x(0.0f), y(0.0f), z(0.0f) {}
+    LinearFloat3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+};
+
+/// @brief Linear octree node representation suitable for USM allocations.
+struct LinearOctreeNode {
+    LinearFloat3 aabb_min;
+    LinearFloat3 aabb_max;
+    int32_t child_base_index;
+    int32_t point_start_index;
+    int32_t point_count;
+
+    bool isLeaf() const { return child_base_index == -1; }
+};
+
+/// @brief Linear octree variant tailored for static point clouds and USM traversal.
+class LinearOctree : public KNNBase {
+public:
+    using Ptr = std::shared_ptr<LinearOctree>;
+
+    LinearOctree(const sycl_utils::DeviceQueue& queue, float resolution, size_t max_points_per_node);
+    LinearOctree(const LinearOctree&) = delete;
+    LinearOctree& operator=(const LinearOctree&) = delete;
+    LinearOctree(LinearOctree&& other) noexcept;
+    LinearOctree& operator=(LinearOctree&& other) noexcept;
+    ~LinearOctree();
+
+    static Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points, float resolution,
+                     size_t max_points_per_node = 32);
+
+    [[nodiscard]] size_t size() const { return point_count_; }
+    [[nodiscard]] float resolution() const { return resolution_; }
+    [[nodiscard]] size_t max_points_per_node() const { return max_points_per_node_; }
+
+    sycl_utils::events knn_search_async(
+        const PointCloudShared& queries, size_t k, KNNResult& result,
+        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const override;
+
+    [[nodiscard]] KNNResult knn_search(const PointCloudShared& queries, size_t k) const {
+        return KNNBase::knn_search(queries, k);
+    }
+
+private:
+    struct MortonPoint {
+        LinearFloat3 position;
+        uint64_t morton_code;
+        int32_t id;
+    };
+
+    struct HostNode {
+        LinearFloat3 min_bounds;
+        LinearFloat3 max_bounds;
+        std::array<int32_t, 8> children;
+        int32_t point_start;
+        int32_t point_count;
+        bool is_leaf;
+
+        HostNode() : min_bounds(), max_bounds(), point_start(0), point_count(0), is_leaf(true) {
+            children.fill(-1);
+        }
+    };
+
+    template <size_t MAX_K, size_t MAX_DEPTH>
+    sycl_utils::events knn_search_async_impl(
+        const PointCloudShared& queries, size_t k, KNNResult& result,
+        const std::vector<sycl::event>& depends) const;
+
+    void build_from_cloud(const PointCloudShared& points);
+    void release_device_memory();
+
+    int32_t build_host_subtree(int32_t start_index, int32_t end_index, const LinearFloat3& min_bounds,
+                               const LinearFloat3& max_bounds, size_t depth, std::vector<HostNode>& host_nodes,
+                               std::vector<LinearFloat3>& sorted_points, std::vector<LinearFloat3>& scratch_points,
+                               std::vector<int32_t>& sorted_ids, std::vector<int32_t>& scratch_ids,
+                               std::vector<uint64_t>& sorted_morton, std::vector<uint64_t>& scratch_morton);
+
+    void linearise_tree(const std::vector<HostNode>& host_nodes, int32_t root_index,
+                        std::vector<LinearOctreeNode>& linear_nodes) const;
+
+    static LinearFloat3 compute_child_min(const LinearFloat3& parent_min, const LinearFloat3& parent_max,
+                                          size_t child_index);
+    static LinearFloat3 compute_child_max(const LinearFloat3& parent_min, const LinearFloat3& parent_max,
+                                          size_t child_index);
+    static LinearFloat3 point_from_type(const PointType& point);
+    static LinearFloat3 make_safe_lengths(const LinearFloat3& min_bounds, const LinearFloat3& max_bounds);
+    static float distance_to_aabb(const LinearFloat3& min_bounds, const LinearFloat3& max_bounds,
+                                  const LinearFloat3& point);
+    static float squared_distance(const LinearFloat3& a, const LinearFloat3& b);
+    static uint64_t morton_encode(const LinearFloat3& point, const LinearFloat3& min_bounds,
+                                  const LinearFloat3& max_bounds);
+
+    sycl_utils::DeviceQueue queue_;
+    float resolution_;
+    size_t max_points_per_node_;
+    LinearOctreeNode* nodes_usm_;
+    LinearFloat3* points_usm_;
+    int32_t* point_ids_usm_;
+    size_t node_count_;
+    size_t point_count_;
+};
+
+inline LinearFloat3 operator+(const LinearFloat3& lhs, const LinearFloat3& rhs) {
+    return LinearFloat3(lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z);
+}
+
+inline LinearFloat3 operator-(const LinearFloat3& lhs, const LinearFloat3& rhs) {
+    return LinearFloat3(lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z);
+}
+
+inline LinearFloat3 operator*(const LinearFloat3& lhs, float rhs) {
+    return LinearFloat3(lhs.x * rhs, lhs.y * rhs, lhs.z * rhs);
+}
+
+inline LinearFloat3 operator*(float lhs, const LinearFloat3& rhs) {
+    return rhs * lhs;
+}
+
+inline LinearFloat3 min_components(const LinearFloat3& lhs, const LinearFloat3& rhs) {
+    return LinearFloat3(std::min(lhs.x, rhs.x), std::min(lhs.y, rhs.y), std::min(lhs.z, rhs.z));
+}
+
+inline LinearFloat3 max_components(const LinearFloat3& lhs, const LinearFloat3& rhs) {
+    return LinearFloat3(std::max(lhs.x, rhs.x), std::max(lhs.y, rhs.y), std::max(lhs.z, rhs.z));
+}
+
+inline LinearOctree::LinearOctree(const sycl_utils::DeviceQueue& queue, float resolution, size_t max_points_per_node)
+    : queue_(queue),
+      resolution_(resolution),
+      max_points_per_node_(max_points_per_node),
+      nodes_usm_(nullptr),
+      points_usm_(nullptr),
+      point_ids_usm_(nullptr),
+      node_count_(0),
+      point_count_(0) {}
+
+inline LinearOctree::LinearOctree(LinearOctree&& other) noexcept
+    : queue_(other.queue_),
+      resolution_(other.resolution_),
+      max_points_per_node_(other.max_points_per_node_),
+      nodes_usm_(other.nodes_usm_),
+      points_usm_(other.points_usm_),
+      point_ids_usm_(other.point_ids_usm_),
+      node_count_(other.node_count_),
+      point_count_(other.point_count_) {
+    other.nodes_usm_ = nullptr;
+    other.points_usm_ = nullptr;
+    other.point_ids_usm_ = nullptr;
+    other.node_count_ = 0;
+    other.point_count_ = 0;
+}
+
+inline LinearOctree& LinearOctree::operator=(LinearOctree&& other) noexcept {
+    if (this != &other) {
+        release_device_memory();
+        queue_ = other.queue_;
+        resolution_ = other.resolution_;
+        max_points_per_node_ = other.max_points_per_node_;
+        nodes_usm_ = other.nodes_usm_;
+        points_usm_ = other.points_usm_;
+        point_ids_usm_ = other.point_ids_usm_;
+        node_count_ = other.node_count_;
+        point_count_ = other.point_count_;
+        other.nodes_usm_ = nullptr;
+        other.points_usm_ = nullptr;
+        other.point_ids_usm_ = nullptr;
+        other.node_count_ = 0;
+        other.point_count_ = 0;
+    }
+    return *this;
+}
+
+inline LinearOctree::~LinearOctree() { release_device_memory(); }
+
+inline void LinearOctree::release_device_memory() {
+    if (queue_.ptr) {
+        if (nodes_usm_ != nullptr) {
+            sycl::free(nodes_usm_, *queue_.ptr);
+            nodes_usm_ = nullptr;
+        }
+        if (points_usm_ != nullptr) {
+            sycl::free(points_usm_, *queue_.ptr);
+            points_usm_ = nullptr;
+        }
+        if (point_ids_usm_ != nullptr) {
+            sycl::free(point_ids_usm_, *queue_.ptr);
+            point_ids_usm_ = nullptr;
+        }
+    }
+    node_count_ = 0;
+    point_count_ = 0;
+}
+
+inline LinearFloat3 LinearOctree::point_from_type(const PointType& point) {
+    return LinearFloat3(point.x(), point.y(), point.z());
+}
+
+inline LinearFloat3 LinearOctree::make_safe_lengths(const LinearFloat3& min_bounds, const LinearFloat3& max_bounds) {
+    const float epsilon = 1e-6f;
+    const float dx = std::max(max_bounds.x - min_bounds.x, epsilon);
+    const float dy = std::max(max_bounds.y - min_bounds.y, epsilon);
+    const float dz = std::max(max_bounds.z - min_bounds.z, epsilon);
+    return LinearFloat3(dx, dy, dz);
+}
+
+inline float LinearOctree::distance_to_aabb(const LinearFloat3& min_bounds, const LinearFloat3& max_bounds,
+                                            const LinearFloat3& point) {
+    const float dx = std::max({0.0f, min_bounds.x - point.x, point.x - max_bounds.x});
+    const float dy = std::max({0.0f, min_bounds.y - point.y, point.y - max_bounds.y});
+    const float dz = std::max({0.0f, min_bounds.z - point.z, point.z - max_bounds.z});
+    return dx * dx + dy * dy + dz * dz;
+}
+
+inline float LinearOctree::squared_distance(const LinearFloat3& a, const LinearFloat3& b) {
+    const float dx = a.x - b.x;
+    const float dy = a.y - b.y;
+    const float dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+inline LinearFloat3 LinearOctree::compute_child_min(const LinearFloat3& parent_min, const LinearFloat3& parent_max,
+                                                    size_t child_index) {
+    const LinearFloat3 center = 0.5f * (parent_min + parent_max);
+    LinearFloat3 child_min = parent_min;
+    if (child_index & 1u) {
+        child_min.x = center.x;
+    }
+    if (child_index & 2u) {
+        child_min.y = center.y;
+    }
+    if (child_index & 4u) {
+        child_min.z = center.z;
+    }
+    return child_min;
+}
+
+inline LinearFloat3 LinearOctree::compute_child_max(const LinearFloat3& parent_min, const LinearFloat3& parent_max,
+                                                    size_t child_index) {
+    const LinearFloat3 center = 0.5f * (parent_min + parent_max);
+    LinearFloat3 child_max = parent_max;
+    if ((child_index & 1u) == 0u) {
+        child_max.x = center.x;
+    }
+    if ((child_index & 2u) == 0u) {
+        child_max.y = center.y;
+    }
+    if ((child_index & 4u) == 0u) {
+        child_max.z = center.z;
+    }
+    return child_max;
+}
+
+inline uint64_t LinearOctree::morton_encode(const LinearFloat3& point, const LinearFloat3& min_bounds,
+                                            const LinearFloat3& max_bounds) {
+    constexpr uint32_t MORTON_BITS = 21;
+    constexpr uint32_t MAX_COORD = (1u << MORTON_BITS) - 1u;
+
+    const LinearFloat3 lengths = make_safe_lengths(min_bounds, max_bounds);
+    const float nx = (point.x - min_bounds.x) / lengths.x;
+    const float ny = (point.y - min_bounds.y) / lengths.y;
+    const float nz = (point.z - min_bounds.z) / lengths.z;
+
+    const uint32_t ix = static_cast<uint32_t>(std::clamp(nx, 0.0f, 1.0f) * static_cast<float>(MAX_COORD));
+    const uint32_t iy = static_cast<uint32_t>(std::clamp(ny, 0.0f, 1.0f) * static_cast<float>(MAX_COORD));
+    const uint32_t iz = static_cast<uint32_t>(std::clamp(nz, 0.0f, 1.0f) * static_cast<float>(MAX_COORD));
+
+    auto expand_bits = [](uint32_t value) {
+        uint64_t v = value & 0x1fffff;
+        v = (v | (v << 32)) & 0x1f00000000ffffULL;
+        v = (v | (v << 16)) & 0x1f0000ff0000ffULL;
+        v = (v | (v << 8)) & 0x100f00f00f00f00fULL;
+        v = (v | (v << 4)) & 0x10c30c30c30c30c3ULL;
+        v = (v | (v << 2)) & 0x1249249249249249ULL;
+        return v;
+    };
+
+    return (expand_bits(ix) << 2) | (expand_bits(iy) << 1) | expand_bits(iz);
+}
+
+inline void LinearOctree::build_from_cloud(const PointCloudShared& points) {
+    if (!queue_.ptr) {
+        throw std::runtime_error("LinearOctree queue is not initialised");
+    }
+    if (!points.points) {
+        throw std::runtime_error("Point cloud is not initialised");
+    }
+
+    release_device_memory();
+
+    const size_t count = points.points->size();
+    point_count_ = count;
+    if (count == 0) {
+        return;
+    }
+
+    std::vector<MortonPoint> morton_points(count);
+    LinearFloat3 bbox_min(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::infinity());
+    LinearFloat3 bbox_max(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                          std::numeric_limits<float>::lowest());
+
+    for (size_t i = 0; i < count; ++i) {
+        const PointType& pt = (*points.points)[i];
+        const LinearFloat3 converted = point_from_type(pt);
+        bbox_min = min_components(bbox_min, converted);
+        bbox_max = max_components(bbox_max, converted);
+        morton_points[i] = MortonPoint{converted, 0ULL, static_cast<int32_t>(i)};
+    }
+
+    const float epsilon = std::max(1e-5f, resolution_ * 0.5f);
+    bbox_min = bbox_min - LinearFloat3(epsilon, epsilon, epsilon);
+    bbox_max = bbox_max + LinearFloat3(epsilon, epsilon, epsilon);
+
+    for (auto& entry : morton_points) {
+        entry.morton_code = morton_encode(entry.position, bbox_min, bbox_max);
+    }
+
+    std::sort(morton_points.begin(), morton_points.end(),
+              [](const MortonPoint& a, const MortonPoint& b) { return a.morton_code < b.morton_code; });
+
+    std::vector<LinearFloat3> sorted_points(count);
+    std::vector<int32_t> sorted_ids(count);
+    std::vector<uint64_t> sorted_morton(count);
+    for (size_t i = 0; i < count; ++i) {
+        sorted_points[i] = morton_points[i].position;
+        sorted_ids[i] = morton_points[i].id;
+        sorted_morton[i] = morton_points[i].morton_code;
+    }
+
+    std::vector<LinearFloat3> scratch_points(count);
+    std::vector<int32_t> scratch_ids(count);
+    std::vector<uint64_t> scratch_morton(count);
+
+    std::vector<HostNode> host_nodes;
+    host_nodes.reserve(count * 2);
+
+    const int32_t root_index = build_host_subtree(0, static_cast<int32_t>(count), bbox_min, bbox_max, 0, host_nodes,
+                                                  sorted_points, scratch_points, sorted_ids, scratch_ids, sorted_morton,
+                                                  scratch_morton);
+
+    std::vector<LinearOctreeNode> linear_nodes;
+    linear_nodes.reserve(host_nodes.size() * 2);
+    linearise_tree(host_nodes, root_index, linear_nodes);
+
+    node_count_ = linear_nodes.size();
+    nodes_usm_ = sycl::malloc_shared<LinearOctreeNode>(node_count_, *queue_.ptr);
+    points_usm_ = sycl::malloc_shared<LinearFloat3>(count, *queue_.ptr);
+    point_ids_usm_ = sycl::malloc_shared<int32_t>(count, *queue_.ptr);
+
+    std::copy(linear_nodes.begin(), linear_nodes.end(), nodes_usm_);
+    std::copy(sorted_points.begin(), sorted_points.end(), points_usm_);
+    std::copy(sorted_ids.begin(), sorted_ids.end(), point_ids_usm_);
+}
+
+inline int32_t LinearOctree::build_host_subtree(int32_t start_index, int32_t end_index, const LinearFloat3& min_bounds,
+                                                const LinearFloat3& max_bounds, size_t depth,
+                                                std::vector<HostNode>& host_nodes,
+                                                std::vector<LinearFloat3>& sorted_points,
+                                                std::vector<LinearFloat3>& scratch_points,
+                                                std::vector<int32_t>& sorted_ids, std::vector<int32_t>& scratch_ids,
+                                                std::vector<uint64_t>& sorted_morton,
+                                                std::vector<uint64_t>& scratch_morton) {
+    HostNode node;
+    node.min_bounds = min_bounds;
+    node.max_bounds = max_bounds;
+    node.point_start = start_index;
+    node.point_count = end_index - start_index;
+
+    const int32_t node_index = static_cast<int32_t>(host_nodes.size());
+    host_nodes.push_back(node);
+
+    if (node.point_count <= 0) {
+        return node_index;
+    }
+
+    const LinearFloat3 extents = max_bounds - min_bounds;
+    const float max_axis = std::max({extents.x, extents.y, extents.z});
+    const bool depth_limit = depth >= 32;
+
+    if (node.point_count <= static_cast<int32_t>(max_points_per_node_) || max_axis <= resolution_ || depth_limit) {
+        host_nodes[node_index].is_leaf = true;
+        return node_index;
+    }
+
+    const LinearFloat3 center = 0.5f * (min_bounds + max_bounds);
+    std::array<int32_t, 8> counts{};
+    for (int32_t idx = start_index; idx < end_index; ++idx) {
+        const LinearFloat3& p = sorted_points[static_cast<size_t>(idx)];
+        size_t child = 0;
+        if (p.x >= center.x) {
+            child |= 1u;
+        }
+        if (p.y >= center.y) {
+            child |= 2u;
+        }
+        if (p.z >= center.z) {
+            child |= 4u;
+        }
+        counts[child] += 1;
+    }
+
+    size_t occupied_children = 0;
+    for (const auto count : counts) {
+        if (count > 0) {
+            ++occupied_children;
+        }
+    }
+
+    if (occupied_children <= 1) {
+        host_nodes[node_index].is_leaf = true;
+        return node_index;
+    }
+
+    std::array<int32_t, 8> offsets{};
+    int32_t total = 0;
+    for (size_t i = 0; i < counts.size(); ++i) {
+        offsets[i] = total;
+        total += counts[i];
+    }
+
+    for (int32_t idx = start_index; idx < end_index; ++idx) {
+        const size_t local_idx = static_cast<size_t>(idx - start_index);
+        const LinearFloat3& point = sorted_points[static_cast<size_t>(idx)];
+        size_t child = 0;
+        if (point.x >= center.x) {
+            child |= 1u;
+        }
+        if (point.y >= center.y) {
+            child |= 2u;
+        }
+        if (point.z >= center.z) {
+            child |= 4u;
+        }
+        const int32_t dest = offsets[child]++;
+        scratch_points[static_cast<size_t>(dest)] = point;
+        scratch_ids[static_cast<size_t>(dest)] = sorted_ids[static_cast<size_t>(idx)];
+        scratch_morton[static_cast<size_t>(dest)] = sorted_morton[static_cast<size_t>(idx)];
+    }
+
+    for (int32_t i = 0; i < total; ++i) {
+        sorted_points[static_cast<size_t>(start_index + i)] = scratch_points[static_cast<size_t>(i)];
+        sorted_ids[static_cast<size_t>(start_index + i)] = scratch_ids[static_cast<size_t>(i)];
+        sorted_morton[static_cast<size_t>(start_index + i)] = scratch_morton[static_cast<size_t>(i)];
+    }
+
+    offsets[0] = 0;
+    for (size_t i = 1; i < counts.size(); ++i) {
+        offsets[i] = offsets[i - 1] + counts[i - 1];
+    }
+
+    host_nodes[node_index].is_leaf = false;
+    for (size_t child = 0; child < counts.size(); ++child) {
+        const int32_t child_count = counts[child];
+        if (child_count == 0) {
+            continue;
+        }
+        const int32_t child_start = start_index + offsets[child];
+        const int32_t child_end = child_start + child_count;
+        const LinearFloat3 child_min = compute_child_min(min_bounds, max_bounds, child);
+        const LinearFloat3 child_max = compute_child_max(min_bounds, max_bounds, child);
+        const int32_t child_index = build_host_subtree(child_start, child_end, child_min, child_max, depth + 1,
+                                                       host_nodes, sorted_points, scratch_points, sorted_ids,
+                                                       scratch_ids, sorted_morton, scratch_morton);
+        host_nodes[node_index].children[child] = child_index;
+    }
+
+    return node_index;
+}
+
+inline void LinearOctree::linearise_tree(const std::vector<HostNode>& host_nodes, int32_t root_index,
+                                         std::vector<LinearOctreeNode>& linear_nodes) const {
+    if (root_index < 0 || host_nodes.empty()) {
+        return;
+    }
+
+    std::vector<int32_t> host_to_linear(host_nodes.size(), -1);
+    std::queue<int32_t> pending;
+
+    linear_nodes.clear();
+    linear_nodes.push_back(LinearOctreeNode{});
+    host_to_linear[static_cast<size_t>(root_index)] = 0;
+    pending.push(root_index);
+
+    while (!pending.empty()) {
+        const int32_t host_idx = pending.front();
+        pending.pop();
+
+        const HostNode& host_node = host_nodes[static_cast<size_t>(host_idx)];
+        const int32_t linear_idx = host_to_linear[static_cast<size_t>(host_idx)];
+        LinearOctreeNode& linear_node = linear_nodes[static_cast<size_t>(linear_idx)];
+
+        linear_node.aabb_min = host_node.min_bounds;
+        linear_node.aabb_max = host_node.max_bounds;
+        linear_node.point_start_index = host_node.point_start;
+        linear_node.point_count = host_node.point_count;
+
+        if (host_node.is_leaf) {
+            linear_node.child_base_index = -1;
+            continue;
+        }
+
+        linear_node.child_base_index = static_cast<int32_t>(linear_nodes.size());
+        for (size_t child = 0; child < host_node.children.size(); ++child) {
+            LinearOctreeNode child_node{};
+            child_node.aabb_min = compute_child_min(host_node.min_bounds, host_node.max_bounds, child);
+            child_node.aabb_max = compute_child_max(host_node.min_bounds, host_node.max_bounds, child);
+            child_node.child_base_index = -1;
+            child_node.point_start_index = host_node.point_start;
+            child_node.point_count = 0;
+
+            const int32_t child_host_idx = host_node.children[child];
+            if (child_host_idx >= 0) {
+                host_to_linear[static_cast<size_t>(child_host_idx)] = static_cast<int32_t>(linear_nodes.size());
+                pending.push(child_host_idx);
+            }
+
+            linear_nodes.push_back(child_node);
+        }
+    }
+}
+
+inline LinearOctree::Ptr LinearOctree::build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points,
+                                             float resolution, size_t max_points_per_node) {
+    auto tree = std::make_shared<LinearOctree>(queue, resolution, max_points_per_node);
+    tree->build_from_cloud(points);
+    return tree;
+}
+
+inline sycl_utils::events LinearOctree::knn_search_async(
+    const PointCloudShared& queries, size_t k, KNNResult& result,
+    const std::vector<sycl::event>& depends) const {
+    constexpr size_t MAX_STACK_DEPTH = 32;
+    if (k == 0) {
+        const size_t query_size = queries.points ? queries.points->size() : 0;
+        if (result.indices == nullptr || result.distances == nullptr) {
+            result.allocate(queue_, query_size, 0);
+        } else {
+            result.resize(query_size, 0);
+        }
+        return sycl_utils::events();
+    }
+
+    if (k == 1) {
+        return knn_search_async_impl<1, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 10) {
+        return knn_search_async_impl<10, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 20) {
+        return knn_search_async_impl<20, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 30) {
+        return knn_search_async_impl<30, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 40) {
+        return knn_search_async_impl<40, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 50) {
+        return knn_search_async_impl<50, MAX_STACK_DEPTH>(queries, k, result, depends);
+    } else if (k <= 100) {
+        return knn_search_async_impl<100, MAX_STACK_DEPTH>(queries, k, result, depends);
+    }
+
+    throw std::runtime_error("Requested neighbour count exceeds the supported maximum");
+}
+
+template <size_t MAX_K, size_t MAX_DEPTH>
+inline sycl_utils::events LinearOctree::knn_search_async_impl(
+    const PointCloudShared& queries, size_t k, KNNResult& result,
+    const std::vector<sycl::event>& depends) const {
+    if (!queue_.ptr) {
+        throw std::runtime_error("LinearOctree queue is not initialised");
+    }
+    if (!queries.points) {
+        throw std::runtime_error("Query cloud is not initialised");
+    }
+    if (k > MAX_K) {
+        throw std::runtime_error("Requested neighbour count exceeds the compile-time limit");
+    }
+
+    const size_t query_size = queries.points->size();
+    if (result.indices == nullptr || result.distances == nullptr) {
+        result.allocate(queue_, query_size, k);
+    } else {
+        result.resize(query_size, k);
+    }
+
+    if (point_count_ > 0 && (nodes_usm_ == nullptr || points_usm_ == nullptr || point_ids_usm_ == nullptr)) {
+        throw std::runtime_error("LinearOctree structure has not been initialised");
+    }
+
+    const auto depends_copy = depends;
+    auto search_task = [=](sycl::handler& handler) {
+        const size_t work_group_size = queue_.get_work_group_size();
+        const size_t global_size = queue_.get_global_size(query_size);
+
+        if (!depends_copy.empty()) {
+            handler.depends_on(depends_copy);
+        }
+
+        auto indices_ptr = result.indices->data();
+        auto distances_ptr = result.distances->data();
+        const auto query_points_ptr = queries.points->data();
+        const auto nodes_ptr = nodes_usm_;
+        const auto leaf_points_ptr = points_usm_;
+        const auto leaf_ids_ptr = point_ids_usm_;
+        const size_t node_count = node_count_;
+        const size_t target_size = point_count_;
+
+        handler.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+            const size_t query_idx = item.get_global_id(0);
+
+            if (query_idx >= query_size || target_size == 0) {
+                return;
+            }
+
+            const PointType query_point = query_points_ptr[query_idx];
+            const LinearFloat3 query_vec(query_point.x(), query_point.y(), query_point.z());
+
+            struct Candidate {
+                int32_t index;
+                float dist_sq;
+            };
+
+            Candidate best_k[MAX_K];
+            for (size_t i = 0; i < MAX_K; ++i) {
+                best_k[i] = Candidate{-1, std::numeric_limits<float>::max()};
+            }
+
+            Candidate stack[MAX_DEPTH];
+            size_t stack_size = 0;
+            size_t neighbour_count = 0;
+
+            auto heap_swap = [&](size_t a, size_t b) { std::swap(best_k[a], best_k[b]); };
+
+            auto sift_up = [&](size_t idx) {
+                while (idx > 0) {
+                    const size_t parent = (idx - 1) / 2;
+                    if (best_k[parent].dist_sq >= best_k[idx].dist_sq) {
+                        break;
+                    }
+                    heap_swap(parent, idx);
+                    idx = parent;
+                }
+            };
+
+            auto sift_down = [&](size_t idx, size_t heap_size) {
+                while (true) {
+                    const size_t left = idx * 2 + 1;
+                    if (left >= heap_size) {
+                        break;
+                    }
+                    size_t largest = left;
+                    const size_t right = left + 1;
+                    if (right < heap_size && best_k[right].dist_sq > best_k[largest].dist_sq) {
+                        largest = right;
+                    }
+                    if (best_k[idx].dist_sq >= best_k[largest].dist_sq) {
+                        break;
+                    }
+                    heap_swap(idx, largest);
+                    idx = largest;
+                }
+            };
+
+            auto current_worst = [&]() {
+                return neighbour_count < k ? std::numeric_limits<float>::infinity() : best_k[0].dist_sq;
+            };
+
+            auto push_candidate = [&](float distance_sq, int32_t index) {
+                if (neighbour_count < k) {
+                    best_k[neighbour_count] = Candidate{index, distance_sq};
+                    ++neighbour_count;
+                    sift_up(neighbour_count - 1);
+                } else if (distance_sq < best_k[0].dist_sq) {
+                    best_k[0] = Candidate{index, distance_sq};
+                    sift_down(0, neighbour_count);
+                }
+            };
+
+            auto push_node_to_stack = [&](int32_t node_idx, float distance_sq) {
+                if (stack_size < MAX_DEPTH) {
+                    stack[stack_size++] = Candidate{node_idx, distance_sq};
+                } else {
+                    size_t worst_pos = 0;
+                    float worst_dist = stack[0].dist_sq;
+                    for (size_t i = 1; i < stack_size; ++i) {
+                        if (stack[i].dist_sq > worst_dist) {
+                            worst_dist = stack[i].dist_sq;
+                            worst_pos = i;
+                        }
+                    }
+                    if (distance_sq < worst_dist) {
+                        stack[worst_pos] = Candidate{node_idx, distance_sq};
+                    }
+                }
+            };
+
+            if (node_count == 0) {
+                return;
+            }
+
+            push_node_to_stack(0, distance_to_aabb(nodes_ptr[0].aabb_min, nodes_ptr[0].aabb_max, query_vec));
+
+            while (stack_size > 0) {
+                size_t best_pos = 0;
+                float best_dist = stack[0].dist_sq;
+                for (size_t i = 1; i < stack_size; ++i) {
+                    if (stack[i].dist_sq < best_dist) {
+                        best_dist = stack[i].dist_sq;
+                        best_pos = i;
+                    }
+                }
+
+                const int32_t current_node_idx = stack[best_pos].index;
+                --stack_size;
+                stack[best_pos] = stack[stack_size];
+
+                if (best_dist > current_worst()) {
+                    continue;
+                }
+
+                const LinearOctreeNode node = nodes_ptr[current_node_idx];
+                if (node.isLeaf()) {
+                    for (int32_t i = 0; i < node.point_count; ++i) {
+                        const int32_t point_idx = node.point_start_index + i;
+                        const LinearFloat3 target_point = leaf_points_ptr[point_idx];
+                        const int32_t target_id = leaf_ids_ptr[point_idx];
+                        const float dist_sq = squared_distance(query_vec, target_point);
+                        push_candidate(dist_sq, target_id);
+                    }
+                } else {
+                    for (size_t child = 0; child < 8; ++child) {
+                        const int32_t child_idx = node.child_base_index + static_cast<int32_t>(child);
+                        if (child_idx < 0 || static_cast<size_t>(child_idx) >= node_count) {
+                            continue;
+                        }
+                        const LinearOctreeNode child_node = nodes_ptr[child_idx];
+                        const float child_dist = distance_to_aabb(child_node.aabb_min, child_node.aabb_max, query_vec);
+                        if (child_dist <= current_worst()) {
+                            push_node_to_stack(child_idx, child_dist);
+                        }
+                    }
+                }
+            }
+
+            size_t heap_size = neighbour_count;
+            while (heap_size > 1) {
+                const size_t last = heap_size - 1;
+                heap_swap(0, last);
+                --heap_size;
+                sift_down(0, heap_size);
+            }
+
+            for (size_t i = 0; i < k; ++i) {
+                indices_ptr[query_idx * k + i] = best_k[i].index;
+                distances_ptr[query_idx * k + i] = best_k[i].dist_sq;
+            }
+        });
+    };
+
+    sycl_utils::events events;
+    events += queue_.ptr->submit(search_task);
     return events;
 }
 
