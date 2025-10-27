@@ -375,14 +375,14 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
             this->host_subtree_sizes_[static_cast<size_t>(child_index)];
     }
 
-    Node& refreshed_node = this->host_nodes_[static_cast<size_t>(node_index)];
+    Node& final_node_ref = this->host_nodes_[static_cast<size_t>(node_index)];
     if (this->host_subtree_sizes_[static_cast<size_t>(node_index)] == 0) {
-        refreshed_node.is_leaf = 1u;
+        final_node_ref.is_leaf = 1u;
         this->host_leaf_points_[static_cast<size_t>(node_index)].clear();
         for (size_t child = 0; child < 8; ++child) {
-            refreshed_node.data.children[child] = -1;
+            final_node_ref.data.children[child] = -1;
         }
-        refreshed_node.data.leaf.point_count = 0;
+        final_node_ref.data.leaf.point_count = 0;
     }
 }
 
@@ -790,8 +790,6 @@ inline void Octree::sync_device_buffers() const {
             const auto& points = this->host_leaf_points_[idx];
             device_node.data.leaf.start_index = static_cast<uint32_t>(offset);
             device_node.data.leaf.point_count = static_cast<uint32_t>(points.size());
-            this->host_nodes_[idx].data.leaf.start_index = device_node.data.leaf.start_index;
-            this->host_nodes_[idx].data.leaf.point_count = device_node.data.leaf.point_count;
             for (size_t i = 0; i < points.size(); ++i) {
                 const auto& record = points[i];
                 this->device_points_[offset + i] = record.point;
