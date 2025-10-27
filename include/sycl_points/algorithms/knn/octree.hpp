@@ -375,6 +375,7 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
             this->host_subtree_sizes_[static_cast<size_t>(child_index)];
     }
 
+    // Reacquire the node reference because create_host_node() may reallocate host_nodes_.
     Node& final_node_ref = this->host_nodes_[static_cast<size_t>(node_index)];
     if (this->host_subtree_sizes_[static_cast<size_t>(node_index)] == 0) {
         final_node_ref.is_leaf = 1u;
