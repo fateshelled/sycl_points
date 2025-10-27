@@ -38,7 +38,7 @@ class Octree : public KNNBase {
 public:
     using Ptr = std::shared_ptr<Octree>;
 
-    /// @brief Compact representation of a node stored on the device.
+    /// @brief Compact representation of a node shared between host and device.
     struct Node {
         Eigen::Vector3f min_bounds;
         Eigen::Vector3f max_bounds;
@@ -151,19 +151,6 @@ private:
         int32_t id;
     };
 
-    /// @brief Host-side representation of a node used for incremental updates.
-    struct HostNode {
-        sycl::float3 min_bounds;
-        sycl::float3 max_bounds;
-        std::array<int32_t, 8> children{};
-        bool is_leaf{true};
-        std::vector<PointRecord> points;
-        size_t subtree_size{0};
-        size_t start_index{0};
-
-        HostNode() { children.fill(-1); }
-    };
-
     /// @brief Work item stored in traversal stacks during neighbour searches.
     /// @details Encodes the node index and the squared distance used to prioritise traversal.
     struct NodeEntry {
@@ -187,7 +174,9 @@ private:
     /// @brief Expand the root bounds until the provided point lies inside them.
     void ensure_root_bounds(const PointType& point);
     /// @brief Compute the bounding box of a specific child octant.
-    BoundingBox child_bounds(const HostNode& node, size_t child_index) const;
+    BoundingBox child_bounds(const Node& node, size_t child_index) const;
+    static Eigen::Vector3f to_eigen(const sycl::float3& vec);
+    static sycl::float3 to_sycl(const Eigen::Vector3f& vec);
     /// @brief Refresh the cached subtree size after structural changes.
     void recompute_subtree_size(int32_t node_index);
     /// @brief Synchronise host-side data into device-visible buffers.
@@ -202,7 +191,12 @@ private:
     int32_t root_index_;
     size_t total_point_count_;
     int32_t next_point_id_;
-    mutable std::vector<HostNode> host_nodes_;
+    /// @brief Host-side mirror of the node array shared with device buffers.
+    mutable std::vector<Node, Eigen::aligned_allocator<Node>> host_nodes_;
+    /// @brief Points stored per leaf node for host-side updates.
+    mutable std::vector<std::vector<PointRecord>> host_leaf_points_;
+    /// @brief Cached subtree sizes used to accelerate host queries and updates.
+    mutable std::vector<size_t> host_subtree_sizes_;
     mutable shared_vector<Node> nodes_;
     mutable shared_vector<PointType> device_points_;
     mutable shared_vector<int32_t> device_point_ids_;
@@ -231,6 +225,8 @@ inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, si
       total_point_count_(0),
       next_point_id_(0),
       host_nodes_(),
+      host_leaf_points_(),
+      host_subtree_sizes_(),
       nodes_(shared_allocator<Node>(*queue_.ptr)),
       device_points_(shared_allocator<PointType>(*queue_.ptr)),
       device_point_ids_(shared_allocator<int32_t>(*queue_.ptr)),
@@ -246,6 +242,8 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
 
     // Reset cached host/device structures before rebuilding the tree.
     this->host_nodes_.clear();
+    this->host_leaf_points_.clear();
+    this->host_subtree_sizes_.clear();
     this->total_point_count_ = 0;
     this->root_index_ = -1;
     this->device_dirty_ = true;
@@ -298,14 +296,17 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
 /// @return Index of the created node inside @c host_nodes_.
 inline int32_t Octree::create_host_node(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
                                         std::vector<PointRecord>&& points, size_t depth) {
-    HostNode node;
-    node.min_bounds = min_bounds;
-    node.max_bounds = max_bounds;
-    node.points = std::move(points);
-    node.subtree_size = node.points.size();
+    Node node{};
+    node.min_bounds = to_eigen(min_bounds);
+    node.max_bounds = to_eigen(max_bounds);
+    node.is_leaf = 1u;
+    node.data.leaf.start_index = 0u;
+    node.data.leaf.point_count = static_cast<uint32_t>(points.size());
 
     const int32_t node_index = static_cast<int32_t>(this->host_nodes_.size());
-    this->host_nodes_.push_back(std::move(node));
+    this->host_nodes_.push_back(node);
+    this->host_leaf_points_.push_back(std::move(points));
+    this->host_subtree_sizes_.push_back(this->host_leaf_points_.back().size());
 
     this->subdivide_leaf(node_index, depth);
     return node_index;
@@ -315,25 +316,28 @@ inline int32_t Octree::create_host_node(const sycl::float3& min_bounds, const sy
 /// @param node_index Index of the leaf node that may be subdivided.
 /// @param depth Depth of the node to guard against excessive recursion.
 inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
-    HostNode& node = this->host_nodes_[static_cast<size_t>(node_index)];
-    if (!node.is_leaf) {
+    const Node node_snapshot = this->host_nodes_[static_cast<size_t>(node_index)];
+    if (node_snapshot.is_leaf == 0u) {
         return;
     }
 
-    const auto lengths = axis_lengths(node.min_bounds, node.max_bounds);
+    auto& points = this->host_leaf_points_[static_cast<size_t>(node_index)];
+    const auto lengths = axis_lengths(to_sycl(node_snapshot.min_bounds), to_sycl(node_snapshot.max_bounds));
     const float max_axis = std::max({lengths.x(), lengths.y(), lengths.z()});
-    if (node.points.size() <= this->max_points_per_node_ || max_axis <= this->resolution_ || depth >= 32) {
-        node.subtree_size = node.points.size();
+    if (points.size() <= this->max_points_per_node_ || max_axis <= this->resolution_ || depth >= 32) {
+        this->host_subtree_sizes_[static_cast<size_t>(node_index)] = points.size();
+        this->host_nodes_[static_cast<size_t>(node_index)].data.leaf.point_count =
+            static_cast<uint32_t>(points.size());
         return;
     }
 
-    const sycl::float3 min_bounds = node.min_bounds;
-    const sycl::float3 max_bounds = node.max_bounds;
+    const sycl::float3 min_bounds = to_sycl(node_snapshot.min_bounds);
+    const sycl::float3 max_bounds = to_sycl(node_snapshot.max_bounds);
     const sycl::float3 center = 0.5f * (min_bounds + max_bounds);
 
-    std::vector<PointRecord> points = std::move(node.points);
+    std::vector<PointRecord> local_points = std::move(points);
     std::array<std::vector<PointRecord>, 8> child_points;
-    for (const auto& record : points) {
+    for (const auto& record : local_points) {
         int octant = 0;
         if (record.point.x() >= center.x()) {
             octant |= 1;
@@ -347,36 +351,39 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
         child_points[static_cast<size_t>(octant)].push_back(record);
     }
 
-    node.is_leaf = false;
-    node.subtree_size = 0;
-    node.children.fill(-1);
+    Node& node_ref = this->host_nodes_[static_cast<size_t>(node_index)];
+    node_ref.is_leaf = 0u;
+    this->host_leaf_points_[static_cast<size_t>(node_index)].clear();
+    this->host_subtree_sizes_[static_cast<size_t>(node_index)] = 0;
+
+    for (size_t child = 0; child < 8; ++child) {
+        node_ref.data.children[child] = -1;
+    }
 
     for (size_t child = 0; child < child_points.size(); ++child) {
         if (child_points[child].empty()) {
             continue;
         }
 
-        BoundingBox bounds{};
-        bounds.min_bounds = min_bounds;
-        bounds.max_bounds = max_bounds;
-        bounds.min_bounds.x() = (child & 1) ? center.x() : min_bounds.x();
-        bounds.max_bounds.x() = (child & 1) ? max_bounds.x() : center.x();
-        bounds.min_bounds.y() = (child & 2) ? center.y() : min_bounds.y();
-        bounds.max_bounds.y() = (child & 2) ? max_bounds.y() : center.y();
-        bounds.min_bounds.z() = (child & 4) ? center.z() : min_bounds.z();
-        bounds.max_bounds.z() = (child & 4) ? max_bounds.z() : center.z();
-
+        const auto child_bounds_value = this->child_bounds(node_snapshot, child);
         const int32_t child_index =
-            this->create_host_node(bounds.min_bounds, bounds.max_bounds, std::move(child_points[child]), depth + 1);
-        HostNode& updated_node = this->host_nodes_[static_cast<size_t>(node_index)];
-        updated_node.children[child] = child_index;
-        updated_node.subtree_size += this->host_nodes_[static_cast<size_t>(child_index)].subtree_size;
+            this->create_host_node(child_bounds_value.min_bounds, child_bounds_value.max_bounds,
+                                   std::move(child_points[child]), depth + 1);
+        Node& refreshed_node = this->host_nodes_[static_cast<size_t>(node_index)];
+        refreshed_node.data.children[child] = child_index;
+        this->host_subtree_sizes_[static_cast<size_t>(node_index)] +=
+            this->host_subtree_sizes_[static_cast<size_t>(child_index)];
     }
 
-    HostNode& updated_node = this->host_nodes_[static_cast<size_t>(node_index)];
-    if (updated_node.subtree_size == 0) {
-        updated_node.is_leaf = true;
-        updated_node.children.fill(-1);
+    // Reacquire the node reference because create_host_node() may reallocate host_nodes_.
+    Node& final_node_ref = this->host_nodes_[static_cast<size_t>(node_index)];
+    if (this->host_subtree_sizes_[static_cast<size_t>(node_index)] == 0) {
+        final_node_ref.is_leaf = 1u;
+        this->host_leaf_points_[static_cast<size_t>(node_index)].clear();
+        for (size_t child = 0; child < 8; ++child) {
+            final_node_ref.data.children[child] = -1;
+        }
+        final_node_ref.data.leaf.point_count = 0;
     }
 }
 
@@ -396,18 +403,22 @@ inline void Octree::insert(const PointType& point) {
 /// @param id Stable identifier assigned to the point.
 /// @param depth Current depth of the traversal for termination checks.
 inline void Octree::insert_recursive(int32_t node_index, const PointType& point, int32_t id, size_t depth) {
-    HostNode& node = this->host_nodes_[static_cast<size_t>(node_index)];
+    Node& node = this->host_nodes_[static_cast<size_t>(node_index)];
     if (node.is_leaf) {
-        node.points.push_back(PointRecord{point, id});
-        node.subtree_size = node.points.size();
+        this->host_leaf_points_[static_cast<size_t>(node_index)].push_back(PointRecord{point, id});
+        this->host_subtree_sizes_[static_cast<size_t>(node_index)] =
+            this->host_leaf_points_[static_cast<size_t>(node_index)].size();
+        node.data.leaf.point_count =
+            static_cast<uint32_t>(this->host_leaf_points_[static_cast<size_t>(node_index)].size());
         this->subdivide_leaf(node_index, depth);
         return;
     }
 
     int octant = 0;
     {
-        const auto bounds = BoundingBox{node.min_bounds, node.max_bounds};
-        const sycl::float3 center = 0.5f * (bounds.min_bounds + bounds.max_bounds);
+        const sycl::float3 min_bounds = to_sycl(node.min_bounds);
+        const sycl::float3 max_bounds = to_sycl(node.max_bounds);
+        const sycl::float3 center = 0.5f * (min_bounds + max_bounds);
 
         if (point.x() >= center.x()) {
             octant |= 1;
@@ -421,18 +432,18 @@ inline void Octree::insert_recursive(int32_t node_index, const PointType& point,
     }
 
     const size_t child_index = static_cast<size_t>(octant);
-    if (child_index >= node.children.size()) {
+    if (child_index >= 8) {
         throw std::out_of_range("Octree child index out of bounds");
     }
-    const int32_t existing_child = node.children[child_index];
+    const int32_t existing_child = node.data.children[child_index];
     if (existing_child < 0) {
         std::vector<PointRecord> new_points;
         new_points.push_back(PointRecord{point, id});
         const auto child_bounds_value = this->child_bounds(node, child_index);
         const int32_t new_child = this->create_host_node(child_bounds_value.min_bounds, child_bounds_value.max_bounds,
                                                          std::move(new_points), depth + 1);
-        HostNode& refreshed_node = this->host_nodes_[static_cast<size_t>(node_index)];
-        refreshed_node.children[child_index] = new_child;
+        Node& refreshed_node = this->host_nodes_[static_cast<size_t>(node_index)];
+        refreshed_node.data.children[child_index] = new_child;
     } else {
         this->insert_recursive(existing_child, point, id, depth + 1);
     }
@@ -463,29 +474,30 @@ inline bool Octree::remove(const PointType& point, float tolerance) {
 /// @param tolerance_sq Squared tolerance for comparisons to avoid repeated sqrt operations.
 /// @return True when a point was erased in the subtree.
 inline bool Octree::remove_recursive(int32_t node_index, const PointType& point, float tolerance_sq) {
-    HostNode& node = this->host_nodes_[static_cast<size_t>(node_index)];
+    Node& node = this->host_nodes_[static_cast<size_t>(node_index)];
     bool removed = false;
     if (node.is_leaf) {
-        auto& pts = node.points;
+        auto& pts = this->host_leaf_points_[static_cast<size_t>(node_index)];
         auto it = std::find_if(pts.begin(), pts.end(), [&](const PointRecord& record) {
             return squared_distance(record.point, point) <= tolerance_sq;
         });
         if (it != pts.end()) {
             pts.erase(it);
-            node.subtree_size = pts.size();
+            this->host_subtree_sizes_[static_cast<size_t>(node_index)] = pts.size();
+            node.data.leaf.point_count = static_cast<uint32_t>(pts.size());
             removed = true;
         }
     } else {
-        for (size_t child = 0; child < node.children.size(); ++child) {
-            const int32_t child_index = node.children[child];
+        for (size_t child = 0; child < 8; ++child) {
+            const int32_t child_index = node.data.children[child];
             if (child_index < 0) {
                 continue;
             }
-            if (!this->host_nodes_[static_cast<size_t>(child_index)].subtree_size) {
+            if (!this->host_subtree_sizes_[static_cast<size_t>(child_index)]) {
                 continue;
             }
             const auto& child_node = this->host_nodes_[static_cast<size_t>(child_index)];
-            const BoundingBox bounds{child_node.min_bounds, child_node.max_bounds};
+            const BoundingBox bounds{to_sycl(child_node.min_bounds), to_sycl(child_node.max_bounds)};
             const float aabb_distance =
                 distance_to_aabb(bounds.min_bounds, bounds.max_bounds, sycl::float3(point.x(), point.y(), point.z()));
             if (aabb_distance > tolerance_sq) {
@@ -494,8 +506,8 @@ inline bool Octree::remove_recursive(int32_t node_index, const PointType& point,
             if (this->remove_recursive(child_index, point, tolerance_sq)) {
                 removed = true;
             }
-            if (this->host_nodes_[static_cast<size_t>(child_index)].subtree_size == 0) {
-                node.children[child] = -1;
+            if (this->host_subtree_sizes_[static_cast<size_t>(child_index)] == 0) {
+                node.data.children[child] = -1;
             }
             if (removed) {
                 break;
@@ -518,7 +530,7 @@ inline size_t Octree::delete_box(const BoundingBox& region) {
         // Root cleared completely.
     }
     if (this->root_index_ >= 0) {
-        this->host_nodes_[static_cast<size_t>(this->root_index_)].subtree_size = this->total_point_count_;
+        this->host_subtree_sizes_[static_cast<size_t>(this->root_index_)] = this->total_point_count_;
     }
     const size_t removed = before - this->total_point_count_;
     if (removed > 0) {
@@ -532,46 +544,50 @@ inline size_t Octree::delete_box(const BoundingBox& region) {
 /// @param region Bounding box defining the delete region.
 /// @return True when the subtree becomes empty and can be pruned.
 inline bool Octree::delete_box_recursive(int32_t node_index, const BoundingBox& region) {
-    HostNode& node = this->host_nodes_[static_cast<size_t>(node_index)];
-    const BoundingBox node_bounds{node.min_bounds, node.max_bounds};
+    Node& node = this->host_nodes_[static_cast<size_t>(node_index)];
+    const BoundingBox node_bounds{to_sycl(node.min_bounds), to_sycl(node.max_bounds)};
     if (!region.intersects(node_bounds)) {
         return false;
     }
 
     if (region.fully_contains(node_bounds)) {
-        this->total_point_count_ -= node.subtree_size;
-        node.points.clear();
-        node.points.shrink_to_fit();
-        node.children.fill(-1);
-        node.is_leaf = true;
-        node.subtree_size = 0;
+        this->total_point_count_ -= this->host_subtree_sizes_[static_cast<size_t>(node_index)];
+        this->host_leaf_points_[static_cast<size_t>(node_index)].clear();
+        this->host_leaf_points_[static_cast<size_t>(node_index)].shrink_to_fit();
+        for (size_t child = 0; child < 8; ++child) {
+            node.data.children[child] = -1;
+        }
+        node.is_leaf = 1u;
+        this->host_subtree_sizes_[static_cast<size_t>(node_index)] = 0;
+        node.data.leaf.point_count = 0;
         return true;
     }
 
     if (node.is_leaf) {
-        auto& pts = node.points;
+        auto& pts = this->host_leaf_points_[static_cast<size_t>(node_index)];
         auto it = std::remove_if(pts.begin(), pts.end(),
                                  [&](const PointRecord& record) { return region.contains(record.point); });
         if (it != pts.end()) {
             this->total_point_count_ -= static_cast<size_t>(std::distance(it, pts.end()));
             pts.erase(it, pts.end());
-            node.subtree_size = pts.size();
+            this->host_subtree_sizes_[static_cast<size_t>(node_index)] = pts.size();
+            node.data.leaf.point_count = static_cast<uint32_t>(pts.size());
         }
-        return node.subtree_size == 0;
+        return this->host_subtree_sizes_[static_cast<size_t>(node_index)] == 0;
     }
 
-    for (size_t child = 0; child < node.children.size(); ++child) {
-        const int32_t child_idx = node.children[child];
+    for (size_t child = 0; child < 8; ++child) {
+        const int32_t child_idx = node.data.children[child];
         if (child_idx < 0) {
             continue;
         }
         if (this->delete_box_recursive(child_idx, region)) {
-            node.children[child] = -1;
+            node.data.children[child] = -1;
         }
     }
 
     this->recompute_subtree_size(node_index);
-    return node.subtree_size == 0;
+    return this->host_subtree_sizes_[static_cast<size_t>(node_index)] == 0;
 }
 
 /// @brief Collect identifiers of every point within the specified radius around a query point.
@@ -594,8 +610,8 @@ inline std::vector<int32_t> Octree::radius_search(const PointType& query, float 
     while (!stack.empty()) {
         const int32_t node_index = stack.back();
         stack.pop_back();
-        const HostNode& node = this->host_nodes_[static_cast<size_t>(node_index)];
-        const BoundingBox bounds{node.min_bounds, node.max_bounds};
+        const Node& node = this->host_nodes_[static_cast<size_t>(node_index)];
+        const BoundingBox bounds{to_sycl(node.min_bounds), to_sycl(node.max_bounds)};
         const float dist_sq =
             distance_to_aabb(bounds.min_bounds, bounds.max_bounds, sycl::float3(query.x(), query.y(), query.z()));
         if (dist_sq > radius_sq) {
@@ -603,15 +619,17 @@ inline std::vector<int32_t> Octree::radius_search(const PointType& query, float 
         }
 
         if (node.is_leaf) {
-            for (size_t i = 0; i < node.points.size(); ++i) {
-                if (squared_distance(node.points[i].point, query) <= radius_sq) {
-                    result.push_back(node.points[i].id);
+            const auto& pts = this->host_leaf_points_[static_cast<size_t>(node_index)];
+            for (size_t i = 0; i < pts.size(); ++i) {
+                if (squared_distance(pts[i].point, query) <= radius_sq) {
+                    result.push_back(pts[i].id);
                 }
             }
         } else {
-            for (const int32_t child : node.children) {
-                if (child >= 0 && this->host_nodes_[static_cast<size_t>(child)].subtree_size > 0) {
-                    stack.push_back(child);
+            for (size_t child = 0; child < 8; ++child) {
+                const int32_t child_index = node.data.children[child];
+                if (child_index >= 0 && this->host_subtree_sizes_[static_cast<size_t>(child_index)] > 0) {
+                    stack.push_back(child_index);
                 }
             }
         }
@@ -632,8 +650,8 @@ inline void Octree::ensure_root_bounds(const PointType& point) {
         return;
     }
 
-    HostNode& root = this->host_nodes_[static_cast<size_t>(this->root_index_)];
-    BoundingBox root_bounds{root.min_bounds, root.max_bounds};
+    Node& root = this->host_nodes_[static_cast<size_t>(this->root_index_)];
+    BoundingBox root_bounds{to_sycl(root.min_bounds), to_sycl(root.max_bounds)};
     if (root_bounds.contains(point_vec)) {
         return;
     }
@@ -641,18 +659,18 @@ inline void Octree::ensure_root_bounds(const PointType& point) {
     const sycl::float3 new_min = sycl::min(root_bounds.min_bounds, point_vec);
     const sycl::float3 new_max = sycl::max(root_bounds.max_bounds, point_vec);
 
-    HostNode new_root;
-    new_root.min_bounds = new_min;
-    new_root.max_bounds = new_max;
-    new_root.is_leaf = false;
-    new_root.subtree_size = root.subtree_size;
-    new_root.start_index = 0;
-    new_root.children.fill(-1);
+    Node new_root{};
+    new_root.min_bounds = to_eigen(new_min);
+    new_root.max_bounds = to_eigen(new_max);
+    new_root.is_leaf = 0u;
+    for (size_t child = 0; child < 8; ++child) {
+        new_root.data.children[child] = -1;
+    }
 
     int octant = 0;
     {
         const sycl::float3 center = 0.5f * (new_min + new_max);
-        const sycl::float3 old_center = 0.5f * (root.min_bounds + root.max_bounds);
+        const sycl::float3 old_center = 0.5f * (root_bounds.min_bounds + root_bounds.max_bounds);
         if (old_center.x() >= center.x()) {
             octant |= 1;
         }
@@ -666,9 +684,11 @@ inline void Octree::ensure_root_bounds(const PointType& point) {
 
     const int32_t new_root_index = static_cast<int32_t>(this->host_nodes_.size());
     this->host_nodes_.push_back(new_root);
-    this->host_nodes_[static_cast<size_t>(new_root_index)].children[static_cast<size_t>(octant)] = this->root_index_;
+    this->host_leaf_points_.emplace_back();
+    this->host_subtree_sizes_.push_back(this->total_point_count_);
+    this->host_nodes_[static_cast<size_t>(new_root_index)].data.children[static_cast<size_t>(octant)] = this->root_index_;
     this->root_index_ = new_root_index;
-    this->host_nodes_[static_cast<size_t>(this->root_index_)].subtree_size = this->total_point_count_;
+    this->host_subtree_sizes_[static_cast<size_t>(this->root_index_)] = this->total_point_count_;
     this->bbox_min_ = new_min;
     this->bbox_max_ = new_max;
 }
@@ -677,44 +697,60 @@ inline void Octree::ensure_root_bounds(const PointType& point) {
 /// @param node Parent node whose child bounds are requested.
 /// @param child_index Index of the child (0-7).
 /// @return Bounding box describing the child octant.
-inline Octree::BoundingBox Octree::child_bounds(const HostNode& node, size_t child_index) const {
-    const sycl::float3 center = 0.5f * (node.min_bounds + node.max_bounds);
+inline Octree::BoundingBox Octree::child_bounds(const Node& node, size_t child_index) const {
+    const sycl::float3 min_bounds = to_sycl(node.min_bounds);
+    const sycl::float3 max_bounds = to_sycl(node.max_bounds);
+    const sycl::float3 center = 0.5f * (min_bounds + max_bounds);
 
     BoundingBox result;
-    result.min_bounds = node.min_bounds;
-    result.max_bounds = node.max_bounds;
+    result.min_bounds = min_bounds;
+    result.max_bounds = max_bounds;
 
-    result.min_bounds.x() = (child_index & 1) ? center.x() : node.min_bounds.x();
-    result.max_bounds.x() = (child_index & 1) ? node.max_bounds.x() : center.x();
-    result.min_bounds.y() = (child_index & 2) ? center.y() : node.min_bounds.y();
-    result.max_bounds.y() = (child_index & 2) ? node.max_bounds.y() : center.y();
-    result.min_bounds.z() = (child_index & 4) ? center.z() : node.min_bounds.z();
-    result.max_bounds.z() = (child_index & 4) ? node.max_bounds.z() : center.z();
+    result.min_bounds.x() = (child_index & 1) ? center.x() : min_bounds.x();
+    result.max_bounds.x() = (child_index & 1) ? max_bounds.x() : center.x();
+    result.min_bounds.y() = (child_index & 2) ? center.y() : min_bounds.y();
+    result.max_bounds.y() = (child_index & 2) ? max_bounds.y() : center.y();
+    result.min_bounds.z() = (child_index & 4) ? center.z() : min_bounds.z();
+    result.max_bounds.z() = (child_index & 4) ? max_bounds.z() : center.z();
 
     return result;
+}
+
+inline Eigen::Vector3f Octree::to_eigen(const sycl::float3& vec) {
+    return Eigen::Vector3f(vec.x(), vec.y(), vec.z());
+}
+
+inline sycl::float3 Octree::to_sycl(const Eigen::Vector3f& vec) {
+    return sycl::float3(vec.x(), vec.y(), vec.z());
 }
 
 /// @brief Recalculate the number of points contained inside the subtree rooted at @p node_index.
 /// @param node_index Index of the subtree's root node.
 inline void Octree::recompute_subtree_size(int32_t node_index) {
-    HostNode& node = this->host_nodes_[static_cast<size_t>(node_index)];
+    Node& node = this->host_nodes_[static_cast<size_t>(node_index)];
     if (node.is_leaf) {
-        node.subtree_size = node.points.size();
+        const size_t count = this->host_leaf_points_[static_cast<size_t>(node_index)].size();
+        this->host_subtree_sizes_[static_cast<size_t>(node_index)] = count;
+        node.data.leaf.point_count = static_cast<uint32_t>(count);
         return;
     }
 
     size_t total = 0;
-    for (int32_t child : node.children) {
-        if (child >= 0) {
-            total += this->host_nodes_[static_cast<size_t>(child)].subtree_size;
+    for (size_t child = 0; child < 8; ++child) {
+        const int32_t child_index = node.data.children[child];
+        if (child_index >= 0) {
+            total += this->host_subtree_sizes_[static_cast<size_t>(child_index)];
         }
     }
 
-    node.subtree_size = total;
+    this->host_subtree_sizes_[static_cast<size_t>(node_index)] = total;
     if (total == 0) {
-        node.is_leaf = true;
-        node.children.fill(-1);
-        node.points.clear();
+        node.is_leaf = 1u;
+        for (size_t child = 0; child < 8; ++child) {
+            node.data.children[child] = -1;
+        }
+        this->host_leaf_points_[static_cast<size_t>(node_index)].clear();
+        node.data.leaf.point_count = 0;
     }
 }
 
@@ -750,27 +786,18 @@ inline void Octree::sync_device_buffers() const {
     size_t offset = 0;
 
     for (size_t idx = 0; idx < node_count; ++idx) {
-        HostNode& host_node = this->host_nodes_[idx];
-        Node device_node{};
-        device_node.min_bounds =
-            Eigen::Vector3f(host_node.min_bounds.x(), host_node.min_bounds.y(), host_node.min_bounds.z());
-        device_node.max_bounds =
-            Eigen::Vector3f(host_node.max_bounds.x(), host_node.max_bounds.y(), host_node.max_bounds.z());
-        device_node.is_leaf = host_node.is_leaf ? 1u : 0u;
-        if (host_node.is_leaf) {
+        Node device_node = this->host_nodes_[idx];
+        if (device_node.is_leaf) {
+            const auto& points = this->host_leaf_points_[idx];
             device_node.data.leaf.start_index = static_cast<uint32_t>(offset);
-            device_node.data.leaf.point_count = static_cast<uint32_t>(host_node.points.size());
-            host_node.start_index = offset;
-            for (size_t i = 0; i < host_node.points.size(); ++i) {
-                const auto& record = host_node.points[i];
+            device_node.data.leaf.point_count = static_cast<uint32_t>(points.size());
+            for (size_t i = 0; i < points.size(); ++i) {
+                const auto& record = points[i];
                 this->device_points_[offset + i] = record.point;
                 this->device_point_ids_[offset + i] = record.id;
                 this->snapshot_ids_.push_back(record.id);
             }
-            offset += host_node.points.size();
-        } else {
-            std::copy(host_node.children.begin(), host_node.children.end(), std::begin(device_node.data.children));
-            host_node.start_index = 0;
+            offset += points.size();
         }
         this->nodes_[idx] = device_node;
     }
