@@ -26,10 +26,10 @@ namespace knn {
 
 // These helpers are declared inline to keep their definitions in the header ODR-safe across translation units.
 /// @brief Compute the edge lengths of an axis-aligned bounding box.
-SYCL_EXTERNAL inline sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds);
+SYCL_EXTERNAL inline Eigen::Vector3f axis_lengths(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds);
 /// @brief Compute the squared distance from @p point to the provided bounding box.
-SYCL_EXTERNAL inline float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
-                                            const sycl::float3& point);
+SYCL_EXTERNAL inline float distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                            const Eigen::Vector3f& point);
 /// @brief Helper that avoids repeated Eigen boilerplate when computing squared distances.
 inline float squared_distance(const PointType& a, const PointType& b);
 
@@ -61,16 +61,16 @@ public:
 
     /// @brief Axis-aligned bounding box helper used during host-side operations.
     struct BoundingBox {
-        sycl::float3 min_bounds;
-        sycl::float3 max_bounds;
+        Eigen::Vector3f min_bounds;
+        Eigen::Vector3f max_bounds;
 
-        [[nodiscard]] bool contains(const sycl::float3& point) const {
+        [[nodiscard]] bool contains(const Eigen::Vector3f& point) const {
             return point.x() >= min_bounds.x() && point.x() <= max_bounds.x() && point.y() >= min_bounds.y() &&
                    point.y() <= max_bounds.y() && point.z() >= min_bounds.z() && point.z() <= max_bounds.z();
         }
 
         [[nodiscard]] bool contains(const PointType& point) const {
-            return contains(sycl::float3(point.x(), point.y(), point.z()));
+            return contains(Eigen::Vector3f(point.x(), point.y(), point.z()));
         }
 
         [[nodiscard]] bool intersects(const BoundingBox& other) const {
@@ -161,7 +161,7 @@ private:
     /// @brief Rebuild the tree from a dense point cloud.
     void build_from_cloud(const PointCloudShared& points);
     /// @brief Allocate a new host-side node and trigger subdivision if necessary.
-    int32_t create_host_node(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
+    int32_t create_host_node(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
                              std::vector<PointRecord>&& points, size_t depth);
     /// @brief Split the provided leaf node when it exceeds capacity.
     void subdivide_leaf(int32_t node_index, size_t depth);
@@ -175,8 +175,6 @@ private:
     void ensure_root_bounds(const PointType& point);
     /// @brief Compute the bounding box of a specific child octant.
     BoundingBox child_bounds(const Node& node, size_t child_index) const;
-    static Eigen::Vector3f to_eigen(const sycl::float3& vec);
-    static sycl::float3 to_sycl(const Eigen::Vector3f& vec);
     /// @brief Refresh the cached subtree size after structural changes.
     void recompute_subtree_size(int32_t node_index);
     /// @brief Synchronise host-side data into device-visible buffers.
@@ -186,8 +184,8 @@ private:
     sycl_utils::DeviceQueue queue_;
     float resolution_;
     size_t max_points_per_node_;
-    sycl::float3 bbox_min_;
-    sycl::float3 bbox_max_;
+    Eigen::Vector3f bbox_min_;
+    Eigen::Vector3f bbox_max_;
     int32_t root_index_;
     size_t total_point_count_;
     int32_t next_point_id_;
@@ -204,9 +202,8 @@ private:
     mutable bool device_dirty_;
 
     template <size_t MAX_K, size_t MAX_DEPTH>
-    sycl_utils::events knn_search_async_impl(
-        const PointCloudShared& queries, size_t k, KNNResult& result,
-        const std::vector<sycl::event>& depends) const;
+    sycl_utils::events knn_search_async_impl(const PointCloudShared& queries, size_t k, KNNResult& result,
+                                             const std::vector<sycl::event>& depends) const;
 };
 
 /// @brief Initialise the octree with the provided execution queue and parameters.
@@ -253,18 +250,18 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
 
     const size_t point_count = points.points->size();
     if (point_count == 0) {
-        this->bbox_min_ = sycl::float3(0.0f, 0.0f, 0.0f);
-        this->bbox_max_ = sycl::float3(0.0f, 0.0f, 0.0f);
+        this->bbox_min_ = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
+        this->bbox_max_ = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
         this->nodes_.clear();
         this->device_points_.clear();
         this->device_point_ids_.clear();
         return;
     }
 
-    this->bbox_min_ = sycl::float3(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
-                                   std::numeric_limits<float>::infinity());
-    this->bbox_max_ = sycl::float3(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
-                                   std::numeric_limits<float>::lowest());
+    this->bbox_min_ = Eigen::Vector3f(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                                      std::numeric_limits<float>::infinity());
+    this->bbox_max_ = Eigen::Vector3f(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                                      std::numeric_limits<float>::lowest());
 
     std::vector<PointRecord> records(point_count);
     for (size_t i = 0; i < point_count; ++i) {
@@ -280,8 +277,8 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
     }
 
     const float epsilon = std::max(1e-5f, this->resolution_ * 0.5f);
-    this->bbox_min_ -= sycl::float3(epsilon, epsilon, epsilon);
-    this->bbox_max_ += sycl::float3(epsilon, epsilon, epsilon);
+    this->bbox_min_ -= Eigen::Vector3f(epsilon, epsilon, epsilon);
+    this->bbox_max_ += Eigen::Vector3f(epsilon, epsilon, epsilon);
 
     this->root_index_ = this->create_host_node(this->bbox_min_, this->bbox_max_, std::move(records), 0);
     this->total_point_count_ = point_count;
@@ -294,11 +291,11 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
 /// @param points Points contained within the node's bounding box.
 /// @param depth Current depth of the node in the tree.
 /// @return Index of the created node inside @c host_nodes_.
-inline int32_t Octree::create_host_node(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
+inline int32_t Octree::create_host_node(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
                                         std::vector<PointRecord>&& points, size_t depth) {
     Node node{};
-    node.min_bounds = to_eigen(min_bounds);
-    node.max_bounds = to_eigen(max_bounds);
+    node.min_bounds = min_bounds;
+    node.max_bounds = max_bounds;
     node.is_leaf = 1u;
     node.data.leaf.start_index = 0u;
     node.data.leaf.point_count = static_cast<uint32_t>(points.size());
@@ -322,18 +319,15 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
     }
 
     auto& points = this->host_leaf_points_[static_cast<size_t>(node_index)];
-    const auto lengths = axis_lengths(to_sycl(node_snapshot.min_bounds), to_sycl(node_snapshot.max_bounds));
+    const auto lengths = axis_lengths(node_snapshot.min_bounds, node_snapshot.max_bounds);
     const float max_axis = std::max({lengths.x(), lengths.y(), lengths.z()});
     if (points.size() <= this->max_points_per_node_ || max_axis <= this->resolution_ || depth >= 32) {
         this->host_subtree_sizes_[static_cast<size_t>(node_index)] = points.size();
-        this->host_nodes_[static_cast<size_t>(node_index)].data.leaf.point_count =
-            static_cast<uint32_t>(points.size());
+        this->host_nodes_[static_cast<size_t>(node_index)].data.leaf.point_count = static_cast<uint32_t>(points.size());
         return;
     }
 
-    const sycl::float3 min_bounds = to_sycl(node_snapshot.min_bounds);
-    const sycl::float3 max_bounds = to_sycl(node_snapshot.max_bounds);
-    const sycl::float3 center = 0.5f * (min_bounds + max_bounds);
+    const Eigen::Vector3f center = 0.5f * (node_snapshot.min_bounds + node_snapshot.max_bounds);
 
     std::vector<PointRecord> local_points = std::move(points);
     std::array<std::vector<PointRecord>, 8> child_points;
@@ -366,9 +360,8 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
         }
 
         const auto child_bounds_value = this->child_bounds(node_snapshot, child);
-        const int32_t child_index =
-            this->create_host_node(child_bounds_value.min_bounds, child_bounds_value.max_bounds,
-                                   std::move(child_points[child]), depth + 1);
+        const int32_t child_index = this->create_host_node(child_bounds_value.min_bounds, child_bounds_value.max_bounds,
+                                                           std::move(child_points[child]), depth + 1);
         Node& refreshed_node = this->host_nodes_[static_cast<size_t>(node_index)];
         refreshed_node.data.children[child] = child_index;
         this->host_subtree_sizes_[static_cast<size_t>(node_index)] +=
@@ -416,9 +409,9 @@ inline void Octree::insert_recursive(int32_t node_index, const PointType& point,
 
     int octant = 0;
     {
-        const sycl::float3 min_bounds = to_sycl(node.min_bounds);
-        const sycl::float3 max_bounds = to_sycl(node.max_bounds);
-        const sycl::float3 center = 0.5f * (min_bounds + max_bounds);
+        const Eigen::Vector3f min_bounds = node.min_bounds;
+        const Eigen::Vector3f max_bounds = node.max_bounds;
+        const Eigen::Vector3f center = 0.5f * (min_bounds + max_bounds);
 
         if (point.x() >= center.x()) {
             octant |= 1;
@@ -497,9 +490,9 @@ inline bool Octree::remove_recursive(int32_t node_index, const PointType& point,
                 continue;
             }
             const auto& child_node = this->host_nodes_[static_cast<size_t>(child_index)];
-            const BoundingBox bounds{to_sycl(child_node.min_bounds), to_sycl(child_node.max_bounds)};
-            const float aabb_distance =
-                distance_to_aabb(bounds.min_bounds, bounds.max_bounds, sycl::float3(point.x(), point.y(), point.z()));
+            const BoundingBox bounds{child_node.min_bounds, child_node.max_bounds};
+            const float aabb_distance = distance_to_aabb(bounds.min_bounds, bounds.max_bounds,
+                                                         Eigen::Vector3f(point.x(), point.y(), point.z()));
             if (aabb_distance > tolerance_sq) {
                 continue;
             }
@@ -545,7 +538,7 @@ inline size_t Octree::delete_box(const BoundingBox& region) {
 /// @return True when the subtree becomes empty and can be pruned.
 inline bool Octree::delete_box_recursive(int32_t node_index, const BoundingBox& region) {
     Node& node = this->host_nodes_[static_cast<size_t>(node_index)];
-    const BoundingBox node_bounds{to_sycl(node.min_bounds), to_sycl(node.max_bounds)};
+    const BoundingBox node_bounds{node.min_bounds, node.max_bounds};
     if (!region.intersects(node_bounds)) {
         return false;
     }
@@ -611,9 +604,9 @@ inline std::vector<int32_t> Octree::radius_search(const PointType& query, float 
         const int32_t node_index = stack.back();
         stack.pop_back();
         const Node& node = this->host_nodes_[static_cast<size_t>(node_index)];
-        const BoundingBox bounds{to_sycl(node.min_bounds), to_sycl(node.max_bounds)};
+        const BoundingBox bounds{node.min_bounds, node.max_bounds};
         const float dist_sq =
-            distance_to_aabb(bounds.min_bounds, bounds.max_bounds, sycl::float3(query.x(), query.y(), query.z()));
+            distance_to_aabb(bounds.min_bounds, bounds.max_bounds, Eigen::Vector3f(query.x(), query.y(), query.z()));
         if (dist_sq > radius_sq) {
             continue;
         }
@@ -641,27 +634,27 @@ inline std::vector<int32_t> Octree::radius_search(const PointType& query, float 
 /// @brief Grow the root bounding box until it encloses the provided point.
 /// @param point The point to be enclosed by the root bounding box.
 inline void Octree::ensure_root_bounds(const PointType& point) {
-    const sycl::float3 point_vec(point.x(), point.y(), point.z());
+    const Eigen::Vector3f point_vec(point.x(), point.y(), point.z());
     if (this->root_index_ < 0) {
-        this->bbox_min_ = point_vec - sycl::float3(this->resolution_, this->resolution_, this->resolution_);
-        this->bbox_max_ = point_vec + sycl::float3(this->resolution_, this->resolution_, this->resolution_);
+        this->bbox_min_ = point_vec - Eigen::Vector3f(this->resolution_, this->resolution_, this->resolution_);
+        this->bbox_max_ = point_vec + Eigen::Vector3f(this->resolution_, this->resolution_, this->resolution_);
         std::vector<PointRecord> pts;
         this->root_index_ = this->create_host_node(this->bbox_min_, this->bbox_max_, std::move(pts), 0);
         return;
     }
 
     Node& root = this->host_nodes_[static_cast<size_t>(this->root_index_)];
-    BoundingBox root_bounds{to_sycl(root.min_bounds), to_sycl(root.max_bounds)};
+    BoundingBox root_bounds{root.min_bounds, root.max_bounds};
     if (root_bounds.contains(point_vec)) {
         return;
     }
 
-    const sycl::float3 new_min = sycl::min(root_bounds.min_bounds, point_vec);
-    const sycl::float3 new_max = sycl::max(root_bounds.max_bounds, point_vec);
+    const Eigen::Vector3f new_min = root_bounds.min_bounds.cwiseMin(point_vec);
+    const Eigen::Vector3f new_max = root_bounds.max_bounds.cwiseMax(point_vec);
 
     Node new_root{};
-    new_root.min_bounds = to_eigen(new_min);
-    new_root.max_bounds = to_eigen(new_max);
+    new_root.min_bounds = new_min;
+    new_root.max_bounds = new_max;
     new_root.is_leaf = 0u;
     for (size_t child = 0; child < 8; ++child) {
         new_root.data.children[child] = -1;
@@ -669,8 +662,8 @@ inline void Octree::ensure_root_bounds(const PointType& point) {
 
     int octant = 0;
     {
-        const sycl::float3 center = 0.5f * (new_min + new_max);
-        const sycl::float3 old_center = 0.5f * (root_bounds.min_bounds + root_bounds.max_bounds);
+        const Eigen::Vector3f center = 0.5f * (new_min + new_max);
+        const Eigen::Vector3f old_center = 0.5f * (root_bounds.min_bounds + root_bounds.max_bounds);
         if (old_center.x() >= center.x()) {
             octant |= 1;
         }
@@ -686,7 +679,8 @@ inline void Octree::ensure_root_bounds(const PointType& point) {
     this->host_nodes_.push_back(new_root);
     this->host_leaf_points_.emplace_back();
     this->host_subtree_sizes_.push_back(this->total_point_count_);
-    this->host_nodes_[static_cast<size_t>(new_root_index)].data.children[static_cast<size_t>(octant)] = this->root_index_;
+    this->host_nodes_[static_cast<size_t>(new_root_index)].data.children[static_cast<size_t>(octant)] =
+        this->root_index_;
     this->root_index_ = new_root_index;
     this->host_subtree_sizes_[static_cast<size_t>(this->root_index_)] = this->total_point_count_;
     this->bbox_min_ = new_min;
@@ -698,9 +692,9 @@ inline void Octree::ensure_root_bounds(const PointType& point) {
 /// @param child_index Index of the child (0-7).
 /// @return Bounding box describing the child octant.
 inline Octree::BoundingBox Octree::child_bounds(const Node& node, size_t child_index) const {
-    const sycl::float3 min_bounds = to_sycl(node.min_bounds);
-    const sycl::float3 max_bounds = to_sycl(node.max_bounds);
-    const sycl::float3 center = 0.5f * (min_bounds + max_bounds);
+    const Eigen::Vector3f min_bounds = node.min_bounds;
+    const Eigen::Vector3f max_bounds = node.max_bounds;
+    const Eigen::Vector3f center = 0.5f * (min_bounds + max_bounds);
 
     BoundingBox result;
     result.min_bounds = min_bounds;
@@ -714,14 +708,6 @@ inline Octree::BoundingBox Octree::child_bounds(const Node& node, size_t child_i
     result.max_bounds.z() = (child_index & 4) ? max_bounds.z() : center.z();
 
     return result;
-}
-
-inline Eigen::Vector3f Octree::to_eigen(const sycl::float3& vec) {
-    return Eigen::Vector3f(vec.x(), vec.y(), vec.z());
-}
-
-inline sycl::float3 Octree::to_sycl(const Eigen::Vector3f& vec) {
-    return sycl::float3(vec.x(), vec.y(), vec.z());
 }
 
 /// @brief Recalculate the number of points contained inside the subtree rooted at @p node_index.
@@ -826,19 +812,18 @@ inline float squared_distance(const PointType& a, const PointType& b) {
     return eigen_utils::dot<4>(diff, diff);
 }
 
-SYCL_EXTERNAL inline sycl::float3 axis_lengths(const sycl::float3& min_bounds, const sycl::float3& max_bounds) {
+SYCL_EXTERNAL inline Eigen::Vector3f axis_lengths(const Eigen::Vector3f& min_bounds,
+                                                  const Eigen::Vector3f& max_bounds) {
     return max_bounds - min_bounds;
 }
 
-/// @brief Generic implementation of @ref distance_to_aabb usable with different vector types.
-/// @tparam Vec3 A 3D vector type for the bounding box (e.g., `sycl::float3` or `Eigen::Vector3f`).
+/// @brief Compute the squared distance from a point to an axis-aligned bounding box.
 /// @param min_bounds Minimum coordinates of the bounding box.
 /// @param max_bounds Maximum coordinates of the bounding box.
 /// @param point The point to measure distance from.
-/// @return The squared distance to the bounding box.
-template <typename Vec3>
-SYCL_EXTERNAL inline float distance_to_aabb_generic(const Vec3& min_bounds, const Vec3& max_bounds,
-                                                    const sycl::float3& point) {
+/// @return The squared distance from the point to the bounding box.
+SYCL_EXTERNAL inline float distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                            const Eigen::Vector3f& point) {
     // Cache the query coordinates to avoid recomputing point.x()/y()/z().
     const float px = point.x();
     const float py = point.y();
@@ -849,22 +834,6 @@ SYCL_EXTERNAL inline float distance_to_aabb_generic(const Vec3& min_bounds, cons
     const float dz = sycl::fmax(0.0f, sycl::fmax(min_bounds.z() - pz, pz - max_bounds.z()));
     // Return the squared Euclidean distance from the query point to the box surface.
     return dx * dx + dy * dy + dz * dz;
-}
-
-/// @brief Compute the squared distance from a point to an axis-aligned bounding box.
-/// @param min_bounds Minimum coordinates of the bounding box.
-/// @param max_bounds Maximum coordinates of the bounding box.
-/// @param point The point to measure distance from.
-/// @return The squared distance from the point to the bounding box.
-SYCL_EXTERNAL inline float distance_to_aabb(const sycl::float3& min_bounds, const sycl::float3& max_bounds,
-                                            const sycl::float3& point) {
-    return distance_to_aabb_generic(min_bounds, max_bounds, point);
-}
-
-/// @copydoc distance_to_aabb(const sycl::float3&, const sycl::float3&, const sycl::float3&)
-SYCL_EXTERNAL inline float distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
-                                            const sycl::float3& point) {
-    return distance_to_aabb_generic(min_bounds, max_bounds, point);
 }
 
 inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points, float resolution,
@@ -880,9 +849,8 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
 }
 
 // Dispatch helper that selects an appropriate MAX_K bound at compile time.
-inline sycl_utils::events Octree::knn_search_async(
-    const PointCloudShared& queries, const size_t k, KNNResult& result,
-    const std::vector<sycl::event>& depends) const {
+inline sycl_utils::events Octree::knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
+                                                   const std::vector<sycl::event>& depends) const {
     constexpr size_t MAX_STACK_DEPTH = 32;
     if (k == 0) {
         const size_t query_size = queries.points ? queries.points->size() : 0;
@@ -915,9 +883,8 @@ inline sycl_utils::events Octree::knn_search_async(
 
 template <size_t MAX_K, size_t MAX_DEPTH>
 // Core implementation of the octree kNN search.
-inline sycl_utils::events Octree::knn_search_async_impl(
-    const PointCloudShared& queries, size_t k, KNNResult& result,
-    const std::vector<sycl::event>& depends) const {
+inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& queries, size_t k, KNNResult& result,
+                                                        const std::vector<sycl::event>& depends) const {
     static_assert(MAX_DEPTH > 0, "MAX_DEPTH must be greater than zero");
     static_assert(MAX_K > 0, "MAX_K must be greater than zero");
 
@@ -975,7 +942,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(
             }
 
             const auto query_point = query_points_ptr[query_idx];
-            const sycl::float3 query_point_vec(query_point.x(), query_point.y(), query_point.z());
+            const Eigen::Vector3f query_point_vec(query_point.x(), query_point.y(), query_point.z());
 
             NodeEntry bestK[MAX_K];
             std::fill(bestK, bestK + MAX_K, NodeEntry{-1, std::numeric_limits<float>::max()});

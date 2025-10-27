@@ -377,8 +377,8 @@ TEST(OctreeTest, DynamicUpdatesFollowDesign) {
         verify_against_brute_force(target_points);
 
         sycl_points::algorithms::knn::Octree::BoundingBox remove_region{};
-        remove_region.min_bounds = sycl::float3(-1.1f, -1.1f, -1.1f);
-        remove_region.max_bounds = sycl::float3(0.0f, 0.0f, 0.25f);
+        remove_region.min_bounds = Eigen::Vector3f(-1.1f, -1.1f, -1.1f);
+        remove_region.max_bounds = Eigen::Vector3f(0.0f, 0.0f, 0.25f);
         const size_t removed_count = tree->delete_box(remove_region);
         target_points.erase(std::remove_if(target_points.begin(), target_points.end(), [&](const auto& point) {
                                    return remove_region.contains(point);
