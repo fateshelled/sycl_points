@@ -120,9 +120,11 @@ TEST(OctreeTest, RemoveByFlags) {
         sycl_points::shared_vector<uint8_t> flags(target_size, sycl_points::algorithms::filter::INCLUDE_FLAG, *queue.ptr);
         sycl_points::shared_vector<int32_t> indices(target_size, *queue.ptr);
 
+        constexpr size_t removal_frequency = 7;
+
         int32_t compact_index = 0;
         for (size_t i = 0; i < target_size; ++i) {
-            if (i % 7 == 0) {
+            if (i % removal_frequency == 0) {
                 flags[i] = sycl_points::algorithms::filter::REMOVE_FLAG;
             }
             indices[i] = (flags[i] == sycl_points::algorithms::filter::INCLUDE_FLAG) ? compact_index++ : -1;

@@ -354,7 +354,7 @@ inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags,
             }
 
             if (new_id >= static_cast<int32_t>(expected_size)) {
-                throw std::runtime_error("remapped point identifier exceeds the allocated range");
+                throw std::runtime_error("remapped point identifier in indices exceeds the allocated range");
             }
 
             if (new_id != record_id) {
@@ -391,8 +391,18 @@ inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags,
         return;
     }
 
-    const int32_t candidate_next_id = (max_new_id >= 0) ? (max_new_id + 1) : 0;
-    this->next_point_id_ = std::max<int32_t>(candidate_next_id, static_cast<int32_t>(this->total_point_count_));
+    int64_t candidate_next_id = (max_new_id >= 0) ? (static_cast<int64_t>(max_new_id) + 1) : 0;
+    if (candidate_next_id < 0) {
+        candidate_next_id = 0;
+    }
+
+    const int64_t total_count_candidate = static_cast<int64_t>(this->total_point_count_);
+    const int64_t next_id_64 = std::max(candidate_next_id, total_count_candidate);
+    if (next_id_64 > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+        throw std::runtime_error("compacted point identifiers exceed int32_t capacity");
+    }
+
+    this->next_point_id_ = static_cast<int32_t>(next_id_64);
 }
 
 /// @brief Create a host node and recursively subdivide it when necessary.
