@@ -2,8 +2,10 @@
 
 #include <chrono>
 #include <filesystem>
+#include <numeric>
 #include <random>
 #include <stdexcept>
+#include <sycl_points/algorithms/common/filter_by_flags.hpp>
 #include <sycl_points/algorithms/knn/bruteforce.hpp>
 #include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/algorithms/knn/octree.hpp>
@@ -85,6 +87,68 @@ TEST(OctreeTest, CompareWithBruteForceInterfaceOnly) {
             sycl_points::algorithms::knn::knn_search_bruteforce(queue, query_cloud, target_cloud, k);
 
         compareKNNResults(octree_result, bruteforce_result, k);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(OctreeTest, RemoveByFlags) {
+    try {
+        const size_t target_size = 1024;
+        const size_t k = 10;
+        const float point_range = 10.0f;
+        const float leaf_size = 0.1f;
+
+        std::mt19937 gen(2025);
+
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::PointCloudCPU target_cpu;
+        target_cpu.points->resize(target_size);
+        generateRandomPoints(target_cpu.points, target_size, point_range, gen);
+
+        sycl_points::PointCloudShared target_cloud(queue, target_cpu);
+        auto octree = sycl_points::algorithms::knn::Octree::build(queue, target_cloud, leaf_size);
+
+        auto initial_result = octree->knn_search(target_cloud, k);
+        for (size_t i = 0; i < target_size; ++i) {
+            EXPECT_FLOAT_EQ(0.0f, (*initial_result.distances)[i * k]);
+            EXPECT_EQ(static_cast<int32_t>(i), (*initial_result.indices)[i * k]);
+        }
+
+        sycl_points::shared_vector<uint8_t> flags(target_size, sycl_points::algorithms::filter::INCLUDE_FLAG, *queue.ptr);
+        sycl_points::shared_vector<int32_t> indices(target_size, *queue.ptr);
+
+        constexpr size_t removal_frequency = 7;
+
+        int32_t compact_index = 0;
+        for (size_t i = 0; i < target_size; ++i) {
+            if (i % removal_frequency == 0) {
+                flags[i] = sycl_points::algorithms::filter::REMOVE_FLAG;
+            }
+            indices[i] = (flags[i] == sycl_points::algorithms::filter::INCLUDE_FLAG) ? compact_index++ : -1;
+        }
+
+        octree->remove_nodes_by_flags(flags, indices);
+
+        sycl_points::algorithms::filter::FilterByFlags filter(queue);
+        auto filtered_cloud = target_cloud;
+        filter.filter_by_flags(*filtered_cloud.points, flags);
+
+        const auto brute_force =
+            sycl_points::algorithms::knn::knn_search_bruteforce(queue, filtered_cloud, filtered_cloud, k);
+        const auto updated_result = octree->knn_search(filtered_cloud, k);
+
+        for (size_t query_idx = 0; query_idx < updated_result.query_size; ++query_idx) {
+            for (size_t neighbor = 0; neighbor < k; ++neighbor) {
+                const size_t offset = query_idx * k + neighbor;
+                ASSERT_FLOAT_EQ(brute_force.distances->at(offset), updated_result.distances->at(offset))
+                    << "Mismatch in distances at query " << query_idx << ", neighbor " << neighbor;
+                ASSERT_EQ(brute_force.indices->at(offset), updated_result.indices->at(offset))
+                    << "Mismatch in indices at query " << query_idx << ", neighbor " << neighbor;
+            }
+        }
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
