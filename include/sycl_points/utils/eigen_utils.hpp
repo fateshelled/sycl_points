@@ -323,6 +323,15 @@ SYCL_EXTERNAL float frobenius_norm_squared(const Eigen::Matrix<float, M, N>& A) 
     return ret;
 }
 
+template <size_t M>
+/// @brief Vector Frobenius Norm squared
+/// @tparam M Vector size
+/// @param a vector
+/// @return Frobenius norm squared of a
+SYCL_EXTERNAL float frobenius_norm_squared(const Eigen::Vector<float, M>& a) {
+    return dot<M>(a, a);
+}
+
 template <size_t M, size_t N>
 /// @brief Matrix Frobenius Norm squared
 /// @tparam M Number of rows
@@ -331,21 +340,6 @@ template <size_t M, size_t N>
 /// @return Frobenius norm of A
 SYCL_EXTERNAL float frobenius_norm(const Eigen::Matrix<float, M, N>& A) {
     return sycl::sqrt(frobenius_norm_squared<M, N>(A));
-}
-
-template <size_t M>
-/// @brief Vector Frobenius Norm squared
-/// @tparam M Vector size
-/// @param a vector
-/// @return Frobenius norm squared of a
-SYCL_EXTERNAL float frobenius_norm_squared(const Eigen::Vector<float, M>& a) {
-    float ret = 0.0f;
-#pragma unroll M
-    for (size_t i = 0; i < M; ++i) {
-        // ret += a(i) * a(i);
-        ret = sycl::fma(a(i), a(i), ret);
-    }
-    return ret;
 }
 
 template <size_t M>
