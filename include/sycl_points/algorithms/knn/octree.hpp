@@ -30,6 +30,9 @@ SYCL_EXTERNAL inline Eigen::Vector3f axis_lengths(const Eigen::Vector3f& min_bou
 /// @brief Compute the squared distance from @p point to the provided bounding box.
 SYCL_EXTERNAL inline float distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
                                             const Eigen::Vector3f& point);
+/// @brief Compute the minimum L-infinity distance from @p point to the provided bounding box.
+SYCL_EXTERNAL inline float linf_distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                                const Eigen::Vector3f& point);
 /// @brief Helper that avoids repeated Eigen boilerplate when computing squared distances.
 inline float squared_distance(const PointType& a, const PointType& b);
 
@@ -601,8 +604,14 @@ inline std::vector<int32_t> Octree::radius_search(const PointType& query, float 
         stack.pop_back();
         const Node& node = this->host_nodes_[static_cast<size_t>(node_index)];
         const BoundingBox bounds{node.min_bounds, node.max_bounds};
-        const float dist_sq =
-            distance_to_aabb(bounds.min_bounds, bounds.max_bounds, Eigen::Vector3f(query.x(), query.y(), query.z()));
+        const Eigen::Vector3f query_vec(query.x(), query.y(), query.z());
+        // Quickly reject nodes that are outside the requested radius in the L-infinity metric.
+        const float dist_linf = linf_distance_to_aabb(bounds.min_bounds, bounds.max_bounds, query_vec);
+        if (dist_linf > radius) {
+            continue;
+        }
+
+        const float dist_sq = distance_to_aabb(bounds.min_bounds, bounds.max_bounds, query_vec);
         if (dist_sq > radius_sq) {
             continue;
         }
@@ -832,6 +841,25 @@ SYCL_EXTERNAL inline float distance_to_aabb(const Eigen::Vector3f& min_bounds, c
     return dx * dx + dy * dy + dz * dz;
 }
 
+/// @brief Compute the minimum L-infinity distance between a point and an axis-aligned bounding box.
+/// @param min_bounds Minimum coordinates of the bounding box.
+/// @param max_bounds Maximum coordinates of the bounding box.
+/// @param point The point to measure distance from.
+/// @return The L-infinity distance.
+SYCL_EXTERNAL inline float linf_distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                                const Eigen::Vector3f& point) {
+    // Distances are computed per-axis and the maximum component is selected.
+    const float px = point.x();
+    const float py = point.y();
+    const float pz = point.z();
+
+    const float dx = (px < min_bounds.x()) ? (min_bounds.x() - px) : (px > max_bounds.x() ? px - max_bounds.x() : 0.0f);
+    const float dy = (py < min_bounds.y()) ? (min_bounds.y() - py) : (py > max_bounds.y() ? py - max_bounds.y() : 0.0f);
+    const float dz = (pz < min_bounds.z()) ? (min_bounds.z() - pz) : (pz > max_bounds.z() ? pz - max_bounds.z() : 0.0f);
+
+    return sycl::fmax(sycl::fmax(dx, dy), dz);
+}
+
 inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points, float resolution,
                                  size_t max_points_per_node) {
     auto tree = std::make_shared<Octree>(queue, resolution, max_points_per_node);
@@ -982,6 +1010,11 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 return neighbour_count < k ? std::numeric_limits<float>::infinity() : bestK[0].dist_sq;
             };
 
+            auto current_worst_radius = [&]() {
+                const float worst_sq = current_worst();
+                return sycl::isfinite(worst_sq) ? sycl::sqrt(worst_sq) : worst_sq;
+            };
+
             auto push_candidate = [&](float distance_sq, int32_t index) {
                 if (neighbour_count < k) {
                     bestK[neighbour_count++] = {index, distance_sq};
@@ -1014,8 +1047,14 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 return;
             }
 
-            push_node_to_stack(root_index, distance_to_aabb(nodes_ptr[root_index].min_bounds,
-                                                            nodes_ptr[root_index].max_bounds, query_point_vec));
+            const float root_linf =
+                linf_distance_to_aabb(nodes_ptr[root_index].min_bounds, nodes_ptr[root_index].max_bounds, query_point_vec);
+            const float root_dist_sq =
+                distance_to_aabb(nodes_ptr[root_index].min_bounds, nodes_ptr[root_index].max_bounds, query_point_vec);
+            // The L-infinity distance provides a cheap rejection test before ordering by Euclidean distance.
+            if (root_linf <= current_worst_radius()) {
+                push_node_to_stack(root_index, root_dist_sq);
+            }
 
             while (stack_size > 0) {
                 size_t best_pos = 0;
@@ -1031,7 +1070,8 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 --stack_size;
                 stack[best_pos] = stack[stack_size];
 
-                if (best_dist > current_worst()) {
+                const float worst_sq = current_worst();
+                if (best_dist > worst_sq) {
                     continue;
                 }
 
@@ -1047,14 +1087,21 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                         push_candidate(dist_sq, point_id);
                     }
                 } else {
+                    const float worst_radius = sycl::isfinite(worst_sq) ? sycl::sqrt(worst_sq) : worst_sq;
                     for (size_t child = 0; child < 8; ++child) {
                         const int32_t child_idx = node.data.children[child];
                         if (child_idx < 0) {
                             continue;
                         }
+                        const float child_linf = linf_distance_to_aabb(nodes_ptr[child_idx].min_bounds,
+                                                                       nodes_ptr[child_idx].max_bounds, query_point_vec);
+                        // Skip children whose boxes are already outside the best-known L2 radius.
+                        if (child_linf > worst_radius) {
+                            continue;
+                        }
                         const float child_dist = distance_to_aabb(nodes_ptr[child_idx].min_bounds,
                                                                   nodes_ptr[child_idx].max_bounds, query_point_vec);
-                        if (child_dist <= current_worst()) {
+                        if (child_dist <= worst_sq) {
                             push_node_to_stack(child_idx, child_dist);
                         }
                     }
