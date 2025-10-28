@@ -942,7 +942,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
             NodeEntry bestK[MAX_K];  // descending order. head data is largest dist_sq
             std::fill(bestK, bestK + MAX_K, NodeEntry{-1, std::numeric_limits<float>::max()});
 
-            NodeEntry stack[MAX_DEPTH + 1];
+            NodeEntry stack[MAX_DEPTH];
             size_t stack_size = 0;
             size_t neighbour_count = 0;
 
@@ -987,7 +987,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                     bestK[neighbour_count++] = {index, distance_sq};
                     sift_up(neighbour_count - 1);
                 } else if (distance_sq < bestK[0].dist_sq) {
-                    bestK[0] = {index, distance_sq};
+                    bestK[0] = {index, distance_sq}; // overwrite worst result
                     sift_down(0, neighbour_count);
                 }
             };
@@ -1047,14 +1047,27 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                         push_candidate(dist_sq, point_id);
                     }
                 } else {
+                    const auto worst_dist = current_worst();
                     for (size_t child = 0; child < 8; ++child) {
                         const int32_t child_idx = node.data.children[child];
                         if (child_idx < 0) {
                             continue;
                         }
-                        const float child_dist = distance_to_aabb(nodes_ptr[child_idx].min_bounds,
-                                                                  nodes_ptr[child_idx].max_bounds, query_point_vec);
-                        if (child_dist <= current_worst()) {
+                        const auto min_bounds = nodes_ptr[child_idx].min_bounds;
+                        const auto max_bounds = nodes_ptr[child_idx].max_bounds;
+
+                        const float dx = sycl::fmax(0.0f, sycl::fmax(min_bounds.x() - query_point_vec.x(),
+                                                                     query_point_vec.x() - max_bounds.x()));
+                        const float dy = sycl::fmax(0.0f, sycl::fmax(min_bounds.y() - query_point_vec.y(),
+                                                                     query_point_vec.y() - max_bounds.y()));
+                        const float dz = sycl::fmax(0.0f, sycl::fmax(min_bounds.z() - query_point_vec.z(),
+                                                                     query_point_vec.z() - max_bounds.z()));
+                        if (dx > worst_dist || dy > worst_dist || dz > worst_dist) {
+                            continue;
+                        }
+                        const float child_dist = sycl::fma(dx, dx, sycl::fma(dy, dy, dz * dz));
+
+                        if (child_dist <= worst_dist) {
                             push_node_to_stack(child_idx, child_dist);
                         }
                     }
