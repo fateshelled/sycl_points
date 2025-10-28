@@ -853,9 +853,9 @@ SYCL_EXTERNAL inline float linf_distance_to_aabb(const Eigen::Vector3f& min_boun
     const float py = point.y();
     const float pz = point.z();
 
-    const float dx = (px < min_bounds.x()) ? (min_bounds.x() - px) : (px > max_bounds.x() ? px - max_bounds.x() : 0.0f);
-    const float dy = (py < min_bounds.y()) ? (min_bounds.y() - py) : (py > max_bounds.y() ? py - max_bounds.y() : 0.0f);
-    const float dz = (pz < min_bounds.z()) ? (min_bounds.z() - pz) : (pz > max_bounds.z() ? pz - max_bounds.z() : 0.0f);
+    const float dx = sycl::fmax(0.0f, sycl::fmax(min_bounds.x() - px, px - max_bounds.x()));
+    const float dy = sycl::fmax(0.0f, sycl::fmax(min_bounds.y() - py, py - max_bounds.y()));
+    const float dz = sycl::fmax(0.0f, sycl::fmax(min_bounds.z() - pz, pz - max_bounds.z()));
 
     return sycl::fmax(sycl::fmax(dx, dy), dz);
 }
@@ -1047,13 +1047,15 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 return;
             }
 
-            const float root_linf =
-                linf_distance_to_aabb(nodes_ptr[root_index].min_bounds, nodes_ptr[root_index].max_bounds, query_point_vec);
-            const float root_dist_sq =
-                distance_to_aabb(nodes_ptr[root_index].min_bounds, nodes_ptr[root_index].max_bounds, query_point_vec);
+            const Node root_node = nodes_ptr[root_index];
+            const float root_linf = linf_distance_to_aabb(root_node.min_bounds, root_node.max_bounds, query_point_vec);
             // The L-infinity distance provides a cheap rejection test before ordering by Euclidean distance.
             if (root_linf <= current_worst_radius()) {
-                push_node_to_stack(root_index, root_dist_sq);
+                const float root_dist_sq =
+                    distance_to_aabb(root_node.min_bounds, root_node.max_bounds, query_point_vec);
+                if (root_dist_sq <= current_worst()) {
+                    push_node_to_stack(root_index, root_dist_sq);
+                }
             }
 
             while (stack_size > 0) {
