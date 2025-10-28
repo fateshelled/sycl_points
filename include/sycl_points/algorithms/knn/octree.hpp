@@ -10,6 +10,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <sycl/sycl.hpp>
+#include <sycl_points/algorithms/common/filter_by_flags.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/algorithms/knn/result.hpp>
 #include <sycl_points/points/point_cloud.hpp>
@@ -186,6 +187,8 @@ private:
     void sync_device_buffers();
     /// @brief Const-qualified overload that forwards to the non-const synchronisation path.
     void sync_device_buffers() const;
+    /// @brief Reset all host/device bookkeeping to the empty-tree state.
+    void reset_tree_state();
 
     sycl_utils::DeviceQueue queue_;
     float resolution_;
@@ -234,6 +237,24 @@ inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, si
       device_point_ids_(*queue_.ptr),
       device_dirty_(true) {}
 
+inline void Octree::reset_tree_state() {
+    this->bbox_min_ = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
+    this->bbox_max_ = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
+    this->root_index_ = -1;
+    this->total_point_count_ = 0;
+    this->next_point_id_ = 0;
+
+    this->host_nodes_.clear();
+    this->host_leaf_points_.clear();
+    this->host_subtree_sizes_.clear();
+
+    this->nodes_.clear();
+    this->device_points_.clear();
+    this->device_point_ids_.clear();
+
+    this->device_dirty_ = true;
+}
+
 /// @brief Populate the octree from an entire point cloud.
 /// @details The method resets any previously stored data and rebuilds the hierarchy from scratch.
 /// @param points Input point cloud.
@@ -243,23 +264,13 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
     }
 
     // Reset cached host/device structures before rebuilding the tree.
-    this->host_nodes_.clear();
-    this->host_leaf_points_.clear();
-    this->host_subtree_sizes_.clear();
-    this->total_point_count_ = 0;
-    this->root_index_ = -1;
-    this->device_dirty_ = true;
+    this->reset_tree_state();
     if (!points.points) {
         throw std::runtime_error("Point cloud is not initialised");
     }
 
     const size_t point_count = points.points->size();
     if (point_count == 0) {
-        this->bbox_min_ = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
-        this->bbox_max_ = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
-        this->nodes_.clear();
-        this->device_points_.clear();
-        this->device_point_ids_.clear();
         return;
     }
 
@@ -288,6 +299,100 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
     this->root_index_ = this->create_host_node(this->bbox_min_, this->bbox_max_, std::move(records), 0);
     this->total_point_count_ = point_count;
     this->next_point_id_ = static_cast<int32_t>(point_count);
+}
+
+inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags,
+                                          const shared_vector<int32_t>& indices) {
+    if (!this->queue_.ptr) {
+        throw std::runtime_error("Octree queue is not initialised");
+    }
+
+    if (flags.size() != indices.size()) {
+        throw std::runtime_error("flags and indices must have the same size");
+    }
+
+    const size_t expected_size = static_cast<size_t>(this->next_point_id_);
+    if (flags.size() != expected_size) {
+        throw std::runtime_error("flags and indices must match the octree point identifier range");
+    }
+
+    if (expected_size == 0 || this->root_index_ < 0 || this->host_nodes_.empty()) {
+        this->reset_tree_state();
+        return;
+    }
+
+    bool modified = false;
+    int32_t max_new_id = -1;
+
+    for (size_t node_idx = 0; node_idx < this->host_nodes_.size(); ++node_idx) {
+        Node& node = this->host_nodes_[node_idx];
+        if (node.is_leaf == 0u) {
+            continue;
+        }
+
+        auto& points = this->host_leaf_points_[node_idx];
+        const size_t original_size = points.size();
+        size_t write_pos = 0;
+
+        for (size_t i = 0; i < original_size; ++i) {
+            const PointRecord& record = points[i];
+            const int32_t record_id = record.id;
+            if (record_id < 0) {
+                continue;
+            }
+
+            const size_t id_index = static_cast<size_t>(record_id);
+            if (id_index >= expected_size) {
+                throw std::runtime_error("flags array does not cover the stored point identifier");
+            }
+
+            const int32_t new_id = indices[id_index];
+            const bool keep = flags[id_index] == filter::INCLUDE_FLAG && new_id >= 0;
+            if (!keep) {
+                modified = true;
+                continue;
+            }
+
+            if (new_id >= static_cast<int32_t>(expected_size)) {
+                throw std::runtime_error("remapped point identifier exceeds the allocated range");
+            }
+
+            if (new_id != record_id) {
+                modified = true;
+            }
+
+            points[write_pos++] = PointRecord{record.point, new_id};
+            max_new_id = std::max(max_new_id, new_id);
+        }
+
+        if (write_pos != original_size) {
+            points.resize(write_pos);
+        }
+    }
+
+    if (!modified) {
+        return;
+    }
+
+    this->device_dirty_ = true;
+
+    for (size_t idx = this->host_nodes_.size(); idx-- > 0;) {
+        this->recompute_subtree_size(static_cast<int32_t>(idx));
+    }
+
+    if (this->root_index_ >= 0) {
+        this->total_point_count_ = this->host_subtree_sizes_[static_cast<size_t>(this->root_index_)];
+    } else {
+        this->total_point_count_ = 0;
+    }
+
+    if (this->total_point_count_ == 0) {
+        this->reset_tree_state();
+        return;
+    }
+
+    const int32_t candidate_next_id = (max_new_id >= 0) ? (max_new_id + 1) : 0;
+    this->next_point_id_ = std::max<int32_t>(candidate_next_id, static_cast<int32_t>(this->total_point_count_));
 }
 
 /// @brief Create a host node and recursively subdivide it when necessary.

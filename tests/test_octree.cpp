@@ -119,7 +119,6 @@ TEST(OctreeTest, RemoveByFlags) {
 
         sycl_points::shared_vector<uint8_t> flags(target_size, sycl_points::algorithms::filter::INCLUDE_FLAG, *queue.ptr);
         sycl_points::shared_vector<int32_t> indices(target_size, *queue.ptr);
-        std::iota(indices.begin(), indices.end(), 0);
 
         int32_t compact_index = 0;
         for (size_t i = 0; i < target_size; ++i) {
