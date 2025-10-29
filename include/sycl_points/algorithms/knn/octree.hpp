@@ -301,8 +301,7 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
     this->next_point_id_ = static_cast<int32_t>(point_count);
 }
 
-inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags,
-                                          const shared_vector<int32_t>& indices) {
+inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
     if (!this->queue_.ptr) {
         throw std::runtime_error("Octree queue is not initialised");
     }
@@ -732,11 +731,10 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                     if (left >= heap_size) {
                         break;
                     }
-                    size_t largest = left;
                     const size_t right = left + 1;
-                    if (right < heap_size && bestK[right].dist_sq > bestK[largest].dist_sq) {
-                        largest = right;
-                    }
+                    const size_t largest =
+                        right < heap_size && bestK[right].dist_sq > bestK[left].dist_sq ? right : left;
+
                     if (bestK[idx].dist_sq >= bestK[largest].dist_sq) {
                         break;
                     }
@@ -745,7 +743,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 }
             };
 
-            auto current_worst = [&]() {
+            auto current_worst_dist_sq = [&]() {
                 return neighbour_count < k ? std::numeric_limits<float>::infinity() : bestK[0].dist_sq;
             };
 
@@ -786,10 +784,10 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
 
             while (stack_size > 0) {
                 size_t best_pos = 0;
-                float best_dist = stack[0].dist_sq;
+                float best_dist_sq = stack[0].dist_sq;
                 for (size_t i = 1; i < stack_size; ++i) {
-                    if (stack[i].dist_sq < best_dist) {
-                        best_dist = stack[i].dist_sq;
+                    if (stack[i].dist_sq < best_dist_sq) {
+                        best_dist_sq = stack[i].dist_sq;
                         best_pos = i;
                     }
                 }
@@ -798,7 +796,8 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 --stack_size;
                 stack[best_pos] = stack[stack_size];
 
-                if (best_dist > current_worst()) {
+                const auto worst_dist_sq = current_worst_dist_sq();
+                if (best_dist_sq > worst_dist_sq) {
                     continue;
                 }
 
@@ -814,7 +813,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                         push_candidate(dist_sq, point_id);
                     }
                 } else {
-                    const auto worst_dist = current_worst();
+                    const auto worst_dist = sycl::sqrt(worst_dist_sq);
                     for (size_t child = 0; child < 8; ++child) {
                         const int32_t child_idx = current_node.data.children[child];
                         if (child_idx < 0) {
@@ -832,11 +831,11 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                         if (dx > worst_dist || dy > worst_dist || dz > worst_dist) {
                             continue;
                         }
-                        const float child_dist = sycl::fma(dx, dx, sycl::fma(dy, dy, dz * dz));
-
-                        if (child_dist <= worst_dist) {
-                            push_node_to_stack(child_idx, child_dist);
+                        const float child_dist_sq = sycl::fma(dx, dx, sycl::fma(dy, dy, dz * dz));
+                        if (child_dist_sq > worst_dist_sq) {
+                            continue;
                         }
+                        push_node_to_stack(child_idx, child_dist_sq);
                     }
                 }
             }
