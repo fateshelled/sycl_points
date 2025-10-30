@@ -68,10 +68,9 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 /// @param points Point Container
 /// @param covs Covariance Container
 /// @return eventscd
-inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueue& queue,
-                                                    const knn::KNNResult& neightbors,
-                                                    const PointContainerShared& points,
-                                                    CovarianceContainerShared& covs) {
+inline sycl_utils::events compute_covariances_async(
+    const sycl_utils::DeviceQueue& queue, const knn::KNNResult& neightbors, const PointContainerShared& points,
+    CovarianceContainerShared& covs, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = points.size();
     if (covs.size() != N) {
         covs.resize(N);
@@ -87,6 +86,8 @@ inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueu
         const auto cov_ptr = covs.data();
         const auto index_ptr = neightbors.indices->data();
         const auto k_correspondences = neightbors.k;
+
+        h.depends_on(depends);
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
@@ -100,8 +101,10 @@ inline sycl_utils::events compute_covariances_async(const sycl_utils::DeviceQueu
 /// @param neightbors KNN search result
 /// @param points Point Cloud
 /// @return events
-inline sycl_utils::events compute_covariances_async(const knn::KNNResult& neightbors, const PointCloudShared& points) {
-    return compute_covariances_async(points.queue, neightbors, *points.points, *points.covs);
+inline sycl_utils::events compute_covariances_async(
+    const knn::KNNResult& neightbors, const PointCloudShared& points,
+    const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+    return compute_covariances_async(points.queue, neightbors, *points.points, *points.covs, depends);
 }
 
 /// @brief Async compute covariance using SYCL
@@ -109,17 +112,20 @@ inline sycl_utils::events compute_covariances_async(const knn::KNNResult& neight
 /// @param points Point Cloud
 /// @param k_correspondences Number of neighbor points
 /// @return events
-inline sycl_utils::events compute_covariances_async(const knn::KNNBase& knn, const PointCloudShared& points,
-                                                    const size_t k_correspondences) {
-    const auto neightbors = knn.knn_search(points, k_correspondences);
-    return compute_covariances_async(neightbors, points);
+inline sycl_utils::events compute_covariances_async(
+    const knn::KNNBase& knn, const PointCloudShared& points, const size_t k_correspondences,
+    const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+    knn::KNNResult neightbors;
+    auto knn_events = knn.knn_search_async(points, k_correspondences, neightbors, depends);
+    return compute_covariances_async(neightbors, points, knn_events.evs);
 }
 
 /// @brief Compute normal vector using SYCL
 /// @param neightbors KNN search result
 /// @param points Point Cloud
 /// @return events
-inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors, const PointCloudShared& points) {
+inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors, const PointCloudShared& points,
+                                                const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = points.size();
     if (points.normals->size() != N) {
         points.normals->resize(N);
@@ -135,6 +141,8 @@ inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors
         const auto normal_ptr = points.normals_ptr();
         const auto index_ptr = neightbors.indices->data();
         const auto k_correspondences = neightbors.k;
+
+        h.depends_on(depends);
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
@@ -152,15 +160,18 @@ inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors
 /// @param k_correspondences Number of neighbor points
 /// @return events
 inline sycl_utils::events compute_normals_async(const knn::KNNBase& knn, const PointCloudShared& points,
-                                                const size_t k_correspondences) {
-    const auto neightbors = knn.knn_search(points, k_correspondences);
-    return compute_normals_async(neightbors, points);
+                                                const size_t k_correspondences,
+                                                const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+    knn::KNNResult neightbors;
+    auto knn_events = knn.knn_search_async(points, k_correspondences, neightbors, depends);
+    return compute_normals_async(neightbors, points, knn_events.evs);
 }
 
 /// @brief Async compute normal vector from covariance using SYCL
 /// @param points Point Cloud with covatiance
 /// @return events
-inline sycl_utils::events compute_normals_from_covariances_async(const PointCloudShared& points) {
+inline sycl_utils::events compute_normals_from_covariances_async(
+    const PointCloudShared& points, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = points.size();
     if (!points.has_cov()) {
         throw std::runtime_error("[compute_normals_from_covariances_async] not computed covariances");
@@ -178,6 +189,8 @@ inline sycl_utils::events compute_normals_from_covariances_async(const PointClou
         const auto point_ptr = points.points_ptr();
         const auto cov_ptr = points.covs_ptr();
         const auto normal_ptr = points.normals_ptr();
+
+        h.depends_on(depends);
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
@@ -191,15 +204,17 @@ inline sycl_utils::events compute_normals_from_covariances_async(const PointClou
 
 /// @brief Compute normal vector from covariance
 /// @param points Point Cloud with covatiance
-inline void compute_normals_from_covariances(const PointCloudShared& points) {
+inline void compute_normals_from_covariances(const PointCloudShared& points,
+                                             const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = points.size();
-    compute_normals_from_covariances_async(points).wait();
+    compute_normals_from_covariances_async(points, depends).wait();
 }
 
 /// @brief Async update covariance matrix to a plane
 /// @param points Point Cloud with covatiance
 /// @return events
-inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& points) {
+inline sycl_utils::events covariance_update_plane_async(
+    const PointCloudShared& points, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     if (!points.has_cov()) {
         throw std::runtime_error("[covariance_update_plane_async] not computed covariances");
     }
@@ -211,6 +226,8 @@ inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& 
     sycl_utils::events events;
     events += points.queue.ptr->submit([&](sycl::handler& h) {
         const auto cov_ptr = points.covs->data();
+
+        h.depends_on(depends);
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
@@ -224,7 +241,10 @@ inline sycl_utils::events covariance_update_plane_async(const PointCloudShared& 
 
 /// @brief Update covariance matrix to a plane
 /// @param points Point Cloud with covatiance
-inline void covariance_update_plane(const PointCloudShared& points) { covariance_update_plane_async(points).wait(); }
+inline void covariance_update_plane(const PointCloudShared& points,
+                                    const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+    covariance_update_plane_async(points, depends).wait();
+}
 
 }  // namespace covariance
 }  // namespace algorithms
