@@ -5,7 +5,7 @@
 #include <limits>
 #include <random>
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/knn/kdtree.hpp>
+#include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/algorithms/registration_factor.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
@@ -177,11 +177,11 @@ public:
     /// @brief do registration
     /// @param source Source point cloud
     /// @param target Target point cloud
-    /// @param target_tree Target KDTree
+    /// @param target_knn Target KNN search
     /// @param init_T Initial transformation matrix
     /// @return Registration result
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
-                             const knn::KDTree& target_tree,
+                             const knn::KNNBase& target_knn,
                              const TransformMatrix& init_T = TransformMatrix::Identity()) {
         const size_t N = source.size();
         const size_t TARGET_SIZE = target.size();
@@ -254,8 +254,8 @@ public:
             prev_T = result.T;
 
             // Nearest neighbor search on device
-            auto knn_event = target_tree.nearest_neighbor_search_async(*this->aligned_, (*this->neighbors_)[0],
-                                                                       transform_events.evs);
+            auto knn_event =
+                target_knn.nearest_neighbor_search_async(*this->aligned_, (*this->neighbors_)[0], transform_events.evs);
 
             // Linearlize on device
             const float max_dist_2 = max_dist * max_dist;

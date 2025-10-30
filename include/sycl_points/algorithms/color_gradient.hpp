@@ -1,7 +1,7 @@
 #pragma once
 
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/knn/kdtree.hpp>
+#include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
@@ -80,9 +80,9 @@ inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& 
     return events;
 }
 
-inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& cloud, const knn::KDTree& kdtree,
+inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& cloud, const knn::KNNBase& knn,
                                                         size_t k_correspondences) {
-    const auto neighbors = kdtree.knn_search(cloud, k_correspondences);
+    const auto neighbors = knn.knn_search(cloud, k_correspondences);
     return compute_color_gradients_async(cloud, neighbors);
 }
 
