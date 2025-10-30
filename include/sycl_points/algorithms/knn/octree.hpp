@@ -42,24 +42,6 @@ inline Eigen::Vector3f axis_lengths(const Eigen::Vector3f& min_bounds, const Eig
     return max_bounds - min_bounds;
 }
 
-/// @brief Compute the squared distance from a point to an axis-aligned bounding box.
-/// @param min_bounds Minimum coordinates of the bounding box.
-/// @param max_bounds Maximum coordinates of the bounding box.
-/// @param point The point to measure distance from.
-/// @return The squared distance from the point to the bounding box.
-inline float distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
-                              const Eigen::Vector3f& point) {
-    // Cache the query coordinates to avoid recomputing point.x()/y()/z().
-    const float px = point.x();
-    const float py = point.y();
-    const float pz = point.z();
-    // Clamp the query position against the bounding box extents along each axis.
-    const float dx = sycl::fmax(0.0f, sycl::fmax(min_bounds.x() - px, px - max_bounds.x()));
-    const float dy = sycl::fmax(0.0f, sycl::fmax(min_bounds.y() - py, py - max_bounds.y()));
-    const float dz = sycl::fmax(0.0f, sycl::fmax(min_bounds.z() - pz, pz - max_bounds.z()));
-    // Return the squared Euclidean distance from the query point to the box surface.
-    return dx * dx + dy * dy + dz * dz;
-}
 }  // namespace
 
 /// @brief Octree data structure that will support parallel construction and neighbour search on SYCL devices.
@@ -190,6 +172,14 @@ private:
     /// @brief Reset all host/device bookkeeping to the empty-tree state.
     void reset_tree_state();
 
+    /// @brief Compute the squared distance from a point to an axis-aligned bounding box.
+    /// @param min_bounds Minimum coordinates of the bounding box.
+    /// @param max_bounds Maximum coordinates of the bounding box.
+    /// @param point The point to measure distance from.
+    /// @return The squared distance from the point to the bounding box.
+    static float distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                  const Eigen::Vector3f& point);
+
     sycl_utils::DeviceQueue queue_;
     float resolution_;
     size_t max_points_per_node_;
@@ -238,8 +228,8 @@ inline Octree::Octree(const sycl_utils::DeviceQueue& queue, float resolution, si
       device_dirty_(true) {}
 
 inline void Octree::reset_tree_state() {
-    this->bbox_min_ = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
-    this->bbox_max_ = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
+    this->bbox_min_.fill(std::numeric_limits<float>::infinity());
+    this->bbox_max_.fill(std::numeric_limits<float>::lowest());
     this->root_index_ = -1;
     this->total_point_count_ = 0;
     this->next_point_id_ = 0;
@@ -552,6 +542,16 @@ inline void Octree::recompute_subtree_size(int32_t node_index) {
     }
 }
 
+SYCL_EXTERNAL float Octree::distance_to_aabb(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds,
+                                             const Eigen::Vector3f& point) {
+    // Clamp the query position against the bounding box extents along each axis.
+    const float dx = sycl::fmax(0.0f, sycl::fmax(min_bounds.x() - point.x(), point.x() - max_bounds.x()));
+    const float dy = sycl::fmax(0.0f, sycl::fmax(min_bounds.y() - point.y(), point.y() - max_bounds.y()));
+    const float dz = sycl::fmax(0.0f, sycl::fmax(min_bounds.z() - point.z(), point.z() - max_bounds.z()));
+    // Return the squared Euclidean distance from the query point to the box surface.
+    return dx * dx + dy * dy + dz * dz;
+}
+
 /// @brief Non-const overload for device buffer synchronisation that calls the const version.
 inline void Octree::sync_device_buffers() { const_cast<const Octree*>(this)->sync_device_buffers(); }
 
@@ -793,8 +793,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 }
 
                 const int32_t current_node_idx = stack[best_pos].nodeIdx;
-                --stack_size;
-                stack[best_pos] = stack[stack_size];
+                stack[best_pos] = stack[--stack_size];
 
                 const auto worst_dist_sq = current_worst_dist_sq();
                 if (best_dist_sq > worst_dist_sq) {
