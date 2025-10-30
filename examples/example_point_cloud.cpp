@@ -1,8 +1,9 @@
 #include <chrono>
 #include <iostream>
 #include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/voxel_downsampling.hpp>
+#include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/algorithms/transform.hpp>
+#include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/io/point_cloud_reader.hpp>
 
 int main() {
@@ -40,7 +41,9 @@ int main() {
     auto kdtree = sycl_points::algorithms::knn::KDTree::build(queue, shared_points);
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_covariances_async(*kdtree, shared_points, k_correspondence_covariance).wait();
+        sycl_points::algorithms::covariance::compute_covariances_async(*kdtree, shared_points,
+                                                                       k_correspondence_covariance)
+            .wait();
         if (i > 0) {
             dt_covariances +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
@@ -93,7 +96,8 @@ int main() {
     double dt_transform_copy = 0.0;
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto ret = sycl_points::algorithms::transform::transform_cpu_copy(shared_points, Eigen::Matrix4f::Identity() * 2);
+        auto ret =
+            sycl_points::algorithms::transform::transform_cpu_copy(shared_points, Eigen::Matrix4f::Identity() * 2);
         if (i == 0) {
             // for (size_t j = 0; j < 10; ++j) {
             //   std::cout << "source: " << source_points.points[j].transpose() << std::endl;
