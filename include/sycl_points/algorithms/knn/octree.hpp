@@ -25,25 +25,6 @@ namespace algorithms {
 
 namespace knn {
 
-namespace {
-
-/// @brief Compute the squared Euclidean distance between two 4D points.
-/// @param a The first point.
-/// @param b The second point.
-/// @return The squared Euclidean distance.
-inline float squared_distance(const PointType& a, const PointType& b) {
-    const PointType diff = eigen_utils::subtract<4, 1>(a, b);
-    return eigen_utils::frobenius_norm<4>(diff);
-}
-
-// These helpers are declared inline to keep their definitions in the header ODR-safe across translation units.
-/// @brief Compute the edge lengths of an axis-aligned bounding box.
-inline Eigen::Vector3f axis_lengths(const Eigen::Vector3f& min_bounds, const Eigen::Vector3f& max_bounds) {
-    return max_bounds - min_bounds;
-}
-
-}  // namespace
-
 /// @brief Octree data structure that will support parallel construction and neighbour search on SYCL devices.
 class Octree : public KNNBase {
 public:
@@ -428,7 +409,7 @@ inline void Octree::subdivide_leaf(int32_t node_index, size_t depth) {
     }
 
     auto& points = this->host_leaf_points_[static_cast<size_t>(node_index)];
-    const auto lengths = axis_lengths(node_snapshot.bounds.min_bounds, node_snapshot.bounds.max_bounds);
+    const auto lengths = node_snapshot.bounds.max_bounds - node_snapshot.bounds.min_bounds;
     const float max_axis = std::max({lengths.x(), lengths.y(), lengths.z()});
     if (points.size() <= this->max_points_per_node_ || max_axis <= this->resolution_ || depth >= 32) {
         this->host_subtree_sizes_[static_cast<size_t>(node_index)] = points.size();
