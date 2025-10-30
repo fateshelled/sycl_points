@@ -209,20 +209,18 @@ struct events {
 
     /// @brief wait all events
     void wait() {
-        while (evs.size() > 0) {
-            auto& event = this->evs.back();
+        for (auto& event: this->evs) {
             event.wait();
-            evs.pop_back();
         }
+        this->evs.clear();
     }
 
     /// @brief wait_and_throw all events
     void wait_and_throw() {
-        while (evs.size() > 0) {
-            auto& event = this->evs.back();
+        for (auto& event: this->evs) {
             event.wait_and_throw();
-            evs.pop_back();
         }
+        this->evs.clear();
     }
 
     /// @brief clear all events
