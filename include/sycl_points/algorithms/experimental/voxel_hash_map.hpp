@@ -132,17 +132,9 @@ public:
         const size_t final_voxel_num = this->voxel_num_;
         result.resize_points(final_voxel_num);
 
-        if (this->has_rgb_data_) {
-            result.resize_rgb(final_voxel_num);
-        } else {
-            result.resize_rgb(0);
-        }
+        result.resize_rgb(this->has_rgb_data_ ? final_voxel_num : 0);
 
-        if (this->has_intensity_data_) {
-            result.resize_intensities(final_voxel_num);
-        } else {
-            result.resize_intensities(0);
-        }
+        result.resize_intensities(this->has_intensity_data_ ? final_voxel_num : 0);
     }
 
     void remove_old_data() { this->remove_old_data_(); }
