@@ -177,22 +177,8 @@ public:
     /// @return aligned point cloud pointer
     PointCloudShared::Ptr get_aligned_point_cloud() const { return this->aligned_; }
 
-    /// @brief do registration
-    /// @param source Source point cloud
-    /// @param target Target point cloud
-    /// @param target_knn Target KNN search
-    /// @param init_T Initial transformation matrix
-    /// @return Registration result
-    RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
-                             const knn::KNNBase& target_knn,
-                             const TransformMatrix& init_T = TransformMatrix::Identity()) {
-        const size_t N = source.size();
-        const size_t TARGET_SIZE = target.size();
-        RegistrationResult result;
-        result.T.matrix() = init_T;
-
-        if (N == 0) return result;
-
+    /// @brief validate parameters
+    void validate_params(const PointCloudShared& source, const PointCloudShared& target) {
         if constexpr (icp == ICPType::POINT_TO_PLANE) {
             if (!target.has_normal()) {
                 if (!target.has_cov()) {
@@ -233,81 +219,109 @@ public:
                 this->params_.photometric.enable = false;
             }
         }
+        if (this->params_.robust.type != RobustLossType::NONE) {
+            if (this->params_.robust.init_scale <= 0.0f) {
+                std::cout << "[Caution] `init_scale` must be greater than zero. Disable robust loss." << std::endl;
+                this->params_.robust.type = RobustLossType::NONE;
+            }
+            if (this->params_.robust.auto_scale) {
+                if (this->params_.robust.scaling_factor <= 0.0f || this->params_.robust.scaling_factor >= 1.0) {
+                    std::cout << "[Caution] `scaling_factor` must be in range (0.0f, 1.0f). Disable auto scaling."
+                              << std::endl;
+                    this->params_.robust.auto_scale = false;
+                }
+                if (this->params_.robust.scaling_iter <= 0) {
+                    std::cout << "[Caution] `scaling_iter` must be greater than zero. Disable auto scaling."
+                              << std::endl;
+                    this->params_.robust.auto_scale = false;
+                }
+            }
+        }
+    }
+
+    /// @brief do registration
+    /// @param source Source point cloud
+    /// @param target Target point cloud
+    /// @param target_knn Target KNN search
+    /// @param init_T Initial transformation matrix
+    /// @return Registration result
+    RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
+                             const knn::KNNBase& target_knn,
+                             const TransformMatrix& init_T = TransformMatrix::Identity()) {
+        const size_t N = source.size();
+        const size_t TARGET_SIZE = target.size();
+        RegistrationResult result;
+        result.T.matrix() = init_T;
+
+        if (N == 0) return result;
+
+        this->validate_params(source, target);
 
         Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
         // copy
         this->aligned_ = std::make_shared<PointCloudShared>(source);
 
-        // mem_advise to device
-        {
-            this->queue_.set_accessed_by_device(this->aligned_->points->data(), N);
-            this->queue_.set_accessed_by_device(source.points->data(), N);
-            this->queue_.set_accessed_by_device(target.points->data(), TARGET_SIZE);
-        }
-        // transform
+        // transform to initial pose
         transform::transform(*this->aligned_, init_T);
 
-        const float max_dist = this->params_.max_correspondence_distance;
-        const float max_dist_2 = max_dist * max_dist;
-
         sycl_utils::events transform_events;
-        float lambda = this->params_.lambda;
-        float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
-        float robust_scale = this->params_.robust.init_scale;
-        const bool enable_robust_auto_scaling =
-            this->params_.robust.type != RobustLossType::NONE && this->params_.robust.auto_scale;
-        const size_t robust_levels =
-            enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
 
-        // Iterate over each configured robust loss scale and perform the standard ICP update cycle.
-        for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
-            if (enable_robust_auto_scaling && this->params_.verbose) {
-                std::cout << "Robust scale: " << robust_scale << std::endl;
-            }
-            for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
-                prev_T = result.T;
-
-                // Nearest neighbor search on device
-                auto knn_event = target_knn.nearest_neighbor_search_async(*this->aligned_, (*this->neighbors_)[0],
-                                                                          transform_events.evs);
-
-                // Linearize on device for the current robust scale level
-                const LinearlizedResult linearlized_result =
-                    this->linearlize(source, target, result.T.matrix(), max_dist_2, robust_scale, knn_event.evs);
-
-                // Optimize on Host
-                switch (this->params_.optimization_method) {
-                    case OptimizationMethod::LEVENBERG_MARQUARDT:
-                        this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result,
-                                                           lambda, iter, robust_scale);
-                        break;
-                    case OptimizationMethod::POWELL_DOGLEG:
-                        this->optimize_powell_dogleg(source, target, max_dist_2, result, linearlized_result,
-                                                     trust_region_radius, iter, robust_scale);
-                        break;
-                    case OptimizationMethod::GAUSS_NEWTON:
-                        this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
-                        break;
-                }
-
-                // Async transform source points on device so the next iteration uses the updated pose
-                transform_events = transform::transform_async(
-                    *this->aligned_, result.T.matrix() * prev_T.matrix().inverse());  // zero copy
-
-                if (result.converged) {
-                    break;
-                }
-            }
-
-            robust_scale *= this->params_.robust.scaling_factor;
-        }
-        transform_events.wait();
-        // mem_advise clear
         {
-            this->queue_.clear_accessed_by_device(this->aligned_->points->data(), N);
-            this->queue_.clear_accessed_by_device(source.points->data(), N);
-            this->queue_.clear_accessed_by_device(target.points->data(), TARGET_SIZE);
+            const float max_dist_2 =
+                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            float lambda = this->params_.lambda;
+            float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
+            float robust_scale = this->params_.robust.init_scale;
+            const bool enable_robust_auto_scaling =
+                this->params_.robust.type != RobustLossType::NONE && this->params_.robust.auto_scale;
+            const size_t robust_levels =
+                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
+
+            // Iterate over each configured robust loss scale and perform the standard ICP update cycle.
+            for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
+                if (enable_robust_auto_scaling && this->params_.verbose) {
+                    std::cout << "Robust scale: " << robust_scale << std::endl;
+                }
+                for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
+                    prev_T = result.T;
+
+                    // Nearest neighbor search on device
+                    auto knn_event = target_knn.nearest_neighbor_search_async(*this->aligned_, (*this->neighbors_)[0],
+                                                                              transform_events.evs);
+
+                    // Linearize on device for the current robust scale level
+                    const LinearlizedResult linearlized_result =
+                        this->linearlize(source, target, result.T.matrix(), max_dist_2, robust_scale, knn_event.evs);
+
+                    // Optimize on Host
+                    switch (this->params_.optimization_method) {
+                        case OptimizationMethod::LEVENBERG_MARQUARDT:
+                            this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result,
+                                                               lambda, iter, robust_scale);
+                            break;
+                        case OptimizationMethod::POWELL_DOGLEG:
+                            this->optimize_powell_dogleg(source, target, max_dist_2, result, linearlized_result,
+                                                         trust_region_radius, iter, robust_scale);
+                            break;
+                        case OptimizationMethod::GAUSS_NEWTON:
+                            this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
+                            break;
+                    }
+
+                    // Async transform source points on device so the next iteration uses the updated pose
+                    transform_events =
+                        transform::transform_async(*this->aligned_, result.T.matrix() * prev_T.matrix().inverse());
+
+                    if (result.converged) {
+                        break;
+                    }
+                }
+
+                robust_scale *= this->params_.robust.scaling_factor;
+            }
         }
+        // wait for transform
+        transform_events.wait();
 
         return result;
     }
