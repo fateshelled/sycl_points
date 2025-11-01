@@ -12,11 +12,11 @@ namespace sycl_points {
 
 namespace algorithms {
 
+inline constexpr float CHOLESKY_REGULARIZATION = 1e-6f;
+
 namespace color_gradient {
 
 namespace kernel {
-
-constexpr float CHOLESKY_REGULARIZATION = 1e-6f;
 
 SYCL_EXTERNAL inline void compute_gradient(ColorGradient& ret, const PointType* points, const RGBType* colors,
                                            const int32_t* index_ptr, size_t k, size_t i) {
@@ -105,8 +105,6 @@ inline sycl_utils::events compute_color_gradients_async(
 namespace intensity_gradient {
 
 namespace kernel {
-
-constexpr float CHOLESKY_REGULARIZATION = 1e-6f;
 
 SYCL_EXTERNAL inline void compute_gradient(IntensityGradient& ret, const PointType* points, const float* intensities,
                                            const int32_t* index_ptr, size_t k, size_t i) {
