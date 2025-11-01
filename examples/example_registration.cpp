@@ -31,7 +31,12 @@ int main() {
     sycl_points::algorithms::registration::RegistrationParams param;
     param.max_iterations = 10;
     param.max_correspondence_distance = 1.0f;
-    param.verbose = false;
+    param.optimization_method = sycl_points::algorithms::registration::OptimizationMethod::POWELL_DOGLEG;
+    param.robust.type = sycl_points::algorithms::registration::RobustLossType::GEMAN_MCCLURE;
+    param.robust.init_scale = 10.0f;
+    param.robust.auto_scale = true;
+    param.robust.scaling_factor = 0.5f;
+    param.robust.scaling_iter = 3;
 
     const auto registration = std::make_shared<sycl_points::algorithms::registration::RegistrationGICP>(queue, param);
     const auto voxel_grid = std::make_shared<sycl_points::algorithms::filter::VoxelGrid>(queue, voxel_size);
@@ -43,6 +48,12 @@ int main() {
     const size_t WARM_UP = 10;
     std::map<std::string, double> elapsed;
     for (size_t i = 0; i < LOOP + WARM_UP; ++i) {
+        if (i == 0) {
+            param.verbose = true;
+        } else {
+            param.verbose = false;
+        }
+
         auto t0 = std::chrono::high_resolution_clock::now();
 
         sycl_points::PointCloudShared source_shared(queue, source_points);
