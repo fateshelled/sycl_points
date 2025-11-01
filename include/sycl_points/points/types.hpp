@@ -15,6 +15,8 @@ using Normal = Eigen::Vector4f;
 using RGBType = Eigen::Vector4f;
 /// @brief Color gradient type (Row(0): r, Row(1): g, Row(2): b; Col(0-2): gradient, Col(3): unused)
 using ColorGradient = Eigen::Matrix3f;
+/// @brief Intensity gradient type (gradient along x, y, z)
+using IntensityGradient = Eigen::Vector3f;
 using TransformMatrix = Eigen::Matrix4f;
 
 constexpr size_t PointAlignment = 16;
@@ -23,6 +25,7 @@ constexpr size_t NormalAlignment = 16;
 constexpr size_t RGBAlignment = 16;
 constexpr size_t IntensityAlignment = 4;
 constexpr size_t ColorGradientAlignment = 0; // 36 is bad alignment
+constexpr size_t IntensityGradientAlignment = 16;
 
 // Vector of point on CPU. Accessible from CPU process only.
 using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
@@ -48,6 +51,12 @@ using RGBContainerShared = shared_vector<RGBType, RGBAlignment>;
 using ColorGradientContainerCPU = std::vector<ColorGradient, Eigen::aligned_allocator<ColorGradient>>;
 // Vector of Color gradient on shared memory
 using ColorGradientContainerShared = shared_vector<ColorGradient, ColorGradientAlignment>;
+
+// Vector of intensity gradient on CPU
+using IntensityGradientContainerCPU =
+    std::vector<IntensityGradient, Eigen::aligned_allocator<IntensityGradient>>;
+// Vector of intensity gradient on shared memory
+using IntensityGradientContainerShared = shared_vector<IntensityGradient, IntensityGradientAlignment>;
 
 // Vector of Intensity on CPU
 using IntensityContainerCPU = std::vector<float, Eigen::aligned_allocator<float>>;
