@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdexcept>
+
 #include <sycl_points/algorithms/common/prefix_sum.hpp>
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
@@ -16,8 +18,8 @@ public:
     /// @brief Constructor
     /// @param queue SYCL queue
     /// @param voxel_size voxel size
-    VoxelHashMap(const sycl_utils::DeviceQueue& queue, const float voxel_size)
-        : queue_(queue), voxel_size_(voxel_size), voxel_size_inv_(1.0f / voxel_size) {
+    VoxelHashMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
+        this->set_voxel_size(voxel_size);
         this->malloc_data();
         this->prefix_sum_ = std::make_shared<common::PrefixSum>(this->queue_);
         this->valid_flags_ptr_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
@@ -28,6 +30,9 @@ public:
     /// @brief Set voxel size
     /// @param size voxel size
     void set_voxel_size(const float voxel_size) {
+        if (voxel_size <= 0.0f) {
+            throw std::invalid_argument("voxel_size must be positive.");
+        }
         this->voxel_size_ = voxel_size;
         // Keep the cached reciprocal consistent for hashing operations.
         this->voxel_size_inv_ = 1.0f / voxel_size;
@@ -135,8 +140,8 @@ private:
     }
 
     sycl_utils::DeviceQueue queue_;
-    float voxel_size_;
-    float voxel_size_inv_;
+    float voxel_size_ = 0.0f;
+    float voxel_size_inv_ = 0.0f;
     size_t capacity_ = 30029;  // prime number recommended
 
     std::shared_ptr<uint64_t> key_ptr_ = nullptr;
@@ -369,7 +374,7 @@ private:
                     local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
                                           point_ptr, N, local_size, power_of_2, vs_inv, item);
 
-                    if (global_id >= N || local_id >= local_size) return;
+                    if (global_id >= N) return;
 
                     // Reduction on global memory
                     global_reduction(local_voxel_data[local_id].voxel_idx, local_voxel_data[local_id].pt, key_ptr,
@@ -387,7 +392,7 @@ private:
                     local_reduction<false>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
                                            point_ptr, N, local_size, power_of_2, vs_inv, item);
 
-                    if (global_id >= N || local_id >= local_size) return;
+                    if (global_id >= N) return;
 
                     // Reduction on global memory
                     global_reduction(local_voxel_data[local_id].voxel_idx, local_voxel_data[local_id].pt, key_ptr,
