@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include <sycl_points/algorithms/covariance.hpp>
@@ -68,14 +69,16 @@ inline sycl_utils::events compute_color_gradients_async(
     const size_t work_group_size = cloud.queue.get_work_group_size();
     const size_t global_size = cloud.queue.get_global_size(N);
 
+    const auto indices = neighbors.indices;
+    const size_t k = neighbors.k;
+
     sycl_utils::events events;
-    events += cloud.queue.ptr->submit([&](sycl::handler& h) {
+    events += cloud.queue.ptr->submit([&, indices, k](sycl::handler& h) {
         h.depends_on(depends);
         const auto pt_ptr = cloud.points_ptr();
         const auto color_ptr = cloud.rgb_ptr();
         const auto grad_ptr = cloud.color_gradients_ptr();
-        const auto index_ptr = neighbors.indices->data();
-        const size_t k = neighbors.k;
+        const auto index_ptr = indices->data();
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t idx = item.get_global_id(0);
             if (idx >= N) return;
@@ -89,9 +92,12 @@ inline sycl_utils::events compute_color_gradients_async(
 inline sycl_utils::events compute_color_gradients_async(
     const PointCloudShared& cloud, const knn::KNNBase& knn, size_t k_correspondences,
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    knn::KNNResult neighbors;
-    auto knn_events = knn.knn_search_async(cloud, k_correspondences, neighbors, depends);
-    return compute_color_gradients_async(cloud, neighbors, knn_events.evs);
+    auto neighbors = std::make_shared<knn::KNNResult>();
+    auto knn_events = knn.knn_search_async(cloud, k_correspondences, *neighbors, depends);
+    auto gradient_events = compute_color_gradients_async(cloud, *neighbors, knn_events.evs);
+    gradient_events += knn_events;
+    gradient_events.add_resource(neighbors);
+    return gradient_events;
 }
 
 }  // namespace color_gradient
@@ -148,14 +154,16 @@ inline sycl_utils::events compute_intensity_gradients_async(
     const size_t work_group_size = cloud.queue.get_work_group_size();
     const size_t global_size = cloud.queue.get_global_size(N);
 
+    const auto indices = neighbors.indices;
+    const size_t k = neighbors.k;
+
     sycl_utils::events events;
-    events += cloud.queue.ptr->submit([&](sycl::handler& h) {
+    events += cloud.queue.ptr->submit([&, indices, k](sycl::handler& h) {
         h.depends_on(depends);
         const auto pt_ptr = cloud.points_ptr();
         const auto intensity_ptr = cloud.intensities_ptr();
         const auto grad_ptr = cloud.intensity_gradients_ptr();
-        const auto index_ptr = neighbors.indices->data();
-        const size_t k = neighbors.k;
+        const auto index_ptr = indices->data();
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t idx = item.get_global_id(0);
             if (idx >= N) return;
@@ -169,9 +177,12 @@ inline sycl_utils::events compute_intensity_gradients_async(
 inline sycl_utils::events compute_intensity_gradients_async(
     const PointCloudShared& cloud, const knn::KNNBase& knn, size_t k_correspondences,
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    knn::KNNResult neighbors;
-    auto knn_events = knn.knn_search_async(cloud, k_correspondences, neighbors, depends);
-    return compute_intensity_gradients_async(cloud, neighbors, knn_events.evs);
+    auto neighbors = std::make_shared<knn::KNNResult>();
+    auto knn_events = knn.knn_search_async(cloud, k_correspondences, *neighbors, depends);
+    auto gradient_events = compute_intensity_gradients_async(cloud, *neighbors, knn_events.evs);
+    gradient_events += knn_events;
+    gradient_events.add_resource(neighbors);
+    return gradient_events;
 }
 
 }  // namespace intensity_gradient
