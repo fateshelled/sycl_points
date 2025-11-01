@@ -27,7 +27,11 @@ public:
 
     /// @brief Set voxel size
     /// @param size voxel size
-    void set_voxel_size(const float voxel_size) { this->voxel_size_ = voxel_size; }
+    void set_voxel_size(const float voxel_size) {
+        this->voxel_size_ = voxel_size;
+        // Keep the cached reciprocal consistent for hashing operations.
+        this->voxel_size_inv_ = 1.0f / voxel_size;
+    }
     /// @brief Get voxel size
     /// @param voxel_size voxel size
     float get_voxel_size() const { return this->voxel_size_; }
@@ -327,14 +331,16 @@ private:
         shared_vector<uint32_t> voxel_num_vec(1, this->voxel_num_, *this->queue_.ptr);
 
         auto reduction_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            const size_t work_group_size = (N + this->wg_size_add_point_cloud_ - 1) / this->wg_size_add_point_cloud_;
-            const size_t global_size = work_group_size * this->wg_size_add_point_cloud_;
+            // Use the configured work-group size as the kernel's local size.
+            const size_t local_size = this->wg_size_add_point_cloud_;
+            const size_t num_work_groups = (N + local_size - 1) / local_size;
+            const size_t global_size = num_work_groups * local_size;
 
             // Allocate local memory for work group operations
-            const auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(work_group_size, h);
+            const auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(local_size, h);
 
             size_t power_of_2 = 1;
-            while (power_of_2 < work_group_size) {
+            while (power_of_2 < local_size) {
                 power_of_2 *= 2;
             }
 
@@ -350,7 +356,7 @@ private:
             const auto current = this->staleness_counter_;
             const auto max_probe = this->max_probe_length_;
 
-            auto range = sycl::nd_range<1>(global_size, work_group_size);
+            auto range = sycl::nd_range<1>(global_size, local_size);
 
             if (this->queue_.is_nvidia()) {
                 auto voxel_num = sycl::reduction(voxel_num_vec.data(), sycl::plus<uint32_t>());
@@ -361,9 +367,9 @@ private:
 
                     // Reduction on workgroup
                     local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                          point_ptr, N, work_group_size, power_of_2, vs_inv, item);
+                                          point_ptr, N, local_size, power_of_2, vs_inv, item);
 
-                    if (global_id >= N || local_id >= work_group_size) return;
+                    if (global_id >= N || local_id >= local_size) return;
 
                     // Reduction on global memory
                     global_reduction(local_voxel_data[local_id].voxel_idx, local_voxel_data[local_id].pt, key_ptr,
@@ -379,9 +385,9 @@ private:
 
                     // Reduction on workgroup
                     local_reduction<false>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                           point_ptr, N, work_group_size, power_of_2, vs_inv, item);
+                                           point_ptr, N, local_size, power_of_2, vs_inv, item);
 
-                    if (global_id >= N || local_id >= work_group_size) return;
+                    if (global_id >= N || local_id >= local_size) return;
 
                     // Reduction on global memory
                     global_reduction(local_voxel_data[local_id].voxel_idx, local_voxel_data[local_id].pt, key_ptr,
