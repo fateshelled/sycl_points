@@ -126,6 +126,21 @@ public:
         }
 
         this->downsampling_(*result.points, rgb_output, intensity_output);
+
+        const size_t final_voxel_num = this->voxel_num_;
+        result.resize_points(final_voxel_num);
+
+        if (this->has_rgb_data_) {
+            result.resize_rgb(final_voxel_num);
+        } else {
+            result.resize_rgb(0);
+        }
+
+        if (this->has_intensity_data_) {
+            result.resize_intensities(final_voxel_num);
+        } else {
+            result.resize_intensities(0);
+        }
     }
 
     void remove_old_data() { this->remove_old_data_(); }
@@ -440,12 +455,8 @@ private:
 
         const bool has_rgb = pc.has_rgb();
         const bool has_intensity = pc.has_intensity();
-        if (has_rgb) {
-            this->has_rgb_data_ = true;
-        }
-        if (has_intensity) {
-            this->has_intensity_data_ = true;
-        }
+        this->has_rgb_data_ |= has_rgb;
+        this->has_intensity_data_ |= has_intensity;
 
         // using `mem_advise to device` is slow
         // add to voxel hash map
