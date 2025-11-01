@@ -105,12 +105,14 @@ public:
             return;
         }
 
-        result.resize_points(this->voxel_num_);
+        const size_t allocation_size = this->capacity_;
+
+        result.resize_points(allocation_size);
 
         RGBType* rgb_output = nullptr;
         if (this->has_rgb_data_) {
             // Allocate RGB container when aggregated color data is available.
-            result.resize_rgb(this->voxel_num_);
+            result.resize_rgb(allocation_size);
             rgb_output = result.rgb_ptr();
         } else {
             result.resize_rgb(0);
@@ -119,7 +121,7 @@ public:
         float* intensity_output = nullptr;
         if (this->has_intensity_data_) {
             // Allocate intensity container when aggregated intensity data is available.
-            result.resize_intensities(this->voxel_num_);
+            result.resize_intensities(allocation_size);
             intensity_output = result.intensities_ptr();
         } else {
             result.resize_intensities(0);
