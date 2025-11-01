@@ -12,13 +12,27 @@ namespace {
 
 sycl_points::PointCloudShared MakePointCloud(
     const sycl_points::sycl_utils::DeviceQueue& queue,
-    const std::vector<Eigen::Vector3f>& positions) {
+    const std::vector<Eigen::Vector3f>& positions,
+    const std::vector<sycl_points::RGBType>* colors = nullptr,
+    const std::vector<float>* intensities = nullptr) {
     // Prepare a CPU point cloud to populate deterministic test data.
     sycl_points::PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(positions.size());
     for (size_t i = 0; i < positions.size(); ++i) {
         const Eigen::Vector3f& pos = positions[i];
         (*cpu_cloud.points)[i] = sycl_points::PointType(pos.x(), pos.y(), pos.z(), 1.0f);
+    }
+
+    if (colors) {
+        EXPECT_EQ(colors->size(), positions.size());
+        cpu_cloud.rgb->resize(positions.size());
+        std::copy(colors->begin(), colors->end(), cpu_cloud.rgb->begin());
+    }
+
+    if (intensities) {
+        EXPECT_EQ(intensities->size(), positions.size());
+        cpu_cloud.intensities->resize(positions.size());
+        std::copy(intensities->begin(), intensities->end(), cpu_cloud.intensities->begin());
     }
     // Move the CPU data to shared memory for the voxel hash map.
     return sycl_points::PointCloudShared(queue, cpu_cloud);
@@ -90,6 +104,52 @@ TEST(VoxelHashMapTest, AggregatesPointsWithinSameVoxel) {
             EXPECT_NEAR(averaged_positions[i].y(), expected_positions[i].y(), 1e-5f);
             EXPECT_NEAR(averaged_positions[i].z(), expected_positions[i].z(), 1e-5f);
         }
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(VoxelHashMapTest, AggregatesRgbAndIntensityWithinVoxel) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        const float voxel_size = 0.5f;
+        sycl_points::algorithms::filter::VoxelHashMap voxel_map(queue, voxel_size);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.0f, 0.0f, 0.0f},
+            {0.1f, 0.0f, 0.0f},
+        };
+        const std::vector<sycl_points::RGBType> colors = {
+            sycl_points::RGBType(0.2f, 0.4f, 0.6f, 1.0f),
+            sycl_points::RGBType(0.6f, 0.2f, 0.0f, 1.0f),
+        };
+        const std::vector<float> intensities = {10.0f, 20.0f};
+
+        auto cloud = MakePointCloud(queue, input_positions, &colors, &intensities);
+        voxel_map.add_point_cloud(cloud);
+
+        sycl_points::PointCloudShared result(queue);
+        voxel_map.downsampling(result);
+
+        ASSERT_EQ(result.size(), 1U);
+        ASSERT_TRUE(result.has_rgb());
+        ASSERT_TRUE(result.has_intensity());
+
+        const auto point = (*result.points)[0];
+        EXPECT_NEAR(point.x(), 0.05f, 1e-5f);
+        EXPECT_NEAR(point.y(), 0.0f, 1e-5f);
+        EXPECT_NEAR(point.z(), 0.0f, 1e-5f);
+
+        const auto color = (*result.rgb)[0];
+        EXPECT_NEAR(color.x(), 0.4f, 1e-5f);
+        EXPECT_NEAR(color.y(), 0.3f, 1e-5f);
+        EXPECT_NEAR(color.z(), 0.3f, 1e-5f);
+        EXPECT_NEAR(color.w(), 1.0f, 1e-5f);
+
+        const float intensity = (*result.intensities)[0];
+        EXPECT_NEAR(intensity, 15.0f, 1e-5f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
