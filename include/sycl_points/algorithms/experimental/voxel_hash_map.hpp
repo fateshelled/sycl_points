@@ -184,6 +184,30 @@ private:
         atomic_ref_uint32_t(new_timestamp).store(old_timestamp);
     }
 
+    SYCL_EXTERNAL static void compute_averaged_attributes(const VoxelPoint& sum, size_t output_idx,
+                                                          RGBType* rgb_output, float* intensity_output) {
+        if (rgb_output) {
+            if (sum.color_count > 0U) {
+                const float inv_color_count = 1.0f / static_cast<float>(sum.color_count);
+                rgb_output[output_idx].x() = sum.r * inv_color_count;
+                rgb_output[output_idx].y() = sum.g * inv_color_count;
+                rgb_output[output_idx].z() = sum.b * inv_color_count;
+                rgb_output[output_idx].w() = sum.a * inv_color_count;
+            } else {
+                rgb_output[output_idx] = RGBType::Zero();
+            }
+        }
+
+        if (intensity_output) {
+            if (sum.intensity_count > 0U) {
+                const float inv_intensity_count = 1.0f / static_cast<float>(sum.intensity_count);
+                intensity_output[output_idx] = sum.intensity * inv_intensity_count;
+            } else {
+                intensity_output[output_idx] = 0.0f;
+            }
+        }
+    }
+
     sycl_utils::DeviceQueue queue_;
     float voxel_size_ = 0.0f;
     float voxel_size_inv_ = 0.0f;
@@ -208,6 +232,14 @@ private:
     size_t voxel_num_ = 0;
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
+
+    void update_voxel_num_and_flags(size_t new_voxel_num) {
+        this->voxel_num_ = new_voxel_num;
+        if (this->voxel_num_ == 0) {
+            this->has_rgb_data_ = false;
+            this->has_intensity_data_ = false;
+        }
+    }
 
     void malloc_data() {
         this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
@@ -510,17 +542,7 @@ private:
                 const auto last_update_ptr = this->last_update_ptr_.get();
                 auto clear_function = [&](uint64_t& key, VoxelPoint& pt, uint32_t& last_update) {
                     key = VoxelConstants::invalid_coord;
-                    pt.x = 0.0f;
-                    pt.y = 0.0f;
-                    pt.z = 0.0f;
-                    pt.r = 0.0f;
-                    pt.g = 0.0f;
-                    pt.b = 0.0f;
-                    pt.a = 0.0f;
-                    pt.intensity = 0.0f;
-                    pt.count = 0;
-                    pt.color_count = 0;
-                    pt.intensity_count = 0;
+                    pt = VoxelPoint{};
                     last_update = 0;
                 };
 
@@ -566,11 +588,7 @@ private:
                 }
             })
             .wait();
-        this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
-        if (this->voxel_num_ == 0) {
-            this->has_rgb_data_ = false;
-            this->has_intensity_data_ = false;
-        }
+        this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
     }
 
     void rehash(size_t new_capacity) {
@@ -633,11 +651,7 @@ private:
                 }
             })
             .wait();
-        this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
-        if (this->voxel_num_ == 0) {
-            this->has_rgb_data_ = false;
-            this->has_intensity_data_ = false;
-        }
+        this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
     }
 
     void downsampling_(PointContainerShared& result, RGBType* rgb_output_ptr = nullptr,
@@ -705,29 +719,7 @@ private:
                             result_ptr[output_idx].z() = sum.z / sum.count;
                             result_ptr[output_idx].w() = 1.0f;
 
-                            if (rgb_output) {
-                                if (sum.color_count > 0U) {
-                                    const float inv_color_count = 1.0f / static_cast<float>(sum.color_count);
-                                    rgb_output[output_idx].x() = sum.r * inv_color_count;
-                                    rgb_output[output_idx].y() = sum.g * inv_color_count;
-                                    rgb_output[output_idx].z() = sum.b * inv_color_count;
-                                    rgb_output[output_idx].w() = sum.a * inv_color_count;
-                                } else {
-                                    rgb_output[output_idx].x() = 0.0f;
-                                    rgb_output[output_idx].y() = 0.0f;
-                                    rgb_output[output_idx].z() = 0.0f;
-                                    rgb_output[output_idx].w() = 0.0f;
-                                }
-                            }
-
-                            if (intensity_output) {
-                                if (sum.intensity_count > 0U) {
-                                    const float inv_intensity_count = 1.0f / static_cast<float>(sum.intensity_count);
-                                    intensity_output[output_idx] = sum.intensity * inv_intensity_count;
-                                } else {
-                                    intensity_output[output_idx] = 0.0f;
-                                }
-                            }
+                            compute_averaged_attributes(sum, output_idx, rgb_output, intensity_output);
                         }
                     });
 
@@ -749,40 +741,16 @@ private:
                         result_ptr[output_idx].z() = sum.z / sum.count;
                         result_ptr[output_idx].w() = 1.0f;
 
-                        if (rgb_output) {
-                            if (sum.color_count > 0U) {
-                                const float inv_color_count = 1.0f / static_cast<float>(sum.color_count);
-                                rgb_output[output_idx].x() = sum.r * inv_color_count;
-                                rgb_output[output_idx].y() = sum.g * inv_color_count;
-                                rgb_output[output_idx].z() = sum.b * inv_color_count;
-                                rgb_output[output_idx].w() = sum.a * inv_color_count;
-                            } else {
-                                rgb_output[output_idx].x() = 0.0f;
-                                rgb_output[output_idx].y() = 0.0f;
-                                rgb_output[output_idx].z() = 0.0f;
-                                rgb_output[output_idx].w() = 0.0f;
-                            }
-                        }
-
-                        if (intensity_output) {
-                            if (sum.intensity_count > 0U) {
-                                const float inv_intensity_count = 1.0f / static_cast<float>(sum.intensity_count);
-                                intensity_output[output_idx] = sum.intensity * inv_intensity_count;
-                            } else {
-                                intensity_output[output_idx] = 0.0f;
-                            }
-                        }
+                        compute_averaged_attributes(sum, output_idx, rgb_output, intensity_output);
                     });
                 }
             })
             .wait();
 
         if (!this->queue_.is_nvidia()) {
-            this->voxel_num_ = static_cast<size_t>(point_num_vec.at(0));
-        }
-        if (this->voxel_num_ == 0) {
-            this->has_rgb_data_ = false;
-            this->has_intensity_data_ = false;
+            this->update_voxel_num_and_flags(static_cast<size_t>(point_num_vec.at(0)));
+        } else {
+            this->update_voxel_num_and_flags(this->voxel_num_);
         }
     }
 };

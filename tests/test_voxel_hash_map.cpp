@@ -26,17 +26,13 @@ sycl_points::PointCloudShared MakePointCloud(
     if (colors) {
         EXPECT_EQ(colors->size(), positions.size());
         cpu_cloud.rgb->resize(positions.size());
-        for (size_t i = 0; i < positions.size(); ++i) {
-            (*cpu_cloud.rgb)[i] = (*colors)[i];
-        }
+        std::copy(colors->begin(), colors->end(), cpu_cloud.rgb->begin());
     }
 
     if (intensities) {
         EXPECT_EQ(intensities->size(), positions.size());
         cpu_cloud.intensities->resize(positions.size());
-        for (size_t i = 0; i < positions.size(); ++i) {
-            (*cpu_cloud.intensities)[i] = (*intensities)[i];
-        }
+        std::copy(intensities->begin(), intensities->end(), cpu_cloud.intensities->begin());
     }
     // Move the CPU data to shared memory for the voxel hash map.
     return sycl_points::PointCloudShared(queue, cpu_cloud);
