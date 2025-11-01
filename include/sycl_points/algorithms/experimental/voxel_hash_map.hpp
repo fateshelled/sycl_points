@@ -69,6 +69,8 @@ public:
         this->initialize_device_ptr();
         this->voxel_num_ = 0;
         this->staleness_counter_ = 0;
+        this->has_rgb_data_ = false;
+        this->has_intensity_data_ = false;
     }
 
     /// @brief add PointCloud to voxel map
@@ -102,7 +104,28 @@ public:
             result.clear();
             return;
         }
-        this->downsampling(*result.points);
+
+        result.resize_points(this->voxel_num_);
+
+        RGBType* rgb_output = nullptr;
+        if (this->has_rgb_data_) {
+            // Allocate RGB container when aggregated color data is available.
+            result.resize_rgb(this->voxel_num_);
+            rgb_output = result.rgb_ptr();
+        } else {
+            result.resize_rgb(0);
+        }
+
+        float* intensity_output = nullptr;
+        if (this->has_intensity_data_) {
+            // Allocate intensity container when aggregated intensity data is available.
+            result.resize_intensities(this->voxel_num_);
+            intensity_output = result.intensities_ptr();
+        } else {
+            result.resize_intensities(0);
+        }
+
+        this->downsampling_(*result.points, rgb_output, intensity_output);
     }
 
     void remove_old_data() { this->remove_old_data_(); }
@@ -116,7 +139,14 @@ private:
         float x = 0.0f;
         float y = 0.0f;
         float z = 0.0f;
+        float r = 0.0f;
+        float g = 0.0f;
+        float b = 0.0f;
+        float a = 0.0f;
+        float intensity = 0.0f;
         uint32_t count = 0;
+        uint32_t color_count = 0;
+        uint32_t intensity_count = 0;
     };
 
     struct VoxelLocalData {
@@ -132,6 +162,21 @@ private:
 
         // count up num of points in voxel
         atomic_ref_uint32_t(dst.count).fetch_add(src.count);
+
+        if (src.color_count > 0U) {
+            // Aggregate RGB components when available.
+            atomic_ref_float(dst.r).fetch_add(src.r);
+            atomic_ref_float(dst.g).fetch_add(src.g);
+            atomic_ref_float(dst.b).fetch_add(src.b);
+            atomic_ref_float(dst.a).fetch_add(src.a);
+            atomic_ref_uint32_t(dst.color_count).fetch_add(src.color_count);
+        }
+
+        if (src.intensity_count > 0U) {
+            // Aggregate intensity when available.
+            atomic_ref_float(dst.intensity).fetch_add(src.intensity);
+            atomic_ref_uint32_t(dst.intensity_count).fetch_add(src.intensity_count);
+        }
     }
 
     SYCL_EXTERNAL static void atomic_store_timestamp(uint32_t old_timestamp, uint32_t& new_timestamp) {
@@ -161,6 +206,8 @@ private:
     size_t wg_size_add_point_cloud_ = 128UL;
 
     size_t voxel_num_ = 0;
+    bool has_rgb_data_ = false;
+    bool has_intensity_data_ = false;
 
     void malloc_data() {
         this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
@@ -178,8 +225,7 @@ private:
 
     void initialize_device_ptr() {
         sycl_utils::events evs;
-        evs +=
-            this->queue_.ptr->fill<VoxelPoint>(this->sum_ptr_.get(), VoxelPoint{0.0f, 0.0f, 0.0f, 0}, this->capacity_);
+        evs += this->queue_.ptr->fill<VoxelPoint>(this->sum_ptr_.get(), VoxelPoint{}, this->capacity_);
         evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
         evs += this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_.get(), 0, this->capacity_);
         evs.wait();
@@ -260,15 +306,23 @@ private:
                 sorted_data[local_id].pt.y += sorted_data[i].pt.y;
                 sorted_data[local_id].pt.z += sorted_data[i].pt.z;
                 sorted_data[local_id].pt.count += sorted_data[i].pt.count;
+                sorted_data[local_id].pt.r += sorted_data[i].pt.r;
+                sorted_data[local_id].pt.g += sorted_data[i].pt.g;
+                sorted_data[local_id].pt.b += sorted_data[i].pt.b;
+                sorted_data[local_id].pt.a += sorted_data[i].pt.a;
+                sorted_data[local_id].pt.color_count += sorted_data[i].pt.color_count;
+                sorted_data[local_id].pt.intensity += sorted_data[i].pt.intensity;
+                sorted_data[local_id].pt.intensity_count += sorted_data[i].pt.intensity_count;
             }
         }
         item.barrier(sycl::access::fence_space::local_space);
     }
 
     template <bool AGGREGATE = true>
-    SYCL_EXTERNAL static void local_reduction(VoxelLocalData* local_voxel_data, PointType* point_ptr, size_t point_num,
-                                              size_t wg_size, size_t wg_size_power_of_2, float voxel_size_inv,
-                                              sycl::nd_item<1> item) {
+    SYCL_EXTERNAL static void local_reduction(VoxelLocalData* local_voxel_data, PointType* point_ptr,
+                                              RGBType* rgb_ptr, float* intensity_ptr, bool has_rgb,
+                                              bool has_intensity, size_t point_num, size_t wg_size,
+                                              size_t wg_size_power_of_2, float voxel_size_inv, sycl::nd_item<1> item) {
         // Reduction on workgroup
         const size_t local_id = item.get_local_id(0);
         const size_t global_id = item.get_global_id(0);
@@ -282,6 +336,27 @@ private:
             local_voxel_data[local_id].pt.y = point_ptr[global_id].y();
             local_voxel_data[local_id].pt.z = point_ptr[global_id].z();
             local_voxel_data[local_id].pt.count = 1;
+            local_voxel_data[local_id].pt.r = 0.0f;
+            local_voxel_data[local_id].pt.g = 0.0f;
+            local_voxel_data[local_id].pt.b = 0.0f;
+            local_voxel_data[local_id].pt.a = 0.0f;
+            local_voxel_data[local_id].pt.color_count = 0;
+            local_voxel_data[local_id].pt.intensity = 0.0f;
+            local_voxel_data[local_id].pt.intensity_count = 0;
+
+            if (has_rgb && rgb_ptr) {
+                const auto color = rgb_ptr[global_id];
+                local_voxel_data[local_id].pt.r = color.x();
+                local_voxel_data[local_id].pt.g = color.y();
+                local_voxel_data[local_id].pt.b = color.z();
+                local_voxel_data[local_id].pt.a = color.w();
+                local_voxel_data[local_id].pt.color_count = 1;
+            }
+
+            if (has_intensity && intensity_ptr) {
+                local_voxel_data[local_id].pt.intensity = intensity_ptr[global_id];
+                local_voxel_data[local_id].pt.intensity_count = 1;
+            }
         }
         // wait local
         item.barrier(sycl::access::fence_space::local_space);
@@ -331,6 +406,15 @@ private:
         const size_t N = pc.size();
         if (N == 0) return;
 
+        const bool has_rgb = pc.has_rgb();
+        const bool has_intensity = pc.has_intensity();
+        if (has_rgb) {
+            this->has_rgb_data_ = true;
+        }
+        if (has_intensity) {
+            this->has_intensity_data_ = true;
+        }
+
         // using `mem_advise to device` is slow
         // add to voxel hash map
         shared_vector<uint32_t> voxel_num_vec(1, this->voxel_num_, *this->queue_.ptr);
@@ -355,6 +439,8 @@ private:
             const auto last_update_ptr = this->last_update_ptr_.get();
 
             const auto point_ptr = pc.points_ptr();
+            const auto rgb_ptr = has_rgb ? pc.rgb_ptr() : static_cast<RGBType*>(nullptr);
+            const auto intensity_ptr = has_intensity ? pc.intensities_ptr() : static_cast<float*>(nullptr);
 
             const auto vs_inv = this->voxel_size_inv_;
             const auto cp = this->capacity_;
@@ -372,7 +458,8 @@ private:
 
                     // Reduction on workgroup
                     local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                          point_ptr, N, local_size, power_of_2, vs_inv, item);
+                                          point_ptr, rgb_ptr, intensity_ptr, has_rgb, has_intensity, N, local_size,
+                                          power_of_2, vs_inv, item);
 
                     if (global_id >= N) return;
 
@@ -390,7 +477,8 @@ private:
 
                     // Reduction on workgroup
                     local_reduction<false>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                           point_ptr, N, local_size, power_of_2, vs_inv, item);
+                                           point_ptr, rgb_ptr, intensity_ptr, has_rgb, has_intensity, N, local_size,
+                                           power_of_2, vs_inv, item);
 
                     if (global_id >= N) return;
 
@@ -425,7 +513,14 @@ private:
                     pt.x = 0.0f;
                     pt.y = 0.0f;
                     pt.z = 0.0f;
+                    pt.r = 0.0f;
+                    pt.g = 0.0f;
+                    pt.b = 0.0f;
+                    pt.a = 0.0f;
+                    pt.intensity = 0.0f;
                     pt.count = 0;
+                    pt.color_count = 0;
+                    pt.intensity_count = 0;
                     last_update = 0;
                 };
 
@@ -472,6 +567,10 @@ private:
             })
             .wait();
         this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
+        if (this->voxel_num_ == 0) {
+            this->has_rgb_data_ = false;
+            this->has_intensity_data_ = false;
+        }
     }
 
     void rehash(size_t new_capacity) {
@@ -535,9 +634,14 @@ private:
             })
             .wait();
         this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
+        if (this->voxel_num_ == 0) {
+            this->has_rgb_data_ = false;
+            this->has_intensity_data_ = false;
+        }
     }
 
-    void downsampling_(PointContainerShared& result) {
+    void downsampling_(PointContainerShared& result, RGBType* rgb_output_ptr = nullptr,
+                       float* intensity_output_ptr = nullptr) {
         // NVIDIA device
         if (this->queue_.is_nvidia()) {
             // compute valid flags
@@ -580,6 +684,9 @@ private:
                 // memory ptr
                 const auto sum_ptr = this->sum_ptr_.get();
                 const auto result_ptr = result.data();
+                // Optional output arrays for aggregated RGB colors and intensity values.
+                const auto rgb_output = rgb_output_ptr;
+                const auto intensity_output = intensity_output_ptr;
 
                 if (this->queue_.is_nvidia()) {
                     const auto flag_ptr = this->valid_flags_ptr_->data();
@@ -597,12 +704,35 @@ private:
                             result_ptr[output_idx].y() = sum.y / sum.count;
                             result_ptr[output_idx].z() = sum.z / sum.count;
                             result_ptr[output_idx].w() = 1.0f;
+
+                            if (rgb_output) {
+                                if (sum.color_count > 0U) {
+                                    const float inv_color_count = 1.0f / static_cast<float>(sum.color_count);
+                                    rgb_output[output_idx].x() = sum.r * inv_color_count;
+                                    rgb_output[output_idx].y() = sum.g * inv_color_count;
+                                    rgb_output[output_idx].z() = sum.b * inv_color_count;
+                                    rgb_output[output_idx].w() = sum.a * inv_color_count;
+                                } else {
+                                    rgb_output[output_idx].x() = 0.0f;
+                                    rgb_output[output_idx].y() = 0.0f;
+                                    rgb_output[output_idx].z() = 0.0f;
+                                    rgb_output[output_idx].w() = 0.0f;
+                                }
+                            }
+
+                            if (intensity_output) {
+                                if (sum.intensity_count > 0U) {
+                                    const float inv_intensity_count = 1.0f / static_cast<float>(sum.intensity_count);
+                                    intensity_output[output_idx] = sum.intensity * inv_intensity_count;
+                                } else {
+                                    intensity_output[output_idx] = 0.0f;
+                                }
+                            }
                         }
                     });
 
                 } else {
                     const auto key_ptr = this->key_ptr_.get();
-                    const uint32_t vx_num = this->voxel_num_;
 
                     const auto point_num_ptr = point_num_vec.data();
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
@@ -618,10 +748,42 @@ private:
                         result_ptr[output_idx].y() = sum.y / sum.count;
                         result_ptr[output_idx].z() = sum.z / sum.count;
                         result_ptr[output_idx].w() = 1.0f;
+
+                        if (rgb_output) {
+                            if (sum.color_count > 0U) {
+                                const float inv_color_count = 1.0f / static_cast<float>(sum.color_count);
+                                rgb_output[output_idx].x() = sum.r * inv_color_count;
+                                rgb_output[output_idx].y() = sum.g * inv_color_count;
+                                rgb_output[output_idx].z() = sum.b * inv_color_count;
+                                rgb_output[output_idx].w() = sum.a * inv_color_count;
+                            } else {
+                                rgb_output[output_idx].x() = 0.0f;
+                                rgb_output[output_idx].y() = 0.0f;
+                                rgb_output[output_idx].z() = 0.0f;
+                                rgb_output[output_idx].w() = 0.0f;
+                            }
+                        }
+
+                        if (intensity_output) {
+                            if (sum.intensity_count > 0U) {
+                                const float inv_intensity_count = 1.0f / static_cast<float>(sum.intensity_count);
+                                intensity_output[output_idx] = sum.intensity * inv_intensity_count;
+                            } else {
+                                intensity_output[output_idx] = 0.0f;
+                            }
+                        }
                     });
                 }
             })
             .wait();
+
+        if (!this->queue_.is_nvidia()) {
+            this->voxel_num_ = static_cast<size_t>(point_num_vec.at(0));
+        }
+        if (this->voxel_num_ == 0) {
+            this->has_rgb_data_ = false;
+            this->has_intensity_data_ = false;
+        }
     }
 };
 
