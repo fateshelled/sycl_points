@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/points/point_cloud.hpp>
@@ -12,6 +14,8 @@ namespace algorithms {
 namespace color_gradient {
 
 namespace kernel {
+
+constexpr float CHOLESKY_REGULARIZATION = 1e-6f;
 
 SYCL_EXTERNAL inline void compute_gradient(ColorGradient& ret, const PointType* points, const RGBType* colors,
                                            const int32_t* index_ptr, size_t k, size_t i) {
@@ -36,7 +40,7 @@ SYCL_EXTERNAL inline void compute_gradient(ColorGradient& ret, const PointType* 
     }
 
     // Add a small identity matrix for numerical stability
-    eigen_utils::add_inplace<3, 3>(A, Eigen::Matrix3f::Identity() * 1e-6f);
+    eigen_utils::add_inplace<3, 3>(A, Eigen::Matrix3f::Identity() * CHOLESKY_REGULARIZATION);
 
     const Eigen::Matrix3f L = eigen_utils::cholesky_3x3(A);
     for (size_t c = 0; c < 3; ++c) {
@@ -48,8 +52,9 @@ SYCL_EXTERNAL inline void compute_gradient(ColorGradient& ret, const PointType* 
 
 }  // namespace kernel
 
-inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& cloud,
-                                                        const knn::KNNResult& neighbors) {
+inline sycl_utils::events compute_color_gradients_async(
+    const PointCloudShared& cloud, const knn::KNNResult& neighbors,
+    const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = cloud.size();
     if (!cloud.has_rgb()) {
         throw std::runtime_error("RGB field not found");
@@ -65,6 +70,7 @@ inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& 
 
     sycl_utils::events events;
     events += cloud.queue.ptr->submit([&](sycl::handler& h) {
+        h.depends_on(depends);
         const auto pt_ptr = cloud.points_ptr();
         const auto color_ptr = cloud.rgb_ptr();
         const auto grad_ptr = cloud.color_gradients_ptr();
@@ -80,10 +86,12 @@ inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& 
     return events;
 }
 
-inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& cloud, const knn::KNNBase& knn,
-                                                        size_t k_correspondences) {
-    const auto neighbors = knn.knn_search(cloud, k_correspondences);
-    return compute_color_gradients_async(cloud, neighbors);
+inline sycl_utils::events compute_color_gradients_async(
+    const PointCloudShared& cloud, const knn::KNNBase& knn, size_t k_correspondences,
+    const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+    knn::KNNResult neighbors;
+    auto knn_events = knn.knn_search_async(cloud, k_correspondences, neighbors, depends);
+    return compute_color_gradients_async(cloud, neighbors, knn_events.evs);
 }
 
 }  // namespace color_gradient
@@ -91,6 +99,8 @@ inline sycl_utils::events compute_color_gradients_async(const PointCloudShared& 
 namespace intensity_gradient {
 
 namespace kernel {
+
+constexpr float CHOLESKY_REGULARIZATION = 1e-6f;
 
 SYCL_EXTERNAL inline void compute_gradient(IntensityGradient& ret, const PointType* points, const float* intensities,
                                            const int32_t* index_ptr, size_t k, size_t i) {
@@ -113,7 +123,7 @@ SYCL_EXTERNAL inline void compute_gradient(IntensityGradient& ret, const PointTy
         b += dp * di;
     }
 
-    eigen_utils::add_inplace<3, 3>(A, Eigen::Matrix3f::Identity() * 1e-6f);
+    eigen_utils::add_inplace<3, 3>(A, Eigen::Matrix3f::Identity() * CHOLESKY_REGULARIZATION);
 
     const Eigen::Matrix3f L = eigen_utils::cholesky_3x3(A);
     const Eigen::Vector3f gradient = eigen_utils::solve_cholesky_3x3(L, b);
@@ -122,8 +132,9 @@ SYCL_EXTERNAL inline void compute_gradient(IntensityGradient& ret, const PointTy
 
 }  // namespace kernel
 
-inline sycl_utils::events compute_intensity_gradients_async(const PointCloudShared& cloud,
-                                                            const knn::KNNResult& neighbors) {
+inline sycl_utils::events compute_intensity_gradients_async(
+    const PointCloudShared& cloud, const knn::KNNResult& neighbors,
+    const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = cloud.size();
     if (!cloud.has_intensity()) {
         throw std::runtime_error("Intensity field not found");
@@ -139,6 +150,7 @@ inline sycl_utils::events compute_intensity_gradients_async(const PointCloudShar
 
     sycl_utils::events events;
     events += cloud.queue.ptr->submit([&](sycl::handler& h) {
+        h.depends_on(depends);
         const auto pt_ptr = cloud.points_ptr();
         const auto intensity_ptr = cloud.intensities_ptr();
         const auto grad_ptr = cloud.intensity_gradients_ptr();
@@ -154,10 +166,12 @@ inline sycl_utils::events compute_intensity_gradients_async(const PointCloudShar
     return events;
 }
 
-inline sycl_utils::events compute_intensity_gradients_async(const PointCloudShared& cloud, const knn::KNNBase& knn,
-                                                            size_t k_correspondences) {
-    const auto neighbors = knn.knn_search(cloud, k_correspondences);
-    return compute_intensity_gradients_async(cloud, neighbors);
+inline sycl_utils::events compute_intensity_gradients_async(
+    const PointCloudShared& cloud, const knn::KNNBase& knn, size_t k_correspondences,
+    const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+    knn::KNNResult neighbors;
+    auto knn_events = knn.knn_search_async(cloud, k_correspondences, neighbors, depends);
+    return compute_intensity_gradients_async(cloud, neighbors, knn_events.evs);
 }
 
 }  // namespace intensity_gradient
