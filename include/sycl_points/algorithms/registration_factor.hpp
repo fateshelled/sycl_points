@@ -326,6 +326,27 @@ SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float
     }
 }
 
+/// @brief Compute the tangent plane offset between the transformed source and target points.
+/// @param T SE(3) transform applied to the source point
+/// @param source_pt Source point before transformation
+/// @param target_pt Target point associated with the source point
+/// @param target_normal Target surface normal defining the tangent plane
+/// @return Offset vector lying on the tangent plane from target to projected source
+SYCL_EXTERNAL inline Eigen::Vector3f compute_tangent_plane_offset(const std::array<sycl::float4, 4>& T,
+                                                                  const PointType& source_pt,
+                                                                  const PointType& target_pt,
+                                                                  const Normal& target_normal) {
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T);
+    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
+
+    const Eigen::Vector3f projected =
+        transform_source.template head<3>() -
+        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
+
+    return projected - target_pt.template head<3>();
+}
+
 /// @brief Linearize color residual using RGB gradient
 /// @note reference:
 /// https://github.com/koide3/gtsam_points/blob/master/include/gtsam_points/factors/impl/integrated_colored_gicp_factor_impl.hpp
@@ -345,19 +366,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
     const Normal& target_normal,             ///< Target normal
     const ColorGradient& target_rgb_grad) {  ///< Target RGB gradient
 
-    // Transform source point to compute geometric residual
-    PointType transform_source;
-    transform::kernel::transform_point(source_pt, transform_source, T);
-    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
-
-    // Project the transformed source point onto the plane defined by the target normal
-    // to decouple the color error from the geometric error along the normal.
-    const Eigen::Vector3f projected =
-        transform_source.template head<3>() -
-        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
-
-    // The offset is the in-plane difference between the projected source and the target.
-    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+    // Offset between the projected point and the target point on the tangent plane.
+    const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
 
     // The color residual is the difference between the source and target colors,
     // compensated by the geometric misalignment in the tangent plane.
@@ -402,18 +412,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_intensity(
     const Normal& target_normal,                  ///< Target normal
     const IntensityGradient& target_intensity_grad ///< Target intensity gradient
 ) {
-    // Transform source point to compute geometric residual
-    PointType transform_source;
-    transform::kernel::transform_point(source_pt, transform_source, T);
-    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
-
-    // Project the transformed source onto the tangent plane defined by the target normal
-    const Eigen::Vector3f projected =
-        transform_source.template head<3>() -
-        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
-
     // Offset between the projected point and the target point on the tangent plane
-    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+    const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
 
     // Intensity residual compensated by the spatial gradient on the tangent plane
     const float intensity_diff = source_intensity - target_intensity;
@@ -453,15 +453,7 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
                                                  const RGBType& target_rgb,               ///< Target color
                                                  const Normal& target_normal,             ///< Target normal
                                                  const ColorGradient& target_rgb_grad) {  ///< Target RGB gradient
-    PointType transform_source;
-    transform::kernel::transform_point(source_pt, transform_source, T);
-
-    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
-
-    const Eigen::Vector3f projected =
-        transform_source.template head<3>() -
-        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
-    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+    const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
     const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
     const Eigen::Vector3f residual_color = color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);
 
@@ -483,15 +475,7 @@ SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::floa
                                                      float target_intensity,
                                                      const Normal& target_normal,
                                                      const IntensityGradient& target_intensity_grad) {
-    PointType transform_source;
-    transform::kernel::transform_point(source_pt, transform_source, T);
-
-    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
-
-    const Eigen::Vector3f projected =
-        transform_source.template head<3>() -
-        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
-    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+    const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
     const float intensity_diff = source_intensity - target_intensity;
     const float residual_intensity = intensity_diff + eigen_utils::dot<3>(target_intensity_grad, offset);
 
