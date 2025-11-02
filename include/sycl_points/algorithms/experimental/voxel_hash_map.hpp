@@ -213,7 +213,7 @@ private:
             pt_output[output_idx].setZero();
         }
         if (rgb_output) {
-            if (sum.color_count >= min_num_point) {
+            if (sum.color_count > 0U) {
                 const float inv_color_count = 1.0f / static_cast<float>(sum.color_count);
                 rgb_output[output_idx].x() = sum.r * inv_color_count;
                 rgb_output[output_idx].y() = sum.g * inv_color_count;
@@ -225,7 +225,7 @@ private:
         }
 
         if (intensity_output) {
-            if (sum.intensity_count >= min_num_point) {
+            if (sum.intensity_count > 0U) {
                 const float inv_intensity_count = 1.0f / static_cast<float>(sum.intensity_count);
                 intensity_output[output_idx] = sum.intensity * inv_intensity_count;
             } else {
