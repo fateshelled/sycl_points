@@ -30,6 +30,36 @@ struct LinearlizedResult {
 
 namespace kernel {
 
+/// @brief Weighting coefficients used to mix geometric and photometric modalities.
+struct PhotometricWeights {
+    float geometry = 1.0f;   ///< Weight applied to the geometric term
+    float color = 0.0f;      ///< Weight applied to the RGB photometric term
+    float intensity = 0.0f;  ///< Weight applied to the intensity photometric term
+};
+
+/// @brief Compute weighting coefficients for the active photometric modalities.
+/// @param photometric_weight Total weight allocated to photometric terms.
+/// @param use_color True when RGB photometric residuals are available.
+/// @param use_intensity True when intensity photometric residuals are available.
+/// @return Normalized weights for geometry, color, and intensity contributions.
+inline PhotometricWeights compute_photometric_weights(float photometric_weight, bool use_color,
+                                                      bool use_intensity) {
+    PhotometricWeights weights{};
+
+    if (0.0f < photometric_weight && photometric_weight <= 1.0f) {
+        const uint32_t modality_count = static_cast<uint32_t>(use_color) + static_cast<uint32_t>(use_intensity);
+
+        if (modality_count > 0U) {
+            const float per_modality_weight = photometric_weight / static_cast<float>(modality_count);
+            weights.geometry = 1.0f - photometric_weight;
+            weights.color = use_color ? per_modality_weight : 0.0f;
+            weights.intensity = use_intensity ? per_modality_weight : 0.0f;
+        }
+    }
+
+    return weights;
+}
+
 /// @brief Compute basic SE(3) Jacobian matrix for ICP registration
 /// @param T transform matrix
 /// @param source_pt Source Point
@@ -354,6 +384,61 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
     return ret;
 }
 
+/// @brief Linearize intensity residual using intensity gradient
+/// @note This follows the same geometric decoupling strategy used for RGB photometric residuals.
+/// @param T SE(3) transform applied to the source point
+/// @param source_pt Source point before transformation
+/// @param target_pt Target point associated with the source point
+/// @param source_intensity Intensity observed at the source point
+/// @param target_intensity Intensity observed at the target point
+/// @param target_normal Target surface normal
+/// @param target_intensity_grad Spatial gradient of the target intensity
+SYCL_EXTERNAL inline LinearlizedResult linearlize_intensity(
+    const std::array<sycl::float4, 4>& T,         ///< SE(3) transform
+    const PointType& source_pt,                   ///< Source point
+    const PointType& target_pt,                   ///< Target point
+    float source_intensity,                       ///< Source intensity
+    float target_intensity,                       ///< Target intensity
+    const Normal& target_normal,                  ///< Target normal
+    const IntensityGradient& target_intensity_grad ///< Target intensity gradient
+) {
+    // Transform source point to compute geometric residual
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T);
+    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
+
+    // Project the transformed source onto the tangent plane defined by the target normal
+    const Eigen::Vector3f projected =
+        transform_source.template head<3>() -
+        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
+
+    // Offset between the projected point and the target point on the tangent plane
+    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+
+    // Intensity residual compensated by the spatial gradient on the tangent plane
+    const float intensity_diff = source_intensity - target_intensity;
+    const float residual_intensity = intensity_diff + eigen_utils::dot<3>(target_intensity_grad, offset);
+
+    // SE(3) Jacobian of the source point
+    const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
+
+    // Intensity Jacobian: gradient (row vector) * J_geo
+    const Eigen::Matrix<float, 1, 3> grad_row = target_intensity_grad.transpose();
+    const Eigen::Matrix<float, 1, 6> J_intensity = eigen_utils::multiply<1, 3, 6>(grad_row, J_geo);
+    const Eigen::Matrix<float, 6, 1> J_intensity_T = eigen_utils::transpose<1, 6>(J_intensity);
+
+    LinearlizedResult ret;
+    // H = J.T * J
+    ret.H = eigen_utils::multiply<6, 1, 6>(J_intensity_T, J_intensity);
+    // b = J.T * residual
+    ret.b = eigen_utils::multiply<6>(J_intensity_T, residual_intensity);
+    // error = 0.5 * residual^2
+    ret.error = 0.5f * residual_intensity * residual_intensity;
+    ret.inlier = 1;
+
+    return ret;
+}
+
 /// @brief Evaluate photometric error including geometric correction
 /// @param T SE(3) transform applied to the source point
 /// @param source_pt Source point before transformation
@@ -383,6 +468,36 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
     return 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
 }
 
+/// @brief Evaluate intensity photometric error including geometric correction
+/// @param T SE(3) transform applied to the source point
+/// @param source_pt Source point before transformation
+/// @param target_pt Target point associated with the source point
+/// @param source_intensity Intensity observed at the source point
+/// @param target_intensity Intensity observed at the target point
+/// @param target_normal Target surface normal
+/// @param target_intensity_grad Spatial gradient of the target intensity
+SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::float4, 4>& T,
+                                                     const PointType& source_pt,
+                                                     const PointType& target_pt,
+                                                     float source_intensity,
+                                                     float target_intensity,
+                                                     const Normal& target_normal,
+                                                     const IntensityGradient& target_intensity_grad) {
+    PointType transform_source;
+    transform::kernel::transform_point(source_pt, transform_source, T);
+
+    const Eigen::Vector3f geometric_residual = (transform_source - target_pt).template head<3>();
+
+    const Eigen::Vector3f projected =
+        transform_source.template head<3>() -
+        target_normal.template head<3>() * eigen_utils::dot<3>(geometric_residual, target_normal.template head<3>());
+    const Eigen::Vector3f offset = projected - target_pt.template head<3>();
+    const float intensity_diff = source_intensity - target_intensity;
+    const float residual_intensity = intensity_diff + eigen_utils::dot<3>(target_intensity_grad, offset);
+
+    return 0.5f * residual_intensity * residual_intensity;
+}
+
 /// @brief Robust Linearlization
 /// @tparam icp icp type
 /// @param T transform matrix
@@ -401,27 +516,50 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
                                                   const Covariance& source_cov, const PointType& target_pt,
                                                   const Covariance& target_cov, const Normal& target_normal,
                                                   const RGBType& source_rgb, const RGBType& target_rgb,
-                                                  const ColorGradient& target_grad, float photometric_weight) {
+                                                  const ColorGradient& target_grad, bool use_color,
+                                                  float source_intensity, float target_intensity,
+                                                  const IntensityGradient& target_intensity_grad, bool use_intensity,
+                                                  float photometric_weight) {
     float geo_residual_norm = 0.0f;
     LinearlizedResult result =
         linearlize_geometry<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, geo_residual_norm);
 
     float total_error = result.error;
+    const PhotometricWeights weights = compute_photometric_weights(photometric_weight, use_color, use_intensity);
+    const bool photometric_active = (weights.color > 0.0f) || (weights.intensity > 0.0f);
 
-    if (0.0f < photometric_weight && photometric_weight <= 1.0f) {
-        const float geo_weight = 1.0f - photometric_weight;
-        auto color_result =
-            linearlize_color(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_grad);
+    if (photometric_active) {
+        // Blend geometric and photometric Hessians/gradients with the assigned weights.
+        eigen_utils::multiply_inplace<6, 6>(result.H, weights.geometry);
+        eigen_utils::multiply_inplace<6, 1>(result.b, weights.geometry);
+        total_error = weights.geometry * result.error;
 
-        eigen_utils::multiply_inplace<6, 6>(result.H, geo_weight);
-        eigen_utils::multiply_inplace<6, 6>(color_result.H, photometric_weight);
-        eigen_utils::add_inplace<6, 6>(result.H, color_result.H);
+        if (weights.color > 0.0f) {
+            auto color_result =
+                linearlize_color(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_grad);
 
-        eigen_utils::multiply_inplace<6, 1>(result.b, geo_weight);
-        eigen_utils::multiply_inplace<6, 1>(color_result.b, photometric_weight);
-        eigen_utils::add_inplace<6, 1>(result.b, color_result.b);
+            eigen_utils::multiply_inplace<6, 6>(color_result.H, weights.color);
+            eigen_utils::add_inplace<6, 6>(result.H, color_result.H);
 
-        total_error = sycl::fma(geo_weight, result.error, photometric_weight * color_result.error);
+            eigen_utils::multiply_inplace<6, 1>(color_result.b, weights.color);
+            eigen_utils::add_inplace<6, 1>(result.b, color_result.b);
+
+            total_error = sycl::fma(weights.color, color_result.error, total_error);
+        }
+
+        if (weights.intensity > 0.0f) {
+            auto intensity_result =
+                linearlize_intensity(T, source_pt, target_pt, source_intensity, target_intensity, target_normal,
+                                     target_intensity_grad);
+
+            eigen_utils::multiply_inplace<6, 6>(intensity_result.H, weights.intensity);
+            eigen_utils::add_inplace<6, 6>(result.H, intensity_result.H);
+
+            eigen_utils::multiply_inplace<6, 1>(intensity_result.b, weights.intensity);
+            eigen_utils::add_inplace<6, 1>(result.b, intensity_result.b);
+
+            total_error = sycl::fma(weights.intensity, intensity_result.error, total_error);
+        }
     }
 
     result.error = sycl::sqrt(2.0f * total_error);
@@ -447,16 +585,32 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
                                            const Covariance& source_cov, const PointType& target_pt,
                                            const Covariance& target_cov, const Normal& target_normal,
                                            const RGBType& source_rgb, const RGBType& target_rgb,
-                                           const ColorGradient& target_rgb_grad, float photometric_weight) {
+                                           const ColorGradient& target_rgb_grad, bool use_color,
+                                           float source_intensity, float target_intensity,
+                                           const IntensityGradient& target_intensity_grad, bool use_intensity,
+                                           float photometric_weight) {
     const float geo_error =
         calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal);
 
     float total_error = geo_error;
-    if (0.0f < photometric_weight && photometric_weight <= 1.0f) {
-        const float geo_weight = 1.0f - photometric_weight;
-        const float color_error =
-            calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_rgb_grad);
-        total_error = sycl::fma(geo_weight, geo_error, photometric_weight * color_error);
+    const PhotometricWeights weights = compute_photometric_weights(photometric_weight, use_color, use_intensity);
+    const bool photometric_active = (weights.color > 0.0f) || (weights.intensity > 0.0f);
+
+    if (photometric_active) {
+        total_error = weights.geometry * geo_error;
+
+        if (weights.color > 0.0f) {
+            const float color_error = calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal,
+                                                            target_rgb_grad);
+            total_error = sycl::fma(weights.color, color_error, total_error);
+        }
+
+        if (weights.intensity > 0.0f) {
+            const float intensity_error =
+                calculate_intensity_error(T, source_pt, target_pt, source_intensity, target_intensity, target_normal,
+                                          target_intensity_grad);
+            total_error = sycl::fma(weights.intensity, intensity_error, total_error);
+        }
     }
     return sycl::sqrt(2.0f * total_error);
 }
