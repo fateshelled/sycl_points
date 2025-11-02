@@ -154,6 +154,37 @@ TEST(VoxelHashMapTest, AggregatesRgbAndIntensityWithinVoxel) {
     }
 }
 
+TEST(VoxelHashMapTest, AppliesMinimumPointThresholdPerVoxel) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::filter::VoxelHashMap voxel_map(queue, 0.1f);
+        voxel_map.set_min_num_point(2);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.01f, 0.01f, 0.0f},  // First voxel, point 1
+            {0.02f, 0.01f, 0.0f},  // First voxel, point 2
+            {0.30f, 0.30f, 0.0f},  // Second voxel, only point
+        };
+
+        auto cloud = MakePointCloud(queue, input_positions);
+        voxel_map.add_point_cloud(cloud);
+
+        sycl_points::PointCloudShared result(queue);
+        voxel_map.downsampling(result);
+
+        ASSERT_EQ(result.size(), 1U);
+        auto remaining_positions = ExtractPositions(*result.points);
+        ASSERT_EQ(remaining_positions.size(), 1U);
+        EXPECT_NEAR(remaining_positions[0].x(), 0.015f, 1e-5f);
+        EXPECT_NEAR(remaining_positions[0].y(), 0.01f, 1e-5f);
+        EXPECT_NEAR(remaining_positions[0].z(), 0.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
 TEST(VoxelHashMapTest, RemovesStaleVoxelsAfterConfiguredCycles) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);

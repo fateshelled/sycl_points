@@ -65,6 +65,13 @@ public:
     /// @return
     float get_rehash_threshold() const { return this->rehash_threshold_; }
 
+    /// @brief Set minimum number of points required to keep a voxel in the output
+    /// @param min_num_point minimum number of accumulated points
+    void set_min_num_point(const uint32_t min_num_point) { this->min_num_point_ = min_num_point; }
+    /// @brief Get minimum number of points required to keep a voxel in the output
+    /// @return minimum number of accumulated points
+    uint32_t get_min_num_point() const { return this->min_num_point_; }
+
     /// @brief
     void clear() {
         this->initialize_device_ptr();
@@ -253,6 +260,7 @@ private:
     size_t voxel_num_ = 0;
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
+    uint32_t min_num_point_ = 1U;
 
     void update_voxel_num_and_flags(size_t new_voxel_num) {
         this->voxel_num_ = new_voxel_num;
@@ -701,13 +709,17 @@ private:
                     // memory ptr
                     const auto valid_flags = this->valid_flags_ptr_->data();
                     const auto key_ptr = this->key_ptr_.get();
+                    const auto sum_ptr = this->sum_ptr_.get();
+                    const auto min_num_point = this->min_num_point_;
 
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                         const size_t global_id = item.get_global_id(0);
                         if (global_id >= cp) return;
 
-                        valid_flags[global_id] =
-                            static_cast<uint8_t>(key_ptr[global_id] != VoxelConstants::invalid_coord);
+                        const bool is_valid_voxel =
+                            (key_ptr[global_id] != VoxelConstants::invalid_coord) &&
+                            (sum_ptr[global_id].count >= min_num_point);
+                        valid_flags[global_id] = static_cast<uint8_t>(is_valid_voxel);
                     });
                 })
                 .wait();
@@ -735,6 +747,7 @@ private:
                 if (this->queue_.is_nvidia()) {
                     const auto flag_ptr = this->valid_flags_ptr_->data();
                     const auto prefix_sum_ptr = this->prefix_sum_->get_prefix_sum().data();
+                    const auto min_num_point = this->min_num_point_;
 
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                         const size_t i = item.get_global_id(0);
@@ -744,7 +757,8 @@ private:
                             const size_t output_idx = prefix_sum_ptr[i] - 1;
                             const auto sum = sum_ptr[i];
 
-                            compute_averaged_attributes(sum, output_idx, result_ptr, rgb_output, intensity_output);
+                            compute_averaged_attributes(sum, output_idx, result_ptr, rgb_output, intensity_output,
+                                                        min_num_point);
                         }
                     });
 
@@ -752,16 +766,23 @@ private:
                     const auto key_ptr = this->key_ptr_.get();
 
                     const auto point_num_ptr = point_num_vec.data();
+                    const auto min_num_point = this->min_num_point_;
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                         const auto i = item.get_global_id(0);
                         if (i >= cp) return;
 
                         if (key_ptr[i] == VoxelConstants::invalid_coord) return;
 
-                        const auto output_idx = atomic_ref_uint32_t(point_num_ptr[0]).fetch_add(1U);
                         const auto sum = sum_ptr[i];
 
-                        compute_averaged_attributes(sum, output_idx, result_ptr, rgb_output, intensity_output);
+                        if (sum.count < min_num_point) {
+                            return;
+                        }
+
+                        const auto output_idx = atomic_ref_uint32_t(point_num_ptr[0]).fetch_add(1U);
+
+                        compute_averaged_attributes(sum, output_idx, result_ptr, rgb_output, intensity_output,
+                                                    min_num_point);
                     });
                 }
             })
