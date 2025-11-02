@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <iostream>
 #include <stdexcept>
 
 #include <sycl_points/algorithms/common/prefix_sum.hpp>
@@ -285,6 +286,8 @@ private:
                 return candidate;
             }
         }
+        std::cout << "[Caution] VoxelHashMap reached the maximum predefined capacity (" << this->capacity_
+                  << "). Further growth is not available." << std::endl;
         return this->capacity_;
     }
 
