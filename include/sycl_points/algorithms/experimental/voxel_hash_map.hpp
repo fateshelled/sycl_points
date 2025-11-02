@@ -3,7 +3,6 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
-
 #include <sycl_points/algorithms/common/prefix_sum.hpp>
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
@@ -90,7 +89,7 @@ public:
 
         if (N > 0) {
             // add PointCloud to voxel map
-            this->add_point_cloud_(pc);
+            this->add_point_cloud_impl(pc);
         }
 
         // remove old data
@@ -101,8 +100,6 @@ public:
         // increment counter
         ++this->staleness_counter_;
     }
-
-    void downsampling(PointContainerShared& result) { this->downsampling_(result); }
 
     void downsampling(PointCloudShared& result) {
         if (this->voxel_num_ == 0) {
@@ -132,17 +129,15 @@ public:
             result.resize_intensities(0);
         }
 
-        this->downsampling_(*result.points, rgb_output, intensity_output);
+        this->downsampling_impl(*result.points, rgb_output, intensity_output);
 
         const size_t final_voxel_num = this->voxel_num_;
         result.resize_points(final_voxel_num);
-
         result.resize_rgb(this->has_rgb_data_ ? final_voxel_num : 0);
-
         result.resize_intensities(this->has_intensity_data_ ? final_voxel_num : 0);
     }
 
-    void remove_old_data() { this->remove_old_data_(); }
+    void remove_old_data() { this->remove_old_data_impl(); }
 
 private:
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
@@ -199,21 +194,31 @@ private:
     }
 
     SYCL_EXTERNAL static void compute_averaged_attributes(const VoxelPoint& sum, size_t output_idx,
-                                                          RGBType* rgb_output, float* intensity_output) {
+                                                          PointType* pt_output, RGBType* rgb_output,
+                                                          float* intensity_output, uint32_t min_num_point = 1) {
+        if (sum.count >= min_num_point) {
+            const float inv_count = 1.0f / static_cast<float>(sum.count);
+            pt_output[output_idx].x() = sum.x * inv_count;
+            pt_output[output_idx].y() = sum.y * inv_count;
+            pt_output[output_idx].z() = sum.z * inv_count;
+            pt_output[output_idx].w() = 1.0f;
+        } else {
+            pt_output[output_idx].setZero();
+        }
         if (rgb_output) {
-            if (sum.color_count > 0U) {
+            if (sum.color_count >= min_num_point) {
                 const float inv_color_count = 1.0f / static_cast<float>(sum.color_count);
                 rgb_output[output_idx].x() = sum.r * inv_color_count;
                 rgb_output[output_idx].y() = sum.g * inv_color_count;
                 rgb_output[output_idx].z() = sum.b * inv_color_count;
                 rgb_output[output_idx].w() = sum.a * inv_color_count;
             } else {
-                rgb_output[output_idx] = RGBType::Zero();
+                rgb_output[output_idx].setZero();
             }
         }
 
         if (intensity_output) {
-            if (sum.intensity_count > 0U) {
+            if (sum.intensity_count >= min_num_point) {
                 const float inv_intensity_count = 1.0f / static_cast<float>(sum.intensity_count);
                 intensity_output[output_idx] = sum.intensity * inv_intensity_count;
             } else {
@@ -225,9 +230,9 @@ private:
     sycl_utils::DeviceQueue queue_;
     float voxel_size_ = 0.0f;
     float voxel_size_inv_ = 0.0f;
-    size_t capacity_ = 30029;  // prime number recommended
     inline static constexpr std::array<size_t, 11> kCapacityCandidates = {
-        30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};
+        30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};  // prime number
+    size_t capacity_ = kCapacityCandidates[0];
 
     std::shared_ptr<uint64_t> key_ptr_ = nullptr;
     std::shared_ptr<VoxelPoint> sum_ptr_ = nullptr;
@@ -311,7 +316,7 @@ private:
     /// @brief Bitonic sort that works correctly with any work group size
     /// @details Uses virtual infinity padding to handle non-power-of-2 sizes
     SYCL_EXTERNAL static void bitonic_sort_local_data(VoxelLocalData* data, size_t size, size_t size_power_of_2,
-                                                      sycl::nd_item<1> item) {
+                                                      const sycl::nd_item<1>& item) {
         const size_t local_id = item.get_local_id(0);
 
         if (size <= 1) return;
@@ -346,7 +351,7 @@ private:
 
     /// @brief Reduce consecutive same voxel indices and output results
     SYCL_EXTERNAL static void reduction_sorted_local_data(VoxelLocalData* sorted_data, size_t wg_size,
-                                                          sycl::nd_item<1> item) {
+                                                          const sycl::nd_item<1>& item) {
         const size_t local_id = item.get_local_id(0);
 
         // Find segments of same voxel indices and reduce them
@@ -379,10 +384,11 @@ private:
     }
 
     template <bool AGGREGATE = true>
-    SYCL_EXTERNAL static void local_reduction(VoxelLocalData* local_voxel_data, PointType* point_ptr,
-                                              RGBType* rgb_ptr, float* intensity_ptr, bool has_rgb,
+    SYCL_EXTERNAL static void local_reduction(VoxelLocalData* local_voxel_data, const PointType* point_ptr,
+                                              const RGBType* rgb_ptr, const float* intensity_ptr, bool has_rgb,
                                               bool has_intensity, size_t point_num, size_t wg_size,
-                                              size_t wg_size_power_of_2, float voxel_size_inv, sycl::nd_item<1> item) {
+                                              size_t wg_size_power_of_2, float voxel_size_inv,
+                                              const sycl::nd_item<1>& item) {
         // Reduction on workgroup
         const size_t local_id = item.get_local_id(0);
         const size_t global_id = item.get_global_id(0);
@@ -462,7 +468,7 @@ private:
         return (voxel_hash + probe * hash2(voxel_hash, capacity)) % capacity;
     }
 
-    void add_point_cloud_(const PointCloudShared& pc) {
+    void add_point_cloud_impl(const PointCloudShared& pc) {
         const size_t N = pc.size();
         if (N == 0) return;
 
@@ -549,7 +555,7 @@ private:
         this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
     }
 
-    void remove_old_data_() {
+    void remove_old_data_impl() {
         if (this->staleness_counter_ <= this->max_staleness_) return;
 
         shared_vector<uint32_t> voxel_num_vec(1, 0, *this->queue_.ptr);
@@ -678,8 +684,8 @@ private:
         this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
     }
 
-    void downsampling_(PointContainerShared& result, RGBType* rgb_output_ptr = nullptr,
-                       float* intensity_output_ptr = nullptr) {
+    void downsampling_impl(PointContainerShared& result, RGBType* rgb_output_ptr = nullptr,
+                           float* intensity_output_ptr = nullptr) {
         // NVIDIA device
         if (this->queue_.is_nvidia()) {
             // compute valid flags
@@ -736,14 +742,9 @@ private:
 
                         if (flag_ptr[i] == 1) {
                             const size_t output_idx = prefix_sum_ptr[i] - 1;
-
                             const auto sum = sum_ptr[i];
-                            result_ptr[output_idx].x() = sum.x / sum.count;
-                            result_ptr[output_idx].y() = sum.y / sum.count;
-                            result_ptr[output_idx].z() = sum.z / sum.count;
-                            result_ptr[output_idx].w() = 1.0f;
 
-                            compute_averaged_attributes(sum, output_idx, rgb_output, intensity_output);
+                            compute_averaged_attributes(sum, output_idx, result_ptr, rgb_output, intensity_output);
                         }
                     });
 
@@ -758,14 +759,9 @@ private:
                         if (key_ptr[i] == VoxelConstants::invalid_coord) return;
 
                         const auto output_idx = atomic_ref_uint32_t(point_num_ptr[0]).fetch_add(1U);
-
                         const auto sum = sum_ptr[i];
-                        result_ptr[output_idx].x() = sum.x / sum.count;
-                        result_ptr[output_idx].y() = sum.y / sum.count;
-                        result_ptr[output_idx].z() = sum.z / sum.count;
-                        result_ptr[output_idx].w() = 1.0f;
 
-                        compute_averaged_attributes(sum, output_idx, rgb_output, intensity_output);
+                        compute_averaged_attributes(sum, output_idx, result_ptr, rgb_output, intensity_output);
                     });
                 }
             })
