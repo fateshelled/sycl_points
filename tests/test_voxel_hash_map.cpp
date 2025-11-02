@@ -76,13 +76,12 @@ TEST(VoxelHashMapTest, AggregatesPointsWithinSameVoxel) {
         auto cloud = MakePointCloud(queue, input_positions);
         voxel_map.add_point_cloud(cloud);
 
-        sycl_points::PointContainerShared result(
-            sycl_points::shared_allocator<sycl_points::PointType, sycl_points::PointAlignment>(*queue.ptr));
+        sycl_points::PointCloudShared result(queue);
         voxel_map.downsampling(result);
 
         ASSERT_EQ(result.size(), 2U);
 
-        auto averaged_positions = ExtractPositions(result);
+        auto averaged_positions = ExtractPositions(*result.points);
         std::sort(averaged_positions.begin(), averaged_positions.end(), [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
             if (lhs.x() != rhs.x()) {
                 return lhs.x() < rhs.x();
@@ -167,8 +166,7 @@ TEST(VoxelHashMapTest, RemovesStaleVoxelsAfterConfiguredCycles) {
         auto old_cloud = MakePointCloud(queue, {{0.0f, 0.0f, 0.0f}});
         voxel_map.add_point_cloud(old_cloud);
 
-        sycl_points::PointContainerShared result(
-            sycl_points::shared_allocator<sycl_points::PointType, sycl_points::PointAlignment>(*queue.ptr));
+        sycl_points::PointCloudShared result(queue);
         voxel_map.downsampling(result);
         ASSERT_EQ(result.size(), 1U);
 
@@ -182,7 +180,7 @@ TEST(VoxelHashMapTest, RemovesStaleVoxelsAfterConfiguredCycles) {
         voxel_map.downsampling(result);
         ASSERT_EQ(result.size(), 1U);
 
-        auto remaining_positions = ExtractPositions(result);
+        auto remaining_positions = ExtractPositions(*result.points);
         ASSERT_EQ(remaining_positions.size(), 1U);
         EXPECT_NEAR(remaining_positions[0].x(), 1.0f, 1e-5f);
         EXPECT_NEAR(remaining_positions[0].y(), 0.0f, 1e-5f);
