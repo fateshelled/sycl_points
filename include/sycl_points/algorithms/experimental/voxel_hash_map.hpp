@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <stdexcept>
 
 #include <sycl_points/algorithms/common/prefix_sum.hpp>
@@ -80,7 +81,10 @@ public:
 
         // rehash
         if (this->rehash_threshold_ < (float)this->voxel_num_ / (float)this->capacity_) {
-            this->rehash(this->capacity_ * 2);
+            const size_t next_capacity = this->get_next_capacity_value();
+            if (next_capacity > this->capacity_) {
+                this->rehash(next_capacity);
+            }
         }
 
         if (N > 0) {
@@ -221,6 +225,8 @@ private:
     float voxel_size_ = 0.0f;
     float voxel_size_inv_ = 0.0f;
     size_t capacity_ = 30029;  // prime number recommended
+    inline static constexpr std::array<size_t, 11> kCapacityCandidates = {
+        30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};
 
     std::shared_ptr<uint64_t> key_ptr_ = nullptr;
     std::shared_ptr<VoxelPoint> sum_ptr_ = nullptr;
@@ -270,6 +276,16 @@ private:
         evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
         evs += this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_.get(), 0, this->capacity_);
         evs.wait();
+    }
+
+    size_t get_next_capacity_value() const {
+        // Select the next pre-defined capacity to keep probing statistics stable.
+        for (const auto candidate : kCapacityCandidates) {
+            if (candidate > this->capacity_) {
+                return candidate;
+            }
+        }
+        return this->capacity_;
     }
 
     size_t compute_wg_size_add_point_cloud() const {
