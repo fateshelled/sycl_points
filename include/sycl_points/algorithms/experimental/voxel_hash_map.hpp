@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Eigen/Core>
 #include <array>
 #include <iostream>
 #include <stdexcept>
@@ -10,7 +11,10 @@
 
 namespace sycl_points {
 namespace algorithms {
-namespace filter {
+namespace mapping {
+
+// Reuse the voxel hashing utilities defined for filtering algorithms.
+namespace kernel = sycl_points::algorithms::filter::kernel;
 
 class VoxelHashMap {
 public:
@@ -108,7 +112,12 @@ public:
         ++this->staleness_counter_;
     }
 
-    void downsampling(PointCloudShared& result) {
+    /// @brief Export the aggregated voxels within the provided bounding range.
+    /// @param result Point cloud container storing the filtered voxels.
+    /// @param center Center of the query bounding box in meters.
+    /// @param distance Half-extent of the axis-aligned bounding box in meters.
+    void downsampling(PointCloudShared& result, const Eigen::Vector3f& center,
+                      const float distance = 100.0f) {
         if (this->voxel_num_ == 0) {
             result.clear();
             return;
@@ -136,7 +145,7 @@ public:
             result.resize_intensities(0);
         }
 
-        this->downsampling_impl(*result.points, rgb_output, intensity_output);
+        this->downsampling_impl(*result.points, center, distance, rgb_output, intensity_output);
 
         const size_t final_voxel_num = this->voxel_num_;
         result.resize_points(final_voxel_num);
@@ -692,8 +701,17 @@ private:
         this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
     }
 
-    void downsampling_impl(PointContainerShared& result, RGBType* rgb_output_ptr = nullptr,
+    void downsampling_impl(PointContainerShared& result, const Eigen::Vector3f& center,
+                           const float distance, RGBType* rgb_output_ptr = nullptr,
                            float* intensity_output_ptr = nullptr) {
+        // Compute the axis-aligned bounding box around the requested query center.
+        const float bbox_min_x = center.x() - distance;
+        const float bbox_min_y = center.y() - distance;
+        const float bbox_min_z = center.z() - distance;
+        const float bbox_max_x = center.x() + distance;
+        const float bbox_max_y = center.y() + distance;
+        const float bbox_max_z = center.z() + distance;
+
         // NVIDIA device
         if (this->queue_.is_nvidia()) {
             // compute valid flags
@@ -711,6 +729,12 @@ private:
                     const auto key_ptr = this->key_ptr_.get();
                     const auto sum_ptr = this->sum_ptr_.get();
                     const auto min_num_point = this->min_num_point_;
+                    const float min_x = bbox_min_x;
+                    const float min_y = bbox_min_y;
+                    const float min_z = bbox_min_z;
+                    const float max_x = bbox_max_x;
+                    const float max_y = bbox_max_y;
+                    const float max_z = bbox_max_z;
 
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                         const size_t global_id = item.get_global_id(0);
@@ -719,7 +743,23 @@ private:
                         const bool is_valid_voxel =
                             (key_ptr[global_id] != VoxelConstants::invalid_coord) &&
                             (sum_ptr[global_id].count >= min_num_point);
-                        valid_flags[global_id] = static_cast<uint8_t>(is_valid_voxel);
+                        if (!is_valid_voxel) {
+                            valid_flags[global_id] = 0U;
+                            return;
+                        }
+
+                        // Compute the voxel centroid and test it against the bounding box.
+                        const auto sum = sum_ptr[global_id];
+                        const float inv_count = 1.0f / static_cast<float>(sum.count);
+                        const float centroid_x = sum.x * inv_count;
+                        const float centroid_y = sum.y * inv_count;
+                        const float centroid_z = sum.z * inv_count;
+
+                        const bool inside_bbox = (centroid_x >= min_x && centroid_x <= max_x) &&
+                                                 (centroid_y >= min_y && centroid_y <= max_y) &&
+                                                 (centroid_z >= min_z && centroid_z <= max_z);
+
+                        valid_flags[global_id] = static_cast<uint8_t>(inside_bbox);
                     });
                 })
                 .wait();
@@ -743,6 +783,12 @@ private:
                 // Optional output arrays for aggregated RGB colors and intensity values.
                 const auto rgb_output = rgb_output_ptr;
                 const auto intensity_output = intensity_output_ptr;
+                const float min_x = bbox_min_x;
+                const float min_y = bbox_min_y;
+                const float min_z = bbox_min_z;
+                const float max_x = bbox_max_x;
+                const float max_y = bbox_max_y;
+                const float max_z = bbox_max_z;
 
                 if (this->queue_.is_nvidia()) {
                     const auto flag_ptr = this->valid_flags_ptr_->data();
@@ -756,6 +802,18 @@ private:
                         if (flag_ptr[i] == 1) {
                             const size_t output_idx = prefix_sum_ptr[i] - 1;
                             const auto sum = sum_ptr[i];
+
+                            const float inv_count = 1.0f / static_cast<float>(sum.count);
+                            const float centroid_x = sum.x * inv_count;
+                            const float centroid_y = sum.y * inv_count;
+                            const float centroid_z = sum.z * inv_count;
+
+                            // Guard against stale flags by double-checking the bounding box.
+                            if (!((centroid_x >= min_x && centroid_x <= max_x) &&
+                                  (centroid_y >= min_y && centroid_y <= max_y) &&
+                                  (centroid_z >= min_z && centroid_z <= max_z))) {
+                                return;
+                            }
 
                             compute_averaged_attributes(sum, output_idx, result_ptr, rgb_output, intensity_output,
                                                         min_num_point);
@@ -779,6 +837,18 @@ private:
                             return;
                         }
 
+                        const float inv_count = 1.0f / static_cast<float>(sum.count);
+                        const float centroid_x = sum.x * inv_count;
+                        const float centroid_y = sum.y * inv_count;
+                        const float centroid_z = sum.z * inv_count;
+
+                        const bool inside_bbox = (centroid_x >= min_x && centroid_x <= max_x) &&
+                                                 (centroid_y >= min_y && centroid_y <= max_y) &&
+                                                 (centroid_z >= min_z && centroid_z <= max_z);
+                        if (!inside_bbox) {
+                            return;
+                        }
+
                         const auto output_idx = atomic_ref_uint32_t(point_num_ptr[0]).fetch_add(1U);
 
                         compute_averaged_attributes(sum, output_idx, result_ptr, rgb_output, intensity_output,
@@ -796,6 +866,6 @@ private:
     }
 };
 
-}  // namespace filter
+}  // namespace mapping
 }  // namespace algorithms
 }  // namespace sycl_points

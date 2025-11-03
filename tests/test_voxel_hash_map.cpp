@@ -54,8 +54,8 @@ TEST(VoxelHashMapTest, ConstructorRejectsNonPositiveVoxelSize) {
     sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
     sycl_points::sycl_utils::DeviceQueue queue(device);
 
-    EXPECT_THROW(sycl_points::algorithms::filter::VoxelHashMap(queue, 0.0f), std::invalid_argument);
-    EXPECT_THROW(sycl_points::algorithms::filter::VoxelHashMap(queue, -0.1f), std::invalid_argument);
+    EXPECT_THROW(sycl_points::algorithms::mapping::VoxelHashMap(queue, 0.0f), std::invalid_argument);
+    EXPECT_THROW(sycl_points::algorithms::mapping::VoxelHashMap(queue, -0.1f), std::invalid_argument);
 }
 
 TEST(VoxelHashMapTest, AggregatesPointsWithinSameVoxel) {
@@ -64,7 +64,7 @@ TEST(VoxelHashMapTest, AggregatesPointsWithinSameVoxel) {
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
         const float voxel_size = 0.1f;
-        sycl_points::algorithms::filter::VoxelHashMap voxel_map(queue, voxel_size);
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, voxel_size);
 
         const std::vector<Eigen::Vector3f> input_positions = {
             {0.02f, 0.02f, 0.00f},
@@ -77,7 +77,7 @@ TEST(VoxelHashMapTest, AggregatesPointsWithinSameVoxel) {
         voxel_map.add_point_cloud(cloud);
 
         sycl_points::PointCloudShared result(queue);
-        voxel_map.downsampling(result);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
 
         ASSERT_EQ(result.size(), 2U);
 
@@ -114,7 +114,7 @@ TEST(VoxelHashMapTest, AggregatesRgbAndIntensityWithinVoxel) {
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
         const float voxel_size = 0.5f;
-        sycl_points::algorithms::filter::VoxelHashMap voxel_map(queue, voxel_size);
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, voxel_size);
 
         const std::vector<Eigen::Vector3f> input_positions = {
             {0.0f, 0.0f, 0.0f},
@@ -130,7 +130,7 @@ TEST(VoxelHashMapTest, AggregatesRgbAndIntensityWithinVoxel) {
         voxel_map.add_point_cloud(cloud);
 
         sycl_points::PointCloudShared result(queue);
-        voxel_map.downsampling(result);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
 
         ASSERT_EQ(result.size(), 1U);
         ASSERT_TRUE(result.has_rgb());
@@ -159,7 +159,7 @@ TEST(VoxelHashMapTest, AppliesMinimumPointThresholdPerVoxel) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::filter::VoxelHashMap voxel_map(queue, 0.1f);
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.1f);
         voxel_map.set_min_num_point(2);
 
         const std::vector<Eigen::Vector3f> input_positions = {
@@ -172,7 +172,7 @@ TEST(VoxelHashMapTest, AppliesMinimumPointThresholdPerVoxel) {
         voxel_map.add_point_cloud(cloud);
 
         sycl_points::PointCloudShared result(queue);
-        voxel_map.downsampling(result);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
 
         ASSERT_EQ(result.size(), 1U);
         auto remaining_positions = ExtractPositions(*result.points);
@@ -190,7 +190,7 @@ TEST(VoxelHashMapTest, PreservesAttributesWhenBelowThresholdCountsExist) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::filter::VoxelHashMap voxel_map(queue, 0.1f);
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.1f);
         voxel_map.set_min_num_point(3);
 
         const std::vector<Eigen::Vector3f> colored_positions = {
@@ -213,7 +213,7 @@ TEST(VoxelHashMapTest, PreservesAttributesWhenBelowThresholdCountsExist) {
         voxel_map.add_point_cloud(colorless_cloud);
 
         sycl_points::PointCloudShared result(queue);
-        voxel_map.downsampling(result);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
 
         ASSERT_EQ(result.size(), 1U);
         ASSERT_TRUE(result.has_rgb());
@@ -232,12 +232,46 @@ TEST(VoxelHashMapTest, PreservesAttributesWhenBelowThresholdCountsExist) {
     }
 }
 
+TEST(VoxelHashMapTest, DownsamplingRespectsAxisAlignedBoundingBox) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.1f);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {1.05f, 0.00f, 0.00f},  // Inside the bounding box after aggregation
+            {1.12f, 0.00f, 0.00f},  // Aggregated with the first point
+            {1.35f, 0.00f, 0.00f},  // Outside the queried bounding box
+            {1.00f, 0.25f, 0.00f},  // Outside along the Y axis
+        };
+
+        auto cloud = MakePointCloud(queue, input_positions);
+        voxel_map.add_point_cloud(cloud);
+
+        sycl_points::PointCloudShared result(queue);
+        voxel_map.downsampling(result, Eigen::Vector3f(1.0f, 0.0f, 0.0f), 0.2f);
+
+        ASSERT_EQ(result.size(), 1U);
+
+        const auto filtered_positions = ExtractPositions(*result.points);
+        ASSERT_EQ(filtered_positions.size(), 1U);
+
+        // The centroid of the first two points should remain inside the bounding box.
+        EXPECT_NEAR(filtered_positions[0].x(), 1.085f, 1e-5f);
+        EXPECT_NEAR(filtered_positions[0].y(), 0.0f, 1e-5f);
+        EXPECT_NEAR(filtered_positions[0].z(), 0.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
 TEST(VoxelHashMapTest, RemovesStaleVoxelsAfterConfiguredCycles) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::filter::VoxelHashMap voxel_map(queue, 0.1f);
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.1f);
         voxel_map.set_max_staleness(1);
         voxel_map.set_remove_old_data_cycle(1);
 
@@ -245,17 +279,17 @@ TEST(VoxelHashMapTest, RemovesStaleVoxelsAfterConfiguredCycles) {
         voxel_map.add_point_cloud(old_cloud);
 
         sycl_points::PointCloudShared result(queue);
-        voxel_map.downsampling(result);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
         ASSERT_EQ(result.size(), 1U);
 
         auto recent_cloud = MakePointCloud(queue, {{1.0f, 0.0f, 0.0f}});
         voxel_map.add_point_cloud(recent_cloud);
-        voxel_map.downsampling(result);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
         ASSERT_EQ(result.size(), 2U);
 
         sycl_points::PointCloudShared empty_cloud(queue);
         voxel_map.add_point_cloud(empty_cloud);
-        voxel_map.downsampling(result);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
         ASSERT_EQ(result.size(), 1U);
 
         auto remaining_positions = ExtractPositions(*result.points);
