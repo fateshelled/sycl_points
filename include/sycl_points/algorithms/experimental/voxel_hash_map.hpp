@@ -123,7 +123,7 @@ public:
             return;
         }
 
-        const size_t allocation_size = this->capacity_;
+        const size_t allocation_size = this->voxel_num_;
 
         result.resize_points(allocation_size);
 
@@ -243,7 +243,7 @@ private:
     }
 
     SYCL_EXTERNAL static bool centroid_inside_bbox(const VoxelPoint& sum, float min_x, float min_y,
-                                                     float min_z, float max_x, float max_y, float max_z) {
+                                                   float min_z, float max_x, float max_y, float max_z) {
         if (sum.count == 0U) {
             return false;
         }
@@ -255,6 +255,16 @@ private:
 
         return (centroid_x >= min_x && centroid_x <= max_x) && (centroid_y >= min_y && centroid_y <= max_y) &&
                (centroid_z >= min_z && centroid_z <= max_z);
+    }
+
+    SYCL_EXTERNAL static bool should_include_voxel(uint64_t key, const VoxelPoint& sum,
+                                                   uint32_t min_num_point, float min_x, float min_y, float min_z,
+                                                   float max_x, float max_y, float max_z) {
+        if (key == VoxelConstants::invalid_coord || sum.count < min_num_point) {
+            return false;
+        }
+
+        return centroid_inside_bbox(sum, min_x, min_y, min_z, max_x, max_y, max_z);
     }
 
     sycl_utils::DeviceQueue queue_;
@@ -750,18 +760,16 @@ private:
                         const size_t global_id = item.get_global_id(0);
                         if (global_id >= cp) return;
 
-                        const bool is_valid_voxel =
-                            (key_ptr[global_id] != VoxelConstants::invalid_coord) &&
-                            (sum_ptr[global_id].count >= min_num_point);
-                        if (!is_valid_voxel) {
+                        const auto key = key_ptr[global_id];
+                        const auto sum = sum_ptr[global_id];
+
+                        if (!should_include_voxel(key, sum, min_num_point, bbox_min_x, bbox_min_y, bbox_min_z,
+                                                  bbox_max_x, bbox_max_y, bbox_max_z)) {
                             valid_flags[global_id] = 0U;
                             return;
                         }
 
-                        const auto sum = sum_ptr[global_id];
-                        const bool inside_bbox = centroid_inside_bbox(sum, bbox_min_x, bbox_min_y, bbox_min_z,
-                                                                      bbox_max_x, bbox_max_y, bbox_max_z);
-                        valid_flags[global_id] = static_cast<uint8_t>(inside_bbox);
+                        valid_flags[global_id] = 1U;
                     });
                 })
                 .wait();
@@ -813,17 +821,11 @@ private:
                         const auto i = item.get_global_id(0);
                         if (i >= cp) return;
 
-                        if (key_ptr[i] == VoxelConstants::invalid_coord) return;
-
+                        const auto key = key_ptr[i];
                         const auto sum = sum_ptr[i];
 
-                        if (sum.count < min_num_point) {
-                            return;
-                        }
-
-                        const bool inside_bbox = centroid_inside_bbox(sum, bbox_min_x, bbox_min_y, bbox_min_z,
-                                                                      bbox_max_x, bbox_max_y, bbox_max_z);
-                        if (!inside_bbox) {
+                        if (!should_include_voxel(key, sum, min_num_point, bbox_min_x, bbox_min_y, bbox_min_z,
+                                                  bbox_max_x, bbox_max_y, bbox_max_z)) {
                             return;
                         }
 

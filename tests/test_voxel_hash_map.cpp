@@ -159,7 +159,7 @@ TEST(VoxelHashMapTest, AppliesMinimumPointThresholdPerVoxel) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.1f);
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.2f);
         voxel_map.set_min_num_point(2);
 
         const std::vector<Eigen::Vector3f> input_positions = {
@@ -190,7 +190,7 @@ TEST(VoxelHashMapTest, PreservesAttributesWhenBelowThresholdCountsExist) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.1f);
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.2f);
         voxel_map.set_min_num_point(3);
 
         const std::vector<Eigen::Vector3f> colored_positions = {
@@ -237,7 +237,7 @@ TEST(VoxelHashMapTest, DownsamplingRespectsAxisAlignedBoundingBox) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.1f);
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.2f);
 
         const std::vector<Eigen::Vector3f> input_positions = {
             {1.05f, 0.00f, 0.00f},  // Inside the bounding box after aggregation
