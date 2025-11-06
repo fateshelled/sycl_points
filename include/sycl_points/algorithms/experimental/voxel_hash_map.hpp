@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Eigen/Core>
 #include <array>
 #include <iostream>
 #include <stdexcept>
@@ -10,7 +11,10 @@
 
 namespace sycl_points {
 namespace algorithms {
-namespace filter {
+namespace mapping {
+
+// Reuse the voxel hashing utilities defined for filtering algorithms.
+namespace kernel = sycl_points::algorithms::filter::kernel;
 
 class VoxelHashMap {
 public:
@@ -108,13 +112,18 @@ public:
         ++this->staleness_counter_;
     }
 
-    void downsampling(PointCloudShared& result) {
+    /// @brief Export the aggregated voxels within the provided bounding range.
+    /// @param result Point cloud container storing the filtered voxels.
+    /// @param center Center of the query bounding box in meters.
+    /// @param distance Half-extent of the axis-aligned bounding box in meters.
+    void downsampling(PointCloudShared& result, const Eigen::Vector3f& center,
+                      const float distance = 100.0f) {
         if (this->voxel_num_ == 0) {
             result.clear();
             return;
         }
 
-        const size_t allocation_size = this->capacity_;
+        const size_t allocation_size = this->voxel_num_;
 
         result.resize_points(allocation_size);
 
@@ -136,9 +145,8 @@ public:
             result.resize_intensities(0);
         }
 
-        this->downsampling_impl(*result.points, rgb_output, intensity_output);
-
-        const size_t final_voxel_num = this->voxel_num_;
+        const size_t final_voxel_num =
+            this->downsampling_impl(*result.points, center, distance, rgb_output, intensity_output);
         result.resize_points(final_voxel_num);
         result.resize_rgb(this->has_rgb_data_ ? final_voxel_num : 0);
         result.resize_intensities(this->has_intensity_data_ ? final_voxel_num : 0);
@@ -232,6 +240,31 @@ private:
                 intensity_output[output_idx] = 0.0f;
             }
         }
+    }
+
+    SYCL_EXTERNAL static bool centroid_inside_bbox(const VoxelPoint& sum, float min_x, float min_y,
+                                                   float min_z, float max_x, float max_y, float max_z) {
+        if (sum.count == 0U) {
+            return false;
+        }
+
+        const float inv_count = 1.0f / static_cast<float>(sum.count);
+        const float centroid_x = sum.x * inv_count;
+        const float centroid_y = sum.y * inv_count;
+        const float centroid_z = sum.z * inv_count;
+
+        return (centroid_x >= min_x && centroid_x <= max_x) && (centroid_y >= min_y && centroid_y <= max_y) &&
+               (centroid_z >= min_z && centroid_z <= max_z);
+    }
+
+    SYCL_EXTERNAL static bool should_include_voxel(uint64_t key, const VoxelPoint& sum,
+                                                   uint32_t min_num_point, float min_x, float min_y, float min_z,
+                                                   float max_x, float max_y, float max_z) {
+        if (key == VoxelConstants::invalid_coord || sum.count < min_num_point) {
+            return false;
+        }
+
+        return centroid_inside_bbox(sum, min_x, min_y, min_z, max_x, max_y, max_z);
     }
 
     sycl_utils::DeviceQueue queue_;
@@ -692,10 +725,21 @@ private:
         this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
     }
 
-    void downsampling_impl(PointContainerShared& result, RGBType* rgb_output_ptr = nullptr,
-                           float* intensity_output_ptr = nullptr) {
-        // NVIDIA device
-        if (this->queue_.is_nvidia()) {
+    size_t downsampling_impl(PointContainerShared& result, const Eigen::Vector3f& center,
+                             const float distance, RGBType* rgb_output_ptr = nullptr,
+                             float* intensity_output_ptr = nullptr) {
+        // Compute the axis-aligned bounding box around the requested query center.
+        const float bbox_min_x = center.x() - distance;
+        const float bbox_min_y = center.y() - distance;
+        const float bbox_min_z = center.z() - distance;
+        const float bbox_max_x = center.x() + distance;
+        const float bbox_max_y = center.y() + distance;
+        const float bbox_max_z = center.z() + distance;
+
+        const bool is_nvidia = this->queue_.is_nvidia();
+        size_t filtered_voxel_count = 0;
+
+        if (is_nvidia) {
             // compute valid flags
             if (this->valid_flags_ptr_->size() < this->capacity_) {
                 this->valid_flags_ptr_->resize(this->capacity_);
@@ -716,15 +760,21 @@ private:
                         const size_t global_id = item.get_global_id(0);
                         if (global_id >= cp) return;
 
-                        const bool is_valid_voxel =
-                            (key_ptr[global_id] != VoxelConstants::invalid_coord) &&
-                            (sum_ptr[global_id].count >= min_num_point);
-                        valid_flags[global_id] = static_cast<uint8_t>(is_valid_voxel);
+                        const auto key = key_ptr[global_id];
+                        const auto sum = sum_ptr[global_id];
+
+                        if (!should_include_voxel(key, sum, min_num_point, bbox_min_x, bbox_min_y, bbox_min_z,
+                                                  bbox_max_x, bbox_max_y, bbox_max_z)) {
+                            valid_flags[global_id] = 0U;
+                            return;
+                        }
+
+                        valid_flags[global_id] = 1U;
                     });
                 })
                 .wait();
             // compute prefix sum
-            this->voxel_num_ = this->prefix_sum_->compute(*this->valid_flags_ptr_);
+            filtered_voxel_count = this->prefix_sum_->compute(*this->valid_flags_ptr_);
         }
 
         // voxel hash map to point cloud
@@ -744,7 +794,7 @@ private:
                 const auto rgb_output = rgb_output_ptr;
                 const auto intensity_output = intensity_output_ptr;
 
-                if (this->queue_.is_nvidia()) {
+                if (is_nvidia) {
                     const auto flag_ptr = this->valid_flags_ptr_->data();
                     const auto prefix_sum_ptr = this->prefix_sum_->get_prefix_sum().data();
                     const auto min_num_point = this->min_num_point_;
@@ -771,11 +821,11 @@ private:
                         const auto i = item.get_global_id(0);
                         if (i >= cp) return;
 
-                        if (key_ptr[i] == VoxelConstants::invalid_coord) return;
-
+                        const auto key = key_ptr[i];
                         const auto sum = sum_ptr[i];
 
-                        if (sum.count < min_num_point) {
+                        if (!should_include_voxel(key, sum, min_num_point, bbox_min_x, bbox_min_y, bbox_min_z,
+                                                  bbox_max_x, bbox_max_y, bbox_max_z)) {
                             return;
                         }
 
@@ -788,14 +838,14 @@ private:
             })
             .wait();
 
-        if (!this->queue_.is_nvidia()) {
-            this->update_voxel_num_and_flags(static_cast<size_t>(point_num_vec.at(0)));
-        } else {
-            this->update_voxel_num_and_flags(this->voxel_num_);
+        if (!is_nvidia) {
+            filtered_voxel_count = static_cast<size_t>(point_num_vec.at(0));
         }
+
+        return filtered_voxel_count;
     }
 };
 
-}  // namespace filter
+}  // namespace mapping
 }  // namespace algorithms
 }  // namespace sycl_points
