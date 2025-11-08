@@ -434,6 +434,12 @@ private:
         const size_t local_id = item.get_local_id(0);
         const size_t global_id = item.get_global_id(0);
 
+        const size_t group_id = item.get_group(0);
+        const size_t group_offset = group_id * wg_size;
+        const size_t remaining_points = (point_num > group_offset) ? point_num - group_offset : 0;
+        // The active size tells the sorter how many valid elements are present in the current work-group.
+        [[maybe_unused]] const size_t active_size = std::min(wg_size, remaining_points);
+
         if (global_id < point_num && local_id < wg_size) {
             const auto voxel_hash = kernel::compute_voxel_bit(point_ptr[global_id], voxel_size_inv);
 
@@ -464,15 +470,19 @@ private:
                 local_voxel_data[local_id].pt.intensity = intensity_ptr[global_id];
                 local_voxel_data[local_id].pt.intensity_count = 1;
             }
+        } else if (local_id < wg_size) {
+            // Mark unused lanes so that the sorter treats them as empty entries.
+            local_voxel_data[local_id].voxel_idx = VoxelConstants::invalid_coord;
+            local_voxel_data[local_id].pt = VoxelPoint{};
         }
         // wait local
         item.barrier(sycl::access::fence_space::local_space);
 
         if constexpr (AGGREGATE) {
             // sort within work group by voxel index
-            bitonic_sort_local_data(local_voxel_data, wg_size, wg_size_power_of_2, item);
+            bitonic_sort_local_data(local_voxel_data, active_size, wg_size_power_of_2, item);
             // reduction
-            reduction_sorted_local_data(local_voxel_data, wg_size, item);
+            reduction_sorted_local_data(local_voxel_data, active_size, item);
         }
     }
 
@@ -552,7 +562,10 @@ private:
 
             auto range = sycl::nd_range<1>(global_size, local_size);
 
-            if (this->queue_.is_nvidia()) {
+            // Force local sorting on CPU as well to exercise the shared bitonic implementation.
+            const bool use_local_sort = this->queue_.is_nvidia() || this->queue_.is_cpu();
+
+            if (use_local_sort) {
                 auto voxel_num = sycl::reduction(voxel_num_vec.data(), sycl::plus<uint32_t>());
 
                 h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
