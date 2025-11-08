@@ -2,6 +2,7 @@
 
 #include <Eigen/Geometry>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -10,22 +11,27 @@
 #include <unordered_set>
 #include <vector>
 
+#include <sycl/sycl.hpp>
+
 #include <sycl_points/points/point_cloud.hpp>
+#include <sycl_points/utils/sycl_utils.hpp>
 
 namespace sycl_points {
 namespace algorithms {
 namespace mapping {
 
 /// @brief Header-only occupancy grid map that accumulates log-odds values per voxel.
-/// @note The implementation runs on the host and uses shared USM containers for IO.
+/// @note The heavy per-point computations are parallelized on the device using the provided SYCL queue.
 class OccupancyGridMap {
 public:
     using Ptr = std::shared_ptr<OccupancyGridMap>;
 
     /// @brief Construct the occupancy grid map.
     /// @param voxel_size Edge length of a voxel in meters.
-    explicit OccupancyGridMap(const float voxel_size) {
+    OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
+        this->device_contributions_ =
+            std::make_shared<DeviceContributionBuffer>(0, *this->queue_.ptr);
     }
 
     /// @brief Reset the map data.
@@ -100,21 +106,125 @@ public:
             return;
         }
 
+        if (cloud.queue.ptr.get() != this->queue_.ptr.get()) {
+            throw std::invalid_argument("Point cloud queue does not match occupancy grid map queue.");
+        }
+
         const bool has_rgb = cloud.has_rgb();
         const bool has_intensity = cloud.has_intensity();
         this->has_rgb_data_ = this->has_rgb_data_ || has_rgb;
         this->has_intensity_data_ = this->has_intensity_data_ || has_intensity;
 
+        const size_t num_points = cloud.points->size();
+        if (this->device_contributions_->size() < num_points) {
+            this->device_contributions_->resize(num_points);
+        }
+
+        this->queue_.set_accessed_by_device(this->device_contributions_->data(), num_points);
+        this->queue_.set_accessed_by_device(cloud.points->data(), num_points);
+        if (has_rgb) {
+            this->queue_.set_accessed_by_device(cloud.rgb->data(), num_points);
+        }
+        if (has_intensity) {
+            this->queue_.set_accessed_by_device(cloud.intensities->data(), num_points);
+        }
+
+        const DeviceTransform device_transform = this->make_device_transform(sensor_pose.matrix());
+        const float inv_voxel_size = this->inv_voxel_size_;
+
+        const size_t work_group_size = this->queue_.get_work_group_size();
+        const size_t global_size = this->queue_.get_global_size(num_points);
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& handler) {
+            const auto contributions_ptr = this->device_contributions_->data();
+            const auto points_ptr = cloud.points->data();
+            const auto rgb_ptr = has_rgb ? cloud.rgb->data() : static_cast<RGBType*>(nullptr);
+            const auto intensity_ptr = has_intensity ? cloud.intensities->data() : static_cast<float*>(nullptr);
+
+            // Transform points to the world frame and compute their voxel coordinates in parallel.
+            handler.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t idx = item.get_global_id(0);
+                if (idx >= num_points) {
+                    return;
+                }
+
+                DeviceContribution contribution;
+                contribution.valid = 0U;
+                contribution.has_rgb = 0U;
+                contribution.has_intensity = 0U;
+
+                const PointType point = points_ptr[idx];
+                const float local_x = point.x();
+                const float local_y = point.y();
+                const float local_z = point.z();
+
+                if (!sycl::isfinite(local_x) || !sycl::isfinite(local_y) || !sycl::isfinite(local_z)) {
+                    contributions_ptr[idx] = contribution;
+                    return;
+                }
+
+                const float world_x = device_transform.m[0] * local_x + device_transform.m[1] * local_y +
+                                      device_transform.m[2] * local_z + device_transform.m[3];
+                const float world_y = device_transform.m[4] * local_x + device_transform.m[5] * local_y +
+                                      device_transform.m[6] * local_z + device_transform.m[7];
+                const float world_z = device_transform.m[8] * local_x + device_transform.m[9] * local_y +
+                                      device_transform.m[10] * local_z + device_transform.m[11];
+
+                const float scaled_x = world_x * inv_voxel_size;
+                const float scaled_y = world_y * inv_voxel_size;
+                const float scaled_z = world_z * inv_voxel_size;
+
+                const int32_t voxel_x = device_fast_floor(scaled_x);
+                const int32_t voxel_y = device_fast_floor(scaled_y);
+                const int32_t voxel_z = device_fast_floor(scaled_z);
+                contribution.voxel_x = voxel_x;
+                contribution.voxel_y = voxel_y;
+                contribution.voxel_z = voxel_z;
+                contribution.world_x = world_x;
+                contribution.world_y = world_y;
+                contribution.world_z = world_z;
+
+                if (rgb_ptr) {
+                    const RGBType rgb = rgb_ptr[idx];
+                    contribution.rgb_x = rgb.x();
+                    contribution.rgb_y = rgb.y();
+                    contribution.rgb_z = rgb.z();
+                    contribution.rgb_w = rgb.w();
+                    contribution.has_rgb = 1U;
+                }
+
+                if (intensity_ptr) {
+                    contribution.intensity = intensity_ptr[idx];
+                    contribution.has_intensity = 1U;
+                }
+
+                contribution.valid = 1U;
+                contributions_ptr[idx] = contribution;
+            });
+        });
+        event.wait();
+
+        this->queue_.clear_accessed_by_device(this->device_contributions_->data(), num_points);
+        this->queue_.clear_accessed_by_device(cloud.points->data(), num_points);
+        if (has_rgb) {
+            this->queue_.clear_accessed_by_device(cloud.rgb->data(), num_points);
+        }
+        if (has_intensity) {
+            this->queue_.clear_accessed_by_device(cloud.intensities->data(), num_points);
+        }
+
+        this->queue_.set_accessed_by_host(this->device_contributions_->data(), num_points);
+
         std::unordered_set<VoxelKey, VoxelKeyHash> updated_voxels;
-        updated_voxels.reserve(cloud.points->size());
+        updated_voxels.reserve(num_points);
 
-        // Update the occupied voxels using a simple inverse sensor model.
-        for (size_t i = 0; i < cloud.points->size(); ++i) {
-            const PointType& raw_point = (*cloud.points)[i];
-            const Eigen::Vector3f local_point = raw_point.head<3>();
-            const Eigen::Vector3f world_point = sensor_pose * local_point;
+        for (size_t i = 0; i < num_points; ++i) {
+            const DeviceContribution& contribution = (*this->device_contributions_)[i];
+            if (contribution.valid == 0U) {
+                continue;
+            }
 
-            const VoxelKey key = this->compute_key(world_point);
+            const VoxelKey key{contribution.voxel_x, contribution.voxel_y, contribution.voxel_z};
             VoxelData& data = this->voxels_[key];
 
             updated_voxels.insert(key);
@@ -123,24 +233,29 @@ public:
             data.log_odds = this->clamp_log_odds(data.log_odds + this->log_odds_hit_);
 
             if (data.hit_count == 1U) {
-                data.centroid = world_point;
+                data.centroid = Eigen::Vector3f(contribution.world_x, contribution.world_y, contribution.world_z);
             } else {
                 // Update centroid using incremental average to keep points stable.
                 const float ratio = 1.0f / static_cast<float>(data.hit_count);
+                const Eigen::Vector3f world_point(contribution.world_x, contribution.world_y, contribution.world_z);
                 data.centroid = data.centroid + (world_point - data.centroid) * ratio;
             }
 
-            if (has_rgb) {
-                const auto& rgb = (*cloud.rgb)[i];
-                data.rgb_sum += rgb;
+            if (contribution.has_rgb) {
+                data.rgb_sum.x() += contribution.rgb_x;
+                data.rgb_sum.y() += contribution.rgb_y;
+                data.rgb_sum.z() += contribution.rgb_z;
+                data.rgb_sum.w() += contribution.rgb_w;
                 data.rgb_count += 1U;
             }
 
-            if (has_intensity) {
-                data.intensity_sum += (*cloud.intensities)[i];
+            if (contribution.has_intensity) {
+                data.intensity_sum += contribution.intensity;
                 data.intensity_count += 1U;
             }
         }
+
+        this->queue_.clear_accessed_by_host(this->device_contributions_->data(), num_points);
 
         // Apply a uniform miss update to voxels within sensor range that were not hit.
         if (this->log_odds_miss_ != 0.0f) {
@@ -250,6 +365,32 @@ private:
 
     using VoxelMap = std::unordered_map<VoxelKey, VoxelData, VoxelKeyHash>;
 
+    struct DeviceContribution {
+        // Aggregated data for a single point after transforming it to the map frame.
+        int32_t voxel_x = 0;
+        int32_t voxel_y = 0;
+        int32_t voxel_z = 0;
+        float world_x = 0.0f;
+        float world_y = 0.0f;
+        float world_z = 0.0f;
+        float rgb_x = 0.0f;
+        float rgb_y = 0.0f;
+        float rgb_z = 0.0f;
+        float rgb_w = 0.0f;
+        float intensity = 0.0f;
+        uint8_t has_rgb = 0U;
+        uint8_t has_intensity = 0U;
+        uint8_t valid = 0U;
+        uint8_t padding = 0U;
+    };
+
+    using DeviceContributionBuffer = shared_vector<DeviceContribution>;
+
+    struct DeviceTransform {
+        // Row-major 3x4 matrix extracted from the homogeneous sensor pose.
+        std::array<float, 12> m = {0.0f};
+    };
+
     static float probability_to_log_odds(const float probability) {
         return std::log(probability / (1.0f - probability));
     }
@@ -298,11 +439,25 @@ private:
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
     VoxelMap voxels_;
+    sycl_utils::DeviceQueue queue_;
+    std::shared_ptr<DeviceContributionBuffer> device_contributions_ = nullptr;
 
     static int32_t fast_floor(const float value) {
         // Bias the input slightly to maintain stable indices near voxel boundaries.
         const float bias = (value >= 0.0f) ? 1e-6f : -1e-6f;
         return static_cast<int32_t>(std::floor(value + bias));
+    }
+
+    static int32_t device_fast_floor(const float value) {
+        const float bias = (value >= 0.0f) ? 1e-6f : -1e-6f;
+        return static_cast<int32_t>(sycl::floor(value + bias));
+    }
+
+    static DeviceTransform make_device_transform(const Eigen::Matrix4f& matrix) {
+        DeviceTransform transform;
+        transform.m = {matrix(0, 0), matrix(0, 1), matrix(0, 2), matrix(0, 3), matrix(1, 0), matrix(1, 1),
+                       matrix(1, 2), matrix(1, 3), matrix(2, 0), matrix(2, 1), matrix(2, 2), matrix(2, 3)};
+        return transform;
     }
 };
 

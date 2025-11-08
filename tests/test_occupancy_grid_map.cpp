@@ -53,8 +53,11 @@ std::vector<Eigen::Vector3f> ExtractPositions(const sycl_points::PointContainerS
 }  // namespace
 
 TEST(OccupancyGridMapTest, ConstructorRejectsNonPositiveVoxelSize) {
-    EXPECT_THROW(sycl_points::algorithms::mapping::OccupancyGridMap(0.0f), std::invalid_argument);
-    EXPECT_THROW(sycl_points::algorithms::mapping::OccupancyGridMap(-0.1f), std::invalid_argument);
+    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+
+    EXPECT_THROW(sycl_points::algorithms::mapping::OccupancyGridMap(queue, 0.0f), std::invalid_argument);
+    EXPECT_THROW(sycl_points::algorithms::mapping::OccupancyGridMap(queue, -0.1f), std::invalid_argument);
 }
 
 TEST(OccupancyGridMapTest, IntegratesPointsAndReturnsVisibleVoxels) {
@@ -62,7 +65,7 @@ TEST(OccupancyGridMapTest, IntegratesPointsAndReturnsVisibleVoxels) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::mapping::OccupancyGridMap map(0.2f);
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.2f);
 
         const std::vector<Eigen::Vector3f> input_positions = {
             {0.05f, 0.05f, 0.0f},
@@ -105,7 +108,7 @@ TEST(OccupancyGridMapTest, DownsamplingSkipsFarVoxels) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::mapping::OccupancyGridMap map(0.2f);
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.2f);
 
         const std::vector<Eigen::Vector3f> input_positions = {
             {0.0f, 0.0f, 0.0f},
@@ -131,7 +134,7 @@ TEST(OccupancyGridMapTest, AggregatesColorAndIntensity) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::mapping::OccupancyGridMap map(0.1f);
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
 
         const std::vector<Eigen::Vector3f> input_positions = {
             {0.0f, 0.0f, 0.0f},
@@ -176,7 +179,7 @@ TEST(OccupancyGridMapTest, VisibilityDecayReducesUnobservedVoxels) {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
-        sycl_points::algorithms::mapping::OccupancyGridMap map(0.1f);
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
         map.set_log_odds_hit(1.0f);
         map.set_log_odds_miss(-0.5f);
 
