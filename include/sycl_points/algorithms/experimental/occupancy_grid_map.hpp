@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <limits>
 
 namespace sycl_points {
 namespace algorithms {
@@ -319,6 +320,183 @@ public:
         }
     }
 
+    /// @brief Extract only the voxels visible from the specified pose using ray casting.
+    /// @param result Output point cloud containing visible occupied voxels.
+    /// @param sensor_pose Sensor pose expressed in the map frame.
+    /// @param max_distance Maximum visibility distance in meters.
+    void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
+                                const float max_distance = 100.0f) const {
+        result.resize_points(0);
+        result.resize_rgb(0);
+        result.resize_intensities(0);
+
+        if (this->voxels_.empty()) {
+            return;
+        }
+
+        struct HostCandidate {
+            const VoxelData* data = nullptr;
+            VoxelKey key;
+        };
+
+        std::vector<HostCandidate> candidates;
+        candidates.reserve(this->voxels_.size());
+
+        const Eigen::Vector3f sensor_position = sensor_pose.translation();
+        const float max_distance_sq = max_distance * max_distance;
+
+        // Collect voxels that exceed the occupancy threshold and are within range.
+        for (const auto& entry : this->voxels_) {
+            const VoxelKey& key = entry.first;
+            const VoxelData& data = entry.second;
+            if (data.log_odds < this->occupancy_threshold_log_odds_) {
+                continue;
+            }
+
+            const Eigen::Vector3f delta = data.centroid - sensor_position;
+            if (delta.squaredNorm() > max_distance_sq) {
+                continue;
+            }
+
+            candidates.push_back(HostCandidate{&data, key});
+        }
+
+        if (candidates.empty()) {
+            return;
+        }
+
+        // Build a lexicographically sorted key list for binary search lookups on the device.
+        std::vector<VoxelKey> sorted_keys;
+        sorted_keys.reserve(candidates.size());
+        for (const HostCandidate& candidate : candidates) {
+            sorted_keys.push_back(candidate.key);
+        }
+        std::sort(sorted_keys.begin(), sorted_keys.end(), [](const VoxelKey& lhs, const VoxelKey& rhs) {
+            if (lhs.x != rhs.x) {
+                return lhs.x < rhs.x;
+            }
+            if (lhs.y != rhs.y) {
+                return lhs.y < rhs.y;
+            }
+            return lhs.z < rhs.z;
+        });
+
+        const size_t candidate_count = candidates.size();
+
+        // Transfer candidate voxel information to shared device buffers.
+        shared_vector<DeviceRaycastVoxel> device_voxels(
+            candidate_count, DeviceRaycastVoxel{}, shared_allocator<DeviceRaycastVoxel>(*this->queue_.ptr));
+        for (size_t i = 0; i < candidate_count; ++i) {
+            const HostCandidate& candidate = candidates[i];
+            const VoxelData& data = *candidate.data;
+            device_voxels[i].voxel_x = candidate.key.x;
+            device_voxels[i].voxel_y = candidate.key.y;
+            device_voxels[i].voxel_z = candidate.key.z;
+            device_voxels[i].centroid_x = data.centroid.x();
+            device_voxels[i].centroid_y = data.centroid.y();
+            device_voxels[i].centroid_z = data.centroid.z();
+        }
+
+        shared_vector<VoxelKey> device_sorted_keys(candidate_count, VoxelKey{},
+                                                   shared_allocator<VoxelKey>(*this->queue_.ptr));
+        for (size_t i = 0; i < candidate_count; ++i) {
+            device_sorted_keys[i] = sorted_keys[i];
+        }
+
+        shared_vector<uint8_t> visibility_flags(candidate_count, 0U,
+                                                shared_allocator<uint8_t>(*this->queue_.ptr));
+
+        this->queue_.set_accessed_by_device(device_voxels.data(), candidate_count);
+        this->queue_.set_accessed_by_device(device_sorted_keys.data(), candidate_count);
+        this->queue_.set_accessed_by_device(visibility_flags.data(), candidate_count);
+
+        const float inv_voxel_size = this->inv_voxel_size_;
+        const float origin_x = sensor_position.x();
+        const float origin_y = sensor_position.y();
+        const float origin_z = sensor_position.z();
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& handler) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(candidate_count);
+
+            const DeviceRaycastVoxel* voxels_ptr = device_voxels.data();
+            const VoxelKey* keys_ptr = device_sorted_keys.data();
+            uint8_t* visibility_ptr = visibility_flags.data();
+
+            handler.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t idx = item.get_global_id(0);
+                if (idx >= candidate_count) {
+                    return;
+                }
+
+                const DeviceRaycastVoxel voxel = voxels_ptr[idx];
+                const bool visible = raycast_visibility_test(voxel, keys_ptr, candidate_count, origin_x, origin_y,
+                                                             origin_z, inv_voxel_size);
+                visibility_ptr[idx] = visible ? 1U : 0U;
+            });
+        });
+        event.wait();
+
+        this->queue_.clear_accessed_by_device(device_voxels.data(), candidate_count);
+        this->queue_.clear_accessed_by_device(device_sorted_keys.data(), candidate_count);
+        this->queue_.clear_accessed_by_device(visibility_flags.data(), candidate_count);
+
+        this->queue_.set_accessed_by_host(visibility_flags.data(), candidate_count);
+
+        size_t visible_count = 0U;
+        for (size_t i = 0; i < candidate_count; ++i) {
+            if (visibility_flags[i] != 0U) {
+                ++visible_count;
+            }
+        }
+
+        if (visible_count == 0U) {
+            this->queue_.clear_accessed_by_host(visibility_flags.data(), candidate_count);
+            return;
+        }
+
+        result.resize_points(visible_count);
+        if (this->has_rgb_data_) {
+            result.resize_rgb(visible_count);
+        }
+        if (this->has_intensity_data_) {
+            result.resize_intensities(visible_count);
+        }
+
+        size_t write_index = 0U;
+        for (size_t i = 0; i < candidate_count; ++i) {
+            if (visibility_flags[i] == 0U) {
+                continue;
+            }
+
+            const HostCandidate& candidate = candidates[i];
+            const VoxelData& data = *candidate.data;
+
+            (*result.points)[write_index] =
+                PointType(data.centroid.x(), data.centroid.y(), data.centroid.z(), 1.0f);
+
+            if (this->has_rgb_data_) {
+                Eigen::Vector4f rgb = Eigen::Vector4f::Zero();
+                if (data.rgb_count > 0U) {
+                    rgb = data.rgb_sum / static_cast<float>(data.rgb_count);
+                }
+                (*result.rgb)[write_index] = rgb;
+            }
+
+            if (this->has_intensity_data_) {
+                float intensity = 0.0f;
+                if (data.intensity_count > 0U) {
+                    intensity = data.intensity_sum / static_cast<float>(data.intensity_count);
+                }
+                (*result.intensities)[write_index] = intensity;
+            }
+
+            ++write_index;
+        }
+
+        this->queue_.clear_accessed_by_host(visibility_flags.data(), candidate_count);
+    }
+
 private:
     struct VoxelKey {
         int32_t x = 0;
@@ -373,6 +551,149 @@ private:
     };
 
     using DeviceContributionBuffer = shared_vector<DeviceContribution>;
+
+    struct DeviceRaycastVoxel {
+        int32_t voxel_x = 0;
+        int32_t voxel_y = 0;
+        int32_t voxel_z = 0;
+        float centroid_x = 0.0f;
+        float centroid_y = 0.0f;
+        float centroid_z = 0.0f;
+    };
+
+    static inline bool key_less(const VoxelKey& lhs, const VoxelKey& rhs) {
+        if (lhs.x != rhs.x) {
+            return lhs.x < rhs.x;
+        }
+        if (lhs.y != rhs.y) {
+            return lhs.y < rhs.y;
+        }
+        return lhs.z < rhs.z;
+    }
+
+    static inline bool key_less(const VoxelKey& lhs, const int32_t x, const int32_t y, const int32_t z) {
+        if (lhs.x != x) {
+            return lhs.x < x;
+        }
+        if (lhs.y != y) {
+            return lhs.y < y;
+        }
+        return lhs.z < z;
+    }
+
+    // Perform a standard binary search on the sorted key buffer.
+    static inline bool binary_search_voxel(const VoxelKey* keys, const size_t count, const int32_t x,
+                                           const int32_t y, const int32_t z) {
+        size_t left = 0U;
+        size_t right = count;
+        while (left < right) {
+            const size_t mid = left + (right - left) / 2U;
+            const VoxelKey key = keys[mid];
+            if (key.x == x && key.y == y && key.z == z) {
+                return true;
+            }
+            if (key_less(key, x, y, z)) {
+                left = mid + 1U;
+            } else {
+                right = mid;
+            }
+        }
+        return false;
+    }
+
+    static inline bool raycast_visibility_test(const DeviceRaycastVoxel& voxel, const VoxelKey* keys,
+                                               const size_t key_count, const float sensor_x,
+                                               const float sensor_y, const float sensor_z,
+                                               const float inv_voxel_size) {
+        const float origin_x_voxel = sensor_x * inv_voxel_size;
+        const float origin_y_voxel = sensor_y * inv_voxel_size;
+        const float origin_z_voxel = sensor_z * inv_voxel_size;
+
+        const float target_center_x = voxel.centroid_x * inv_voxel_size;
+        const float target_center_y = voxel.centroid_y * inv_voxel_size;
+        const float target_center_z = voxel.centroid_z * inv_voxel_size;
+
+        float dir_x = target_center_x - origin_x_voxel;
+        float dir_y = target_center_y - origin_y_voxel;
+        float dir_z = target_center_z - origin_z_voxel;
+
+        const float dir_length_sq = dir_x * dir_x + dir_y * dir_y + dir_z * dir_z;
+        if (dir_length_sq <= 1e-8f) {
+            return true;
+        }
+
+        const int32_t step_x = dir_x > 0.0f ? 1 : (dir_x < 0.0f ? -1 : 0);
+        const int32_t step_y = dir_y > 0.0f ? 1 : (dir_y < 0.0f ? -1 : 0);
+        const int32_t step_z = dir_z > 0.0f ? 1 : (dir_z < 0.0f ? -1 : 0);
+
+        int32_t curr_x = static_cast<int32_t>(sycl::floor(origin_x_voxel));
+        int32_t curr_y = static_cast<int32_t>(sycl::floor(origin_y_voxel));
+        int32_t curr_z = static_cast<int32_t>(sycl::floor(origin_z_voxel));
+
+        const float inv_dir_x = step_x != 0 ? sycl::fabs(1.0f / dir_x) : 0.0f;
+        const float inv_dir_y = step_y != 0 ? sycl::fabs(1.0f / dir_y) : 0.0f;
+        const float inv_dir_z = step_z != 0 ? sycl::fabs(1.0f / dir_z) : 0.0f;
+
+        float t_max_x = std::numeric_limits<float>::infinity();
+        float t_max_y = std::numeric_limits<float>::infinity();
+        float t_max_z = std::numeric_limits<float>::infinity();
+
+        if (step_x > 0) {
+            t_max_x = (static_cast<float>(curr_x + 1) - origin_x_voxel) * inv_dir_x;
+        } else if (step_x < 0) {
+            t_max_x = (origin_x_voxel - static_cast<float>(curr_x)) * inv_dir_x;
+        }
+
+        if (step_y > 0) {
+            t_max_y = (static_cast<float>(curr_y + 1) - origin_y_voxel) * inv_dir_y;
+        } else if (step_y < 0) {
+            t_max_y = (origin_y_voxel - static_cast<float>(curr_y)) * inv_dir_y;
+        }
+
+        if (step_z > 0) {
+            t_max_z = (static_cast<float>(curr_z + 1) - origin_z_voxel) * inv_dir_z;
+        } else if (step_z < 0) {
+            t_max_z = (origin_z_voxel - static_cast<float>(curr_z)) * inv_dir_z;
+        }
+
+        const float t_delta_x = step_x != 0 ? inv_dir_x : std::numeric_limits<float>::infinity();
+        const float t_delta_y = step_y != 0 ? inv_dir_y : std::numeric_limits<float>::infinity();
+        const float t_delta_z = step_z != 0 ? inv_dir_z : std::numeric_limits<float>::infinity();
+
+        // Maximum number of cell transitions is bounded by the discretized distance.
+        const float distance_voxels = sycl::sqrt(dir_length_sq);
+        const int32_t max_steps = static_cast<int32_t>(sycl::ceil(distance_voxels)) + 3;
+
+        for (int32_t step = 0; step < max_steps; ++step) {
+            if (curr_x == voxel.voxel_x && curr_y == voxel.voxel_y && curr_z == voxel.voxel_z) {
+                return true;
+            }
+
+            // Advance along the dominant axis towards the target cell.
+            if (t_max_x <= t_max_y && t_max_x <= t_max_z) {
+                curr_x += step_x;
+                t_max_x += t_delta_x;
+            } else if (t_max_y <= t_max_z) {
+                curr_y += step_y;
+                t_max_y += t_delta_y;
+            } else {
+                curr_z += step_z;
+                t_max_z += t_delta_z;
+            }
+
+            if (curr_x == voxel.voxel_x && curr_y == voxel.voxel_y && curr_z == voxel.voxel_z) {
+                return true;
+            }
+
+            // Any occupied cell encountered before the target implies occlusion.
+            if (binary_search_voxel(keys, key_count, curr_x, curr_y, curr_z)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     static float probability_to_log_odds(const float probability) {
         return std::log(probability / (1.0f - probability));
     }

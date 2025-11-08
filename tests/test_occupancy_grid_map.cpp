@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include <Eigen/Geometry>
@@ -98,6 +99,30 @@ TEST(OccupancyGridMapTest, IntegratesPointsAndReturnsVisibleVoxels) {
         EXPECT_NEAR(positions[1].x(), 0.35f, 1e-5f);
         EXPECT_NEAR(positions[1].y(), 0.05f, 1e-5f);
         EXPECT_NEAR(positions[1].z(), 0.0f, 1e-5f);
+
+        sycl_points::PointCloudShared raycast_result(queue);
+        map.extract_visible_points(raycast_result, Eigen::Isometry3f::Identity(), 1.0f);
+
+        ASSERT_EQ(raycast_result.size(), 2U);
+        auto raycast_positions = ExtractPositions(*raycast_result.points);
+        std::sort(raycast_positions.begin(), raycast_positions.end(),
+                  [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
+                      if (lhs.x() != rhs.x()) {
+                          return lhs.x() < rhs.x();
+                      }
+                      if (lhs.y() != rhs.y()) {
+                          return lhs.y() < rhs.y();
+                      }
+                      return lhs.z() < rhs.z();
+                  });
+
+        ASSERT_EQ(raycast_positions.size(), 2U);
+        EXPECT_NEAR(raycast_positions[0].x(), 0.06f, 1e-5f);
+        EXPECT_NEAR(raycast_positions[0].y(), 0.05f, 1e-5f);
+        EXPECT_NEAR(raycast_positions[0].z(), 0.0f, 1e-5f);
+        EXPECT_NEAR(raycast_positions[1].x(), 0.35f, 1e-5f);
+        EXPECT_NEAR(raycast_positions[1].y(), 0.05f, 1e-5f);
+        EXPECT_NEAR(raycast_positions[1].z(), 0.0f, 1e-5f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
@@ -207,6 +232,71 @@ TEST(OccupancyGridMapTest, VisibilityDecayReducesUnobservedVoxels) {
 
         // The voxel that was not observed on the second scan should have lower confidence.
         EXPECT_LT(map.voxel_probability(positions[1]), map.voxel_probability(positions[0]));
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(OccupancyGridMapTest, ExtractVisiblePointsRemovesOccludedVoxels) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.2f);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.2f, 0.0f, 0.0f},
+            {0.6f, 0.0f, 0.0f},
+            {0.0f, 0.2f, 0.0f},
+        };
+
+        auto cloud = MakePointCloud(queue, input_positions);
+        map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        sycl_points::PointCloudShared downsampled(queue);
+        map.downsampling(downsampled, Eigen::Isometry3f::Identity(), 2.0f);
+        ASSERT_EQ(downsampled.size(), 3U);
+
+        sycl_points::PointCloudShared visible(queue);
+        map.extract_visible_points(visible, Eigen::Isometry3f::Identity(), 2.0f);
+
+        ASSERT_EQ(visible.size(), 2U);
+        auto positions = ExtractPositions(*visible.points);
+        std::sort(positions.begin(), positions.end(),
+                  [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
+                      if (lhs.x() != rhs.x()) {
+                          return lhs.x() < rhs.x();
+                      }
+                      if (lhs.y() != rhs.y()) {
+                          return lhs.y() < rhs.y();
+                      }
+                      return lhs.z() < rhs.z();
+                  });
+
+        ASSERT_EQ(positions.size(), 2U);
+        EXPECT_NEAR(positions[0].x(), 0.0f, 1e-5f);
+        EXPECT_NEAR(positions[0].y(), 0.2f, 1e-5f);
+        EXPECT_NEAR(positions[0].z(), 0.0f, 1e-5f);
+        EXPECT_NEAR(positions[1].x(), 0.2f, 1e-5f);
+        EXPECT_NEAR(positions[1].y(), 0.0f, 1e-5f);
+        EXPECT_NEAR(positions[1].z(), 0.0f, 1e-5f);
+
+        Eigen::Isometry3f shifted_pose = Eigen::Isometry3f::Identity();
+        shifted_pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+        map.extract_visible_points(visible, shifted_pose, 2.0f);
+
+        auto shifted_positions = ExtractPositions(*visible.points);
+        const bool has_far_voxel = std::any_of(shifted_positions.begin(), shifted_positions.end(),
+                                               [](const Eigen::Vector3f& position) {
+                                                   return std::fabs(position.x() - 0.6f) < 1e-4f;
+                                               });
+        EXPECT_TRUE(has_far_voxel);
+
+        const bool has_occluder = std::any_of(shifted_positions.begin(), shifted_positions.end(),
+                                              [](const Eigen::Vector3f& position) {
+                                                  return std::fabs(position.x() - 0.2f) < 1e-4f;
+                                              });
+        EXPECT_FALSE(has_occluder);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
