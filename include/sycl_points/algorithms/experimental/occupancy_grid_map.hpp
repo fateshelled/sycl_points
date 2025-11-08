@@ -7,14 +7,13 @@
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <sycl_points/algorithms/transform.hpp>
+#include <sycl_points/points/point_cloud.hpp>
+#include <sycl_points/utils/eigen_utils.hpp>
+#include <sycl_points/utils/sycl_utils.hpp>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-#include <sycl/sycl.hpp>
-
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
 
 namespace sycl_points {
 namespace algorithms {
@@ -30,8 +29,7 @@ public:
     /// @param voxel_size Edge length of a voxel in meters.
     OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
-        this->device_contributions_ =
-            std::make_shared<DeviceContributionBuffer>(0, *this->queue_.ptr);
+        this->device_contributions_ = std::make_shared<DeviceContributionBuffer>(0, *this->queue_.ptr);
     }
 
     /// @brief Reset the map data.
@@ -129,13 +127,13 @@ public:
             this->queue_.set_accessed_by_device(cloud.intensities->data(), num_points);
         }
 
-        const DeviceTransform device_transform = this->make_device_transform(sensor_pose.matrix());
-        const float inv_voxel_size = this->inv_voxel_size_;
-
-        const size_t work_group_size = this->queue_.get_work_group_size();
-        const size_t global_size = this->queue_.get_global_size(num_points);
-
         auto event = this->queue_.ptr->submit([&](sycl::handler& handler) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(num_points);
+
+            const auto transform = eigen_utils::to_sycl_vec(sensor_pose.matrix());
+            const float inv_voxel_size = this->inv_voxel_size_;
+
             const auto contributions_ptr = this->device_contributions_->data();
             const auto points_ptr = cloud.points->data();
             const auto rgb_ptr = has_rgb ? cloud.rgb->data() : static_cast<RGBType*>(nullptr);
@@ -153,36 +151,26 @@ public:
                 contribution.has_rgb = 0U;
                 contribution.has_intensity = 0U;
 
-                const PointType point = points_ptr[idx];
-                const float local_x = point.x();
-                const float local_y = point.y();
-                const float local_z = point.z();
+                const PointType local_point = points_ptr[idx];
 
-                if (!sycl::isfinite(local_x) || !sycl::isfinite(local_y) || !sycl::isfinite(local_z)) {
+                if (!sycl::isfinite(local_point.x()) || !sycl::isfinite(local_point.y()) ||
+                    !sycl::isfinite(local_point.z())) {
                     contributions_ptr[idx] = contribution;
                     return;
                 }
 
-                const float world_x = device_transform.m[0] * local_x + device_transform.m[1] * local_y +
-                                      device_transform.m[2] * local_z + device_transform.m[3];
-                const float world_y = device_transform.m[4] * local_x + device_transform.m[5] * local_y +
-                                      device_transform.m[6] * local_z + device_transform.m[7];
-                const float world_z = device_transform.m[8] * local_x + device_transform.m[9] * local_y +
-                                      device_transform.m[10] * local_z + device_transform.m[11];
+                PointType world_pt;
+                algorithms::transform::kernel::transform_point(local_point, world_pt, transform);
 
-                const float scaled_x = world_x * inv_voxel_size;
-                const float scaled_y = world_y * inv_voxel_size;
-                const float scaled_z = world_z * inv_voxel_size;
-
-                const int32_t voxel_x = device_fast_floor(scaled_x);
-                const int32_t voxel_y = device_fast_floor(scaled_y);
-                const int32_t voxel_z = device_fast_floor(scaled_z);
+                const int32_t voxel_x = static_cast<int32_t>(std::floor(world_pt.x() * inv_voxel_size));
+                const int32_t voxel_y = static_cast<int32_t>(std::floor(world_pt.y() * inv_voxel_size));
+                const int32_t voxel_z = static_cast<int32_t>(std::floor(world_pt.z() * inv_voxel_size));
                 contribution.voxel_x = voxel_x;
                 contribution.voxel_y = voxel_y;
                 contribution.voxel_z = voxel_z;
-                contribution.world_x = world_x;
-                contribution.world_y = world_y;
-                contribution.world_z = world_z;
+                contribution.world_x = world_pt.x();
+                contribution.world_y = world_pt.y();
+                contribution.world_z = world_pt.z();
 
                 if (rgb_ptr) {
                     const RGBType rgb = rgb_ptr[idx];
@@ -385,19 +373,11 @@ private:
     };
 
     using DeviceContributionBuffer = shared_vector<DeviceContribution>;
-
-    struct DeviceTransform {
-        // Row-major 3x4 matrix extracted from the homogeneous sensor pose.
-        std::array<float, 12> m = {0.0f};
-    };
-
     static float probability_to_log_odds(const float probability) {
         return std::log(probability / (1.0f - probability));
     }
 
-    static float log_odds_to_probability(const float log_odds) {
-        return 1.0f / (1.0f + std::exp(-log_odds));
-    }
+    static float log_odds_to_probability(const float log_odds) { return 1.0f / (1.0f + std::exp(-log_odds)); }
 
     float clamp_log_odds(const float value) const {
         return std::min(std::max(value, this->min_log_odds_), this->max_log_odds_);
@@ -405,7 +385,10 @@ private:
 
     VoxelKey compute_key(const Eigen::Vector3f& point) const {
         const Eigen::Vector3f scaled = point * this->inv_voxel_size_;
-        return VoxelKey{this->fast_floor(scaled.x()), this->fast_floor(scaled.y()), this->fast_floor(scaled.z())};
+        return VoxelKey{
+            static_cast<int32_t>(std::floor(scaled.x())),
+            static_cast<int32_t>(std::floor(scaled.y())),
+            static_cast<int32_t>(std::floor(scaled.z()))};
     }
 
     void apply_visibility_decay(const Eigen::Isometry3f& sensor_pose,
@@ -441,27 +424,8 @@ private:
     VoxelMap voxels_;
     sycl_utils::DeviceQueue queue_;
     std::shared_ptr<DeviceContributionBuffer> device_contributions_ = nullptr;
-
-    static int32_t fast_floor(const float value) {
-        // Bias the input slightly to maintain stable indices near voxel boundaries.
-        const float bias = (value >= 0.0f) ? 1e-6f : -1e-6f;
-        return static_cast<int32_t>(std::floor(value + bias));
-    }
-
-    static int32_t device_fast_floor(const float value) {
-        const float bias = (value >= 0.0f) ? 1e-6f : -1e-6f;
-        return static_cast<int32_t>(sycl::floor(value + bias));
-    }
-
-    static DeviceTransform make_device_transform(const Eigen::Matrix4f& matrix) {
-        DeviceTransform transform;
-        transform.m = {matrix(0, 0), matrix(0, 1), matrix(0, 2), matrix(0, 3), matrix(1, 0), matrix(1, 1),
-                       matrix(1, 2), matrix(1, 3), matrix(2, 0), matrix(2, 1), matrix(2, 2), matrix(2, 3)};
-        return transform;
-    }
 };
 
 }  // namespace mapping
 }  // namespace algorithms
 }  // namespace sycl_points
-
