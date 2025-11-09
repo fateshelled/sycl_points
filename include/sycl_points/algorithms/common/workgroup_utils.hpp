@@ -65,28 +65,60 @@ SYCL_EXTERNAL void bitonic_sort_local_data(LocalData* data, const size_t size, c
 /// @param invalid_key Sentinel key used for inactive entries.
 /// @param key_of Functor returning the key from a local entry.
 /// @param equal Equality predicate that identifies entries belonging to the same group.
+///
+/// The algorithm performs a parallel tree reduction by iteratively accumulating contributions from
+/// neighbours located at exponentially increasing offsets. After @p log2(size) steps the first
+/// element of each segment holds the aggregated value, while all other entries belonging to that
+/// segment are reset.
 template <typename LocalData, typename KeyType, typename KeyFunc, typename EqualFunc, typename CombineFunc,
           typename ResetFunc>
 SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t size, const sycl::nd_item<1>& item,
                                                const KeyType invalid_key, KeyFunc key_of, EqualFunc equal,
                                                CombineFunc combine, ResetFunc reset) {
     const size_t local_id = item.get_local_id(0);
-    const KeyType current_key = (local_id < size) ? key_of(data[local_id]) : invalid_key;
+    for (size_t stride = 1; stride < size; stride *= 2) {
+        item.barrier(sycl::access::fence_space::local_space);
 
-    const bool has_prev = (local_id > 0) && (local_id - 1 < size);
-    const KeyType previous_key = has_prev ? key_of(data[local_id - 1]) : invalid_key;
+        bool should_add = false;
+        LocalData contribution{};
 
-    const bool is_segment_start = (current_key != invalid_key) && (!has_prev || !equal(previous_key, current_key));
+        if (local_id < size) {
+            const KeyType current_key = key_of(data[local_id]);
 
-    if (is_segment_start) {
-        for (size_t i = local_id + 1; i < size; ++i) {
-            const KeyType next_key = key_of(data[i]);
-            if (!equal(next_key, current_key)) {
-                break;
+            if (current_key != invalid_key) {
+                const size_t neighbor_index = local_id + stride;
+                if (neighbor_index < size) {
+                    const KeyType neighbor_key = key_of(data[neighbor_index]);
+
+                    if (equal(current_key, neighbor_key)) {
+                        contribution = data[neighbor_index];
+                        should_add = true;
+                    }
+                }
             }
+        }
 
-            combine(data[local_id], data[i]);
-            reset(data[i]);
+        item.barrier(sycl::access::fence_space::local_space);
+
+        if (should_add) {
+            combine(data[local_id], contribution);
+        }
+
+        item.barrier(sycl::access::fence_space::local_space);
+    }
+
+    if (local_id < size) {
+        const KeyType current_key = key_of(data[local_id]);
+
+        bool should_reset = (current_key == invalid_key);
+
+        if (!should_reset && local_id > 0) {
+            const KeyType prev_key = key_of(data[local_id - 1]);
+            should_reset = equal(prev_key, current_key);
+        }
+
+        if (should_reset) {
+            reset(data[local_id]);
         }
     }
 
