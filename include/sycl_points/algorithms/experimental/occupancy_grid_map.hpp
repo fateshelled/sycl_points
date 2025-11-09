@@ -8,20 +8,17 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
-#include <vector>
-
 #include <sycl/sycl.hpp>
-
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
+#include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
+#include <vector>
 
 namespace sycl_points {
 namespace algorithms {
 namespace mapping {
-
-namespace kernel = sycl_points::algorithms::filter::kernel;
 
 /// @brief Occupancy grid map that performs voxel integration on the device.
 /// @note The class mirrors the hashing infrastructure used by VoxelHashMap so that
@@ -33,8 +30,7 @@ public:
     /// @brief Construct the occupancy grid map.
     /// @param queue Device queue used for all kernels.
     /// @param voxel_size Edge length of a voxel in meters.
-    OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size)
-        : queue_(queue) {
+    OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
         this->allocate_storage();
         // Preallocate the buffer used to store world-frame points before hashing.
@@ -153,12 +149,9 @@ public:
     }
 
 private:
-    using atomic_ref_float =
-        sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
-    using atomic_ref_uint32_t =
-        sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
-    using atomic_ref_uint64_t =
-        sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
+    using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
+    using atomic_ref_uint32_t = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
+    using atomic_ref_uint64_t = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
 
     struct VoxelData {
         float sum_x = 0.0f;
@@ -202,9 +195,7 @@ private:
         return std::log(probability / (1.0f - probability));
     }
 
-    static float log_odds_to_probability(const float log_odds) {
-        return 1.0f / (1.0f + std::exp(-log_odds));
-    }
+    static float log_odds_to_probability(const float log_odds) { return 1.0f / (1.0f + std::exp(-log_odds)); }
 
     float clamp_log_odds(const float value) const {
         return std::min(std::max(value, this->min_log_odds_), this->max_log_odds_);
@@ -219,8 +210,8 @@ private:
         const int64_t coord_y = static_cast<int64_t>(std::floor(scaled_y)) + VoxelConstants::coord_offset;
         const int64_t coord_z = static_cast<int64_t>(std::floor(scaled_z)) + VoxelConstants::coord_offset;
 
-        if (coord_x < 0 || coord_x > VoxelConstants::coord_bit_mask || coord_y < 0 || coord_y > VoxelConstants::coord_bit_mask ||
-            coord_z < 0 || coord_z > VoxelConstants::coord_bit_mask) {
+        if (coord_x < 0 || coord_x > VoxelConstants::coord_bit_mask || coord_y < 0 ||
+            coord_y > VoxelConstants::coord_bit_mask || coord_z < 0 || coord_z > VoxelConstants::coord_bit_mask) {
             return VoxelConstants::invalid_coord;
         }
 
@@ -258,12 +249,10 @@ private:
     }
 
     void allocate_storage() {
-        this->key_ptr_ = std::shared_ptr<uint64_t>(
-            sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
-            [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
-        this->data_ptr_ = std::shared_ptr<VoxelData>(
-            sycl::malloc_shared<VoxelData>(this->capacity_, *this->queue_.ptr),
-            [&](VoxelData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
+                                                   [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+        this->data_ptr_ = std::shared_ptr<VoxelData>(sycl::malloc_shared<VoxelData>(this->capacity_, *this->queue_.ptr),
+                                                     [&](VoxelData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
 
         this->queue_.set_accessed_by_device(this->key_ptr_.get(), this->capacity_);
         this->queue_.set_accessed_by_device(this->data_ptr_.get(), this->capacity_);
@@ -272,8 +261,7 @@ private:
     void initialize_storage() {
         // Reset the hash table content before the next integration round.
         sycl_utils::events evs;
-        evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord,
-                                                 this->capacity_);
+        evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
         evs += this->queue_.ptr->fill<VoxelData>(this->data_ptr_.get(), VoxelData{}, this->capacity_);
         evs.wait();
     }
@@ -332,35 +320,22 @@ private:
     static void local_reduction(VoxelLocalData* local_data, const PointType* local_points, const RGBType* rgb_ptr,
                                 const float* intensity_ptr, const bool has_rgb, const bool has_intensity,
                                 const size_t point_num, const size_t wg_size, const size_t wg_size_power_of_2,
-                                const float* transform, const float voxel_size_inv, const float log_odds_hit,
-                                const sycl::nd_item<1>& item) {
+                                const std::array<sycl::vec<float, 4>, 4>& trans, const float voxel_size_inv,
+                                const float log_odds_hit, const sycl::nd_item<1>& item) {
         const size_t local_id = item.get_local_id(0);
         const size_t global_id = item.get_global_id(0);
 
-        if (local_id < wg_size) {
-            local_data[local_id].voxel_idx = VoxelConstants::invalid_coord;
-            local_data[local_id].acc = VoxelAccumulator{};
-        }
-
-        item.barrier(sycl::access::fence_space::local_space);
-
-        if (global_id < point_num && local_id < wg_size) {
+        if (global_id < point_num) {
             const PointType local_point = local_points[global_id];
-            const float lx = local_point.x();
-            const float ly = local_point.y();
-            const float lz = local_point.z();
-
-            const float wx = transform[0] * lx + transform[1] * ly + transform[2] * lz + transform[3];
-            const float wy = transform[4] * lx + transform[5] * ly + transform[6] * lz + transform[7];
-            const float wz = transform[8] * lx + transform[9] * ly + transform[10] * lz + transform[11];
-
-            const uint64_t voxel_hash = compute_voxel_hash(wx, wy, wz, voxel_size_inv);
+            PointType world_point;
+            transform::kernel::transform_point(local_point, world_point, trans);
+            const uint64_t voxel_hash = filter::kernel::compute_voxel_bit(world_point, voxel_size_inv);
 
             local_data[local_id].voxel_idx = voxel_hash;
             local_data[local_id].acc.voxel_hash = voxel_hash;
-            local_data[local_id].acc.sum_x = wx;
-            local_data[local_id].acc.sum_y = wy;
-            local_data[local_id].acc.sum_z = wz;
+            local_data[local_id].acc.sum_x = world_point.x();
+            local_data[local_id].acc.sum_y = world_point.y();
+            local_data[local_id].acc.sum_z = world_point.z();
             local_data[local_id].acc.hit_increment = 1U;
             local_data[local_id].acc.log_odds_delta = log_odds_hit;
             local_data[local_id].acc.sum_r = 0.0f;
@@ -389,35 +364,47 @@ private:
         item.barrier(sycl::access::fence_space::local_space);
 
         if constexpr (Aggregate) {
-            bitonic_sort_local_data(local_data, wg_size, wg_size_power_of_2, item);
-            reduction_sorted_local_data(local_data, wg_size, item);
+            const size_t group_id = item.get_group(0);
+            const size_t group_offset = group_id * wg_size;
+            const size_t remaining_points = (point_num > group_offset) ? point_num - group_offset : 0;
+            // The active size tells the sorter how many valid elements are present in the current work-group.
+            const size_t active_size = std::min(wg_size, remaining_points);
+
+            // sort within work group by voxel index
+            bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item);
+            // reduction
+            reduction_sorted_local_data(local_data, active_size, item);
         }
     }
 
-    static void bitonic_sort_local_data(VoxelLocalData* data, const size_t size, const size_t size_power_of_2,
-                                        const sycl::nd_item<1>& item) {
+    /// @brief Bitonic sort that works correctly with any work group size
+    /// @details Uses virtual infinity padding to handle non-power-of-2 sizes
+    SYCL_EXTERNAL static void bitonic_sort_local_data(VoxelLocalData* data, size_t size, size_t size_power_of_2,
+                                                      const sycl::nd_item<1>& item) {
         const size_t local_id = item.get_local_id(0);
-        if (size <= 1) {
-            return;
-        }
 
+        if (size <= 1) return;
+
+        // Bitonic sort with virtual infinity padding
         for (size_t k = 2; k <= size_power_of_2; k *= 2) {
             for (size_t j = k / 2; j > 0; j /= 2) {
                 const size_t i = local_id;
                 const size_t ixj = i ^ j;
 
                 if (ixj > i && i < size_power_of_2) {
+                    // Determine if we're in ascending or descending phase
                     const bool ascending = ((i & k) == 0);
 
+                    // Get values (use infinity for out-of-bounds elements)
                     const uint64_t val_i = (i < size) ? data[i].voxel_idx : VoxelConstants::invalid_coord;
                     const uint64_t val_ixj = (ixj < size) ? data[ixj].voxel_idx : VoxelConstants::invalid_coord;
 
+                    // Determine if swap is needed based on virtual values
                     const bool should_swap = (val_i > val_ixj) == ascending;
 
+                    // Perform actual swap only if both indices are within real data
                     if (should_swap && i < size && ixj < size) {
-                        const VoxelLocalData tmp = data[i];
-                        data[i] = data[ixj];
-                        data[ixj] = tmp;
+                        std::swap(data[i], data[ixj]);
                     }
                 }
 
@@ -452,29 +439,6 @@ private:
         }
 
         item.barrier(sycl::access::fence_space::local_space);
-    }
-
-    SYCL_EXTERNAL static uint64_t compute_voxel_hash(const float x, const float y, const float z,
-                                                     const float voxel_size_inv) {
-        if (!sycl::isfinite(x) || !sycl::isfinite(y) || !sycl::isfinite(z)) {
-            return VoxelConstants::invalid_coord;
-        }
-
-        const int64_t coord_x = static_cast<int64_t>(sycl::floor(x * voxel_size_inv)) + VoxelConstants::coord_offset;
-        const int64_t coord_y = static_cast<int64_t>(sycl::floor(y * voxel_size_inv)) + VoxelConstants::coord_offset;
-        const int64_t coord_z = static_cast<int64_t>(sycl::floor(z * voxel_size_inv)) + VoxelConstants::coord_offset;
-
-        if (coord_x < 0 || coord_x > VoxelConstants::coord_bit_mask || coord_y < 0 || coord_y > VoxelConstants::coord_bit_mask ||
-            coord_z < 0 || coord_z > VoxelConstants::coord_bit_mask) {
-            return VoxelConstants::invalid_coord;
-        }
-
-        return (static_cast<uint64_t>(coord_x & VoxelConstants::coord_bit_mask)
-                << (VoxelConstants::coord_bit_size * CartesianCoordComponent::X)) |
-               (static_cast<uint64_t>(coord_y & VoxelConstants::coord_bit_mask)
-                << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Y)) |
-               (static_cast<uint64_t>(coord_z & VoxelConstants::coord_bit_mask)
-                << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Z));
     }
 
     template <typename CounterFunc>
@@ -530,16 +494,6 @@ private:
         const size_t N = cloud.size();
         shared_vector<uint32_t> voxel_counter(1, this->voxel_num_, *this->queue_.ptr);
 
-        const Eigen::Matrix3f rotation = sensor_pose.linear();
-        const Eigen::Vector3f translation = sensor_pose.translation();
-        std::array<float, 12> transform{};
-        for (int row = 0; row < 3; ++row) {
-            for (int col = 0; col < 3; ++col) {
-                transform[row * 4 + col] = rotation(row, col);
-            }
-            transform[row * 4 + 3] = translation(row);
-        }
-        const auto transform_data = transform;
 
         // Parallel reduction merges per-point contributions into hashed voxels.
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
@@ -548,6 +502,7 @@ private:
             const size_t global_size = num_work_groups * local_size;
 
             auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(local_size, h);
+            const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             size_t power_of_2 = 1;
             while (power_of_2 < local_size) {
@@ -564,44 +519,43 @@ private:
             const auto max_probe = this->max_probe_length_;
             const auto capacity = this->capacity_;
             const float log_odds_hit = this->log_odds_hit_;
-            const auto transform_ptr = transform_data.data();
 
             if (this->queue_.is_nvidia()) {
                 auto reduction = sycl::reduction(voxel_counter.data(), sycl::plus<uint32_t>());
-                h.parallel_for(sycl::nd_range<1>(global_size, local_size), reduction,
-                               [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
-                                   local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                                         point_ptr, rgb_ptr, intensity_ptr, has_rgb, has_intensity, N,
-                                                         local_size, power_of_2, transform_ptr, voxel_size_inv,
-                                                         log_odds_hit, item);
+                h.parallel_for(  //
+                    sycl::nd_range<1>(global_size, local_size), reduction,
+                    [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
+                        local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
+                                              point_ptr, rgb_ptr, intensity_ptr, has_rgb, has_intensity, N, local_size,
+                                              power_of_2, trans, voxel_size_inv, log_odds_hit, item);
 
-                                   const size_t lid = item.get_local_id(0);
-                                   if (item.get_global_id(0) >= N) {
-                                       return;
-                                   }
+                        const size_t lid = item.get_local_id(0);
+                        if (item.get_global_id(0) >= N) {
+                            return;
+                        }
 
-                                   const VoxelLocalData local = local_voxel_data[lid];
-                                   global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
-                                                    [&](uint32_t add) { voxel_num_arg += add; });
-                               });
+                        const VoxelLocalData local = local_voxel_data[lid];
+                        global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                                         [&](uint32_t add) { voxel_num_arg += add; });
+                    });
             } else {
                 auto voxel_ptr_counter = voxel_counter.data();
-                h.parallel_for(sycl::nd_range<1>(global_size, local_size), [=](sycl::nd_item<1> item) {
-                    local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), point_ptr,
-                                          rgb_ptr, intensity_ptr, has_rgb, has_intensity, N, local_size, power_of_2,
-                                          transform_ptr, voxel_size_inv, log_odds_hit, item);
+                h.parallel_for(  //
+                    sycl::nd_range<1>(global_size, local_size), [=](sycl::nd_item<1> item) {
+                        local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
+                                              point_ptr, rgb_ptr, intensity_ptr, has_rgb, has_intensity, N, local_size,
+                                              power_of_2, trans, voxel_size_inv, log_odds_hit, item);
 
-                    const size_t lid = item.get_local_id(0);
-                    if (item.get_global_id(0) >= N) {
-                        return;
-                    }
+                        const size_t lid = item.get_local_id(0);
+                        if (item.get_global_id(0) >= N) {
+                            return;
+                        }
 
-                    const VoxelLocalData local = local_voxel_data[lid];
-                    global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
-                                     [&](uint32_t add) {
-                                         atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add);
-                                     });
-                });
+                        const VoxelLocalData local = local_voxel_data[lid];
+                        global_reduction(
+                            local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                            [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); });
+                    });
             }
         });
 
@@ -692,7 +646,7 @@ private:
     }
 
     void export_visible_voxels(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
-                                const float max_distance) const {
+                               const float max_distance) const {
         const size_t N = this->capacity_;
         const float max_distance_sq = max_distance * max_distance;
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
@@ -711,8 +665,7 @@ private:
 
             auto points_ptr = result.points_ptr();
             auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
-            auto intensity_ptr =
-                this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
+            auto intensity_ptr = this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
 
             const float threshold = this->occupancy_threshold_log_odds_;
             const float sensor_x = sensor_position.x();
@@ -817,9 +770,8 @@ private:
     bool has_intensity_data_ = false;
     uint32_t frame_index_ = 0U;
 
-    inline static constexpr std::array<size_t, 11> kCapacityCandidates = {30029, 60013, 120011, 240007, 480013,
-                                                                          960017, 1920001, 3840007, 7680017,
-                                                                          15360013, 30720007};
+    inline static constexpr std::array<size_t, 11> kCapacityCandidates = {
+        30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};
     size_t capacity_ = kCapacityCandidates[0];
     size_t voxel_num_ = 0;
     const size_t max_probe_length_ = 100;
@@ -832,4 +784,3 @@ private:
 }  // namespace mapping
 }  // namespace algorithms
 }  // namespace sycl_points
-
