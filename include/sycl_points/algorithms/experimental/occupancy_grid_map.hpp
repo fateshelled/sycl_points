@@ -149,6 +149,215 @@ public:
         this->export_visible_voxels(result, sensor_pose.translation(), max_distance);
     }
 
+    /// @brief Extract the visible subset of the map as a new point cloud.
+    /// @param sensor_pose Sensor pose expressed in the map frame.
+    /// @param max_distance Maximum visibility distance in meters.
+    /// @param horizontal_fov Horizontal field of view in radians.
+    /// @param vertical_fov Vertical field of view in radians.
+    PointCloudShared extract_visible_points(const Eigen::Isometry3f& sensor_pose,
+                                           const float max_distance, const float horizontal_fov,
+                                           const float vertical_fov) const {
+        PointCloudShared result(this->queue_);
+        result.resize_points(0);
+        if (this->voxel_num_ == 0) {
+            return result;
+        }
+
+        // Precompute the inverse rotation and translation so that the sensor-frame projection can
+        // be evaluated inside the kernel without Eigen dependencies.
+        const Eigen::Matrix3f rotation = sensor_pose.rotation();
+        const Eigen::Matrix3f rotation_inv = rotation.transpose();
+        const Eigen::Vector3f translation = sensor_pose.translation();
+
+        std::array<sycl::float3, 3> world_to_sensor{};
+        for (int row = 0; row < 3; ++row) {
+            world_to_sensor[row] = sycl::float3(rotation_inv(row, 0), rotation_inv(row, 1), rotation_inv(row, 2));
+        }
+        const sycl::float3 sensor_translation(translation.x(), translation.y(), translation.z());
+
+        const float max_distance_sq = max_distance * max_distance;
+        const float half_horizontal = horizontal_fov * 0.5f;
+        const float half_vertical = vertical_fov * 0.5f;
+
+        shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
+
+        // Allocate the worst-case storage before the filtering pass and shrink once visibility is known.
+        result.resize_points(this->voxel_num_);
+        if (this->has_rgb_data_) {
+            result.resize_rgb(this->voxel_num_);
+        }
+        if (this->has_intensity_data_) {
+            result.resize_intensities(this->voxel_num_);
+        }
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            auto key_ptr = this->key_ptr_.get();
+            auto voxel_ptr = this->data_ptr_.get();
+
+            auto points_ptr = result.points_ptr();
+            auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
+            auto intensity_ptr = this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
+
+            const float occupancy_threshold = this->occupancy_threshold_log_odds_;
+            const float voxel_size = this->voxel_size_;
+            const float inv_voxel_size = this->inv_voxel_size_;
+            const float sensor_x = sensor_translation.x();
+            const float sensor_y = sensor_translation.y();
+            const float sensor_z = sensor_translation.z();
+            const float max_dist_sq = max_distance_sq;
+            const float half_h = half_horizontal;
+            const float half_v = half_vertical;
+            const float half_voxel = 0.5f * voxel_size;
+            const bool has_rgb = this->has_rgb_data_;
+            const bool has_intensity = this->has_intensity_data_;
+            const size_t max_probe = this->max_probe_length_;
+            const size_t capacity = this->capacity_;
+            const auto rotation_rows = world_to_sensor;
+            auto counter_ptr = counter.data();
+
+            h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
+                const size_t i = idx[0];
+                const uint64_t current_key = key_ptr[i];
+                if (current_key == VoxelConstants::invalid_coord) {
+                    return;
+                }
+
+                const VoxelData& voxel = voxel_ptr[i];
+                if (voxel.hit_count == 0U || voxel.log_odds < occupancy_threshold) {
+                    return;
+                }
+
+                const float inv_count = 1.0f / static_cast<float>(voxel.hit_count);
+                const float cx = voxel.sum_x * inv_count;
+                const float cy = voxel.sum_y * inv_count;
+                const float cz = voxel.sum_z * inv_count;
+
+                const float dx = cx - sensor_x;
+                const float dy = cy - sensor_y;
+                const float dz = cz - sensor_z;
+                const float dist_sq = dx * dx + dy * dy + dz * dz;
+                if (dist_sq > max_dist_sq) {
+                    return;
+                }
+
+                float local_x = rotation_rows[0].x() * dx + rotation_rows[0].y() * dy + rotation_rows[0].z() * dz;
+                float local_y = rotation_rows[1].x() * dx + rotation_rows[1].y() * dy + rotation_rows[1].z() * dz;
+                float local_z = rotation_rows[2].x() * dx + rotation_rows[2].y() * dy + rotation_rows[2].z() * dz;
+
+                if (local_x <= 0.0f) {
+                    return;
+                }
+
+                const float angle_h = sycl::atan2(local_y, local_x);
+                const float angle_v = sycl::atan2(local_z, local_x);
+                if (sycl::fabs(angle_h) > half_h || sycl::fabs(angle_v) > half_v) {
+                    return;
+                }
+
+                const float distance = sycl::sqrt(dist_sq);
+                bool occluded = false;
+
+                // March along the viewing ray to detect occupied voxels that would occlude the candidate.
+                if (distance > voxel_size) {
+                    const float dir_x = dx / distance;
+                    const float dir_y = dy / distance;
+                    const float dir_z = dz / distance;
+
+                    float travel = voxel_size;
+                    while (travel < distance - half_voxel && !occluded) {
+                        const float sx = sensor_x + dir_x * travel;
+                        const float sy = sensor_y + dir_y * travel;
+                        const float sz = sensor_z + dir_z * travel;
+
+                        PointType sample_point;
+                        sample_point.x() = sx;
+                        sample_point.y() = sy;
+                        sample_point.z() = sz;
+                        sample_point.w() = 1.0f;
+
+                        const uint64_t sample_key = filter::kernel::compute_voxel_bit(sample_point, inv_voxel_size);
+                        if (sample_key == VoxelConstants::invalid_coord || sample_key == current_key) {
+                            travel += voxel_size;
+                            continue;
+                        }
+
+                        for (size_t probe = 0; probe < max_probe; ++probe) {
+                            const size_t slot = compute_slot_id(sample_key, probe, capacity);
+                            const uint64_t stored_key = key_ptr[slot];
+                            if (stored_key == sample_key) {
+                                const VoxelData& occ = voxel_ptr[slot];
+                                if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
+                                    const float inv_occ = 1.0f / static_cast<float>(occ.hit_count);
+                                    const float occ_cx = occ.sum_x * inv_occ;
+                                    const float occ_cy = occ.sum_y * inv_occ;
+                                    const float occ_cz = occ.sum_z * inv_occ;
+                                    const float occ_dx = occ_cx - sensor_x;
+                                    const float occ_dy = occ_cy - sensor_y;
+                                    const float occ_dz = occ_cz - sensor_z;
+                                    const float occ_dist_sq =
+                                        occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
+                                    if (occ_dist_sq + 1e-6f < dist_sq) {
+                                        occluded = true;
+                                    }
+                                }
+                                break;
+                            }
+                            if (stored_key == VoxelConstants::invalid_coord) {
+                                break;
+                            }
+                        }
+
+                        travel += voxel_size;
+                    }
+                }
+
+                if (occluded) {
+                    return;
+                }
+
+                const uint32_t index = atomic_ref_uint32_t(counter_ptr[0]).fetch_add(1U);
+                points_ptr[index].x() = cx;
+                points_ptr[index].y() = cy;
+                points_ptr[index].z() = cz;
+                points_ptr[index].w() = 1.0f;
+
+                if (has_rgb && rgb_ptr) {
+                    if (voxel.color_count > 0U) {
+                        const float inv_color = 1.0f / static_cast<float>(voxel.color_count);
+                        rgb_ptr[index].x() = voxel.sum_r * inv_color;
+                        rgb_ptr[index].y() = voxel.sum_g * inv_color;
+                        rgb_ptr[index].z() = voxel.sum_b * inv_color;
+                        rgb_ptr[index].w() = voxel.sum_a * inv_color;
+                    } else {
+                        rgb_ptr[index].setZero();
+                    }
+                }
+
+                if (has_intensity && intensity_ptr) {
+                    if (voxel.intensity_count > 0U) {
+                        const float inv_intensity = 1.0f / static_cast<float>(voxel.intensity_count);
+                        intensity_ptr[index] = voxel.sum_intensity * inv_intensity;
+                    } else {
+                        intensity_ptr[index] = 0.0f;
+                    }
+                }
+            });
+        });
+
+        event.wait();
+
+        const uint32_t final_count = counter.at(0);
+        result.resize_points(final_count);
+        if (this->has_rgb_data_) {
+            result.resize_rgb(final_count);
+        }
+        if (this->has_intensity_data_) {
+            result.resize_intensities(final_count);
+        }
+
+        return result;
+    }
+
 private:
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint32_t = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
