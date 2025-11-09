@@ -494,7 +494,6 @@ private:
         const size_t N = cloud.size();
         shared_vector<uint32_t> voxel_counter(1, this->voxel_num_, *this->queue_.ptr);
 
-
         // Parallel reduction merges per-point contributions into hashed voxels.
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t local_size = this->compute_work_group_size();
@@ -749,7 +748,7 @@ private:
             return std::min(max_work_group_size, size_t{64});
         }
         if (this->queue_.is_intel() && this->queue_.is_gpu()) {
-            return std::min(max_work_group_size, compute_units * size_t{16});
+            return std::min(max_work_group_size, compute_units * size_t{8});
         }
         if (this->queue_.is_cpu()) {
             return std::min(max_work_group_size, compute_units * size_t{100});
