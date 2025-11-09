@@ -545,7 +545,7 @@ private:
                 auto voxel_ptr_counter = voxel_counter.data();
                 h.parallel_for(  //
                     sycl::nd_range<1>(global_size, local_size), [=](sycl::nd_item<1> item) {
-                        local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
+                        local_reduction<false>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
                                               point_ptr, rgb_ptr, intensity_ptr, has_rgb, has_intensity, N, local_size,
                                               power_of_2, trans, voxel_size_inv, log_odds_hit, item);
 
