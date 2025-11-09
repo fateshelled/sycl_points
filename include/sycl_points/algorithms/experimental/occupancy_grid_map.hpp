@@ -300,16 +300,20 @@ private:
                 continue;
             }
 
-            const VoxelData& src = old_data.get()[i];
+            bool inserted = false;
             for (size_t probe = 0; probe < this->max_probe_length_; ++probe) {
                 const size_t slot = this->compute_slot_id(key, probe, this->capacity_);
                 uint64_t& dst_key = this->key_ptr_.get()[slot];
                 if (dst_key == VoxelConstants::invalid_coord) {
                     dst_key = key;
-                    this->data_ptr_.get()[slot] = src;
+                    this->data_ptr_.get()[slot] = old_data.get()[i];
                     ++voxel_count;
+                    inserted = true;
                     break;
                 }
+            }
+            if (!inserted) {
+                throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
             }
         }
 
