@@ -395,7 +395,7 @@ private:
         const size_t local_id = item.get_local_id(0);
 
         // Find segments of same voxel indices and reduce them
-        const auto current_voxel = local_id < wg_size ? sorted_data[local_id].voxel_idx : VoxelConstants::invalid_coord;
+        const auto current_voxel = sorted_data[local_id].voxel_idx;
         // Check if this is the start of a new voxel segment
         const bool is_segment_start = (current_voxel != VoxelConstants::invalid_coord) &&
                                       ((local_id == 0) || (sorted_data[local_id - 1].voxel_idx != current_voxel));
@@ -433,7 +433,7 @@ private:
         const size_t local_id = item.get_local_id(0);
         const size_t global_id = item.get_global_id(0);
 
-        if (global_id < point_num && local_id < wg_size) {
+        if (global_id < point_num) {
             const auto voxel_hash = kernel::compute_voxel_bit(point_ptr[global_id], voxel_size_inv);
 
             // set local data
@@ -463,7 +463,7 @@ private:
                 local_voxel_data[local_id].pt.intensity = intensity_ptr[global_id];
                 local_voxel_data[local_id].pt.intensity_count = 1;
             }
-        } else if (local_id < wg_size) {
+        } else {
             // Mark unused lanes so that the sorter treats them as empty entries.
             local_voxel_data[local_id].voxel_idx = VoxelConstants::invalid_coord;
             local_voxel_data[local_id].pt = VoxelPoint{};
