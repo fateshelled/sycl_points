@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <sycl/sycl.hpp>
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
+#include <sycl_points/algorithms/common/workgroup_utils.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/points/point_cloud.hpp>
@@ -320,131 +321,6 @@ private:
         this->voxel_num_ = voxel_count;
     }
 
-    template <bool Aggregate>
-    static void local_reduction(VoxelLocalData* local_data, const PointType* local_points, const RGBType* rgb_ptr,
-                                const float* intensity_ptr, const bool has_rgb, const bool has_intensity,
-                                const size_t point_num, const size_t wg_size, const size_t wg_size_power_of_2,
-                                const std::array<sycl::vec<float, 4>, 4>& trans, const float voxel_size_inv,
-                                const float log_odds_hit, const sycl::nd_item<1>& item) {
-        const size_t local_id = item.get_local_id(0);
-        const size_t global_id = item.get_global_id(0);
-
-        if (global_id < point_num) {
-            const PointType local_point = local_points[global_id];
-            PointType world_point;
-            transform::kernel::transform_point(local_point, world_point, trans);
-            const uint64_t voxel_hash = filter::kernel::compute_voxel_bit(world_point, voxel_size_inv);
-
-            local_data[local_id].voxel_idx = voxel_hash;
-            local_data[local_id].acc.voxel_hash = voxel_hash;
-            local_data[local_id].acc.sum_x = world_point.x();
-            local_data[local_id].acc.sum_y = world_point.y();
-            local_data[local_id].acc.sum_z = world_point.z();
-            local_data[local_id].acc.hit_increment = 1U;
-            local_data[local_id].acc.log_odds_delta = log_odds_hit;
-            local_data[local_id].acc.sum_r = 0.0f;
-            local_data[local_id].acc.sum_g = 0.0f;
-            local_data[local_id].acc.sum_b = 0.0f;
-            local_data[local_id].acc.sum_a = 0.0f;
-            local_data[local_id].acc.sum_intensity = 0.0f;
-            local_data[local_id].acc.color_count = 0U;
-            local_data[local_id].acc.intensity_count = 0U;
-
-            if (has_rgb && rgb_ptr) {
-                const auto color = rgb_ptr[global_id];
-                local_data[local_id].acc.sum_r = color.x();
-                local_data[local_id].acc.sum_g = color.y();
-                local_data[local_id].acc.sum_b = color.z();
-                local_data[local_id].acc.sum_a = color.w();
-                local_data[local_id].acc.color_count = 1U;
-            }
-
-            if (has_intensity && intensity_ptr) {
-                local_data[local_id].acc.sum_intensity = intensity_ptr[global_id];
-                local_data[local_id].acc.intensity_count = 1U;
-            }
-        }
-
-        item.barrier(sycl::access::fence_space::local_space);
-
-        if constexpr (Aggregate) {
-            const size_t group_id = item.get_group(0);
-            const size_t group_offset = group_id * wg_size;
-            const size_t remaining_points = (point_num > group_offset) ? point_num - group_offset : 0;
-            // The active size tells the sorter how many valid elements are present in the current work-group.
-            const size_t active_size = std::min(wg_size, remaining_points);
-
-            // sort within work group by voxel index
-            bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item);
-            // reduction
-            reduction_sorted_local_data(local_data, active_size, item);
-        }
-    }
-
-    /// @brief Bitonic sort that works correctly with any work group size
-    /// @details Uses virtual infinity padding to handle non-power-of-2 sizes
-    SYCL_EXTERNAL static void bitonic_sort_local_data(VoxelLocalData* data, size_t size, size_t size_power_of_2,
-                                                      const sycl::nd_item<1>& item) {
-        const size_t local_id = item.get_local_id(0);
-
-        if (size <= 1) return;
-
-        // Bitonic sort with virtual infinity padding
-        for (size_t k = 2; k <= size_power_of_2; k *= 2) {
-            for (size_t j = k / 2; j > 0; j /= 2) {
-                const size_t i = local_id;
-                const size_t ixj = i ^ j;
-
-                if (ixj > i && i < size_power_of_2) {
-                    // Determine if we're in ascending or descending phase
-                    const bool ascending = ((i & k) == 0);
-
-                    // Get values (use infinity for out-of-bounds elements)
-                    const uint64_t val_i = (i < size) ? data[i].voxel_idx : VoxelConstants::invalid_coord;
-                    const uint64_t val_ixj = (ixj < size) ? data[ixj].voxel_idx : VoxelConstants::invalid_coord;
-
-                    // Determine if swap is needed based on virtual values
-                    const bool should_swap = (val_i > val_ixj) == ascending;
-
-                    // Perform actual swap only if both indices are within real data
-                    if (should_swap && i < size && ixj < size) {
-                        std::swap(data[i], data[ixj]);
-                    }
-                }
-
-                item.barrier(sycl::access::fence_space::local_space);
-            }
-        }
-    }
-
-    static void reduction_sorted_local_data(VoxelLocalData* data, const size_t size, const sycl::nd_item<1>& item) {
-        const size_t local_id = item.get_local_id(0);
-        const uint64_t current_voxel = (local_id < size) ? data[local_id].voxel_idx : VoxelConstants::invalid_coord;
-
-        const bool is_segment_start = (current_voxel != VoxelConstants::invalid_coord) &&
-                                      ((local_id == 0) || (data[local_id - 1].voxel_idx != current_voxel));
-
-        if (is_segment_start) {
-            for (size_t i = local_id + 1; i < size && data[i].voxel_idx == current_voxel; ++i) {
-                data[i].voxel_idx = VoxelConstants::invalid_coord;
-                data[local_id].acc.sum_x += data[i].acc.sum_x;
-                data[local_id].acc.sum_y += data[i].acc.sum_y;
-                data[local_id].acc.sum_z += data[i].acc.sum_z;
-                data[local_id].acc.hit_increment += data[i].acc.hit_increment;
-                data[local_id].acc.log_odds_delta += data[i].acc.log_odds_delta;
-                data[local_id].acc.sum_r += data[i].acc.sum_r;
-                data[local_id].acc.sum_g += data[i].acc.sum_g;
-                data[local_id].acc.sum_b += data[i].acc.sum_b;
-                data[local_id].acc.sum_a += data[i].acc.sum_a;
-                data[local_id].acc.color_count += data[i].acc.color_count;
-                data[local_id].acc.sum_intensity += data[i].acc.sum_intensity;
-                data[local_id].acc.intensity_count += data[i].acc.intensity_count;
-            }
-        }
-
-        item.barrier(sycl::access::fence_space::local_space);
-    }
-
     template <typename CounterFunc>
     static void global_reduction(const VoxelLocalData& data, uint64_t* key_ptr, VoxelData* voxel_ptr,
                                  const uint32_t current_frame, const size_t max_probe, const size_t capacity,
@@ -523,14 +399,76 @@ private:
             const auto capacity = this->capacity_;
             const float log_odds_hit = this->log_odds_hit_;
 
+            auto load_entry = [=](VoxelLocalData& entry, const size_t idx) {
+                const PointType local_point = point_ptr[idx];
+                PointType world_point;
+                transform::kernel::transform_point(local_point, world_point, trans);
+                const uint64_t voxel_hash = filter::kernel::compute_voxel_bit(world_point, voxel_size_inv);
+
+                entry.voxel_idx = voxel_hash;
+                entry.acc.voxel_hash = voxel_hash;
+                entry.acc.sum_x = world_point.x();
+                entry.acc.sum_y = world_point.y();
+                entry.acc.sum_z = world_point.z();
+                entry.acc.hit_increment = 1U;
+                entry.acc.log_odds_delta = log_odds_hit;
+                entry.acc.sum_r = 0.0f;
+                entry.acc.sum_g = 0.0f;
+                entry.acc.sum_b = 0.0f;
+                entry.acc.sum_a = 0.0f;
+                entry.acc.sum_intensity = 0.0f;
+                entry.acc.color_count = 0U;
+                entry.acc.intensity_count = 0U;
+
+                if (has_rgb && rgb_ptr) {
+                    const auto color = rgb_ptr[idx];
+                    entry.acc.sum_r = color.x();
+                    entry.acc.sum_g = color.y();
+                    entry.acc.sum_b = color.z();
+                    entry.acc.sum_a = color.w();
+                    entry.acc.color_count = 1U;
+                }
+
+                if (has_intensity && intensity_ptr) {
+                    entry.acc.sum_intensity = intensity_ptr[idx];
+                    entry.acc.intensity_count = 1U;
+                }
+            };
+
+            auto combine_entry = [](VoxelLocalData& dst, const VoxelLocalData& src) {
+                dst.acc.sum_x += src.acc.sum_x;
+                dst.acc.sum_y += src.acc.sum_y;
+                dst.acc.sum_z += src.acc.sum_z;
+                dst.acc.hit_increment += src.acc.hit_increment;
+                dst.acc.log_odds_delta += src.acc.log_odds_delta;
+                dst.acc.sum_r += src.acc.sum_r;
+                dst.acc.sum_g += src.acc.sum_g;
+                dst.acc.sum_b += src.acc.sum_b;
+                dst.acc.sum_a += src.acc.sum_a;
+                dst.acc.color_count += src.acc.color_count;
+                dst.acc.sum_intensity += src.acc.sum_intensity;
+                dst.acc.intensity_count += src.acc.intensity_count;
+            };
+
+            auto reset_entry = [](VoxelLocalData& entry) {
+                entry.voxel_idx = VoxelConstants::invalid_coord;
+                entry.acc = VoxelAccumulator{};
+            };
+
+            // Configure key accessors and comparators for the shared reduction helpers.
+            auto key_of_entry = [](const VoxelLocalData& entry) { return entry.voxel_idx; };
+            auto compare_keys = [](uint64_t lhs, uint64_t rhs) { return lhs < rhs; };
+            auto equal_keys = [](uint64_t lhs, uint64_t rhs) { return lhs == rhs; };
+
             if (this->queue_.is_nvidia()) {
                 auto reduction = sycl::reduction(voxel_counter.data(), sycl::plus<uint32_t>());
                 h.parallel_for(  //
                     sycl::nd_range<1>(global_size, local_size), reduction,
                     [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
-                        local_reduction<true>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                              point_ptr, rgb_ptr, intensity_ptr, has_rgb, has_intensity, N, local_size,
-                                              power_of_2, trans, voxel_size_inv, log_odds_hit, item);
+                        common::local_reduction<true, VoxelLocalData>(
+                            local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size,
+                            power_of_2, item, load_entry, combine_entry, reset_entry,
+                            VoxelConstants::invalid_coord, key_of_entry, compare_keys, equal_keys);
 
                         const size_t lid = item.get_local_id(0);
                         if (item.get_global_id(0) >= N) {
@@ -545,9 +483,10 @@ private:
                 auto voxel_ptr_counter = voxel_counter.data();
                 h.parallel_for(  //
                     sycl::nd_range<1>(global_size, local_size), [=](sycl::nd_item<1> item) {
-                        local_reduction<false>(local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(),
-                                              point_ptr, rgb_ptr, intensity_ptr, has_rgb, has_intensity, N, local_size,
-                                              power_of_2, trans, voxel_size_inv, log_odds_hit, item);
+                        common::local_reduction<false, VoxelLocalData>(
+                            local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size,
+                            power_of_2, item, load_entry, combine_entry, reset_entry,
+                            VoxelConstants::invalid_coord, key_of_entry, compare_keys, equal_keys);
 
                         const size_t lid = item.get_local_id(0);
                         if (item.get_global_id(0) >= N) {
