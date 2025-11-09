@@ -116,8 +116,7 @@ public:
     /// @param result Point cloud container storing the filtered voxels.
     /// @param center Center of the query bounding box in meters.
     /// @param distance Half-extent of the axis-aligned bounding box in meters.
-    void downsampling(PointCloudShared& result, const Eigen::Vector3f& center,
-                      const float distance = 100.0f) {
+    void downsampling(PointCloudShared& result, const Eigen::Vector3f& center, const float distance = 100.0f) {
         if (this->voxel_num_ == 0) {
             result.clear();
             return;
@@ -242,8 +241,8 @@ private:
         }
     }
 
-    SYCL_EXTERNAL static bool centroid_inside_bbox(const VoxelPoint& sum, float min_x, float min_y,
-                                                   float min_z, float max_x, float max_y, float max_z) {
+    SYCL_EXTERNAL static bool centroid_inside_bbox(const VoxelPoint& sum, float min_x, float min_y, float min_z,
+                                                   float max_x, float max_y, float max_z) {
         if (sum.count == 0U) {
             return false;
         }
@@ -257,9 +256,9 @@ private:
                (centroid_z >= min_z && centroid_z <= max_z);
     }
 
-    SYCL_EXTERNAL static bool should_include_voxel(uint64_t key, const VoxelPoint& sum,
-                                                   uint32_t min_num_point, float min_x, float min_y, float min_z,
-                                                   float max_x, float max_y, float max_z) {
+    SYCL_EXTERNAL static bool should_include_voxel(uint64_t key, const VoxelPoint& sum, uint32_t min_num_point,
+                                                   float min_x, float min_y, float min_z, float max_x, float max_y,
+                                                   float max_z) {
         if (key == VoxelConstants::invalid_coord || sum.count < min_num_point) {
             return false;
         }
@@ -434,12 +433,6 @@ private:
         const size_t local_id = item.get_local_id(0);
         const size_t global_id = item.get_global_id(0);
 
-        const size_t group_id = item.get_group(0);
-        const size_t group_offset = group_id * wg_size;
-        const size_t remaining_points = (point_num > group_offset) ? point_num - group_offset : 0;
-        // The active size tells the sorter how many valid elements are present in the current work-group.
-        [[maybe_unused]] const size_t active_size = std::min(wg_size, remaining_points);
-
         if (global_id < point_num && local_id < wg_size) {
             const auto voxel_hash = kernel::compute_voxel_bit(point_ptr[global_id], voxel_size_inv);
 
@@ -479,6 +472,12 @@ private:
         item.barrier(sycl::access::fence_space::local_space);
 
         if constexpr (AGGREGATE) {
+            const size_t group_id = item.get_group(0);
+            const size_t group_offset = group_id * wg_size;
+            const size_t remaining_points = (point_num > group_offset) ? point_num - group_offset : 0;
+            // The active size tells the sorter how many valid elements are present in the current work-group.
+            const size_t active_size = std::min(wg_size, remaining_points);
+
             // sort within work group by voxel index
             bitonic_sort_local_data(local_voxel_data, active_size, wg_size_power_of_2, item);
             // reduction
@@ -562,10 +561,7 @@ private:
 
             auto range = sycl::nd_range<1>(global_size, local_size);
 
-            // Force local sorting on CPU as well to exercise the shared bitonic implementation.
-            const bool use_local_sort = this->queue_.is_nvidia() || this->queue_.is_cpu();
-
-            if (use_local_sort) {
+            if (this->queue_.is_nvidia()) {
                 auto voxel_num = sycl::reduction(voxel_num_vec.data(), sycl::plus<uint32_t>());
 
                 h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
@@ -738,9 +734,8 @@ private:
         this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
     }
 
-    size_t downsampling_impl(PointContainerShared& result, const Eigen::Vector3f& center,
-                             const float distance, RGBType* rgb_output_ptr = nullptr,
-                             float* intensity_output_ptr = nullptr) {
+    size_t downsampling_impl(PointContainerShared& result, const Eigen::Vector3f& center, const float distance,
+                             RGBType* rgb_output_ptr = nullptr, float* intensity_output_ptr = nullptr) {
         // Compute the axis-aligned bounding box around the requested query center.
         const float bbox_min_x = center.x() - distance;
         const float bbox_min_y = center.y() - distance;
