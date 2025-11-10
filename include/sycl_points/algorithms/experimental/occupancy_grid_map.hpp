@@ -270,7 +270,7 @@ public:
                 if (horizontal_norm_sq > 0.0f) {
                     const float inv_horizontal_norm = sycl::rsqrt(horizontal_norm_sq);
                     cos_horizontal = forward_projection * inv_horizontal_norm;
-                    cos_horizontal = sycl::fmin(1.0f, sycl::fmax(-1.0f, cos_horizontal));
+                    cos_horizontal = sycl::clamp(cos_horizontal, -1.0f, 1.0f);
                 }
                 if (cos_horizontal < cos_limit_horizontal) {
                     return;
