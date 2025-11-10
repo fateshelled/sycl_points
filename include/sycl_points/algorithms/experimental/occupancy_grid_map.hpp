@@ -178,8 +178,9 @@ public:
         const float max_distance_sq = max_distance * max_distance;
         const float half_horizontal = horizontal_fov * 0.5f;
         const float half_vertical = vertical_fov * 0.5f;
-        const float tan_half_horizontal = std::tan(half_horizontal);
-        const float tan_half_vertical = std::tan(half_vertical);
+        constexpr float kPi = 3.14159265358979323846f;
+        // Allow backward visibility once the horizontal FOV reaches 180 degrees.
+        const bool allow_backward = horizontal_fov >= kPi;
 
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
@@ -207,8 +208,6 @@ public:
             const float sensor_y = sensor_translation.y();
             const float sensor_z = sensor_translation.z();
             const float max_dist_sq = max_distance_sq;
-            const float tan_half_h = tan_half_horizontal;
-            const float tan_half_v = tan_half_vertical;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
             const size_t max_probe = this->max_probe_length_;
@@ -221,6 +220,7 @@ public:
             const float sensor_grid_floor_x = std::floor(sensor_grid_x);
             const float sensor_grid_floor_y = std::floor(sensor_grid_y);
             const float sensor_grid_floor_z = std::floor(sensor_grid_z);
+            const bool include_backward = allow_backward;
 
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -251,16 +251,22 @@ public:
                 float local_y = rotation_rows[1].x() * dx + rotation_rows[1].y() * dy + rotation_rows[1].z() * dz;
                 float local_z = rotation_rows[2].x() * dx + rotation_rows[2].y() * dy + rotation_rows[2].z() * dz;
 
-                if (local_x <= 0.0f) {
+                if (!include_backward && local_x <= 0.0f) {
                     return;
                 }
 
-                if (sycl::fabs(local_y) > local_x * tan_half_h) {
+                // Mirror the forward component when backward visibility is enabled so that
+                // the same angular limits apply behind the sensor.
+                const float forward_projection = include_backward ? sycl::fabs(local_x) : local_x;
+                const float horizontal_angle = sycl::atan2(sycl::fabs(local_y), forward_projection);
+                if (horizontal_angle > half_horizontal) {
                     return;
                 }
 
                 const float lateral = sycl::sqrt(local_x * local_x + local_y * local_y);
-                if (sycl::fabs(local_z) > lateral * tan_half_v) {
+                // Evaluate the vertical angle directly to avoid instability near 90 degrees.
+                const float vertical_angle = sycl::atan2(sycl::fabs(local_z), lateral);
+                if (vertical_angle > half_vertical) {
                     return;
                 }
 
