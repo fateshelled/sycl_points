@@ -136,7 +136,8 @@ public:
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @param max_distance Maximum extract L2 distance in meters.
-    void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, const float max_distance = 100.0f) const {
+    void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
+                                 const float max_distance = 100.0f) const {
         result.resize_points(0);
         result.resize_rgb(0);
         result.resize_intensities(0);
@@ -154,32 +155,15 @@ public:
     /// @param max_distance Maximum visibility distance in meters.
     /// @param horizontal_fov Horizontal field of view in radians.
     /// @param vertical_fov Vertical field of view in radians.
-    void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
-                                const float max_distance, const float horizontal_fov, const float vertical_fov) const {
+    void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
+                                float horizontal_fov, float vertical_fov) const {
         result.resize_points(0);
         if (this->voxel_num_ == 0) {
             return;
         }
 
-        // Precompute the inverse rotation and translation so that the sensor-frame projection can
-        // be evaluated inside the kernel without Eigen dependencies.
-        const Eigen::Matrix3f rotation = sensor_pose.rotation();
-        const Eigen::Matrix3f rotation_inv = rotation.transpose();
-        const Eigen::Vector3f translation = sensor_pose.translation();
-
-        std::array<sycl::float3, 3> world_to_sensor{};
-        for (int row = 0; row < 3; ++row) {
-            world_to_sensor[row] = sycl::float3(rotation_inv(row, 0), rotation_inv(row, 1), rotation_inv(row, 2));
-        }
-        const sycl::float3 sensor_translation(translation.x(), translation.y(), translation.z());
-
-        const float max_distance_sq = max_distance * max_distance;
-        const float half_horizontal = horizontal_fov * 0.5f;
-        const float half_vertical = vertical_fov * 0.5f;
-        const float cos_half_horizontal = sycl::cos(half_horizontal);
-        const float cos_half_vertical = sycl::cos(half_vertical);
-        // Allow backward visibility once the horizontal FOV reaches 180 degrees.
-        const bool allow_backward = horizontal_fov >= (kPi - kFovTolerance);
+        horizontal_fov = std::clamp(horizontal_fov, kFovTolerance, kPi - kFovTolerance);
+        vertical_fov = std::clamp(vertical_fov, kFovTolerance, 2.0f * kPi - kFovTolerance);
 
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
@@ -200,28 +184,35 @@ public:
             auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
             auto intensity_ptr = this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
 
+            const std::array<sycl::float4, 4>& world_to_sensor_T =
+                eigen_utils::to_sycl_vec(sensor_pose.inverse().matrix());
+
             const float occupancy_threshold = this->occupancy_threshold_log_odds_;
             const float voxel_size = this->voxel_size_;
             const float inv_voxel_size = this->inv_voxel_size_;
-            const float sensor_x = sensor_translation.x();
-            const float sensor_y = sensor_translation.y();
-            const float sensor_z = sensor_translation.z();
-            const float max_dist_sq = max_distance_sq;
-            const float cos_limit_horizontal = cos_half_horizontal;
-            const float cos_limit_vertical = cos_half_vertical;
+
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
+
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
-            const auto rotation_rows = world_to_sensor;
+
             auto counter_ptr = counter.data();
+            const float sensor_x = sensor_pose.translation().x();
+            const float sensor_y = sensor_pose.translation().y();
+            const float sensor_z = sensor_pose.translation().z();
             const float sensor_grid_x = sensor_x * inv_voxel_size;
             const float sensor_grid_y = sensor_y * inv_voxel_size;
             const float sensor_grid_z = sensor_z * inv_voxel_size;
             const float sensor_grid_floor_x = std::floor(sensor_grid_x);
             const float sensor_grid_floor_y = std::floor(sensor_grid_y);
             const float sensor_grid_floor_z = std::floor(sensor_grid_z);
-            const bool include_backward = allow_backward;
+
+            const float max_dist_sq = max_distance * max_distance;
+            const float cos_limit_horizontal = sycl::cos(horizontal_fov * 0.5f);
+            const float cos_limit_vertical = sycl::cos(vertical_fov * 0.5f);
+            // // Allow backward visibility once the horizontal FOV reaches 180 degrees.
+            const bool include_backward = horizontal_fov >= (kPi - kFovTolerance);
 
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -247,22 +238,21 @@ public:
                 if (dist_sq > max_dist_sq) {
                     return;
                 }
+                const auto world_to_sensor_Mat = eigen_utils::from_sycl_vec(world_to_sensor_T);
+                const Eigen::Vector3f local_pt =
+                    eigen_utils::multiply<3, 3>(world_to_sensor_Mat.block<3, 3>(0, 0), Eigen::Vector3f{dx, dy, dz});
 
-                float local_x = rotation_rows[0].x() * dx + rotation_rows[0].y() * dy + rotation_rows[0].z() * dz;
-                float local_y = rotation_rows[1].x() * dx + rotation_rows[1].y() * dy + rotation_rows[1].z() * dz;
-                float local_z = rotation_rows[2].x() * dx + rotation_rows[2].y() * dy + rotation_rows[2].z() * dz;
-
-                if (!include_backward && local_x <= 0.0f) {
+                if (!include_backward && local_pt.x() <= 0.0f) {
                     return;
                 }
 
                 // Mirror the forward component when backward visibility is enabled so that
                 // the same angular limits apply behind the sensor.
-                const float forward_projection = include_backward ? sycl::fabs(local_x) : local_x;
+                const float forward_projection = include_backward ? sycl::fabs(local_pt.x()) : local_pt.x();
 
                 // Compute the cosine of the horizontal angle without using atan2. The mirrored forward
                 // projection is used in the norm so that forward/backward views are evaluated symmetrically.
-                const float horizontal_norm_sq = forward_projection * forward_projection + local_y * local_y;
+                const float horizontal_norm_sq = forward_projection * forward_projection + local_pt.y() * local_pt.y();
                 float cos_horizontal = 1.0f;
                 if (horizontal_norm_sq > 0.0f) {
                     const float inv_horizontal_norm = sycl::rsqrt(horizontal_norm_sq);
@@ -276,7 +266,7 @@ public:
                 // Reuse the mirrored forward component so that the vertical FOV is symmetric when backward
                 // viewing is enabled. The vertical angle is measured in the sensor XZ-plane to remain
                 // consistent with the horizontal computation that projects into the XY-plane.
-                const float vertical_norm_sq = forward_projection * forward_projection + local_z * local_z;
+                const float vertical_norm_sq = forward_projection * forward_projection + local_pt.z() * local_pt.z();
                 float cos_vertical = 1.0f;
                 if (vertical_norm_sq > 0.0f) {
                     const float inv_vertical_norm = sycl::rsqrt(vertical_norm_sq);
