@@ -28,10 +28,6 @@ class OccupancyGridMap {
 public:
     using Ptr = std::shared_ptr<OccupancyGridMap>;
 
-    inline static constexpr float kPi = 3.1415927f;
-    inline static constexpr float kTwoPi = 6.2831853f;
-    inline static constexpr float kFovTolerance = 1e-6f;
-
     /// @brief Construct the occupancy grid map.
     /// @param queue Device queue used for all kernels.
     /// @param voxel_size Edge length of a voxel in meters.
@@ -181,11 +177,10 @@ public:
         const float max_distance_sq = max_distance * max_distance;
         const float half_horizontal = horizontal_fov * 0.5f;
         const float half_vertical = vertical_fov * 0.5f;
-        const bool restrict_backward = horizontal_fov < (kPi - kFovTolerance);
-        const bool limit_horizontal = horizontal_fov < (kTwoPi - kFovTolerance);
-        const bool limit_vertical = vertical_fov < (kPi - kFovTolerance);
-        const float cos_half_horizontal = limit_horizontal ? sycl::cos(half_horizontal) : -1.0f;
-        const float cos_half_vertical = limit_vertical ? sycl::cos(half_vertical) : -1.0f;
+        const float cos_half_horizontal = sycl::cos(half_horizontal);
+        const float cos_half_vertical = sycl::cos(half_vertical);
+        // Allow backward visibility once the horizontal FOV reaches 180 degrees.
+        const bool allow_backward = horizontal_fov >= (kPi - kFovTolerance);
 
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
@@ -227,9 +222,7 @@ public:
             const float sensor_grid_floor_x = std::floor(sensor_grid_x);
             const float sensor_grid_floor_y = std::floor(sensor_grid_y);
             const float sensor_grid_floor_z = std::floor(sensor_grid_z);
-            const bool enforce_forward_only = restrict_backward;
-            const bool enforce_horizontal_limit = limit_horizontal;
-            const bool enforce_vertical_limit = limit_vertical;
+            const bool include_backward = allow_backward;
 
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -260,40 +253,39 @@ public:
                 float local_y = rotation_rows[1].x() * dx + rotation_rows[1].y() * dy + rotation_rows[1].z() * dz;
                 float local_z = rotation_rows[2].x() * dx + rotation_rows[2].y() * dy + rotation_rows[2].z() * dz;
 
-                if (enforce_forward_only && local_x <= 0.0f) {
+                if (!include_backward && local_x <= 0.0f) {
                     return;
                 }
 
-                const float horizontal_norm_sq = local_x * local_x + local_y * local_y;
+                // Mirror the forward component when backward visibility is enabled so that
+                // the same angular limits apply behind the sensor.
+                const float forward_projection = include_backward ? sycl::fabs(local_x) : local_x;
 
-                if (enforce_horizontal_limit) {
-                    float cos_horizontal = 1.0f;
-                    if (horizontal_norm_sq > 0.0f) {
-                        const float inv_horizontal_norm = sycl::rsqrt(horizontal_norm_sq);
-                        cos_horizontal = local_x * inv_horizontal_norm;
-                        cos_horizontal = sycl::clamp(cos_horizontal, -1.0f, 1.0f);
-                    }
-                    if (cos_horizontal < cos_limit_horizontal) {
-                        return;
-                    }
+                // Compute the cosine of the horizontal angle without using atan2. The mirrored forward
+                // projection is used in the norm so that forward/backward views are evaluated symmetrically.
+                const float horizontal_norm_sq = forward_projection * forward_projection + local_y * local_y;
+                float cos_horizontal = 1.0f;
+                if (horizontal_norm_sq > 0.0f) {
+                    const float inv_horizontal_norm = sycl::rsqrt(horizontal_norm_sq);
+                    cos_horizontal = forward_projection * inv_horizontal_norm;
+                    cos_horizontal = sycl::clamp(cos_horizontal, -1.0f, 1.0f);
+                }
+                if (cos_horizontal < cos_limit_horizontal) {
+                    return;
                 }
 
-                if (enforce_vertical_limit) {
-                    const float vertical_norm_sq = horizontal_norm_sq + local_z * local_z;
-                    float cos_vertical = 1.0f;
-                    if (vertical_norm_sq > 0.0f) {
-                        if (horizontal_norm_sq > 0.0f) {
-                            const float horizontal_radius = sycl::sqrt(horizontal_norm_sq);
-                            const float inv_vertical_norm = sycl::rsqrt(vertical_norm_sq);
-                            cos_vertical = horizontal_radius * inv_vertical_norm;
-                        } else {
-                            cos_vertical = 0.0f;
-                        }
-                        cos_vertical = sycl::clamp(cos_vertical, -1.0f, 1.0f);
-                    }
-                    if (cos_vertical < cos_limit_vertical) {
-                        return;
-                    }
+                // Reuse the mirrored forward component so that the vertical FOV is symmetric when backward
+                // viewing is enabled. The vertical angle is measured in the sensor XZ-plane to remain
+                // consistent with the horizontal computation that projects into the XY-plane.
+                const float vertical_norm_sq = forward_projection * forward_projection + local_z * local_z;
+                float cos_vertical = 1.0f;
+                if (vertical_norm_sq > 0.0f) {
+                    const float inv_vertical_norm = sycl::rsqrt(vertical_norm_sq);
+                    cos_vertical = forward_projection * inv_vertical_norm;
+                    cos_vertical = sycl::clamp(cos_vertical, -1.0f, 1.0f);
+                }
+                if (cos_vertical < cos_limit_vertical) {
+                    return;
                 }
 
                 const float distance = sycl::sqrt(dist_sq);
@@ -360,13 +352,19 @@ public:
                     while (!(ix == target_ix && iy == target_iy && iz == target_iz) && !occluded) {
                         if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
                             ix += step_x;
-                            tMaxX += tDeltaX;
+                            if (step_x != 0) {
+                                tMaxX += tDeltaX;
+                            }
                         } else if (tMaxY <= tMaxZ) {
                             iy += step_y;
-                            tMaxY += tDeltaY;
+                            if (step_y != 0) {
+                                tMaxY += tDeltaY;
+                            }
                         } else {
                             iz += step_z;
-                            tMaxZ += tDeltaZ;
+                            if (step_z != 0) {
+                                tMaxZ += tDeltaZ;
+                            }
                         }
 
                         if (ix == target_ix && iy == target_iy && iz == target_iz) {
@@ -457,6 +455,8 @@ public:
     }
 
 private:
+    inline static constexpr float kPi = 3.1415927f;
+    inline static constexpr float kFovTolerance = 1e-6f;
     inline static constexpr float kOcclusionEpsilon = 1e-6f;
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint32_t = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;

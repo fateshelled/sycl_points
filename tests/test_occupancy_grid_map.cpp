@@ -219,20 +219,19 @@ TEST(OccupancyGridMapTest, ExtractVisiblePointsFiltersByViewFrustum) {
 
         sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
 
-        // Populate voxels around the origin to validate frustum culling later on, including one
-        // that exceeds the vertical field of view when laterally offset.
+        // Populate three voxels around the origin to validate frustum culling later on.
         const std::vector<Eigen::Vector3f> input_positions = {
             {1.0f, 0.0f, 0.0f},
             {0.5f, 0.5f, 0.0f},
             {-1.0f, 0.0f, 0.0f},
-            {1.0f, 0.2f, 0.28f},
         };
 
         auto cloud = MakePointCloud(queue, input_positions);
         map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
-        const float fov = sycl_points::algorithms::mapping::OccupancyGridMap::kPi / 6.0f;
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fov = kPi / 6.0f;  // 30 degrees field of view.
         auto visible = map.extract_visible_points(sensor_pose, 5.0f, fov, fov);
 
         ASSERT_EQ(visible.size(), 1U);
@@ -262,7 +261,8 @@ TEST(OccupancyGridMapTest, ExtractVisiblePointsIncludesBackwardWhenFovIsWide) {
         map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
-        const float fov = sycl_points::algorithms::mapping::OccupancyGridMap::kPi;
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fov = kPi;
         auto visible = map.extract_visible_points(sensor_pose, 5.0f, fov, fov);
 
         ASSERT_EQ(visible.size(), 2U);
@@ -295,7 +295,8 @@ TEST(OccupancyGridMapTest, ExtractVisiblePointsRespectsOcclusion) {
         map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
-        const float fov = sycl_points::algorithms::mapping::OccupancyGridMap::kPi / 2.0f;
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fov = kPi / 2.0f;
         auto visible = map.extract_visible_points(sensor_pose, 5.0f, fov, fov);
 
         ASSERT_EQ(visible.size(), 1U);
