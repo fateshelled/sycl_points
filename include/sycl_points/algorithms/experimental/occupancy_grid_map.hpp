@@ -276,18 +276,21 @@ public:
                     return;
                 }
 
-                const float lateral_xy = sycl::sqrt(local_x * local_x + local_y * local_y);
-                const float distance = sycl::sqrt(dist_sq);
-                // Compute the cosine of the vertical angle without using atan2.
+                // Reuse the mirrored forward component so that the vertical FOV is symmetric when backward
+                // viewing is enabled. The vertical angle is measured in the sensor XZ-plane to remain
+                // consistent with the horizontal computation that projects into the XY-plane.
+                const float vertical_norm_sq = forward_projection * forward_projection + local_z * local_z;
                 float cos_vertical = 1.0f;
-                if (distance > 0.0f) {
-                    cos_vertical = lateral_xy / distance;
+                if (vertical_norm_sq > 0.0f) {
+                    const float inv_vertical_norm = sycl::rsqrt(vertical_norm_sq);
+                    cos_vertical = forward_projection * inv_vertical_norm;
                     cos_vertical = sycl::fmin(1.0f, sycl::fmax(-1.0f, cos_vertical));
                 }
                 if (cos_vertical < cos_limit_vertical) {
                     return;
                 }
 
+                const float distance = sycl::sqrt(dist_sq);
                 bool occluded = false;
 
                 // March along the viewing ray to detect occupied voxels that would occlude the candidate.
