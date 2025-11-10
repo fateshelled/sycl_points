@@ -211,7 +211,7 @@ public:
             const float max_dist_sq = max_distance * max_distance;
             const float cos_limit_horizontal = sycl::cos(horizontal_fov * 0.5f);
             const float cos_limit_vertical = sycl::cos(vertical_fov * 0.5f);
-            // // Allow backward visibility once the horizontal FOV reaches 180 degrees.
+            // Allow backward visibility once the horizontal FOV reaches 180 degrees.
             const bool include_backward = horizontal_fov >= (kPi - kFovTolerance);
 
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
