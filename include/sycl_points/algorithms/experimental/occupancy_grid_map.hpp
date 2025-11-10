@@ -325,19 +325,19 @@ public:
                     float tDeltaY = std::numeric_limits<float>::infinity();
                     float tDeltaZ = std::numeric_limits<float>::infinity();
 
-                    if (step_x != 0 && dir_mag_x > 0.0f) {
+                    if (step_x != 0) {
                         const float offset_x = (step_x > 0) ? (1.0f - start_frac_x) : start_frac_x;
                         tMaxX = offset_x / dir_mag_x;
                         tDeltaX = 1.0f / dir_mag_x;
                     }
 
-                    if (step_y != 0 && dir_mag_y > 0.0f) {
+                    if (step_y != 0) {
                         const float offset_y = (step_y > 0) ? (1.0f - start_frac_y) : start_frac_y;
                         tMaxY = offset_y / dir_mag_y;
                         tDeltaY = 1.0f / dir_mag_y;
                     }
 
-                    if (step_z != 0 && dir_mag_z > 0.0f) {
+                    if (step_z != 0) {
                         const float offset_z = (step_z > 0) ? (1.0f - start_frac_z) : start_frac_z;
                         tMaxZ = offset_z / dir_mag_z;
                         tDeltaZ = 1.0f / dir_mag_z;
