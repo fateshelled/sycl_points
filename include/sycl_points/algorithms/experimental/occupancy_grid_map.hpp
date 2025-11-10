@@ -28,8 +28,8 @@ class OccupancyGridMap {
 public:
     using Ptr = std::shared_ptr<OccupancyGridMap>;
 
-    inline static constexpr float kPi = sycl::pi<float>();
-    inline static constexpr float kTwoPi = sycl::two_pi<float>();
+    inline static constexpr float kPi = 3.1415927f;
+    inline static constexpr float kTwoPi = 6.2831853f;
     inline static constexpr float kFovTolerance = 1e-6f;
 
     /// @brief Construct the occupancy grid map.
@@ -158,9 +158,8 @@ public:
     /// @param max_distance Maximum visibility distance in meters.
     /// @param horizontal_fov Horizontal field of view in radians.
     /// @param vertical_fov Vertical field of view in radians.
-    PointCloudShared extract_visible_points(const Eigen::Isometry3f& sensor_pose,
-                                           const float max_distance, const float horizontal_fov,
-                                           const float vertical_fov) const {
+    PointCloudShared extract_visible_points(const Eigen::Isometry3f& sensor_pose, const float max_distance,
+                                            const float horizontal_fov, const float vertical_fov) const {
         PointCloudShared result(this->queue_);
         result.resize_points(0);
         if (this->voxel_num_ == 0) {
@@ -378,8 +377,7 @@ public:
                         sample_point.y() = (static_cast<float>(iy) + 0.5f) * voxel_size;
                         sample_point.z() = (static_cast<float>(iz) + 0.5f) * voxel_size;
 
-                        const uint64_t sample_key =
-                            filter::kernel::compute_voxel_bit(sample_point, inv_voxel_size);
+                        const uint64_t sample_key = filter::kernel::compute_voxel_bit(sample_point, inv_voxel_size);
                         if (sample_key == VoxelConstants::invalid_coord || sample_key == current_key) {
                             continue;
                         }
@@ -397,8 +395,7 @@ public:
                                     const float occ_dx = occ_cx - sensor_x;
                                     const float occ_dy = occ_cy - sensor_y;
                                     const float occ_dz = occ_cz - sensor_z;
-                                    const float occ_dist_sq =
-                                        occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
+                                    const float occ_dist_sq = occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
                                     if (occ_dist_sq + kOcclusionEpsilon < dist_sq) {
                                         occluded = true;
                                     }
@@ -778,8 +775,8 @@ private:
                     [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
                         common::local_reduction<true, VoxelLocalData>(
                             local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size,
-                            power_of_2, item, load_entry, combine_entry, reset_entry,
-                            VoxelConstants::invalid_coord, key_of_entry, compare_keys, equal_keys);
+                            power_of_2, item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord,
+                            key_of_entry, compare_keys, equal_keys);
 
                         const size_t lid = item.get_local_id(0);
                         if (item.get_global_id(0) >= N) {
@@ -796,8 +793,8 @@ private:
                     sycl::nd_range<1>(global_size, local_size), [=](sycl::nd_item<1> item) {
                         common::local_reduction<false, VoxelLocalData>(
                             local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size,
-                            power_of_2, item, load_entry, combine_entry, reset_entry,
-                            VoxelConstants::invalid_coord, key_of_entry, compare_keys, equal_keys);
+                            power_of_2, item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord,
+                            key_of_entry, compare_keys, equal_keys);
 
                         const size_t lid = item.get_local_id(0);
                         if (item.get_global_id(0) >= N) {
