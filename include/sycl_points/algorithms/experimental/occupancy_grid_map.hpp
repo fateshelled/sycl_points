@@ -180,7 +180,7 @@ public:
         const float half_vertical = vertical_fov * 0.5f;
         constexpr float kPi = 3.14159265358979323846f;
         // Allow backward visibility once the horizontal FOV reaches 180 degrees.
-        const bool allow_backward = horizontal_fov >= kPi;
+        const bool allow_backward = horizontal_fov >= (kPi - 1e-6f);
 
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
