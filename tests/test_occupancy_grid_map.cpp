@@ -1,22 +1,19 @@
 #include <gtest/gtest.h>
 
-#include <algorithm>
-#include <vector>
-
 #include <Eigen/Geometry>
-
+#include <algorithm>
 #include <sycl_points/algorithms/experimental/occupancy_grid_map.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
+#include <vector>
 
 namespace {
 
-sycl_points::PointCloudShared MakePointCloud(
-    const sycl_points::sycl_utils::DeviceQueue& queue,
-    const std::vector<Eigen::Vector3f>& positions,
-    const std::vector<sycl_points::RGBType>* colors = nullptr,
-    const std::vector<float>* intensities = nullptr) {
+sycl_points::PointCloudShared MakePointCloud(const sycl_points::sycl_utils::DeviceQueue& queue,
+                                             const std::vector<Eigen::Vector3f>& positions,
+                                             const std::vector<sycl_points::RGBType>* colors = nullptr,
+                                             const std::vector<float>* intensities = nullptr) {
     // Populate a CPU point cloud to create deterministic test data.
     sycl_points::PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(positions.size());
@@ -77,7 +74,7 @@ TEST(OccupancyGridMapTest, IntegratesPointsAndReturnsVisibleVoxels) {
         map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
-        map.downsampling(result, Eigen::Isometry3f::Identity(), 1.0f);
+        map.extract_occupied_points(result, Eigen::Isometry3f::Identity(), 1.0f);
 
         ASSERT_EQ(result.size(), 2U);
         auto positions = ExtractPositions(*result.points);
@@ -103,7 +100,7 @@ TEST(OccupancyGridMapTest, IntegratesPointsAndReturnsVisibleVoxels) {
     }
 }
 
-TEST(OccupancyGridMapTest, DownsamplingSkipsFarVoxels) {
+TEST(OccupancyGridMapTest, ExtractOccupiedPointsSkipsFarVoxels) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
@@ -119,7 +116,7 @@ TEST(OccupancyGridMapTest, DownsamplingSkipsFarVoxels) {
         map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
-        map.downsampling(result, Eigen::Isometry3f::Identity(), 1.0f);
+        map.extract_occupied_points(result, Eigen::Isometry3f::Identity(), 1.0f);
 
         ASSERT_EQ(result.size(), 1U);
         const auto point = (*result.points)[0];
@@ -150,7 +147,7 @@ TEST(OccupancyGridMapTest, AggregatesColorAndIntensity) {
         map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
-        map.downsampling(result, Eigen::Isometry3f::Identity(), 1.0f);
+        map.extract_occupied_points(result, Eigen::Isometry3f::Identity(), 1.0f);
 
         ASSERT_EQ(result.size(), 1U);
         ASSERT_TRUE(result.has_rgb());
@@ -197,13 +194,12 @@ TEST(OccupancyGridMapTest, VisibilityDecayReducesUnobservedVoxels) {
         map.add_point_cloud(second_cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
-        map.downsampling(result, Eigen::Isometry3f::Identity(), 1.0f);
+        map.extract_occupied_points(result, Eigen::Isometry3f::Identity(), 1.0f);
 
         ASSERT_EQ(result.size(), 2U);
         auto positions = ExtractPositions(*result.points);
-        std::sort(positions.begin(), positions.end(), [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
-            return lhs.x() < rhs.x();
-        });
+        std::sort(positions.begin(), positions.end(),
+                  [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) { return lhs.x() < rhs.x(); });
 
         // The voxel that was not observed on the second scan should have lower confidence.
         EXPECT_LT(map.voxel_probability(positions[1]), map.voxel_probability(positions[0]));
@@ -232,10 +228,11 @@ TEST(OccupancyGridMapTest, ExtractVisiblePointsFiltersByViewFrustum) {
         Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
         constexpr float kPi = 3.14159265358979323846f;
         const float fov = kPi / 6.0f;  // 30 degrees field of view.
-        auto visible = map.extract_visible_points(sensor_pose, 5.0f, fov, fov);
+        sycl_points::PointCloudShared result(queue);
+        map.extract_visible_points(result, sensor_pose, 5.0f, fov, fov);
 
-        ASSERT_EQ(visible.size(), 1U);
-        const auto point = (*visible.points)[0];
+        ASSERT_EQ(result.size(), 1U);
+        const auto point = (*result.points)[0];
         EXPECT_NEAR(point.x(), 1.0f, 1e-5f);
         EXPECT_NEAR(point.y(), 0.0f, 1e-5f);
         EXPECT_NEAR(point.z(), 0.0f, 1e-5f);
@@ -263,13 +260,13 @@ TEST(OccupancyGridMapTest, ExtractVisiblePointsIncludesBackwardWhenFovIsWide) {
         Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
         constexpr float kPi = 3.14159265358979323846f;
         const float fov = kPi;
-        auto visible = map.extract_visible_points(sensor_pose, 5.0f, fov, fov);
+        sycl_points::PointCloudShared result(queue);
+        map.extract_visible_points(result, sensor_pose, 5.0f, fov, fov);
 
-        ASSERT_EQ(visible.size(), 2U);
-        auto positions = ExtractPositions(*visible.points);
-        std::sort(positions.begin(), positions.end(), [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
-            return lhs.x() < rhs.x();
-        });
+        ASSERT_EQ(result.size(), 2U);
+        auto positions = ExtractPositions(*result.points);
+        std::sort(positions.begin(), positions.end(),
+                  [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) { return lhs.x() < rhs.x(); });
 
         EXPECT_NEAR(positions[0].x(), -1.0f, 1e-5f);
         EXPECT_NEAR(positions[1].x(), 1.0f, 1e-5f);
@@ -297,10 +294,11 @@ TEST(OccupancyGridMapTest, ExtractVisiblePointsRespectsOcclusion) {
         Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
         constexpr float kPi = 3.14159265358979323846f;
         const float fov = kPi / 2.0f;
-        auto visible = map.extract_visible_points(sensor_pose, 5.0f, fov, fov);
+        sycl_points::PointCloudShared result(queue);
+        map.extract_visible_points(result, sensor_pose, 5.0f, fov, fov);
 
-        ASSERT_EQ(visible.size(), 1U);
-        const auto point = (*visible.points)[0];
+        ASSERT_EQ(result.size(), 1U);
+        const auto point = (*result.points)[0];
         EXPECT_NEAR(point.x(), 0.8f, 1e-5f);
         EXPECT_NEAR(point.y(), 0.0f, 1e-5f);
         EXPECT_NEAR(point.z(), 0.0f, 1e-5f);
@@ -308,4 +306,3 @@ TEST(OccupancyGridMapTest, ExtractVisiblePointsRespectsOcclusion) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
 }
-

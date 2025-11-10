@@ -132,12 +132,11 @@ public:
         ++this->frame_index_;
     }
 
-    /// @brief Extract occupied voxels that are visible from the sensor pose.
+    /// @brief Extract occupied voxels from the sensor pose to L2 distance.
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
-    /// @param max_distance Maximum visibility distance in meters.
-    void downsampling(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
-                      const float max_distance = 100.0f) const {
+    /// @param max_distance Maximum extract L2 distance in meters.
+    void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, const float max_distance = 100.0f) const {
         result.resize_points(0);
         result.resize_rgb(0);
         result.resize_intensities(0);
@@ -146,20 +145,20 @@ public:
             return;
         }
 
-        this->export_visible_voxels(result, sensor_pose.translation(), max_distance);
+        this->extract_occupied_points_impl(result, sensor_pose.translation(), max_distance);
     }
 
     /// @brief Extract the visible subset of the map as a new point cloud.
+    /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @param max_distance Maximum visibility distance in meters.
     /// @param horizontal_fov Horizontal field of view in radians.
     /// @param vertical_fov Vertical field of view in radians.
-    PointCloudShared extract_visible_points(const Eigen::Isometry3f& sensor_pose, const float max_distance,
-                                            const float horizontal_fov, const float vertical_fov) const {
-        PointCloudShared result(this->queue_);
+    void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
+                                const float max_distance, const float horizontal_fov, const float vertical_fov) const {
         result.resize_points(0);
         if (this->voxel_num_ == 0) {
-            return result;
+            return;
         }
 
         // Precompute the inverse rotation and translation so that the sensor-frame projection can
@@ -451,7 +450,7 @@ public:
             result.resize_intensities(final_count);
         }
 
-        return result;
+        return;
     }
 
 private:
@@ -895,8 +894,8 @@ private:
         event.wait();
     }
 
-    void export_visible_voxels(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
-                               const float max_distance) const {
+    void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
+                                      const float max_distance) const {
         const size_t N = this->capacity_;
         const float max_distance_sq = max_distance * max_distance;
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
