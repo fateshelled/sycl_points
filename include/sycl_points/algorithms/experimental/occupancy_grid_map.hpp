@@ -28,8 +28,8 @@ class OccupancyGridMap {
 public:
     using Ptr = std::shared_ptr<OccupancyGridMap>;
 
-    inline static constexpr float kPi = 3.14159265358979323846f;
-    inline static constexpr float kTwoPi = 2.0f * kPi;
+    inline static constexpr float kPi = sycl::pi<float>();
+    inline static constexpr float kTwoPi = sycl::two_pi<float>();
     inline static constexpr float kFovTolerance = 1e-6f;
 
     /// @brief Construct the occupancy grid map.
