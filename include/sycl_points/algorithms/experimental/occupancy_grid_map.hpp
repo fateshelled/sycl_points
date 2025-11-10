@@ -178,8 +178,11 @@ public:
         const float max_distance_sq = max_distance * max_distance;
         const float half_horizontal = horizontal_fov * 0.5f;
         const float half_vertical = vertical_fov * 0.5f;
-        const float tan_half_horizontal = std::tan(half_horizontal);
-        const float tan_half_vertical = std::tan(half_vertical);
+        const float cos_half_horizontal = sycl::cos(half_horizontal);
+        const float cos_half_vertical = sycl::cos(half_vertical);
+        constexpr float kPi = 3.14159265358979323846f;
+        // Allow backward visibility once the horizontal FOV reaches 180 degrees.
+        const bool allow_backward = horizontal_fov >= (kPi - 1e-6f);
 
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
@@ -207,8 +210,8 @@ public:
             const float sensor_y = sensor_translation.y();
             const float sensor_z = sensor_translation.z();
             const float max_dist_sq = max_distance_sq;
-            const float tan_half_h = tan_half_horizontal;
-            const float tan_half_v = tan_half_vertical;
+            const float cos_limit_horizontal = cos_half_horizontal;
+            const float cos_limit_vertical = cos_half_vertical;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
             const size_t max_probe = this->max_probe_length_;
@@ -221,6 +224,7 @@ public:
             const float sensor_grid_floor_x = std::floor(sensor_grid_x);
             const float sensor_grid_floor_y = std::floor(sensor_grid_y);
             const float sensor_grid_floor_z = std::floor(sensor_grid_z);
+            const bool include_backward = allow_backward;
 
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -251,20 +255,39 @@ public:
                 float local_y = rotation_rows[1].x() * dx + rotation_rows[1].y() * dy + rotation_rows[1].z() * dz;
                 float local_z = rotation_rows[2].x() * dx + rotation_rows[2].y() * dy + rotation_rows[2].z() * dz;
 
-                if (local_x <= 0.0f) {
+                if (!include_backward && local_x <= 0.0f) {
                     return;
                 }
 
-                if (sycl::fabs(local_y) > local_x * tan_half_h) {
+                // Mirror the forward component when backward visibility is enabled so that
+                // the same angular limits apply behind the sensor.
+                const float forward_projection = include_backward ? sycl::fabs(local_x) : local_x;
+
+                // Compute the cosine of the horizontal angle without using atan2. The mirrored forward
+                // projection is used in the norm so that forward/backward views are evaluated symmetrically.
+                const float horizontal_norm_sq = forward_projection * forward_projection + local_y * local_y;
+                float cos_horizontal = 1.0f;
+                if (horizontal_norm_sq > 0.0f) {
+                    const float inv_horizontal_norm = sycl::rsqrt(horizontal_norm_sq);
+                    cos_horizontal = forward_projection * inv_horizontal_norm;
+                    cos_horizontal = sycl::fmin(1.0f, sycl::fmax(-1.0f, cos_horizontal));
+                }
+                if (cos_horizontal < cos_limit_horizontal) {
                     return;
                 }
 
-                const float lateral = sycl::sqrt(local_x * local_x + local_y * local_y);
-                if (sycl::fabs(local_z) > lateral * tan_half_v) {
-                    return;
-                }
-
+                const float lateral_xy = sycl::sqrt(local_x * local_x + local_y * local_y);
                 const float distance = sycl::sqrt(dist_sq);
+                // Compute the cosine of the vertical angle without using atan2.
+                float cos_vertical = 1.0f;
+                if (distance > 0.0f) {
+                    cos_vertical = lateral_xy / distance;
+                    cos_vertical = sycl::fmin(1.0f, sycl::fmax(-1.0f, cos_vertical));
+                }
+                if (cos_vertical < cos_limit_vertical) {
+                    return;
+                }
+
                 bool occluded = false;
 
                 // March along the viewing ray to detect occupied voxels that would occlude the candidate.

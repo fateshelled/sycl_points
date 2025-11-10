@@ -66,6 +66,7 @@ TEST(OccupancyGridMapTest, IntegratesPointsAndReturnsVisibleVoxels) {
 
         sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.2f);
 
+        // Populate multiple voxels to validate aggregation across distinct cells.
         const std::vector<Eigen::Vector3f> input_positions = {
             {0.05f, 0.05f, 0.0f},
             {0.07f, 0.05f, 0.0f},
@@ -238,6 +239,40 @@ TEST(OccupancyGridMapTest, ExtractVisiblePointsFiltersByViewFrustum) {
         EXPECT_NEAR(point.x(), 1.0f, 1e-5f);
         EXPECT_NEAR(point.y(), 0.0f, 1e-5f);
         EXPECT_NEAR(point.z(), 0.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(OccupancyGridMapTest, ExtractVisiblePointsIncludesBackwardWhenFovIsWide) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
+
+        // Populate front and back voxels to confirm the backward extraction path.
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {1.0f, 0.0f, 0.0f},
+            {-1.0f, 0.0f, 0.0f},
+        };
+
+        auto cloud = MakePointCloud(queue, input_positions);
+        map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fov = kPi;
+        auto visible = map.extract_visible_points(sensor_pose, 5.0f, fov, fov);
+
+        ASSERT_EQ(visible.size(), 2U);
+        auto positions = ExtractPositions(*visible.points);
+        std::sort(positions.begin(), positions.end(), [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
+            return lhs.x() < rhs.x();
+        });
+
+        EXPECT_NEAR(positions[0].x(), -1.0f, 1e-5f);
+        EXPECT_NEAR(positions[1].x(), 1.0f, 1e-5f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
