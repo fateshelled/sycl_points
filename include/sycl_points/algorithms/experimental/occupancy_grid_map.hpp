@@ -284,7 +284,7 @@ public:
                 if (vertical_norm_sq > 0.0f) {
                     const float inv_vertical_norm = sycl::rsqrt(vertical_norm_sq);
                     cos_vertical = forward_projection * inv_vertical_norm;
-                    cos_vertical = sycl::fmin(1.0f, sycl::fmax(-1.0f, cos_vertical));
+                    cos_vertical = sycl::clamp(cos_vertical, -1.0f, 1.0f);
                 }
                 if (cos_vertical < cos_limit_vertical) {
                     return;
