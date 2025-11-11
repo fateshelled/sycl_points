@@ -888,13 +888,17 @@ private:
         const float inv_voxel = this->inv_voxel_size_;
         const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
+        const float sensor_x = sensor_origin.x();
+        const float sensor_y = sensor_origin.y();
+        const float sensor_z = sensor_origin.z();
+        const float scaled_origin_x = sensor_x * inv_voxel;
+        const float scaled_origin_y = sensor_y * inv_voxel;
+        const float scaled_origin_z = sensor_z * inv_voxel;
+
         shared_vector<uint32_t> expected_visit_counter(1, 0U, *this->queue_.ptr);
         auto estimate_event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto counter_ptr = expected_visit_counter.data();
             auto local_points_ptr = points_ptr;
-            const float sensor_x = sensor_origin.x();
-            const float sensor_y = sensor_origin.y();
-            const float sensor_z = sensor_origin.z();
             const float inv_voxel_size = inv_voxel;
 
             auto reduction = sycl::reduction(counter_ptr, sycl::plus<uint32_t>());
@@ -920,9 +924,6 @@ private:
                     return;
                 }
 
-                const float scaled_origin_x = sensor_x * inv_voxel_size;
-                const float scaled_origin_y = sensor_y * inv_voxel_size;
-                const float scaled_origin_z = sensor_z * inv_voxel_size;
                 const float scaled_target_x = world_x * inv_voxel_size;
                 const float scaled_target_y = world_y * inv_voxel_size;
                 const float scaled_target_z = world_z * inv_voxel_size;
@@ -967,9 +968,6 @@ private:
 
         shared_vector<uint32_t> voxel_counter(1, static_cast<uint32_t>(this->voxel_num_), *this->queue_.ptr);
 
-        const float sensor_x = sensor_origin.x();
-        const float sensor_y = sensor_origin.y();
-        const float sensor_z = sensor_origin.z();
         const size_t max_probe = this->max_probe_length_;
         const size_t capacity = this->capacity_;
         const uint32_t current_frame = this->frame_index_;
@@ -1001,9 +999,6 @@ private:
                     return;
                 }
 
-                const float scaled_origin_x = sensor_x * inv_voxel;
-                const float scaled_origin_y = sensor_y * inv_voxel;
-                const float scaled_origin_z = sensor_z * inv_voxel;
                 const float scaled_target_x = world_x * inv_voxel;
                 const float scaled_target_y = world_y * inv_voxel;
                 const float scaled_target_z = world_z * inv_voxel;
