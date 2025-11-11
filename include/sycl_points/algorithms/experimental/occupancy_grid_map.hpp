@@ -123,6 +123,10 @@ public:
 
         this->integrate_points(cloud, sensor_pose, has_rgb, has_intensity);
 
+        if (this->log_odds_miss_ != 0.0f) {
+            this->update_free_space(cloud, sensor_pose);
+        }
+
         this->apply_pending_log_odds();
 
         if (this->log_odds_miss_ != 0.0f) {
@@ -201,12 +205,6 @@ public:
             const float sensor_x = sensor_pose.translation().x();
             const float sensor_y = sensor_pose.translation().y();
             const float sensor_z = sensor_pose.translation().z();
-            const float sensor_grid_x = sensor_x * inv_voxel_size;
-            const float sensor_grid_y = sensor_y * inv_voxel_size;
-            const float sensor_grid_z = sensor_z * inv_voxel_size;
-            const float sensor_grid_floor_x = std::floor(sensor_grid_x);
-            const float sensor_grid_floor_y = std::floor(sensor_grid_y);
-            const float sensor_grid_floor_z = std::floor(sensor_grid_z);
 
             const float max_dist_sq = max_distance * max_distance;
             const float cos_limit_horizontal = sycl::cos(horizontal_fov * 0.5f);
@@ -282,118 +280,44 @@ public:
 
                 // March along the viewing ray to detect occupied voxels that would occlude the candidate.
                 if (distance > voxel_size) {
-                    const float ray_dir_x = dx * inv_voxel_size;
-                    const float ray_dir_y = dy * inv_voxel_size;
-                    const float ray_dir_z = dz * inv_voxel_size;
+                    // Reuse the same discrete traversal used for free-space carving to test occlusion.
+                    traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, cx, cy, cz, inv_voxel_size,
+                                                 [&](int64_t ix, int64_t iy, int64_t iz) {
+                                                     uint64_t sample_key = VoxelConstants::invalid_coord;
+                                                     if (!grid_to_key_device(ix, iy, iz, sample_key) ||
+                                                         sample_key == current_key) {
+                                                         return true;
+                                                     }
 
-                    const int step_x = (ray_dir_x > 0.0f) ? 1 : ((ray_dir_x < 0.0f) ? -1 : 0);
-                    const int step_y = (ray_dir_y > 0.0f) ? 1 : ((ray_dir_y < 0.0f) ? -1 : 0);
-                    const int step_z = (ray_dir_z > 0.0f) ? 1 : ((ray_dir_z < 0.0f) ? -1 : 0);
-
-                    const float dir_mag_x = sycl::fabs(ray_dir_x);
-                    const float dir_mag_y = sycl::fabs(ray_dir_y);
-                    const float dir_mag_z = sycl::fabs(ray_dir_z);
-
-                    const float start_frac_x = sensor_grid_x - sensor_grid_floor_x;
-                    const float start_frac_y = sensor_grid_y - sensor_grid_floor_y;
-                    const float start_frac_z = sensor_grid_z - sensor_grid_floor_z;
-
-                    float tMaxX = std::numeric_limits<float>::infinity();
-                    float tMaxY = std::numeric_limits<float>::infinity();
-                    float tMaxZ = std::numeric_limits<float>::infinity();
-                    float tDeltaX = std::numeric_limits<float>::infinity();
-                    float tDeltaY = std::numeric_limits<float>::infinity();
-                    float tDeltaZ = std::numeric_limits<float>::infinity();
-
-                    if (step_x != 0) {
-                        const float offset_x = (step_x > 0) ? (1.0f - start_frac_x) : start_frac_x;
-                        tMaxX = offset_x / dir_mag_x;
-                        tDeltaX = 1.0f / dir_mag_x;
-                    }
-
-                    if (step_y != 0) {
-                        const float offset_y = (step_y > 0) ? (1.0f - start_frac_y) : start_frac_y;
-                        tMaxY = offset_y / dir_mag_y;
-                        tDeltaY = 1.0f / dir_mag_y;
-                    }
-
-                    if (step_z != 0) {
-                        const float offset_z = (step_z > 0) ? (1.0f - start_frac_z) : start_frac_z;
-                        tMaxZ = offset_z / dir_mag_z;
-                        tDeltaZ = 1.0f / dir_mag_z;
-                    }
-
-                    int ix = static_cast<int>(sensor_grid_floor_x);
-                    int iy = static_cast<int>(sensor_grid_floor_y);
-                    int iz = static_cast<int>(sensor_grid_floor_z);
-
-                    const float target_grid_x = cx * inv_voxel_size;
-                    const float target_grid_y = cy * inv_voxel_size;
-                    const float target_grid_z = cz * inv_voxel_size;
-
-                    const int target_ix = static_cast<int>(sycl::floor(target_grid_x));
-                    const int target_iy = static_cast<int>(sycl::floor(target_grid_y));
-                    const int target_iz = static_cast<int>(sycl::floor(target_grid_z));
-
-                    PointType sample_point;
-                    sample_point.w() = 1.0f;
-
-                    while (!(ix == target_ix && iy == target_iy && iz == target_iz) && !occluded) {
-                        if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
-                            ix += step_x;
-                            if (step_x != 0) {
-                                tMaxX += tDeltaX;
-                            }
-                        } else if (tMaxY <= tMaxZ) {
-                            iy += step_y;
-                            if (step_y != 0) {
-                                tMaxY += tDeltaY;
-                            }
-                        } else {
-                            iz += step_z;
-                            if (step_z != 0) {
-                                tMaxZ += tDeltaZ;
-                            }
-                        }
-
-                        if (ix == target_ix && iy == target_iy && iz == target_iz) {
-                            break;
-                        }
-
-                        sample_point.x() = (static_cast<float>(ix) + 0.5f) * voxel_size;
-                        sample_point.y() = (static_cast<float>(iy) + 0.5f) * voxel_size;
-                        sample_point.z() = (static_cast<float>(iz) + 0.5f) * voxel_size;
-
-                        const uint64_t sample_key = filter::kernel::compute_voxel_bit(sample_point, inv_voxel_size);
-                        if (sample_key == VoxelConstants::invalid_coord || sample_key == current_key) {
-                            continue;
-                        }
-
-                        for (size_t probe = 0; probe < max_probe; ++probe) {
-                            const size_t slot = compute_slot_id(sample_key, probe, capacity);
-                            const uint64_t stored_key = key_ptr[slot];
-                            if (stored_key == sample_key) {
-                                const VoxelData& occ = voxel_ptr[slot];
-                                if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
-                                    const float inv_occ = 1.0f / static_cast<float>(occ.hit_count);
-                                    const float occ_cx = occ.sum_x * inv_occ;
-                                    const float occ_cy = occ.sum_y * inv_occ;
-                                    const float occ_cz = occ.sum_z * inv_occ;
-                                    const float occ_dx = occ_cx - sensor_x;
-                                    const float occ_dy = occ_cy - sensor_y;
-                                    const float occ_dz = occ_cz - sensor_z;
-                                    const float occ_dist_sq = occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
-                                    if (occ_dist_sq + kOcclusionEpsilon < dist_sq) {
-                                        occluded = true;
-                                    }
-                                }
-                                break;
-                            }
-                            if (stored_key == VoxelConstants::invalid_coord) {
-                                break;
-                            }
-                        }
-                    }
+                                                     for (size_t probe = 0; probe < max_probe; ++probe) {
+                                                         const size_t slot = compute_slot_id(sample_key, probe, capacity);
+                                                         const uint64_t stored_key = key_ptr[slot];
+                                                         if (stored_key == sample_key) {
+                                                             const VoxelData& occ = voxel_ptr[slot];
+                                                             if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
+                                                                 const float inv_occ =
+                                                                     1.0f / static_cast<float>(occ.hit_count);
+                                                                 const float occ_cx = occ.sum_x * inv_occ;
+                                                                 const float occ_cy = occ.sum_y * inv_occ;
+                                                                 const float occ_cz = occ.sum_z * inv_occ;
+                                                                 const float occ_dx = occ_cx - sensor_x;
+                                                                 const float occ_dy = occ_cy - sensor_y;
+                                                                 const float occ_dz = occ_cz - sensor_z;
+                                                                 const float occ_dist_sq =
+                                                                     occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
+                                                                 if (occ_dist_sq + kOcclusionEpsilon < dist_sq) {
+                                                                     occluded = true;
+                                                                     return false;
+                                                                 }
+                                                             }
+                                                             return true;
+                                                         }
+                                                         if (stored_key == VoxelConstants::invalid_coord) {
+                                                             return true;
+                                                         }
+                                                     }
+                                                     return true;
+                                                 });
                 }
 
                 if (occluded) {
@@ -644,6 +568,159 @@ private:
         }
     }
 
+    /// @brief Traverse voxels between the origin and target in grid coordinates, excluding both endpoints.
+    template <typename Visitor>
+    static inline void traverse_ray_exclusive_impl(const float origin_x, const float origin_y, const float origin_z,
+                                                   const float target_x, const float target_y, const float target_z,
+                                                   const float inv_voxel, Visitor&& visitor) {
+        const float scaled_origin_x = origin_x * inv_voxel;
+        const float scaled_origin_y = origin_y * inv_voxel;
+        const float scaled_origin_z = origin_z * inv_voxel;
+        const float scaled_target_x = target_x * inv_voxel;
+        const float scaled_target_y = target_y * inv_voxel;
+        const float scaled_target_z = target_z * inv_voxel;
+
+        int64_t ix = static_cast<int64_t>(sycl::floor(scaled_origin_x));
+        int64_t iy = static_cast<int64_t>(sycl::floor(scaled_origin_y));
+        int64_t iz = static_cast<int64_t>(sycl::floor(scaled_origin_z));
+
+        const int64_t target_ix = static_cast<int64_t>(sycl::floor(scaled_target_x));
+        const int64_t target_iy = static_cast<int64_t>(sycl::floor(scaled_target_y));
+        const int64_t target_iz = static_cast<int64_t>(sycl::floor(scaled_target_z));
+
+        if (ix == target_ix && iy == target_iy && iz == target_iz) {
+            return;
+        }
+
+        const float dir_x = scaled_target_x - scaled_origin_x;
+        const float dir_y = scaled_target_y - scaled_origin_y;
+        const float dir_z = scaled_target_z - scaled_origin_z;
+
+        const float abs_dir_x = sycl::fabs(dir_x);
+        const float abs_dir_y = sycl::fabs(dir_y);
+        const float abs_dir_z = sycl::fabs(dir_z);
+
+        const int step_x = (dir_x > 0.0f) ? 1 : ((dir_x < 0.0f) ? -1 : 0);
+        const int step_y = (dir_y > 0.0f) ? 1 : ((dir_y < 0.0f) ? -1 : 0);
+        const int step_z = (dir_z > 0.0f) ? 1 : ((dir_z < 0.0f) ? -1 : 0);
+
+        const float start_frac_x = scaled_origin_x - sycl::floor(scaled_origin_x);
+        const float start_frac_y = scaled_origin_y - sycl::floor(scaled_origin_y);
+        const float start_frac_z = scaled_origin_z - sycl::floor(scaled_origin_z);
+
+        const float inv_dir_mag_x = (abs_dir_x > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_x) : 0.0f;
+        const float inv_dir_mag_y = (abs_dir_y > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_y) : 0.0f;
+        const float inv_dir_mag_z = (abs_dir_z > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_z) : 0.0f;
+
+        const float inf = std::numeric_limits<float>::infinity();
+        float t_max_x = (step_x != 0) ? ((step_x > 0 ? (1.0f - start_frac_x) : start_frac_x) * inv_dir_mag_x) : inf;
+        float t_max_y = (step_y != 0) ? ((step_y > 0 ? (1.0f - start_frac_y) : start_frac_y) * inv_dir_mag_y) : inf;
+        float t_max_z = (step_z != 0) ? ((step_z > 0 ? (1.0f - start_frac_z) : start_frac_z) * inv_dir_mag_z) : inf;
+
+        float t_delta_x = (step_x != 0) ? inv_dir_mag_x : inf;
+        float t_delta_y = (step_y != 0) ? inv_dir_mag_y : inf;
+        float t_delta_z = (step_z != 0) ? inv_dir_mag_z : inf;
+
+        while (true) {
+            if (t_max_x <= t_max_y && t_max_x <= t_max_z) {
+                ix += step_x;
+                if (step_x != 0) {
+                    t_max_x += t_delta_x;
+                }
+            } else if (t_max_y <= t_max_z) {
+                iy += step_y;
+                if (step_y != 0) {
+                    t_max_y += t_delta_y;
+                }
+            } else {
+                iz += step_z;
+                if (step_z != 0) {
+                    t_max_z += t_delta_z;
+                }
+            }
+
+            if (ix == target_ix && iy == target_iy && iz == target_iz) {
+                break;
+            }
+
+            if (!visitor(ix, iy, iz)) {
+                break;
+            }
+        }
+    }
+
+    /// @brief Convert integer grid coordinates into the packed voxel key representation.
+    static inline bool grid_to_key_device(const int64_t x, const int64_t y, const int64_t z, uint64_t& key) {
+        const int64_t shift_x = x + VoxelConstants::coord_offset;
+        const int64_t shift_y = y + VoxelConstants::coord_offset;
+        const int64_t shift_z = z + VoxelConstants::coord_offset;
+
+        if (shift_x < 0 || shift_x > VoxelConstants::coord_bit_mask || shift_y < 0 ||
+            shift_y > VoxelConstants::coord_bit_mask || shift_z < 0 || shift_z > VoxelConstants::coord_bit_mask) {
+            return false;
+        }
+
+        key = (static_cast<uint64_t>(shift_x & VoxelConstants::coord_bit_mask)
+               << (VoxelConstants::coord_bit_size * CartesianCoordComponent::X)) |
+              (static_cast<uint64_t>(shift_y & VoxelConstants::coord_bit_mask)
+               << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Y)) |
+              (static_cast<uint64_t>(shift_z & VoxelConstants::coord_bit_mask)
+               << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Z));
+        return true;
+    }
+
+    /// @brief Visit voxels from origin to target, including the origin cell on the host.
+    template <typename Visitor>
+    void traverse_ray(const Eigen::Vector3f& origin, const Eigen::Vector3f& target, Visitor&& visitor) const {
+        const float inv_voxel = this->inv_voxel_size_;
+        const float scaled_origin_x = origin.x() * inv_voxel;
+        const float scaled_origin_y = origin.y() * inv_voxel;
+        const float scaled_origin_z = origin.z() * inv_voxel;
+        const float scaled_target_x = target.x() * inv_voxel;
+        const float scaled_target_y = target.y() * inv_voxel;
+        const float scaled_target_z = target.z() * inv_voxel;
+
+        int64_t ix = static_cast<int64_t>(std::floor(scaled_origin_x));
+        int64_t iy = static_cast<int64_t>(std::floor(scaled_origin_y));
+        int64_t iz = static_cast<int64_t>(std::floor(scaled_origin_z));
+
+        const int64_t target_ix = static_cast<int64_t>(std::floor(scaled_target_x));
+        const int64_t target_iy = static_cast<int64_t>(std::floor(scaled_target_y));
+        const int64_t target_iz = static_cast<int64_t>(std::floor(scaled_target_z));
+
+        if (ix == target_ix && iy == target_iy && iz == target_iz) {
+            return;
+        }
+
+        if (!visitor(ix, iy, iz)) {
+            return;
+        }
+
+        traverse_ray_exclusive_impl(origin.x(), origin.y(), origin.z(), target.x(), target.y(), target.z(), inv_voxel,
+                                    std::forward<Visitor>(visitor));
+    }
+
+    bool grid_to_key(const int64_t x, const int64_t y, const int64_t z, uint64_t& key) const {
+        return grid_to_key_device(x, y, z, key);
+    }
+
+    VoxelData* find_or_insert_voxel_host(const uint64_t key, bool& inserted) {
+        inserted = false;
+        for (size_t probe = 0; probe < this->max_probe_length_; ++probe) {
+            const size_t slot = this->compute_slot_id(key, probe, this->capacity_);
+            uint64_t& stored_key = this->key_ptr_.get()[slot];
+            if (stored_key == key) {
+                return &this->data_ptr_.get()[slot];
+            }
+            if (stored_key == VoxelConstants::invalid_coord) {
+                stored_key = key;
+                inserted = true;
+                return &this->data_ptr_.get()[slot];
+            }
+        }
+        return nullptr;
+    }
+
     static void atomic_add_voxel_data(const VoxelAccumulator& src, VoxelData& dst) {
         atomic_ref_float(dst.sum_x).fetch_add(src.sum_x);
         atomic_ref_float(dst.sum_y).fetch_add(src.sum_y);
@@ -796,6 +873,153 @@ private:
                             [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); });
                     });
             }
+        });
+
+        event.wait();
+        this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+    }
+
+    void update_free_space(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) {
+        const size_t point_count = cloud.size();
+        if (point_count == 0U) {
+            return;
+        }
+
+        const Eigen::Vector3f sensor_origin = sensor_pose.translation();
+        const PointType* points_ptr = cloud.points_ptr();
+        const float log_miss = this->log_odds_miss_;
+        const float inv_voxel = this->inv_voxel_size_;
+
+        // Estimate an upper bound of the voxels touched by the rays to ensure enough capacity.
+        size_t expected_voxel_visits = 0U;
+        for (size_t i = 0; i < point_count; ++i) {
+            const PointType& local_point = points_ptr[i];
+            const Eigen::Vector3f local_position(local_point.x(), local_point.y(), local_point.z());
+            const Eigen::Vector3f world_position = sensor_pose * local_position;
+            const float distance = (world_position - sensor_origin).norm();
+            if (distance <= std::numeric_limits<float>::epsilon()) {
+                continue;
+            }
+            const float scaled_origin_x = sensor_origin.x() * inv_voxel;
+            const float scaled_origin_y = sensor_origin.y() * inv_voxel;
+            const float scaled_origin_z = sensor_origin.z() * inv_voxel;
+            const float scaled_target_x = world_position.x() * inv_voxel;
+            const float scaled_target_y = world_position.y() * inv_voxel;
+            const float scaled_target_z = world_position.z() * inv_voxel;
+            const int64_t origin_ix = static_cast<int64_t>(std::floor(scaled_origin_x));
+            const int64_t origin_iy = static_cast<int64_t>(std::floor(scaled_origin_y));
+            const int64_t origin_iz = static_cast<int64_t>(std::floor(scaled_origin_z));
+            const int64_t target_ix = static_cast<int64_t>(std::floor(scaled_target_x));
+            const int64_t target_iy = static_cast<int64_t>(std::floor(scaled_target_y));
+            const int64_t target_iz = static_cast<int64_t>(std::floor(scaled_target_z));
+            if (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz) {
+                ++expected_voxel_visits;
+            }
+            bool skip_origin = true;  // Ignore the sensor cell so that only free voxels are counted.
+            this->traverse_ray(sensor_origin, world_position, [&](int64_t, int64_t, int64_t) {
+                if (skip_origin) {
+                    skip_origin = false;
+                    return true;
+                }
+                ++expected_voxel_visits;
+                return true;
+            });
+        }
+
+        if (expected_voxel_visits == 0U) {
+            return;
+        }
+
+        const size_t minimum_required = this->voxel_num_ + expected_voxel_visits;
+        while (this->rehash_threshold_ < static_cast<float>(minimum_required) / static_cast<float>(this->capacity_)) {
+            const size_t next_capacity = this->get_next_capacity_value();
+            if (next_capacity <= this->capacity_) {
+                break;
+            }
+            this->rehash(next_capacity);
+        }
+
+        shared_vector<uint32_t> voxel_counter(1, static_cast<uint32_t>(this->voxel_num_), *this->queue_.ptr);
+
+        const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
+        const float sensor_x = sensor_origin.x();
+        const float sensor_y = sensor_origin.y();
+        const float sensor_z = sensor_origin.z();
+        const size_t max_probe = this->max_probe_length_;
+        const size_t capacity = this->capacity_;
+        const uint32_t current_frame = this->frame_index_;
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            auto key_ptr = this->key_ptr_.get();
+            auto voxel_ptr = this->data_ptr_.get();
+            auto counter_ptr = voxel_counter.data();
+
+            h.parallel_for(sycl::range<1>(point_count), [=](sycl::id<1> idx) {
+                const size_t i = idx[0];
+                if (i >= point_count) {
+                    return;
+                }
+
+                const PointType local_point = points_ptr[i];
+                PointType world_point;
+                transform::kernel::transform_point(local_point, world_point, trans);
+
+                const float world_x = world_point.x();
+                const float world_y = world_point.y();
+                const float world_z = world_point.z();
+
+                const float diff_x = world_x - sensor_x;
+                const float diff_y = world_y - sensor_y;
+                const float diff_z = world_z - sensor_z;
+                const float dist_sq = diff_x * diff_x + diff_y * diff_y + diff_z * diff_z;
+                if (dist_sq <= std::numeric_limits<float>::epsilon()) {
+                    return;
+                }
+
+                const float scaled_origin_x = sensor_x * inv_voxel;
+                const float scaled_origin_y = sensor_y * inv_voxel;
+                const float scaled_origin_z = sensor_z * inv_voxel;
+                const float scaled_target_x = world_x * inv_voxel;
+                const float scaled_target_y = world_y * inv_voxel;
+                const float scaled_target_z = world_z * inv_voxel;
+
+                const int64_t origin_ix = static_cast<int64_t>(sycl::floor(scaled_origin_x));
+                const int64_t origin_iy = static_cast<int64_t>(sycl::floor(scaled_origin_y));
+                const int64_t origin_iz = static_cast<int64_t>(sycl::floor(scaled_origin_z));
+                const int64_t target_ix = static_cast<int64_t>(sycl::floor(scaled_target_x));
+                const int64_t target_iy = static_cast<int64_t>(sycl::floor(scaled_target_y));
+                const int64_t target_iz = static_cast<int64_t>(sycl::floor(scaled_target_z));
+
+                auto accumulate_miss = [=](uint64_t key) {
+                    VoxelLocalData local{};
+                    local.voxel_idx = key;
+                    local.acc.voxel_hash = key;
+                    local.acc.log_odds_delta = log_miss;
+
+                    global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                                     [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); });
+                };
+
+                if (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz) {
+                    uint64_t origin_key = VoxelConstants::invalid_coord;
+                    if (grid_to_key_device(origin_ix, origin_iy, origin_iz, origin_key)) {
+                        accumulate_miss(origin_key);
+                    }
+                }
+
+                // Mirror the visibility traversal so that free-space updates exclude the hit voxel.
+                traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, world_x, world_y, world_z, inv_voxel,
+                                             [=](int64_t grid_x, int64_t grid_y, int64_t grid_z) {
+                                                 uint64_t key = VoxelConstants::invalid_coord;
+                                                 if (!grid_to_key_device(grid_x, grid_y, grid_z, key)) {
+                                                     return true;
+                                                 }
+
+                                                 // Accumulate a miss observation for the current voxel on the device.
+                                                 accumulate_miss(key);
+                                                 return true;
+                                             });
+            });
         });
 
         event.wait();

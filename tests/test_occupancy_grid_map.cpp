@@ -171,6 +171,32 @@ TEST(OccupancyGridMapTest, AggregatesColorAndIntensity) {
     }
 }
 
+TEST(OccupancyGridMapTest, UpdatesFreeSpaceAlongRay) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
+        map.set_log_odds_hit(0.9f);
+        map.set_log_odds_miss(-0.6f);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.45f, 0.0f, 0.0f},
+        };
+
+        auto cloud = MakePointCloud(queue, input_positions);
+        map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        const Eigen::Vector3f free_query(0.05f, 0.0f, 0.0f);
+        EXPECT_LT(map.voxel_probability(free_query), 0.5f);
+
+        const Eigen::Vector3f occupied_query(0.45f, 0.0f, 0.0f);
+        EXPECT_GT(map.voxel_probability(occupied_query), 0.5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
 TEST(OccupancyGridMapTest, VisibilityDecayReducesUnobservedVoxels) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
