@@ -608,9 +608,12 @@ private:
         const float start_frac_y = scaled_origin_y - sycl::floor(scaled_origin_y);
         const float start_frac_z = scaled_origin_z - sycl::floor(scaled_origin_z);
 
-        const float inv_dir_mag_x = (abs_dir_x > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_x) : 0.0f;
-        const float inv_dir_mag_y = (abs_dir_y > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_y) : 0.0f;
-        const float inv_dir_mag_z = (abs_dir_z > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_z) : 0.0f;
+        const float inv_dir_mag_x =
+            (abs_dir_x > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_x) : std::numeric_limits<float>::infinity();
+        const float inv_dir_mag_y =
+            (abs_dir_y > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_y) : std::numeric_limits<float>::infinity();
+        const float inv_dir_mag_z =
+            (abs_dir_z > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_z) : std::numeric_limits<float>::infinity();
 
         const float inf = std::numeric_limits<float>::infinity();
         float t_max_x = (step_x != 0) ? ((step_x > 0 ? (1.0f - start_frac_x) : start_frac_x) * inv_dir_mag_x) : inf;
@@ -624,19 +627,13 @@ private:
         while (true) {
             if (t_max_x <= t_max_y && t_max_x <= t_max_z) {
                 ix += step_x;
-                if (step_x != 0) {
-                    t_max_x += t_delta_x;
-                }
+                t_max_x += t_delta_x;
             } else if (t_max_y <= t_max_z) {
                 iy += step_y;
-                if (step_y != 0) {
-                    t_max_y += t_delta_y;
-                }
+                t_max_y += t_delta_y;
             } else {
                 iz += step_z;
-                if (step_z != 0) {
-                    t_max_z += t_delta_z;
-                }
+                t_max_z += t_delta_z;
             }
 
             if (ix == target_ix && iy == target_iy && iz == target_iz) {
@@ -889,42 +886,71 @@ private:
         const PointType* points_ptr = cloud.points_ptr();
         const float log_miss = this->log_odds_miss_;
         const float inv_voxel = this->inv_voxel_size_;
+        const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
-        // Estimate an upper bound of the voxels touched by the rays to ensure enough capacity.
-        size_t expected_voxel_visits = 0U;
-        for (size_t i = 0; i < point_count; ++i) {
-            const PointType& local_point = points_ptr[i];
-            const Eigen::Vector3f local_position(local_point.x(), local_point.y(), local_point.z());
-            const Eigen::Vector3f world_position = sensor_pose * local_position;
-            const float distance = (world_position - sensor_origin).norm();
-            if (distance <= std::numeric_limits<float>::epsilon()) {
-                continue;
-            }
-            const float scaled_origin_x = sensor_origin.x() * inv_voxel;
-            const float scaled_origin_y = sensor_origin.y() * inv_voxel;
-            const float scaled_origin_z = sensor_origin.z() * inv_voxel;
-            const float scaled_target_x = world_position.x() * inv_voxel;
-            const float scaled_target_y = world_position.y() * inv_voxel;
-            const float scaled_target_z = world_position.z() * inv_voxel;
-            const int64_t origin_ix = static_cast<int64_t>(std::floor(scaled_origin_x));
-            const int64_t origin_iy = static_cast<int64_t>(std::floor(scaled_origin_y));
-            const int64_t origin_iz = static_cast<int64_t>(std::floor(scaled_origin_z));
-            const int64_t target_ix = static_cast<int64_t>(std::floor(scaled_target_x));
-            const int64_t target_iy = static_cast<int64_t>(std::floor(scaled_target_y));
-            const int64_t target_iz = static_cast<int64_t>(std::floor(scaled_target_z));
-            if (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz) {
-                ++expected_voxel_visits;
-            }
-            bool skip_origin = true;  // Ignore the sensor cell so that only free voxels are counted.
-            this->traverse_ray(sensor_origin, world_position, [&](int64_t, int64_t, int64_t) {
-                if (skip_origin) {
-                    skip_origin = false;
-                    return true;
+        shared_vector<uint32_t> expected_visit_counter(1, 0U, *this->queue_.ptr);
+        auto estimate_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            auto counter_ptr = expected_visit_counter.data();
+            auto local_points_ptr = points_ptr;
+            const float sensor_x = sensor_origin.x();
+            const float sensor_y = sensor_origin.y();
+            const float sensor_z = sensor_origin.z();
+            const float inv_voxel_size = inv_voxel;
+
+            auto reduction = sycl::reduction(counter_ptr, sycl::plus<uint32_t>());
+            h.parallel_for(sycl::range<1>(point_count), reduction, [=](sycl::id<1> idx, auto& visit_acc) {
+                const size_t i = idx[0];
+                if (i >= point_count) {
+                    return;
                 }
-                ++expected_voxel_visits;
-                return true;
+
+                const PointType local_point = local_points_ptr[i];
+                PointType world_point{};
+                transform::kernel::transform_point(local_point, world_point, trans);
+
+                const float world_x = world_point.x();
+                const float world_y = world_point.y();
+                const float world_z = world_point.z();
+
+                const float diff_x = world_x - sensor_x;
+                const float diff_y = world_y - sensor_y;
+                const float diff_z = world_z - sensor_z;
+                const float dist_sq = diff_x * diff_x + diff_y * diff_y + diff_z * diff_z;
+                if (dist_sq <= std::numeric_limits<float>::epsilon()) {
+                    return;
+                }
+
+                const float scaled_origin_x = sensor_x * inv_voxel_size;
+                const float scaled_origin_y = sensor_y * inv_voxel_size;
+                const float scaled_origin_z = sensor_z * inv_voxel_size;
+                const float scaled_target_x = world_x * inv_voxel_size;
+                const float scaled_target_y = world_y * inv_voxel_size;
+                const float scaled_target_z = world_z * inv_voxel_size;
+
+                const int64_t origin_ix = static_cast<int64_t>(sycl::floor(scaled_origin_x));
+                const int64_t origin_iy = static_cast<int64_t>(sycl::floor(scaled_origin_y));
+                const int64_t origin_iz = static_cast<int64_t>(sycl::floor(scaled_origin_z));
+                const int64_t target_ix = static_cast<int64_t>(sycl::floor(scaled_target_x));
+                const int64_t target_iy = static_cast<int64_t>(sycl::floor(scaled_target_y));
+                const int64_t target_iz = static_cast<int64_t>(sycl::floor(scaled_target_z));
+
+                uint32_t local_count = 0U;
+                if (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz) {
+                    ++local_count;
+                }
+
+                traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, world_x, world_y, world_z, inv_voxel_size,
+                                             [&](int64_t, int64_t, int64_t) {
+                                                 ++local_count;
+                                                 return true;
+                                             });
+
+                visit_acc += local_count;
             });
-        }
+        });
+
+        estimate_event.wait();
+        const size_t expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0));
 
         if (expected_voxel_visits == 0U) {
             return;
@@ -941,7 +967,6 @@ private:
 
         shared_vector<uint32_t> voxel_counter(1, static_cast<uint32_t>(this->voxel_num_), *this->queue_.ptr);
 
-        const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
         const float sensor_x = sensor_origin.x();
         const float sensor_y = sensor_origin.y();
         const float sensor_z = sensor_origin.z();
