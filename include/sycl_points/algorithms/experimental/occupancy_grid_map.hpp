@@ -188,8 +188,7 @@ public:
             auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
             auto intensity_ptr = this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
 
-            const std::array<sycl::float4, 4>& world_to_sensor_T =
-                eigen_utils::to_sycl_vec(sensor_pose.inverse().matrix());
+            const auto world_to_sensor_T = eigen_utils::to_sycl_vec(sensor_pose.inverse().matrix());
 
             const float occupancy_threshold = this->occupancy_threshold_log_odds_;
             const float voxel_size = this->voxel_size_;
@@ -281,43 +280,41 @@ public:
                 // March along the viewing ray to detect occupied voxels that would occlude the candidate.
                 if (distance > voxel_size) {
                     // Reuse the same discrete traversal used for free-space carving to test occlusion.
-                    traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, cx, cy, cz, inv_voxel_size,
-                                                 [&](int64_t ix, int64_t iy, int64_t iz) {
-                                                     uint64_t sample_key = VoxelConstants::invalid_coord;
-                                                     if (!grid_to_key_device(ix, iy, iz, sample_key) ||
-                                                         sample_key == current_key) {
-                                                         return true;
-                                                     }
+                    traverse_ray_exclusive_impl(
+                        sensor_x, sensor_y, sensor_z, cx, cy, cz, inv_voxel_size,
+                        [&](int64_t ix, int64_t iy, int64_t iz) {
+                            uint64_t sample_key = VoxelConstants::invalid_coord;
+                            if (!grid_to_key_device(ix, iy, iz, sample_key) || sample_key == current_key) {
+                                return true;
+                            }
 
-                                                     for (size_t probe = 0; probe < max_probe; ++probe) {
-                                                         const size_t slot = compute_slot_id(sample_key, probe, capacity);
-                                                         const uint64_t stored_key = key_ptr[slot];
-                                                         if (stored_key == sample_key) {
-                                                             const VoxelData& occ = voxel_ptr[slot];
-                                                             if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
-                                                                 const float inv_occ =
-                                                                     1.0f / static_cast<float>(occ.hit_count);
-                                                                 const float occ_cx = occ.sum_x * inv_occ;
-                                                                 const float occ_cy = occ.sum_y * inv_occ;
-                                                                 const float occ_cz = occ.sum_z * inv_occ;
-                                                                 const float occ_dx = occ_cx - sensor_x;
-                                                                 const float occ_dy = occ_cy - sensor_y;
-                                                                 const float occ_dz = occ_cz - sensor_z;
-                                                                 const float occ_dist_sq =
-                                                                     occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
-                                                                 if (occ_dist_sq + kOcclusionEpsilon < dist_sq) {
-                                                                     occluded = true;
-                                                                     return false;
-                                                                 }
-                                                             }
-                                                             return true;
-                                                         }
-                                                         if (stored_key == VoxelConstants::invalid_coord) {
-                                                             return true;
-                                                         }
-                                                     }
-                                                     return true;
-                                                 });
+                            for (size_t probe = 0; probe < max_probe; ++probe) {
+                                const size_t slot = compute_slot_id(sample_key, probe, capacity);
+                                const uint64_t stored_key = key_ptr[slot];
+                                if (stored_key == sample_key) {
+                                    const VoxelData& occ = voxel_ptr[slot];
+                                    if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
+                                        const float inv_occ = 1.0f / static_cast<float>(occ.hit_count);
+                                        const float occ_cx = occ.sum_x * inv_occ;
+                                        const float occ_cy = occ.sum_y * inv_occ;
+                                        const float occ_cz = occ.sum_z * inv_occ;
+                                        const float occ_dx = occ_cx - sensor_x;
+                                        const float occ_dy = occ_cy - sensor_y;
+                                        const float occ_dz = occ_cz - sensor_z;
+                                        const float occ_dist_sq = occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
+                                        if (occ_dist_sq + kOcclusionEpsilon < dist_sq) {
+                                            occluded = true;
+                                            return false;
+                                        }
+                                    }
+                                    return true;
+                                }
+                                if (stored_key == VoxelConstants::invalid_coord) {
+                                    return true;
+                                }
+                            }
+                            return true;
+                        });
                 }
 
                 if (occluded) {
@@ -608,12 +605,15 @@ private:
         const float start_frac_y = scaled_origin_y - sycl::floor(scaled_origin_y);
         const float start_frac_z = scaled_origin_z - sycl::floor(scaled_origin_z);
 
-        const float inv_dir_mag_x =
-            (abs_dir_x > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_x) : std::numeric_limits<float>::infinity();
-        const float inv_dir_mag_y =
-            (abs_dir_y > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_y) : std::numeric_limits<float>::infinity();
-        const float inv_dir_mag_z =
-            (abs_dir_z > std::numeric_limits<float>::epsilon()) ? (1.0f / abs_dir_z) : std::numeric_limits<float>::infinity();
+        const float inv_dir_mag_x = (abs_dir_x > std::numeric_limits<float>::epsilon())
+                                        ? (1.0f / abs_dir_x)
+                                        : std::numeric_limits<float>::infinity();
+        const float inv_dir_mag_y = (abs_dir_y > std::numeric_limits<float>::epsilon())
+                                        ? (1.0f / abs_dir_y)
+                                        : std::numeric_limits<float>::infinity();
+        const float inv_dir_mag_z = (abs_dir_z > std::numeric_limits<float>::epsilon())
+                                        ? (1.0f / abs_dir_z)
+                                        : std::numeric_limits<float>::infinity();
 
         const float inf = std::numeric_limits<float>::infinity();
         float t_max_x = (step_x != 0) ? ((step_x > 0 ? (1.0f - start_frac_x) : start_frac_x) * inv_dir_mag_x) : inf;
@@ -940,10 +940,10 @@ private:
                 }
 
                 traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, world_x, world_y, world_z, inv_voxel_size,
-                                             [&](int64_t, int64_t, int64_t) {
-                                                 ++local_count;
-                                                 return true;
-                                             });
+                                            [&](int64_t, int64_t, int64_t) {
+                                                ++local_count;
+                                                return true;
+                                            });
 
                 visit_acc += local_count;
             });
@@ -1034,16 +1034,16 @@ private:
 
                 // Mirror the visibility traversal so that free-space updates exclude the hit voxel.
                 traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, world_x, world_y, world_z, inv_voxel,
-                                             [=](int64_t grid_x, int64_t grid_y, int64_t grid_z) {
-                                                 uint64_t key = VoxelConstants::invalid_coord;
-                                                 if (!grid_to_key_device(grid_x, grid_y, grid_z, key)) {
-                                                     return true;
-                                                 }
+                                            [=](int64_t grid_x, int64_t grid_y, int64_t grid_z) {
+                                                uint64_t key = VoxelConstants::invalid_coord;
+                                                if (!grid_to_key_device(grid_x, grid_y, grid_z, key)) {
+                                                    return true;
+                                                }
 
-                                                 // Accumulate a miss observation for the current voxel on the device.
-                                                 accumulate_miss(key);
-                                                 return true;
-                                             });
+                                                // Accumulate a miss observation for the current voxel on the device.
+                                                accumulate_miss(key);
+                                                return true;
+                                            });
             });
         });
 
