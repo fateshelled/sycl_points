@@ -22,7 +22,7 @@ TEST(DeskewIMUTest, PreintegratesConstantRotation) {
     const Eigen::Vector3f kAngularVel(0.0f, 0.0f, static_cast<float>(M_PI));
 
     IMUDataContainerCPU imu_samples;
-    for (size_t i = 0; i <= static_cast<size_t>(kTotalTime / kDt); ++i) {
+    for (size_t i = 0; i <= static_cast<size_t>(std::round(kTotalTime / kDt)); ++i) {
         const double timestamp = i * kDt;
         imu_samples.push_back(CreateIMUSample(timestamp, kAngularVel));
     }
