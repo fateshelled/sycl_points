@@ -26,7 +26,8 @@ inline std::vector<Eigen::Quaternionf> PreintegrateIMURotations(
   for (size_t idx = 1; idx < imu_samples.size(); ++idx) {
     const IMUData &prev_sample = imu_samples[idx - 1];
     const IMUData &curr_sample = imu_samples[idx];
-    const double delta_time = curr_sample.timestamp - prev_sample.timestamp;
+    const double delta_time =
+        curr_sample.timestamp_seconds() - prev_sample.timestamp_seconds();
     if (delta_time <= 0.0) {
       // Non-positive dt: propagate previous orientation.
       orientations.push_back(accumulated_orientation);
@@ -82,7 +83,7 @@ inline bool DeskewPointCloudRotations(PointCloudCPU &cloud,
 
   const auto interpolate_orientation = [&](double timestamp) {
     const auto comparator = [](const IMUData &sample, double t) {
-      return sample.timestamp < t;
+      return sample.timestamp_seconds() < t;
     };
 
     auto upper = std::lower_bound(imu_samples.begin(), imu_samples.end(),
@@ -98,8 +99,8 @@ inline bool DeskewPointCloudRotations(PointCloudCPU &cloud,
         static_cast<size_t>(std::distance(imu_samples.begin(), upper));
     const size_t prev_idx = next_idx - 1;
 
-    const double t0 = imu_samples[prev_idx].timestamp;
-    const double t1 = imu_samples[next_idx].timestamp;
+    const double t0 = imu_samples[prev_idx].timestamp_seconds();
+    const double t1 = imu_samples[next_idx].timestamp_seconds();
     const double ratio = (t1 - t0) <= 0.0
                              ? 0.0
                              : clamp_ratio((timestamp - t0) / (t1 - t0), 0.0,
@@ -119,9 +120,9 @@ inline bool DeskewPointCloudRotations(PointCloudCPU &cloud,
       continue;
     }
 
-    const double clamped_time =
-        std::max(imu_samples.front().timestamp,
-                 std::min(timestamp_seconds, imu_samples.back().timestamp));
+    const double clamped_time = std::max(
+        imu_samples.front().timestamp_seconds(),
+        std::min(timestamp_seconds, imu_samples.back().timestamp_seconds()));
     const Eigen::Quaternionf orientation = interpolate_orientation(clamped_time);
     const Eigen::Vector3f original_point = (*cloud.points)[idx].head<3>();
     const Eigen::Vector3f corrected_point =

@@ -26,7 +26,10 @@ using TimestampOffset = std::uint32_t;
 
 /// @brief IMU measurement packet bundled for deskewing.
 struct IMUData {
-  double timestamp{0.0};
+  /// @brief Timestamp seconds following ROS2 format.
+  int32_t timestamp_sec{0};
+  /// @brief Timestamp nanoseconds following ROS2 format.
+  uint32_t timestamp_nanosec{0};
   Eigen::Vector3f angular_velocity{Eigen::Vector3f::Zero()};
   Eigen::Vector3f linear_acceleration{Eigen::Vector3f::Zero()};
 
@@ -34,14 +37,24 @@ struct IMUData {
   IMUData() = default;
 
   /// @brief Construct an IMU sample with explicit values.
-  /// @param time Timestamp in seconds.
+  /// @param sec Timestamp seconds component.
+  /// @param nanosec Timestamp nanoseconds component.
   /// @param angular_vel Angular velocity (rad/s).
   /// @param linear_acc Linear acceleration (m/s^2).
-  IMUData(double time, const Eigen::Vector3f &angular_vel,
+  IMUData(int32_t sec, uint32_t nanosec, const Eigen::Vector3f &angular_vel,
           const Eigen::Vector3f &linear_acc)
-      : timestamp(time),
+      : timestamp_sec(sec),
+        timestamp_nanosec(nanosec),
         angular_velocity(angular_vel),
         linear_acceleration(linear_acc) {}
+
+  /// @brief Convert ROS2 timestamp representation to seconds.
+  /// @return Timestamp in seconds as double precision floating point.
+  double timestamp_seconds() const {
+    constexpr double kNanoToSec = 1e-9;
+    return static_cast<double>(timestamp_sec) +
+           static_cast<double>(timestamp_nanosec) * kNanoToSec;
+  }
 };
 
 constexpr size_t PointAlignment = 16;
