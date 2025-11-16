@@ -36,7 +36,7 @@ TEST(DeskewIMUTest, PreintegratesConstantRotation) {
     const float expected_angle = static_cast<float>(kAngularVel.z() * kTotalTime);
     const Eigen::Quaternionf expected_orientation(Eigen::AngleAxisf(expected_angle, Eigen::Vector3f::UnitZ()));
     const float quaternion_dot = std::abs(expected_orientation.dot(orientations.back()));
-    EXPECT_NEAR(quaternion_dot, 1.0f, 1e-3f);
+    EXPECT_NEAR(quaternion_dot, 1.0f, 1e-5f);
 }
 
 TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
