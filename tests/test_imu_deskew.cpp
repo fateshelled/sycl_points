@@ -45,7 +45,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
     constexpr double kTotalTime = 0.1;
     const Eigen::Vector3f kAngularVel(0.0f, 0.0f, static_cast<float>(M_PI));
 
-    for (size_t i = 0; i <= static_cast<size_t>(kTotalTime / kDt); ++i) {
+    for (size_t i = 0; i <= static_cast<size_t>(std::round(kTotalTime / kDt)); ++i) {
         const double timestamp = i * kDt;
         imu_samples.push_back(CreateIMUSample(timestamp, kAngularVel));
     }
