@@ -83,7 +83,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
     for (size_t i = 0; i < reference_points.size(); ++i) {
         const Eigen::Vector3f corrected_point = (*cloud.points)[i].head<3>();
         const Eigen::Vector3f expected_point = reference_points[i];
-        EXPECT_NEAR((corrected_point - expected_point).norm(), 0.0f, 1e-3f);
+        EXPECT_NEAR((corrected_point - expected_point).norm(), 0.0f, 1e-5f);
     }
 }
 
