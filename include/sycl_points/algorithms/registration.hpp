@@ -198,13 +198,18 @@ public:
             }
         }
         if (this->params_.photometric.enable) {
-            if (!source.has_rgb() || !target.has_rgb()) {
-                throw std::runtime_error("RGB fields is required for photometric matching.");
-            }
-            if (!target.has_color_gradient() || !target.has_normal()) {
+            if (!target.has_normal()) {
                 throw std::runtime_error(
-                    "Target color gradient and target normal vector must be pre-computed before performing "
-                    "photometric matching.");
+                    "Target normal vector must be pre-computed before performing photometric matching.");
+            }
+
+            const bool color_ready = source.has_rgb() && target.has_rgb() && target.has_color_gradient();
+            const bool intensity_ready = source.has_intensity() && target.has_intensity() && target.has_intensity_gradient();
+
+            if (!color_ready && !intensity_ready) {
+                throw std::runtime_error(
+                    "RGB fields with gradients or intensity fields with gradients are required for photometric "
+                    "matching.");
             }
             if (this->params_.photometric.photometric_weight == 0.0f) {
                 std::cout << "[Caution] `photometric_weight` is set to zero. Disable photometric matching."
@@ -367,6 +372,10 @@ private:
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
             const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
+            const auto source_intensity_ptr = source.has_intensity() ? source.intensities_ptr() : nullptr;
+            const auto target_intensity_ptr = target.has_intensity() ? target.intensities_ptr() : nullptr;
+            const auto target_intensity_grad_ptr =
+                target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
             const float photometric_weight =
                 this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
@@ -403,11 +412,20 @@ private:
                     const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
                     const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
                     const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
+                    const float source_intensity = source_intensity_ptr ? source_intensity_ptr[index] : 0.0f;
+                    const float target_intensity = target_intensity_ptr ? target_intensity_ptr[target_idx] : 0.0f;
+                    const auto target_intensity_grad =
+                        target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
+                    const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
+                    const bool use_intensity =
+                        source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
                     const LinearlizedResult linearlized =
                         kernel::linearlize<icp>(cur_T, source_ptr[index], source_cov,               //
                                                 target_ptr[target_idx], target_cov, target_normal,  //
-                                                source_rgb, target_rgb, target_grad, photometric_weight);
+                                                source_rgb, target_rgb, target_grad, use_color,     //
+                                                source_intensity, target_intensity,                 //
+                                                target_intensity_grad, use_intensity, photometric_weight);
                     if (linearlized.inlier == 1U) {
                         const float robust_weight =
                             kernel::compute_robust_weight<loss>(linearlized.error, robust_scale);
@@ -482,6 +500,10 @@ private:
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
             const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
+            const auto source_intensity_ptr = source.has_intensity() ? source.intensities_ptr() : nullptr;
+            const auto target_intensity_ptr = target.has_intensity() ? target.intensities_ptr() : nullptr;
+            const auto target_intensity_grad_ptr =
+                target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
             const float photometric_weight =
                 this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
             const auto neighbors_index_ptr = knn_results.indices->data();
@@ -508,12 +530,21 @@ private:
                     const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
                     const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
                     const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
+                    const float source_intensity = source_intensity_ptr ? source_intensity_ptr[index] : 0.0f;
+                    const float target_intensity = target_intensity_ptr ? target_intensity_ptr[target_idx] : 0.0f;
+                    const auto target_intensity_grad =
+                        target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
+                    const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
+                    const bool use_intensity =
+                        source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
                     const float err =
                         kernel::calculate_error<icp>(cur_T,                                              //
                                                      source_ptr[index], source_cov,                      // source
                                                      target_ptr[target_idx], target_cov, target_normal,  // target
-                                                     source_rgb, target_rgb, target_grad, photometric_weight);
+                                                     source_rgb, target_rgb, target_grad, use_color,     //
+                                                     source_intensity, target_intensity, target_intensity_grad,
+                                                     use_intensity, photometric_weight);
 
                     sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
                     ;

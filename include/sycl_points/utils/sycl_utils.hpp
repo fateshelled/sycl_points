@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <shared_mutex>
 #include <sycl/sycl.hpp>
 
@@ -202,6 +203,8 @@ inline bool enable_shared_allocations(const sycl::device& device) {
 struct events {
     /// @brief events
     std::vector<sycl::event> evs;
+    /// @brief resources kept alive until events complete
+    std::vector<std::shared_ptr<void>> keep_alive;
 
     /// @brief add event
     /// @param event event
@@ -212,7 +215,7 @@ struct events {
         for (auto& event: this->evs) {
             event.wait();
         }
-        this->evs.clear();
+        this->clear();
     }
 
     /// @brief wait_and_throw all events
@@ -220,17 +223,29 @@ struct events {
         for (auto& event: this->evs) {
             event.wait_and_throw();
         }
-        this->evs.clear();
+        this->clear();
     }
 
     /// @brief clear all events
-    void clear() { this->evs.clear(); }
+    void clear() {
+        this->evs.clear();
+        this->keep_alive.clear();
+    }
     /// @brief add event
     /// @param event event
     void operator+=(const sycl::event& event) { this->evs.push_back(event); }
     /// @brief add events
     /// @param e events
-    void operator+=(const events& e) { std::copy(e.evs.begin(), e.evs.end(), std::back_inserter(this->evs)); }
+    void operator+=(const events& e) {
+        std::copy(e.evs.begin(), e.evs.end(), std::back_inserter(this->evs));
+        std::copy(e.keep_alive.begin(), e.keep_alive.end(), std::back_inserter(this->keep_alive));
+    }
+
+    /// @brief keep a resource alive while events are pending
+    template <typename T>
+    void add_resource(const std::shared_ptr<T>& resource) {
+        this->keep_alive.emplace_back(resource);
+    }
 };
 
 /// @brief shared memory location advise to underlying runtime
