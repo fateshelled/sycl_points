@@ -153,7 +153,7 @@ public:
         this->extract_occupied_points_impl(result, sensor_pose.translation(), max_distance);
     }
 
-    /// @brief Extract the visible subset of the map as a new point cloud.
+    /// @brief [Experimental] Extract the visible subset of the map as a new point cloud.
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @param max_distance Maximum visibility distance in meters.

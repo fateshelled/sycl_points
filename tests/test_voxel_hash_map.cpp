@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <vector>
 
-#include <sycl_points/algorithms/experimental/voxel_hash_map.hpp>
+#include <sycl_points/algorithms/mapping/voxel_hash_map.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
