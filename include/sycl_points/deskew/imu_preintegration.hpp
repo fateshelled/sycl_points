@@ -102,12 +102,16 @@ inline std::vector<Eigen::Quaternionf> PreintegrateIMURotations(
   return orientations;
 }
 
-/// @brief Deskew a point cloud by removing rotational and translational motion derived from IMU data.
+/// @brief Deskew a point cloud by removing rotational and translational motion
+/// derived from IMU data.
+///
+/// The corrected points are expressed in the world frame (base frame) rather
+/// than the sensor frame at the start timestamp.
 /// @param cloud Point cloud that will be updated in-place.
 /// @param imu_samples Time ordered IMU samples used for interpolation.
 /// @return true when deskewing is applied, false if prerequisites are not met.
-inline bool DeskewPointCloudRotations(PointCloudCPU &cloud,
-                                      const IMUDataContainerCPU &imu_samples) {
+inline bool DeskewPointCloud(PointCloudCPU &cloud,
+                             const IMUDataContainerCPU &imu_samples) {
   if (cloud.size() == 0 || !cloud.has_timestamps() || imu_samples.size() < 2) {
     return false;
   }

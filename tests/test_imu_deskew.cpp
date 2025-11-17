@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -15,6 +16,43 @@ IMUData CreateIMUSample(double time_seconds, const Eigen::Vector3f &angular_velo
     const int32_t sec = static_cast<int32_t>(std::floor(time_seconds));
     const uint32_t nanosec = static_cast<uint32_t>(std::round((time_seconds - static_cast<double>(sec)) * 1e9));
     return IMUData(sec, nanosec, angular_velocity, linear_acceleration);
+}
+
+double ClampRatio(double value, double min_value, double max_value) {
+    return std::max(min_value, std::min(value, max_value));
+}
+
+IMUMotionState InterpolateMotionState(const IMUDataContainerCPU &imu_samples,
+                                     const std::vector<IMUMotionState> &motion_states,
+                                     double timestamp) {
+    const auto comparator = [](const IMUData &sample, double t) { return sample.timestamp_seconds() < t; };
+
+    auto upper = std::lower_bound(imu_samples.begin(), imu_samples.end(), timestamp, comparator);
+    if (upper == imu_samples.begin()) {
+        return motion_states.front();
+    }
+    if (upper == imu_samples.end()) {
+        return motion_states.back();
+    }
+
+    const size_t next_idx = static_cast<size_t>(std::distance(imu_samples.begin(), upper));
+    const size_t prev_idx = next_idx - 1;
+
+    const double t0 = imu_samples[prev_idx].timestamp_seconds();
+    const double t1 = imu_samples[next_idx].timestamp_seconds();
+    const double ratio = (t1 - t0) <= 0.0 ? 0.0
+                                          : ClampRatio((timestamp - t0) / (t1 - t0), 0.0, 1.0);
+
+    IMUMotionState interpolated_state;
+    interpolated_state.orientation = motion_states[prev_idx].orientation.slerp(
+        static_cast<float>(ratio), motion_states[next_idx].orientation);
+    interpolated_state.position = motion_states[prev_idx].position +
+                                  static_cast<float>(ratio) *
+                                      (motion_states[next_idx].position - motion_states[prev_idx].position);
+    interpolated_state.velocity = motion_states[prev_idx].velocity +
+                                  static_cast<float>(ratio) *
+                                      (motion_states[next_idx].velocity - motion_states[prev_idx].velocity);
+    return interpolated_state;
 }
 
 TEST(DeskewIMUTest, PreintegratesConstantRotation) {
@@ -79,7 +117,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), reference_points.size());
 
-    const bool success = DeskewPointCloudRotations(cloud, imu_samples);
+    const bool success = DeskewPointCloud(cloud, imu_samples);
     ASSERT_TRUE(success);
 
     for (size_t i = 0; i < reference_points.size(); ++i) {
@@ -121,7 +159,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithTranslation) {
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
 
-    const bool success = DeskewPointCloudRotations(cloud, imu_samples);
+    const bool success = DeskewPointCloud(cloud, imu_samples);
     ASSERT_TRUE(success);
 
     for (size_t i = 0; i < point_times.size(); ++i) {
@@ -147,52 +185,6 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
         PreintegrateIMUMotion(imu_samples);
     ASSERT_EQ(motion_states.size(), imu_samples.size());
 
-    const auto clamp_ratio = [](double value, double min_value,
-                                double max_value) -> double {
-        return std::max(min_value, std::min(value, max_value));
-    };
-
-    const auto interpolate_state = [&](double timestamp) {
-        const auto comparator = [](const IMUData &sample, double t) {
-            return sample.timestamp_seconds() < t;
-        };
-
-        auto upper = std::lower_bound(imu_samples.begin(), imu_samples.end(),
-                                      timestamp, comparator);
-        if (upper == imu_samples.begin()) {
-            return motion_states.front();
-        }
-        if (upper == imu_samples.end()) {
-            return motion_states.back();
-        }
-
-        const size_t next_idx =
-            static_cast<size_t>(std::distance(imu_samples.begin(), upper));
-        const size_t prev_idx = next_idx - 1;
-
-        const double t0 = imu_samples[prev_idx].timestamp_seconds();
-        const double t1 = imu_samples[next_idx].timestamp_seconds();
-        const double ratio = (t1 - t0) <= 0.0
-                                 ? 0.0
-                                 : clamp_ratio((timestamp - t0) / (t1 - t0), 0.0,
-                                               1.0);
-
-        IMUMotionState interpolated_state;
-        interpolated_state.orientation = motion_states[prev_idx].orientation.slerp(
-            static_cast<float>(ratio), motion_states[next_idx].orientation);
-        interpolated_state.position =
-            motion_states[prev_idx].position +
-            static_cast<float>(ratio) *
-                (motion_states[next_idx].position -
-                 motion_states[prev_idx].position);
-        interpolated_state.velocity =
-            motion_states[prev_idx].velocity +
-            static_cast<float>(ratio) *
-                (motion_states[next_idx].velocity -
-                 motion_states[prev_idx].velocity);
-        return interpolated_state;
-    };
-
     PointCloudCPU cloud;
     cloud.timestamp_base_ns = 0;
 
@@ -200,7 +192,8 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
     const std::vector<double> point_times = {0.0, 0.25, 0.5};
 
     for (double timestamp : point_times) {
-        const IMUMotionState motion_state = interpolate_state(timestamp);
+        const IMUMotionState motion_state =
+            InterpolateMotionState(imu_samples, motion_states, timestamp);
 
         // Observation in the sensor frame: undo translation then rotation.
         const Eigen::Vector3f observed_point =
@@ -218,7 +211,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
 
-    const bool success = DeskewPointCloudRotations(cloud, imu_samples);
+    const bool success = DeskewPointCloud(cloud, imu_samples);
     ASSERT_TRUE(success);
 
     for (size_t i = 0; i < point_times.size(); ++i) {
