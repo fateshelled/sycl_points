@@ -77,6 +77,37 @@ inline std::vector<IMUMotionState> PreintegrateIMUMotion(const IMUDataContainerC
     return motion_states;
 }
 
+inline IMUMotionState InterpolateMotionState(const IMUDataContainerCPU& imu_samples,
+                                             const std::vector<IMUMotionState>& motion_states, double timestamp) {
+    const auto comparator = [](const IMUData& sample, double t) { return sample.timestamp_seconds() < t; };
+
+    auto upper = std::lower_bound(imu_samples.begin(), imu_samples.end(), timestamp, comparator);
+    if (upper == imu_samples.begin()) {
+        return motion_states.front();
+    }
+    if (upper == imu_samples.end()) {
+        return motion_states.back();
+    }
+
+    const size_t next_idx = static_cast<size_t>(std::distance(imu_samples.begin(), upper));
+    const size_t prev_idx = next_idx - 1;
+
+    const double t0 = imu_samples[prev_idx].timestamp_seconds();
+    const double t1 = imu_samples[next_idx].timestamp_seconds();
+    const double ratio = (t1 - t0) <= 0.0 ? 0.0 : std::clamp((timestamp - t0) / (t1 - t0), 0.0, 1.0);
+
+    IMUMotionState interpolated_state;
+    interpolated_state.orientation =
+        motion_states[prev_idx].orientation.slerp(static_cast<float>(ratio), motion_states[next_idx].orientation);
+    interpolated_state.position =
+        motion_states[prev_idx].position +
+        static_cast<float>(ratio) * (motion_states[next_idx].position - motion_states[prev_idx].position);
+    interpolated_state.velocity =
+        motion_states[prev_idx].velocity +
+        static_cast<float>(ratio) * (motion_states[next_idx].velocity - motion_states[prev_idx].velocity);
+    return interpolated_state;
+}
+
 /// @brief Preintegrate IMU rotations and output cumulative orientations.
 /// @param imu_samples Sequence of IMU measurements ordered by timestamp.
 /// @return Quaternion sequence aligned with @p imu_samples.
@@ -108,35 +139,6 @@ inline bool DeskewPointCloud(PointCloudCPU& cloud, const IMUDataContainerCPU& im
         return false;
     }
 
-    const auto interpolate_state = [&](double timestamp) {
-        const auto comparator = [](const IMUData& sample, double t) { return sample.timestamp_seconds() < t; };
-
-        auto upper = std::lower_bound(imu_samples.begin(), imu_samples.end(), timestamp, comparator);
-        if (upper == imu_samples.begin()) {
-            return motion_states.front();
-        }
-        if (upper == imu_samples.end()) {
-            return motion_states.back();
-        }
-
-        const size_t next_idx = static_cast<size_t>(std::distance(imu_samples.begin(), upper));
-        const size_t prev_idx = next_idx - 1;
-
-        const double t0 = imu_samples[prev_idx].timestamp_seconds();
-        const double t1 = imu_samples[next_idx].timestamp_seconds();
-        const double ratio = (t1 - t0) <= 0.0 ? 0.0 : std::clamp((timestamp - t0) / (t1 - t0), 0.0, 1.0);
-        IMUMotionState interpolated_state;
-        interpolated_state.orientation =
-            motion_states[prev_idx].orientation.slerp(static_cast<float>(ratio), motion_states[next_idx].orientation);
-        interpolated_state.position =
-            motion_states[prev_idx].position +
-            static_cast<float>(ratio) * (motion_states[next_idx].position - motion_states[prev_idx].position);
-        interpolated_state.velocity =
-            motion_states[prev_idx].velocity +
-            static_cast<float>(ratio) * (motion_states[next_idx].velocity - motion_states[prev_idx].velocity);
-        return interpolated_state;
-    };
-
     const double timestamp_base = static_cast<double>(cloud.timestamp_base_ns) * 1e-9;
 
     for (size_t idx = 0; idx < cloud.size(); ++idx) {
@@ -147,7 +149,7 @@ inline bool DeskewPointCloud(PointCloudCPU& cloud, const IMUDataContainerCPU& im
 
         const double clamped_time = std::clamp(timestamp_seconds, imu_samples.front().timestamp_seconds(),
                                                imu_samples.back().timestamp_seconds());
-        const IMUMotionState motion_state = interpolate_state(clamped_time);
+        const IMUMotionState motion_state = InterpolateMotionState(imu_samples, motion_states, clamped_time);
         const Eigen::Vector3f original_point = (*cloud.points)[idx].head<3>();
         // Transform point from sensor frame to world frame to compensate for motion.
         const Eigen::Vector3f corrected_point = motion_state.orientation * original_point + motion_state.position;

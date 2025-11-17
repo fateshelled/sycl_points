@@ -17,36 +17,6 @@ IMUData CreateIMUSample(double time_seconds, const Eigen::Vector3f& angular_velo
     return IMUData(sec, nanosec, angular_velocity, linear_acceleration);
 }
 
-IMUMotionState InterpolateMotionState(const IMUDataContainerCPU& imu_samples,
-                                      const std::vector<IMUMotionState>& motion_states, double timestamp) {
-    const auto comparator = [](const IMUData& sample, double t) { return sample.timestamp_seconds() < t; };
-
-    auto upper = std::lower_bound(imu_samples.begin(), imu_samples.end(), timestamp, comparator);
-    if (upper == imu_samples.begin()) {
-        return motion_states.front();
-    }
-    if (upper == imu_samples.end()) {
-        return motion_states.back();
-    }
-
-    const size_t next_idx = static_cast<size_t>(std::distance(imu_samples.begin(), upper));
-    const size_t prev_idx = next_idx - 1;
-
-    const double t0 = imu_samples[prev_idx].timestamp_seconds();
-    const double t1 = imu_samples[next_idx].timestamp_seconds();
-    const double ratio = (t1 - t0) <= 0.0 ? 0.0 : std::clamp((timestamp - t0) / (t1 - t0), 0.0, 1.0);
-
-    IMUMotionState interpolated_state;
-    interpolated_state.orientation =
-        motion_states[prev_idx].orientation.slerp(static_cast<float>(ratio), motion_states[next_idx].orientation);
-    interpolated_state.position =
-        motion_states[prev_idx].position +
-        static_cast<float>(ratio) * (motion_states[next_idx].position - motion_states[prev_idx].position);
-    interpolated_state.velocity =
-        motion_states[prev_idx].velocity +
-        static_cast<float>(ratio) * (motion_states[next_idx].velocity - motion_states[prev_idx].velocity);
-    return interpolated_state;
-}
 
 TEST(DeskewIMUTest, PreintegratesConstantRotation) {
     constexpr double kDt = 0.1;
