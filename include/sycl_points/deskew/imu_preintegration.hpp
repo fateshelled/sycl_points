@@ -23,8 +23,18 @@ struct IMUMotionState {
 
 /// @brief Preintegrate IMU motion and output cumulative states.
 /// @param imu_samples Sequence of IMU measurements ordered by timestamp.
+/// @param gyro_bias Constant gyroscope bias to subtract from measurements.
+/// @param accel_bias Constant accelerometer bias to subtract from measurements.
+/// @param gravity Gravity acceleration expressed in the world frame (subtracted after
+/// rotation).
 /// @return Motion state sequence aligned with @p imu_samples.
-inline std::vector<IMUMotionState> preintegrate_imu_motion(const IMUDataContainerCPU& imu_samples) {
+inline std::vector<IMUMotionState> preintegrate_imu_motion(const IMUDataContainerCPU& imu_samples,
+                                                          const Eigen::Vector3f& gyro_bias =
+                                                              Eigen::Vector3f::Zero(),
+                                                          const Eigen::Vector3f& accel_bias =
+                                                              Eigen::Vector3f::Zero(),
+                                                          const Eigen::Vector3f& gravity =
+                                                              Eigen::Vector3f::Zero()) {
     std::vector<IMUMotionState> motion_states;
     motion_states.reserve(imu_samples.size());
     if (imu_samples.empty()) {
@@ -44,7 +54,9 @@ inline std::vector<IMUMotionState> preintegrate_imu_motion(const IMUDataContaine
             continue;
         }
 
-        const Eigen::Vector3f average_gyro = 0.5f * (prev_sample.angular_velocity + curr_sample.angular_velocity);
+        const Eigen::Vector3f corrected_prev_gyro = prev_sample.angular_velocity - gyro_bias;
+        const Eigen::Vector3f corrected_curr_gyro = curr_sample.angular_velocity - gyro_bias;
+        const Eigen::Vector3f average_gyro = 0.5f * (corrected_prev_gyro + corrected_curr_gyro);
         const Eigen::Vector3f delta_theta = average_gyro * static_cast<float>(delta_time);
         const float angle = delta_theta.norm();
 
@@ -63,10 +75,14 @@ inline std::vector<IMUMotionState> preintegrate_imu_motion(const IMUDataContaine
         accumulated_state.orientation = (prev_orientation * delta_orientation).normalized();
 
         // Use the average acceleration and beginning-of-interval orientation to
-        // integrate translational motion in the world frame.
+        // integrate translational motion in the world frame. Biases are removed
+        // before rotation and gravity is subtracted in the world frame so that the
+        // integrator can model free-fall or stationary scenarios accurately.
+        const Eigen::Vector3f corrected_prev_acceleration = prev_sample.linear_acceleration - accel_bias;
+        const Eigen::Vector3f corrected_curr_acceleration = curr_sample.linear_acceleration - accel_bias;
         const Eigen::Vector3f average_acceleration =
-            0.5f * (prev_sample.linear_acceleration + curr_sample.linear_acceleration);
-        const Eigen::Vector3f acceleration_world = prev_orientation * average_acceleration;
+            0.5f * (corrected_prev_acceleration + corrected_curr_acceleration);
+        const Eigen::Vector3f acceleration_world = prev_orientation * average_acceleration - gravity;
         accumulated_state.position += accumulated_state.velocity * static_cast<float>(delta_time) +
                                       0.5f * acceleration_world * static_cast<float>(delta_time * delta_time);
         accumulated_state.velocity += acceleration_world * static_cast<float>(delta_time);
@@ -115,13 +131,21 @@ inline IMUMotionState interpolate_motion_state(const IMUDataContainerCPU& imu_sa
 /// than the sensor frame at the start timestamp.
 /// @param cloud Point cloud that will be updated in-place.
 /// @param imu_samples Time ordered IMU samples used for interpolation.
+/// @param gyro_bias Constant gyroscope bias to subtract from measurements.
+/// @param accel_bias Constant accelerometer bias to subtract from measurements.
+/// @param gravity Gravity acceleration expressed in the world frame (subtracted after
+/// rotation).
 /// @return true when deskewing is applied, false if prerequisites are not met.
-inline bool deskew_point_cloud(PointCloudCPU& cloud, const IMUDataContainerCPU& imu_samples) {
+inline bool deskew_point_cloud(PointCloudCPU& cloud, const IMUDataContainerCPU& imu_samples,
+                               const Eigen::Vector3f& gyro_bias = Eigen::Vector3f::Zero(),
+                               const Eigen::Vector3f& accel_bias = Eigen::Vector3f::Zero(),
+                               const Eigen::Vector3f& gravity = Eigen::Vector3f::Zero()) {
     if (cloud.size() == 0 || !cloud.has_timestamps() || imu_samples.size() < 2) {
         return false;
     }
 
-    const std::vector<IMUMotionState> motion_states = preintegrate_imu_motion(imu_samples);
+    const std::vector<IMUMotionState> motion_states = preintegrate_imu_motion(imu_samples, gyro_bias,
+                                                                             accel_bias, gravity);
     if (motion_states.size() != imu_samples.size()) {
         return false;
     }
