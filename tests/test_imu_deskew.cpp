@@ -18,10 +18,6 @@ IMUData CreateIMUSample(double time_seconds, const Eigen::Vector3f &angular_velo
     return IMUData(sec, nanosec, angular_velocity, linear_acceleration);
 }
 
-double ClampRatio(double value, double min_value, double max_value) {
-    return std::max(min_value, std::min(value, max_value));
-}
-
 IMUMotionState InterpolateMotionState(const IMUDataContainerCPU &imu_samples,
                                      const std::vector<IMUMotionState> &motion_states,
                                      double timestamp) {
@@ -41,7 +37,7 @@ IMUMotionState InterpolateMotionState(const IMUDataContainerCPU &imu_samples,
     const double t0 = imu_samples[prev_idx].timestamp_seconds();
     const double t1 = imu_samples[next_idx].timestamp_seconds();
     const double ratio = (t1 - t0) <= 0.0 ? 0.0
-                                          : ClampRatio((timestamp - t0) / (t1 - t0), 0.0, 1.0);
+                                          : std::clamp((timestamp - t0) / (t1 - t0), 0.0, 1.0);
 
     IMUMotionState interpolated_state;
     interpolated_state.orientation = motion_states[prev_idx].orientation.slerp(
@@ -222,4 +218,3 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
 
 }  // namespace
 }  // namespace sycl_points
-

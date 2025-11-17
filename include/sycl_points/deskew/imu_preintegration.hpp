@@ -122,11 +122,6 @@ inline bool DeskewPointCloud(PointCloudCPU &cloud,
     return false;
   }
 
-  const auto clamp_ratio = [](double value, double min_value,
-                              double max_value) -> double {
-    return std::max(min_value, std::min(value, max_value));
-  };
-
   const auto interpolate_state = [&](double timestamp) {
     const auto comparator = [](const IMUData &sample, double t) {
       return sample.timestamp_seconds() < t;
@@ -149,7 +144,7 @@ inline bool DeskewPointCloud(PointCloudCPU &cloud,
     const double t1 = imu_samples[next_idx].timestamp_seconds();
     const double ratio = (t1 - t0) <= 0.0
                              ? 0.0
-                             : clamp_ratio((timestamp - t0) / (t1 - t0), 0.0,
+                             : std::clamp((timestamp - t0) / (t1 - t0), 0.0,
                                            1.0);
     IMUMotionState interpolated_state;
     interpolated_state.orientation = motion_states[prev_idx].orientation.slerp(
@@ -178,9 +173,8 @@ inline bool DeskewPointCloud(PointCloudCPU &cloud,
       continue;
     }
 
-    const double clamped_time = std::max(
-        imu_samples.front().timestamp_seconds(),
-        std::min(timestamp_seconds, imu_samples.back().timestamp_seconds()));
+    const double clamped_time = std::clamp(timestamp_seconds,
+      imu_samples.front().timestamp_seconds(), imu_samples.back().timestamp_seconds());
     const IMUMotionState motion_state = interpolate_state(clamped_time);
     const Eigen::Vector3f original_point = (*cloud.points)[idx].head<3>();
     // Transform point from sensor frame to world frame to compensate for motion.
@@ -193,4 +187,3 @@ inline bool DeskewPointCloud(PointCloudCPU &cloud,
 }
 
 }  // namespace sycl_points
-
