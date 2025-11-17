@@ -24,7 +24,7 @@ struct IMUMotionState {
 /// @brief Preintegrate IMU motion and output cumulative states.
 /// @param imu_samples Sequence of IMU measurements ordered by timestamp.
 /// @return Motion state sequence aligned with @p imu_samples.
-inline std::vector<IMUMotionState> PreintegrateIMUMotion(const IMUDataContainerCPU& imu_samples) {
+inline std::vector<IMUMotionState> preintegrate_imu_motion(const IMUDataContainerCPU& imu_samples) {
     std::vector<IMUMotionState> motion_states;
     motion_states.reserve(imu_samples.size());
     if (imu_samples.empty()) {
@@ -77,8 +77,8 @@ inline std::vector<IMUMotionState> PreintegrateIMUMotion(const IMUDataContainerC
     return motion_states;
 }
 
-inline IMUMotionState InterpolateMotionState(const IMUDataContainerCPU& imu_samples,
-                                             const std::vector<IMUMotionState>& motion_states, double timestamp) {
+inline IMUMotionState interpolate_motion_state(const IMUDataContainerCPU& imu_samples,
+                                               const std::vector<IMUMotionState>& motion_states, double timestamp) {
     const auto comparator = [](const IMUData& sample, double t) { return sample.timestamp_seconds() < t; };
 
     auto upper = std::lower_bound(imu_samples.begin(), imu_samples.end(), timestamp, comparator);
@@ -108,19 +108,6 @@ inline IMUMotionState InterpolateMotionState(const IMUDataContainerCPU& imu_samp
     return interpolated_state;
 }
 
-/// @brief Preintegrate IMU rotations and output cumulative orientations.
-/// @param imu_samples Sequence of IMU measurements ordered by timestamp.
-/// @return Quaternion sequence aligned with @p imu_samples.
-inline std::vector<Eigen::Quaternionf> PreintegrateIMURotations(const IMUDataContainerCPU& imu_samples) {
-    const std::vector<IMUMotionState> motion_states = PreintegrateIMUMotion(imu_samples);
-    std::vector<Eigen::Quaternionf> orientations;
-    orientations.reserve(motion_states.size());
-    for (const auto& state : motion_states) {
-        orientations.push_back(state.orientation);
-    }
-    return orientations;
-}
-
 /// @brief Deskew a point cloud by removing rotational and translational motion
 /// derived from IMU data.
 ///
@@ -129,12 +116,12 @@ inline std::vector<Eigen::Quaternionf> PreintegrateIMURotations(const IMUDataCon
 /// @param cloud Point cloud that will be updated in-place.
 /// @param imu_samples Time ordered IMU samples used for interpolation.
 /// @return true when deskewing is applied, false if prerequisites are not met.
-inline bool DeskewPointCloud(PointCloudCPU& cloud, const IMUDataContainerCPU& imu_samples) {
+inline bool deskew_point_cloud(PointCloudCPU& cloud, const IMUDataContainerCPU& imu_samples) {
     if (cloud.size() == 0 || !cloud.has_timestamps() || imu_samples.size() < 2) {
         return false;
     }
 
-    const std::vector<IMUMotionState> motion_states = PreintegrateIMUMotion(imu_samples);
+    const std::vector<IMUMotionState> motion_states = preintegrate_imu_motion(imu_samples);
     if (motion_states.size() != imu_samples.size()) {
         return false;
     }
@@ -149,7 +136,7 @@ inline bool DeskewPointCloud(PointCloudCPU& cloud, const IMUDataContainerCPU& im
 
         const double clamped_time = std::clamp(timestamp_seconds, imu_samples.front().timestamp_seconds(),
                                                imu_samples.back().timestamp_seconds());
-        const IMUMotionState motion_state = InterpolateMotionState(imu_samples, motion_states, clamped_time);
+        const IMUMotionState motion_state = interpolate_motion_state(imu_samples, motion_states, clamped_time);
         const Eigen::Vector3f original_point = (*cloud.points)[idx].head<3>();
         // Transform point from sensor frame to world frame to compensate for motion.
         const Eigen::Vector3f corrected_point = motion_state.orientation * original_point + motion_state.position;

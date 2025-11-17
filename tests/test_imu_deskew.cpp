@@ -17,30 +17,6 @@ IMUData CreateIMUSample(double time_seconds, const Eigen::Vector3f& angular_velo
     return IMUData(sec, nanosec, angular_velocity, linear_acceleration);
 }
 
-
-TEST(DeskewIMUTest, PreintegratesConstantRotation) {
-    constexpr double kDt = 0.1;
-    constexpr double kTotalTime = 1.0;
-    const Eigen::Vector3f kAngularVel(0.0f, 0.0f, static_cast<float>(M_PI));
-
-    IMUDataContainerCPU imu_samples;
-    for (size_t i = 0; i <= static_cast<size_t>(std::round(kTotalTime / kDt)); ++i) {
-        const double timestamp = i * kDt;
-        imu_samples.push_back(CreateIMUSample(timestamp, kAngularVel));
-    }
-
-    const std::vector<Eigen::Quaternionf> orientations = PreintegrateIMURotations(imu_samples);
-    ASSERT_EQ(orientations.size(), imu_samples.size());
-
-    EXPECT_NEAR(orientations.front().w(), 1.0f, 1e-6f);
-    EXPECT_NEAR(orientations.front().vec().norm(), 0.0f, 1e-6f);
-
-    const float expected_angle = static_cast<float>(kAngularVel.z() * kTotalTime);
-    const Eigen::Quaternionf expected_orientation(Eigen::AngleAxisf(expected_angle, Eigen::Vector3f::UnitZ()));
-    const float quaternion_dot = std::abs(expected_orientation.dot(orientations.back()));
-    EXPECT_NEAR(quaternion_dot, 1.0f, 1e-5f);
-}
-
 TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
     IMUDataContainerCPU imu_samples;
     constexpr double kDt = 0.025;
@@ -79,7 +55,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), reference_points.size());
 
-    const bool success = DeskewPointCloud(cloud, imu_samples);
+    const bool success = deskew_point_cloud(cloud, imu_samples);
     ASSERT_TRUE(success);
 
     for (size_t i = 0; i < reference_points.size(); ++i) {
@@ -121,7 +97,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithTranslation) {
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
 
-    const bool success = DeskewPointCloud(cloud, imu_samples);
+    const bool success = deskew_point_cloud(cloud, imu_samples);
     ASSERT_TRUE(success);
 
     for (size_t i = 0; i < point_times.size(); ++i) {
@@ -142,7 +118,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
         imu_samples.push_back(CreateIMUSample(timestamp, kAngularVel, kAcceleration));
     }
 
-    const std::vector<IMUMotionState> motion_states = PreintegrateIMUMotion(imu_samples);
+    const std::vector<IMUMotionState> motion_states = preintegrate_imu_motion(imu_samples);
     ASSERT_EQ(motion_states.size(), imu_samples.size());
 
     PointCloudCPU cloud;
@@ -152,7 +128,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
     const std::vector<double> point_times = {0.0, 0.25, 0.5};
 
     for (double timestamp : point_times) {
-        const IMUMotionState motion_state = InterpolateMotionState(imu_samples, motion_states, timestamp);
+        const IMUMotionState motion_state = interpolate_motion_state(imu_samples, motion_states, timestamp);
 
         // Observation in the sensor frame: undo translation then rotation.
         const Eigen::Vector3f observed_point =
@@ -168,7 +144,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
 
-    const bool success = DeskewPointCloud(cloud, imu_samples);
+    const bool success = deskew_point_cloud(cloud, imu_samples);
     ASSERT_TRUE(success);
 
     for (size_t i = 0; i < point_times.size(); ++i) {
