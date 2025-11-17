@@ -64,16 +64,17 @@ inline std::vector<IMUMotionState> PreintegrateIMUMotion(
       delta_orientation = Eigen::AngleAxisf(angle, axis);
     }
 
+    const auto prev_orientation = accumulated_state.orientation;
     accumulated_state.orientation =
-        (accumulated_state.orientation * delta_orientation).normalized();
+        (prev_orientation * delta_orientation).normalized();
 
-    // Use the average acceleration and current orientation to integrate
-    // translational motion in the world frame.
+    // Use the average acceleration and beginning-of-interval orientation to
+    // integrate translational motion in the world frame.
     const Eigen::Vector3f average_acceleration =
         0.5f *
         (prev_sample.linear_acceleration + curr_sample.linear_acceleration);
     const Eigen::Vector3f acceleration_world =
-        accumulated_state.orientation * average_acceleration;
+        prev_orientation * average_acceleration;
     accumulated_state.position +=
         accumulated_state.velocity * static_cast<float>(delta_time) +
         0.5f * acceleration_world * static_cast<float>(delta_time * delta_time);
@@ -178,11 +179,10 @@ inline bool DeskewPointCloudRotations(PointCloudCPU &cloud,
         std::min(timestamp_seconds, imu_samples.back().timestamp_seconds()));
     const IMUMotionState motion_state = interpolate_state(clamped_time);
     const Eigen::Vector3f original_point = (*cloud.points)[idx].head<3>();
-    // Rotate the point back to the base frame and restore the accumulated
+    // Rotate the point to the base frame and restore the accumulated
     // translation to obtain a motion-compensated position.
     const Eigen::Vector3f corrected_point =
-        motion_state.orientation.conjugate() * original_point +
-        motion_state.position;
+        motion_state.orientation * original_point + motion_state.position;
     (*cloud.points)[idx].head<3>() = corrected_point;
   }
 
