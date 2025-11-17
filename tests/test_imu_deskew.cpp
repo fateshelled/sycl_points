@@ -10,10 +10,11 @@ namespace sycl_points {
 namespace {
 
 /// @brief Helper to construct IMU sample timestamps from floating seconds.
-IMUData CreateIMUSample(double time_seconds, const Eigen::Vector3f &angular_velocity) {
+IMUData CreateIMUSample(double time_seconds, const Eigen::Vector3f &angular_velocity,
+                        const Eigen::Vector3f &linear_acceleration = Eigen::Vector3f::Zero()) {
     const int32_t sec = static_cast<int32_t>(std::floor(time_seconds));
     const uint32_t nanosec = static_cast<uint32_t>(std::round((time_seconds - static_cast<double>(sec)) * 1e9));
-    return IMUData(sec, nanosec, angular_velocity, Eigen::Vector3f::Zero());
+    return IMUData(sec, nanosec, angular_velocity, linear_acceleration);
 }
 
 TEST(DeskewIMUTest, PreintegratesConstantRotation) {
@@ -84,6 +85,47 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
         const Eigen::Vector3f corrected_point = (*cloud.points)[i].head<3>();
         const Eigen::Vector3f expected_point = reference_points[i];
         EXPECT_NEAR((corrected_point - expected_point).norm(), 0.0f, 1e-5f);
+    }
+}
+
+TEST(DeskewIMUTest, DeskewsPointCloudWithTranslation) {
+    IMUDataContainerCPU imu_samples;
+    constexpr double kDt = 0.1;
+    constexpr double kTotalTime = 1.0;
+    const Eigen::Vector3f kAcceleration(1.0f, 0.0f, 0.0f);
+
+    for (size_t i = 0; i <= static_cast<size_t>(std::round(kTotalTime / kDt)); ++i) {
+        const double timestamp = i * kDt;
+        imu_samples.push_back(CreateIMUSample(timestamp, Eigen::Vector3f::Zero(), kAcceleration));
+    }
+
+    PointCloudCPU cloud;
+    cloud.timestamp_base_ns = 0;
+
+    const Eigen::Vector3f world_point(5.0f, 0.0f, 0.0f);
+    const std::vector<double> point_times = {0.0, 0.5, 1.0};
+
+    for (double timestamp : point_times) {
+        const double translation = 0.5 * static_cast<double>(kAcceleration.x()) * timestamp * timestamp;
+        const Eigen::Vector3f sensor_position(static_cast<float>(translation), 0.0f, 0.0f);
+        const Eigen::Vector3f observed_point = world_point - sensor_position;
+
+        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e9));
+
+        PointType point;
+        point << observed_point.x(), observed_point.y(), observed_point.z(), 1.0f;
+        cloud.points->push_back(point);
+    }
+
+    ASSERT_TRUE(cloud.has_timestamps());
+    ASSERT_EQ(cloud.size(), point_times.size());
+
+    const bool success = DeskewPointCloudRotations(cloud, imu_samples);
+    ASSERT_TRUE(success);
+
+    for (size_t i = 0; i < point_times.size(); ++i) {
+        const Eigen::Vector3f corrected_point = (*cloud.points)[i].head<3>();
+        EXPECT_NEAR((corrected_point - world_point).norm(), 0.0f, 1e-5f);
     }
 }
 
