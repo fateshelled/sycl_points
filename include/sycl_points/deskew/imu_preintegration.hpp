@@ -179,8 +179,7 @@ inline bool DeskewPointCloudRotations(PointCloudCPU &cloud,
         std::min(timestamp_seconds, imu_samples.back().timestamp_seconds()));
     const IMUMotionState motion_state = interpolate_state(clamped_time);
     const Eigen::Vector3f original_point = (*cloud.points)[idx].head<3>();
-    // Rotate the point to the base frame and restore the accumulated
-    // translation to obtain a motion-compensated position.
+    // Transform point from sensor frame to world frame to compensate for motion.
     const Eigen::Vector3f corrected_point =
         motion_state.orientation * original_point + motion_state.position;
     (*cloud.points)[idx].head<3>() = corrected_point;
