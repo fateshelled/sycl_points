@@ -2,26 +2,24 @@
 
 #include <algorithm>
 #include <cmath>
-#include <vector>
-
 #include <sycl_points/deskew/imu_preintegration.hpp>
 #include <sycl_points/points/point_cloud.hpp>
+#include <vector>
 
 namespace sycl_points {
 namespace {
 
 /// @brief Helper to construct IMU sample timestamps from floating seconds.
-IMUData CreateIMUSample(double time_seconds, const Eigen::Vector3f &angular_velocity,
-                        const Eigen::Vector3f &linear_acceleration = Eigen::Vector3f::Zero()) {
+IMUData CreateIMUSample(double time_seconds, const Eigen::Vector3f& angular_velocity,
+                        const Eigen::Vector3f& linear_acceleration = Eigen::Vector3f::Zero()) {
     const int32_t sec = static_cast<int32_t>(std::floor(time_seconds));
     const uint32_t nanosec = static_cast<uint32_t>(std::round((time_seconds - static_cast<double>(sec)) * 1e9));
     return IMUData(sec, nanosec, angular_velocity, linear_acceleration);
 }
 
-IMUMotionState InterpolateMotionState(const IMUDataContainerCPU &imu_samples,
-                                     const std::vector<IMUMotionState> &motion_states,
-                                     double timestamp) {
-    const auto comparator = [](const IMUData &sample, double t) { return sample.timestamp_seconds() < t; };
+IMUMotionState InterpolateMotionState(const IMUDataContainerCPU& imu_samples,
+                                      const std::vector<IMUMotionState>& motion_states, double timestamp) {
+    const auto comparator = [](const IMUData& sample, double t) { return sample.timestamp_seconds() < t; };
 
     auto upper = std::lower_bound(imu_samples.begin(), imu_samples.end(), timestamp, comparator);
     if (upper == imu_samples.begin()) {
@@ -36,18 +34,17 @@ IMUMotionState InterpolateMotionState(const IMUDataContainerCPU &imu_samples,
 
     const double t0 = imu_samples[prev_idx].timestamp_seconds();
     const double t1 = imu_samples[next_idx].timestamp_seconds();
-    const double ratio = (t1 - t0) <= 0.0 ? 0.0
-                                          : std::clamp((timestamp - t0) / (t1 - t0), 0.0, 1.0);
+    const double ratio = (t1 - t0) <= 0.0 ? 0.0 : std::clamp((timestamp - t0) / (t1 - t0), 0.0, 1.0);
 
     IMUMotionState interpolated_state;
-    interpolated_state.orientation = motion_states[prev_idx].orientation.slerp(
-        static_cast<float>(ratio), motion_states[next_idx].orientation);
-    interpolated_state.position = motion_states[prev_idx].position +
-                                  static_cast<float>(ratio) *
-                                      (motion_states[next_idx].position - motion_states[prev_idx].position);
-    interpolated_state.velocity = motion_states[prev_idx].velocity +
-                                  static_cast<float>(ratio) *
-                                      (motion_states[next_idx].velocity - motion_states[prev_idx].velocity);
+    interpolated_state.orientation =
+        motion_states[prev_idx].orientation.slerp(static_cast<float>(ratio), motion_states[next_idx].orientation);
+    interpolated_state.position =
+        motion_states[prev_idx].position +
+        static_cast<float>(ratio) * (motion_states[next_idx].position - motion_states[prev_idx].position);
+    interpolated_state.velocity =
+        motion_states[prev_idx].velocity +
+        static_cast<float>(ratio) * (motion_states[next_idx].velocity - motion_states[prev_idx].velocity);
     return interpolated_state;
 }
 
@@ -102,8 +99,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
 
         const float angle = static_cast<float>(kAngularVel.z() * timestamp);
         const Eigen::Quaternionf orientation(Eigen::AngleAxisf(angle, Eigen::Vector3f::UnitZ()));
-        Eigen::Vector3f rotated_point =
-            orientation.conjugate() * reference_points[i];
+        Eigen::Vector3f rotated_point = orientation.conjugate() * reference_points[i];
 
         PointType point;
         point << rotated_point.x(), rotated_point.y(), rotated_point.z(), 1.0f;
@@ -173,12 +169,10 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
 
     for (size_t i = 0; i <= static_cast<size_t>(std::round(kTotalTime / kDt)); ++i) {
         const double timestamp = i * kDt;
-        imu_samples.push_back(
-            CreateIMUSample(timestamp, kAngularVel, kAcceleration));
+        imu_samples.push_back(CreateIMUSample(timestamp, kAngularVel, kAcceleration));
     }
 
-    const std::vector<IMUMotionState> motion_states =
-        PreintegrateIMUMotion(imu_samples);
+    const std::vector<IMUMotionState> motion_states = PreintegrateIMUMotion(imu_samples);
     ASSERT_EQ(motion_states.size(), imu_samples.size());
 
     PointCloudCPU cloud;
@@ -188,16 +182,13 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
     const std::vector<double> point_times = {0.0, 0.25, 0.5};
 
     for (double timestamp : point_times) {
-        const IMUMotionState motion_state =
-            InterpolateMotionState(imu_samples, motion_states, timestamp);
+        const IMUMotionState motion_state = InterpolateMotionState(imu_samples, motion_states, timestamp);
 
         // Observation in the sensor frame: undo translation then rotation.
         const Eigen::Vector3f observed_point =
-            motion_state.orientation.conjugate() *
-            (world_point - motion_state.position);
+            motion_state.orientation.conjugate() * (world_point - motion_state.position);
 
-        cloud.timestamp_offsets->push_back(
-            static_cast<TimestampOffset>(timestamp * 1e9));
+        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e9));
 
         PointType point;
         point << observed_point.x(), observed_point.y(), observed_point.z(), 1.0f;
