@@ -54,9 +54,8 @@ inline std::vector<IMUMotionState> preintegrate_imu_motion(const IMUDataContaine
             continue;
         }
 
-        const Eigen::Vector3f corrected_prev_gyro = prev_sample.angular_velocity - gyro_bias;
-        const Eigen::Vector3f corrected_curr_gyro = curr_sample.angular_velocity - gyro_bias;
-        const Eigen::Vector3f average_gyro = 0.5f * (corrected_prev_gyro + corrected_curr_gyro);
+        const Eigen::Vector3f average_raw_gyro = 0.5f * (prev_sample.angular_velocity + curr_sample.angular_velocity);
+        const Eigen::Vector3f average_gyro = average_raw_gyro - gyro_bias;
         const Eigen::Vector3f delta_theta = average_gyro * static_cast<float>(delta_time);
         const float angle = delta_theta.norm();
 
