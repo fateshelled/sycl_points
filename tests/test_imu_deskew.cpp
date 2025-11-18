@@ -153,5 +153,44 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
     }
 }
 
+TEST(DeskewIMUTest, DeskewsPointCloudWithBiasAndGravity) {
+    IMUDataContainerCPU imu_samples;
+    constexpr double kDt = 0.01;
+    constexpr double kTotalTime = 0.1;
+    const Eigen::Vector3f kGyroBias(0.01f, -0.02f, 0.015f);
+    const Eigen::Vector3f kAccelBias(0.2f, -0.1f, 0.05f);
+    const Eigen::Vector3f kGravity(0.0f, 0.0f, -9.81f);
+
+    for (size_t i = 0; i <= static_cast<size_t>(std::round(kTotalTime / kDt)); ++i) {
+        const double timestamp = i * kDt;
+        imu_samples.push_back(CreateIMUSample(timestamp, kGyroBias, kGravity + kAccelBias));
+    }
+
+    PointCloudCPU cloud;
+    cloud.timestamp_base_ns = 0;
+
+    const std::vector<double> point_times = {0.0, 0.05, 0.1};
+    const Eigen::Vector3f fixed_point(1.0f, -2.0f, 0.5f);
+
+    for (double timestamp : point_times) {
+        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e9));
+
+        PointType point;
+        point << fixed_point.x(), fixed_point.y(), fixed_point.z(), 1.0f;
+        cloud.points->push_back(point);
+    }
+
+    ASSERT_TRUE(cloud.has_timestamps());
+    ASSERT_EQ(cloud.size(), point_times.size());
+
+    const bool success = deskew_point_cloud(cloud, imu_samples, kGyroBias, kAccelBias, kGravity);
+    ASSERT_TRUE(success);
+
+    for (size_t i = 0; i < point_times.size(); ++i) {
+        const Eigen::Vector3f corrected_point = (*cloud.points)[i].head<3>();
+        EXPECT_NEAR((corrected_point - fixed_point).norm(), 0.0f, 1e-5f);
+    }
+}
+
 }  // namespace
 }  // namespace sycl_points
