@@ -77,10 +77,9 @@ inline std::vector<IMUMotionState> preintegrate_imu_motion(const IMUDataContaine
         // integrate translational motion in the world frame. Biases are removed
         // before rotation and gravity is subtracted in the world frame so that the
         // integrator can model free-fall or stationary scenarios accurately.
-        const Eigen::Vector3f corrected_prev_acceleration = prev_sample.linear_acceleration - accel_bias;
-        const Eigen::Vector3f corrected_curr_acceleration = curr_sample.linear_acceleration - accel_bias;
-        const Eigen::Vector3f average_acceleration =
-            0.5f * (corrected_prev_acceleration + corrected_curr_acceleration);
+        const Eigen::Vector3f average_raw_acceleration =
+            0.5f * (prev_sample.linear_acceleration + curr_sample.linear_acceleration);
+        const Eigen::Vector3f average_acceleration = average_raw_acceleration - accel_bias;
         const Eigen::Vector3f acceleration_world = prev_orientation * average_acceleration - gravity;
         accumulated_state.position += accumulated_state.velocity * static_cast<float>(delta_time) +
                                       0.5f * acceleration_world * static_cast<float>(delta_time * delta_time);
