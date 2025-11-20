@@ -165,6 +165,20 @@ inline bool deskew_point_cloud(PointCloudCPU& cloud, const IMUDataContainerCPU& 
         (*cloud.points)[idx].head<3>() = corrected_point;
     }
 
+    // Derived attributes computed in the original sensor frame are now invalid.
+    if (cloud.has_cov()) {
+        cloud.covs->clear();
+    }
+    if (cloud.has_normal()) {
+        cloud.normals->clear();
+    }
+    if (cloud.has_color_gradient()) {
+        cloud.color_gradients->clear();
+    }
+    if (cloud.has_intensity_gradient()) {
+        cloud.intensity_gradients->clear();
+    }
+
     return true;
 }
 
