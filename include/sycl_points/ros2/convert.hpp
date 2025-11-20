@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -91,17 +92,19 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
     }
 
     // Convert ROS2 timestamp fields (seconds relative to the header stamp) into
-    // the base-plus-offset representation used by PointCloudShared.
+    // the start-plus-offset representation used by PointCloudShared.
     auto assign_timestamp_offsets = [&]() {
         if (!has_timestamp_field) {
             return;
         }
 
-        cloud->timestamp_base_ns = static_cast<uint64_t>(msg.header.stamp.sec) * 1000000000ULL + msg.header.stamp.nanosec;
+        cloud->start_time_ms = static_cast<double>(msg.header.stamp.sec) * 1000.0 +
+                               static_cast<double>(msg.header.stamp.nanosec) * 1e-6;
 
         auto* offsets = cloud->timestamp_offsets->data();
         const auto* msg_bytes = reinterpret_cast<const uint8_t*>(msg.data.data());
-        const uint64_t max_offset = std::numeric_limits<TimestampOffset>::max();
+        const double max_offset = static_cast<double>(std::numeric_limits<TimestampOffset>::max());
+        double max_offset_ms = 0.0;
 
         for (size_t i = 0; i < point_size; ++i) {
             const size_t base = point_step * i + timestamp_offset;
@@ -119,17 +122,13 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
                 timestamp_seconds = 0.0;
             }
 
-            const double timestamp_ns = timestamp_seconds * 1e9;
-            uint64_t offset_ns = 0;
-            if (timestamp_ns > 0.0) {
-                offset_ns = static_cast<uint64_t>(std::llround(timestamp_ns));
-            }
-            if (offset_ns > max_offset) {
-                // Clamp to the representable offset range to avoid wrap-around.
-                offset_ns = max_offset;
-            }
-            offsets[i] = static_cast<TimestampOffset>(offset_ns);
+            const double timestamp_ms = timestamp_seconds * 1e3;
+            const double clamped_ms = std::min(timestamp_ms, max_offset);
+            offsets[i] = static_cast<TimestampOffset>(clamped_ms);
+            max_offset_ms = std::max(max_offset_ms, clamped_ms);
         }
+
+        cloud->end_time_ms = cloud->start_time_ms + max_offset_ms;
     };
 
     auto submit_device_conversion = [&](auto scalar_tag) {

@@ -148,10 +148,10 @@ inline bool deskew_point_cloud(PointCloudCPU& cloud, const IMUDataContainerCPU& 
         return false;
     }
 
-    const double timestamp_base = static_cast<double>(cloud.timestamp_base_ns) * 1e-9;
+    const double timestamp_base = cloud.start_time_ms * 1e-3;
 
     for (size_t idx = 0; idx < cloud.size(); ++idx) {
-        const double timestamp_seconds = timestamp_base + static_cast<double>((*cloud.timestamp_offsets)[idx]) * 1e-9;
+        const double timestamp_seconds = timestamp_base + static_cast<double>((*cloud.timestamp_offsets)[idx]) * 1e-3;
         if (!std::isfinite(timestamp_seconds)) {
             continue;
         }
