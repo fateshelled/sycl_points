@@ -19,48 +19,39 @@ using ColorGradient = Eigen::Matrix3f;
 using IntensityGradient = Eigen::Vector3f;
 using TransformMatrix = Eigen::Matrix4f;
 
-constexpr size_t PointAlignment = 16;
-constexpr size_t CovarianceAlignment = 64;
-constexpr size_t NormalAlignment = 16;
-constexpr size_t RGBAlignment = 16;
-constexpr size_t IntensityAlignment = 4;
-constexpr size_t ColorGradientAlignment = 0; // 36 is bad alignment
-constexpr size_t IntensityGradientAlignment = 16;
-
 // Vector of point on CPU. Accessible from CPU process only.
 using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
 // Vector of point on shared memory. Accessible directly from the CPU and via pointer from the device.
-using PointContainerShared = shared_vector<PointType, PointAlignment>;
+using PointContainerShared = shared_vector<PointType>;
 
 // Vector of covariance on CPU
 using CovarianceContainerCPU = std::vector<Covariance, Eigen::aligned_allocator<Covariance>>;
 // Vector of covariance on shared memory
-using CovarianceContainerShared = shared_vector<Covariance, CovarianceAlignment>;
+using CovarianceContainerShared = shared_vector<Covariance>;
 
 // Vector of normal on CPU
 using NormalContainerCPU = std::vector<Normal, Eigen::aligned_allocator<Normal>>;
 // Vector of normal on shared memory
-using NormalContainerShared = shared_vector<Normal, NormalAlignment>;
+using NormalContainerShared = shared_vector<Normal>;
 
 // Vector of RGB on CPU
 using RGBContainerCPU = std::vector<RGBType, Eigen::aligned_allocator<RGBType>>;
 // Vector of RGB on shared memory
-using RGBContainerShared = shared_vector<RGBType, RGBAlignment>;
+using RGBContainerShared = shared_vector<RGBType>;
 
 // Vector of Color gradient on CPU
 using ColorGradientContainerCPU = std::vector<ColorGradient, Eigen::aligned_allocator<ColorGradient>>;
 // Vector of Color gradient on shared memory
-using ColorGradientContainerShared = shared_vector<ColorGradient, ColorGradientAlignment>;
+using ColorGradientContainerShared = shared_vector<ColorGradient>;
 
 // Vector of intensity gradient on CPU
-using IntensityGradientContainerCPU =
-    std::vector<IntensityGradient, Eigen::aligned_allocator<IntensityGradient>>;
+using IntensityGradientContainerCPU = std::vector<IntensityGradient, Eigen::aligned_allocator<IntensityGradient>>;
 // Vector of intensity gradient on shared memory
-using IntensityGradientContainerShared = shared_vector<IntensityGradient, IntensityGradientAlignment>;
+using IntensityGradientContainerShared = shared_vector<IntensityGradient>;
 
 // Vector of Intensity on CPU
 using IntensityContainerCPU = std::vector<float, Eigen::aligned_allocator<float>>;
 // Vector of RGB on shared memory
-using IntensityContainerShared = shared_vector<float, IntensityAlignment>;
+using IntensityContainerShared = shared_vector<float>;
 
 }  // namespace sycl_points
