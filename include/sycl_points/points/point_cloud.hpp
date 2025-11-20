@@ -506,9 +506,14 @@ private:
 
         if (!this->has_timestamps()) {
             if (original_size == 0) {
+                // This cloud was empty, so we can just adopt the timestamps from the other cloud.
                 this->timestamp_offsets->insert(this->timestamp_offsets->end(), other.timestamp_offsets->begin(),
                                                 other.timestamp_offsets->end());
                 this->timestamp_base_ns = other.timestamp_base_ns;
+            } else {
+                // This cloud has points but no timestamps. The merged cloud will also not have timestamps
+                // to maintain consistency. Timestamps from `other` are intentionally dropped.
+                // No action is needed as `this->timestamp_offsets` is already empty.
             }
             return;
         }
