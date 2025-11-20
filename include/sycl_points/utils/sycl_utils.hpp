@@ -212,7 +212,7 @@ struct events {
 
     /// @brief wait all events
     void wait() {
-        for (auto& event: this->evs) {
+        for (auto& event : this->evs) {
             event.wait();
         }
         this->clear();
@@ -220,7 +220,7 @@ struct events {
 
     /// @brief wait_and_throw all events
     void wait_and_throw() {
-        for (auto& event: this->evs) {
+        for (auto& event : this->evs) {
             event.wait_and_throw();
         }
         this->clear();
@@ -587,9 +587,9 @@ public:
 
 template <typename T, size_t Alignment = 0>
 using shared_allocator = sycl::usm_allocator<T, sycl::usm::alloc::shared, Alignment>;
-template <typename T, size_t Alignment = 0>
-using shared_vector = std::vector<T, shared_allocator<T, Alignment>>;
-template <typename T, size_t Alignment = 0>
-using shared_vector_ptr = std::shared_ptr<shared_vector<T, Alignment>>;
+template <typename T>
+using shared_vector = std::vector<T, shared_allocator<T, alignof(T)>>;
+template <typename T>
+using shared_vector_ptr = std::shared_ptr<shared_vector<T>>;
 
 }  // namespace sycl_points

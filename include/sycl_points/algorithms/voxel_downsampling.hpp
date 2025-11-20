@@ -52,7 +52,7 @@ public:
         if (voxel_size <= 0.0f) {
             throw std::invalid_argument("voxel_size must be positive");
         }
-        this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, shared_allocator<uint64_t>(*this->queue_.ptr));
+        this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, *this->queue_.ptr);
         this->voxel_size_inv_ = 1.0f / this->voxel_size_;
         this->min_voxel_count_ = 1;
     }
@@ -103,8 +103,8 @@ public:
 
         if (cloud.has_rgb() || cloud.has_intensity()) {
             // compute RGB map on host
-            const auto rgb_map = this->compute_voxel_map(*cloud.rgb);
-            const auto intensity_map = this->compute_voxel_map(*cloud.intensities);
+            const auto rgb_map = this->compute_voxel_map<RGBType>(*cloud.rgb);
+            const auto intensity_map = this->compute_voxel_map<float>(*cloud.intensities);
             // Voxel map to point cloud on host
             this->voxel_map_to_cloud(voxel_map, rgb_map, intensity_map, result);
         } else {
@@ -153,8 +153,8 @@ private:
         }
     }
 
-    template <typename T, size_t AllocSize = 0>
-    std::unordered_map<uint64_t, T> compute_voxel_map(const shared_vector<T, AllocSize>& data) const {
+    template <typename T>
+    std::unordered_map<uint64_t, T> compute_voxel_map(const shared_vector<T>& data) const {
         const size_t N = data.size();
         if (N == 0) {
             return {};
@@ -198,7 +198,7 @@ private:
         this->compute_voxel_bit(points);
 
         // compute Voxel map on host
-        return this->compute_voxel_map(points);
+        return this->compute_voxel_map<PointType>(points);
     }
 
     void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
