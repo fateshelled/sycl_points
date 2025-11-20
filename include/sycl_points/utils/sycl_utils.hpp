@@ -212,7 +212,7 @@ struct events {
 
     /// @brief wait all events
     void wait() {
-        for (auto& event: this->evs) {
+        for (auto& event : this->evs) {
             event.wait();
         }
         this->clear();
@@ -220,7 +220,7 @@ struct events {
 
     /// @brief wait_and_throw all events
     void wait_and_throw() {
-        for (auto& event: this->evs) {
+        for (auto& event : this->evs) {
             event.wait_and_throw();
         }
         this->clear();
@@ -315,7 +315,7 @@ void clear_read_mostly(sycl::queue& queue, T* data_ptr, size_t N) {
 
 namespace device_selector {
 
-bool is_supported_device(const sycl::device& dev) {
+inline bool is_supported_device(const sycl::device& dev) {
     const auto backend = dev.get_backend();
     bool supported = true;
     supported &= (backend == sycl::backend::opencl) || (backend == sycl::backend::ext_oneapi_cuda);
@@ -340,7 +340,7 @@ inline int nvidia_gpu_selector_v(const sycl::device& dev) {
     return dev.is_gpu() && (vendor_id == VENDOR_ID::NVIDIA) && is_supported_device(dev);
 }
 
-sycl::device select_device(const std::string& device_vendor, const std::string& device_type) {
+inline sycl::device select_device(const std::string& device_vendor, const std::string& device_type) {
     std::string device_vendor_lower = device_vendor;
     std::transform(device_vendor_lower.begin(), device_vendor_lower.end(), device_vendor_lower.begin(),
                    [](char c) { return std::tolower(c); });
@@ -587,9 +587,9 @@ public:
 
 template <typename T, size_t Alignment = 0>
 using shared_allocator = sycl::usm_allocator<T, sycl::usm::alloc::shared, Alignment>;
-template <typename T, size_t Alignment = 0>
-using shared_vector = std::vector<T, shared_allocator<T, Alignment>>;
-template <typename T, size_t Alignment = 0>
-using shared_vector_ptr = std::shared_ptr<shared_vector<T, Alignment>>;
+template <typename T>
+using shared_vector = std::vector<T, shared_allocator<T, alignof(T)>>;
+template <typename T>
+using shared_vector_ptr = std::shared_ptr<shared_vector<T>>;
 
 }  // namespace sycl_points
