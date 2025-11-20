@@ -28,8 +28,9 @@ public:
     /// @param source Source data
     /// @param output Data to be filtered
     /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove
-    template <typename T, size_t AllocSize = 0>
-    void filter_by_flags(const shared_vector<T, AllocSize>& source, shared_vector<T, AllocSize>& output, const shared_vector<uint8_t>& flags) const {
+    template <typename T>
+    void filter_by_flags(const shared_vector<T>& source, shared_vector<T>& output,
+                         const shared_vector<uint8_t>& flags) const {
         const size_t N = source.size();
         if (N == 0) return;
 
@@ -61,14 +62,13 @@ public:
         output.resize(new_size);
     }
 
-
     /// @brief Filter data synchronously on host
     /// @tparam T Data type (PointType or Covariance)
     /// @tparam AllocSize Optional allocator size
     /// @param data Data to be filtered
     /// @param flags Flags indicating which elements to keep (INCLUDE_FLAG) or remove
-    template <typename T, size_t AllocSize = 0>
-    void filter_by_flags(shared_vector<T, AllocSize>& data, const shared_vector<uint8_t>& flags) const {
+    template <typename T>
+    void filter_by_flags(shared_vector<T>& data, const shared_vector<uint8_t>& flags) const {
         this->filter_by_flags(data, data, flags);
     }
 

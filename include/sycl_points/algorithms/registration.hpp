@@ -161,14 +161,13 @@ public:
     /// @param params Registration parameters
     Registration(const sycl_utils::DeviceQueue& queue, const RegistrationParams& params = RegistrationParams())
         : params_(params), queue_(queue) {
-        this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(
-            1, knn::KNNResult(), shared_allocator<knn::KNNResult>(*this->queue_.ptr));
+        this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(1, knn::KNNResult(), *this->queue_.ptr);
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
 
         this->aligned_ = std::make_shared<PointCloudShared>(this->queue_);
         this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_);
-        this->linearlized_on_host_ = std::make_shared<shared_vector<LinearlizedResult>>(
-            1, LinearlizedResult(), shared_allocator<LinearlizedResult>(*this->queue_.ptr));
+        this->linearlized_on_host_ =
+            std::make_shared<shared_vector<LinearlizedResult>>(1, LinearlizedResult(), *this->queue_.ptr);
         this->error_on_host_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->inlier_on_host_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
     }
@@ -204,7 +203,8 @@ public:
             }
 
             const bool color_ready = source.has_rgb() && target.has_rgb() && target.has_color_gradient();
-            const bool intensity_ready = source.has_intensity() && target.has_intensity() && target.has_intensity_gradient();
+            const bool intensity_ready =
+                source.has_intensity() && target.has_intensity() && target.has_intensity_gradient();
 
             if (!color_ready && !intensity_ready) {
                 throw std::runtime_error(
@@ -477,8 +477,8 @@ private:
         const PointCloudShared& source, const PointCloudShared& target, const knn::KNNResult& knn_results,
         const Eigen::Matrix4f transT, float max_correspondence_distance_2, float robust_scale) {
         // The robust_scale argument ensures error reduction uses the caller-provided loss scale.
-        shared_vector<float> error(1, 0.0f, shared_allocator<float>(*this->queue_.ptr));
-        shared_vector<uint32_t> inlier(1, 0, shared_allocator<uint32_t>(*this->queue_.ptr));
+        shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
+        shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t N = source.size();
@@ -538,13 +538,12 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const float err =
-                        kernel::calculate_error<icp>(cur_T,                                              //
-                                                     source_ptr[index], source_cov,                      // source
-                                                     target_ptr[target_idx], target_cov, target_normal,  // target
-                                                     source_rgb, target_rgb, target_grad, use_color,     //
-                                                     source_intensity, target_intensity, target_intensity_grad,
-                                                     use_intensity, photometric_weight);
+                    const float err = kernel::calculate_error<icp>(
+                        cur_T,                                              //
+                        source_ptr[index], source_cov,                      // source
+                        target_ptr[target_idx], target_cov, target_normal,  // target
+                        source_rgb, target_rgb, target_grad, use_color,     //
+                        source_intensity, target_intensity, target_intensity_grad, use_intensity, photometric_weight);
 
                     sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
                     ;
