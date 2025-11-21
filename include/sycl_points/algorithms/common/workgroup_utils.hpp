@@ -183,14 +183,17 @@ SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t siz
         item.barrier(sycl::access::fence_space::local_space);
     }
 
+    KeyType current_key = invalid_key;
     if (local_id < size) {
-        const KeyType current_key = key_of(data[local_id]);
+        current_key = key_of(data[local_id]);
+    }
 
-        auto group = item.get_group();
-        const KeyType previous_valid_key = sycl::exclusive_scan_over_group(
-            group, current_key, invalid_key,
-            [&](const KeyType& lhs, const KeyType& rhs) { return (rhs != invalid_key) ? rhs : lhs; });
+    auto group = item.get_group();
+    const KeyType previous_valid_key = sycl::exclusive_scan_over_group(
+        group, current_key, invalid_key,
+        [&](const KeyType& lhs, const KeyType& rhs) { return (rhs != invalid_key) ? rhs : lhs; });
 
+    if (local_id < size) {
         const bool is_valid = (current_key != invalid_key);
         const bool has_previous_valid = (previous_valid_key != invalid_key);
         const bool should_reset = !is_valid || (has_previous_valid && equal(previous_valid_key, current_key));
