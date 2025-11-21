@@ -52,8 +52,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
         cloud.points->push_back(point);
     }
 
-    const auto max_offset = *std::max_element(cloud.timestamp_offsets->begin(), cloud.timestamp_offsets->end());
-    cloud.end_time_ms = cloud.start_time_ms + static_cast<double>(max_offset);
+    cloud.update_end_time();
 
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), reference_points.size());
@@ -97,8 +96,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithTranslation) {
         cloud.points->push_back(point);
     }
 
-    const auto max_offset = *std::max_element(cloud.timestamp_offsets->begin(), cloud.timestamp_offsets->end());
-    cloud.end_time_ms = cloud.start_time_ms + static_cast<double>(max_offset);
+    cloud.update_end_time();
 
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
@@ -147,8 +145,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
         cloud.points->push_back(point);
     }
 
-    const auto max_offset = *std::max_element(cloud.timestamp_offsets->begin(), cloud.timestamp_offsets->end());
-    cloud.end_time_ms = cloud.start_time_ms + static_cast<double>(max_offset);
+    cloud.update_end_time();
 
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
@@ -189,8 +186,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithBiasAndGravity) {
         cloud.points->push_back(point);
     }
 
-    const auto max_offset = *std::max_element(cloud.timestamp_offsets->begin(), cloud.timestamp_offsets->end());
-    cloud.end_time_ms = cloud.start_time_ms + static_cast<double>(max_offset);
+    cloud.update_end_time();
 
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());

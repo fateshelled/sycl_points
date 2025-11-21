@@ -71,6 +71,16 @@ struct PointCloudCPU {
         return this->timestamp_offsets != nullptr && this->timestamp_offsets->size() == this->points->size() &&
                !this->timestamp_offsets->empty() && this->end_time_ms >= this->start_time_ms;
     }
+
+    /// @brief Update the end timestamp based on available offsets.
+    void update_end_time() {
+        if (this->timestamp_offsets && !this->timestamp_offsets->empty()) {
+            const auto max_offset = *std::max_element(this->timestamp_offsets->begin(), this->timestamp_offsets->end());
+            this->end_time_ms = this->start_time_ms + static_cast<double>(max_offset);
+        } else {
+            this->end_time_ms = this->start_time_ms;
+        }
+    }
 };
 
 /// @brief Shared memory point cloud class with point and covariance container.
@@ -501,8 +511,6 @@ private:
         }
 
         this->start_time_ms = new_start_time_ms;
-        const auto max_offset = *std::max_element(this->timestamp_offsets->begin(), this->timestamp_offsets->end());
-        this->end_time_ms = this->start_time_ms + static_cast<double>(max_offset);
     }
 
     /// @brief Merge timestamp offsets when extending point clouds.
