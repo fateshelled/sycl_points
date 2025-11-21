@@ -98,19 +98,25 @@ SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const s
     LocalData accumulated = value;
     bool should_continue_accumulation = is_head;
 
+    struct KeyValuePair {
+        KeyType key;
+        LocalData value;
+    };
+
+    KeyValuePair kv{key, value};
+
     for (size_t offset = 1; offset < sg_size; ++offset) {
-        const KeyType neighbor_key = sycl::shift_group_left(sub_group, key, offset);
-        const LocalData neighbor_value = sycl::shift_group_left(sub_group, value, offset);
+        const KeyValuePair neighbor_kv = sycl::shift_group_left(sub_group, kv, offset);
 
         if (should_continue_accumulation) {
             const size_t neighbor_lane = sg_local_id + offset;
             const size_t neighbor_index = local_id + offset;
 
             const bool neighbor_in_range = (neighbor_lane < sg_size) && (neighbor_index < size);
-            if (!neighbor_in_range || !equal(key, neighbor_key)) {
+            if (!neighbor_in_range || !equal(key, neighbor_kv.key)) {
                 should_continue_accumulation = false;
             } else {
-                combine(accumulated, neighbor_value);
+                combine(accumulated, neighbor_kv.value);
             }
         }
     }
