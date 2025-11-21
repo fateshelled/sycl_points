@@ -21,8 +21,8 @@ using ColorGradient = Eigen::Matrix3f;
 using IntensityGradient = Eigen::Vector3f;
 using TransformMatrix = Eigen::Matrix4f;
 
-/// @brief Timestamp offset representation relative to the first measurement.
-using TimestampOffset = std::uint32_t;
+/// @brief Timestamp offset in milliseconds relative to the first measurement.
+using TimestampOffset = float;
 
 /// @brief IMU measurement packet bundled for deskewing.
 struct IMUData {

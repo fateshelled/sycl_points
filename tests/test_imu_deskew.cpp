@@ -29,7 +29,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
     }
 
     PointCloudCPU cloud;
-    cloud.timestamp_base_ns = 0;
+    cloud.start_time_ms = 0.0;
 
     const std::vector<Eigen::Vector3f> reference_points = {
         Eigen::Vector3f(1.0f, 0.0f, 0.0f),
@@ -41,7 +41,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
 
     for (size_t i = 0; i < reference_points.size(); ++i) {
         const double timestamp = point_times[i];
-        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e9));
+        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e3));
 
         const float angle = static_cast<float>(kAngularVel.z() * timestamp);
         const Eigen::Quaternionf orientation(Eigen::AngleAxisf(angle, Eigen::Vector3f::UnitZ()));
@@ -51,6 +51,8 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithRotationalMotion) {
         point << rotated_point.x(), rotated_point.y(), rotated_point.z(), 1.0f;
         cloud.points->push_back(point);
     }
+
+    cloud.update_end_time();
 
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), reference_points.size());
@@ -77,7 +79,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithTranslation) {
     }
 
     PointCloudCPU cloud;
-    cloud.timestamp_base_ns = 0;
+    cloud.start_time_ms = 0.0;
 
     const Eigen::Vector3f world_point(5.0f, 0.0f, 0.0f);
     const std::vector<double> point_times = {0.0, 0.5, 1.0};
@@ -87,12 +89,14 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithTranslation) {
         const Eigen::Vector3f sensor_position(static_cast<float>(translation), 0.0f, 0.0f);
         const Eigen::Vector3f observed_point = world_point - sensor_position;
 
-        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e9));
+        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e3));
 
         PointType point;
         point << observed_point.x(), observed_point.y(), observed_point.z(), 1.0f;
         cloud.points->push_back(point);
     }
+
+    cloud.update_end_time();
 
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
@@ -122,7 +126,7 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
     ASSERT_EQ(motion_states.size(), imu_samples.size());
 
     PointCloudCPU cloud;
-    cloud.timestamp_base_ns = 0;
+    cloud.start_time_ms = 0.0;
 
     const Eigen::Vector3f world_point(2.0f, -1.0f, 0.5f);
     const std::vector<double> point_times = {0.0, 0.25, 0.5};
@@ -134,12 +138,14 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithCombinedMotion) {
         const Eigen::Vector3f observed_point =
             motion_state.orientation.conjugate() * (world_point - motion_state.position);
 
-        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e9));
+        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e3));
 
         PointType point;
         point << observed_point.x(), observed_point.y(), observed_point.z(), 1.0f;
         cloud.points->push_back(point);
     }
+
+    cloud.update_end_time();
 
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
@@ -167,18 +173,20 @@ TEST(DeskewIMUTest, DeskewsPointCloudWithBiasAndGravity) {
     }
 
     PointCloudCPU cloud;
-    cloud.timestamp_base_ns = 0;
+    cloud.start_time_ms = 0.0;
 
     const std::vector<double> point_times = {0.0, 0.05, 0.1};
     const Eigen::Vector3f fixed_point(1.0f, -2.0f, 0.5f);
 
     for (double timestamp : point_times) {
-        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e9));
+        cloud.timestamp_offsets->push_back(static_cast<TimestampOffset>(timestamp * 1e3));
 
         PointType point;
         point << fixed_point.x(), fixed_point.y(), fixed_point.z(), 1.0f;
         cloud.points->push_back(point);
     }
+
+    cloud.update_end_time();
 
     ASSERT_TRUE(cloud.has_timestamps());
     ASSERT_EQ(cloud.size(), point_times.size());
