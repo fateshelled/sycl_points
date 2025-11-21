@@ -52,6 +52,78 @@ SYCL_EXTERNAL void bitonic_sort_local_data(LocalData* data, const size_t size, c
     }
 }
 
+/// @brief Perform a sub-group segmented reduction on sorted local data to shrink identical keys.
+/// @tparam LocalData Structure type stored in local memory.
+/// @tparam KeyType Key type returned by @p key_of.
+/// @tparam KeyFunc Functor that extracts the key from a local entry.
+/// @tparam EqualFunc Functor that returns true when two keys belong to the same group.
+/// @tparam CombineFunc Functor merging the payload of two LocalData entries.
+/// @tparam ResetFunc Functor clearing a LocalData entry after it is merged.
+/// @param data Pointer to the sorted local memory buffer.
+/// @param size Number of active elements in the buffer for the current work-group.
+/// @param item Work-item descriptor providing local identifiers and synchronization primitives.
+/// @param invalid_key Sentinel key used for inactive entries.
+/// @param key_of Functor returning the key from a local entry.
+/// @param equal Equality predicate that identifies entries belonging to the same group.
+///
+/// The routine keeps only the head element of each identical-key segment within a sub-group and
+/// accumulates contributions from following lanes. Non-head entries are reset so that subsequent
+/// work-group reductions process fewer items and require fewer barriers.
+template <typename LocalData, typename KeyType, typename KeyFunc, typename EqualFunc, typename CombineFunc,
+          typename ResetFunc>
+SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const size_t size,
+                                                         const sycl::nd_item<1>& item, const KeyType invalid_key,
+                                                         KeyFunc key_of, EqualFunc equal, CombineFunc combine,
+                                                         ResetFunc reset) {
+    const size_t local_id = item.get_local_id(0);
+
+    if (local_id >= size) {
+        return;
+    }
+
+    auto sub_group = item.get_sub_group();
+    const size_t sg_local_id = sub_group.get_local_id()[0];
+    const size_t sg_size = sub_group.get_local_range()[0];
+
+    LocalData value = data[local_id];
+    const KeyType key = key_of(value);
+
+    if (key == invalid_key) {
+        reset(data[local_id]);
+        return;
+    }
+
+    const KeyType prev_key = sycl::shift_group_right(sub_group, key, 1);
+    const bool is_head = (sg_local_id == 0) || !equal(key, prev_key);
+
+    if (!is_head) {
+        reset(data[local_id]);
+        return;
+    }
+
+    LocalData accumulated = value;
+
+    for (size_t offset = 1; offset < sg_size; ++offset) {
+        const size_t neighbor_lane = sg_local_id + offset;
+        const size_t neighbor_index = local_id + offset;
+
+        if (neighbor_lane >= sg_size || neighbor_index >= size) {
+            break;
+        }
+
+        const KeyType neighbor_key = sycl::shift_group_left(sub_group, key, offset);
+
+        if (!equal(key, neighbor_key)) {
+            break;
+        }
+
+        const LocalData neighbor_value = sycl::shift_group_left(sub_group, value, offset);
+        combine(accumulated, neighbor_value);
+    }
+
+    data[local_id] = accumulated;
+}
+
 /// @brief Reduce consecutive entries sharing the same key within a sorted local buffer.
 /// @tparam LocalData Structure type stored in local memory.
 /// @tparam KeyType Key type returned by @p key_of.
@@ -171,6 +243,8 @@ SYCL_EXTERNAL void local_reduction(LocalData* local_data, const size_t point_num
         const size_t active_size = std::min(wg_size, remaining_points);
 
         bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item, invalid_key, key_of, compare);
+        subgroup_reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine,
+                                             reset);
         reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine, reset);
     }
 }
