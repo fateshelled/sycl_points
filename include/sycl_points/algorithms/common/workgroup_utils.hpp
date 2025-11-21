@@ -180,19 +180,14 @@ SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t siz
     if (local_id < size) {
         const KeyType current_key = key_of(data[local_id]);
 
-        bool should_reset = (current_key == invalid_key);
+        auto group = item.get_group();
+        const KeyType previous_valid_key = sycl::exclusive_scan_over_group(
+            group, current_key, invalid_key,
+            [&](const KeyType& lhs, const KeyType& rhs) { return (rhs != invalid_key) ? rhs : lhs; });
 
-        if (!should_reset && local_id > 0) {
-            size_t prev_index = local_id;
-            while (prev_index > 0) {
-                --prev_index;
-                const KeyType prev_key = key_of(data[prev_index]);
-                if (prev_key != invalid_key) {
-                    should_reset = equal(prev_key, current_key);
-                    break;
-                }
-            }
-        }
+        const bool is_valid = (current_key != invalid_key);
+        const bool has_previous_valid = (previous_valid_key != invalid_key);
+        const bool should_reset = !is_valid || (has_previous_valid && equal(previous_valid_key, current_key));
 
         if (should_reset) {
             reset(data[local_id]);
