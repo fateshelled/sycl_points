@@ -60,6 +60,19 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
                                                            eigen_utils::transpose<3, 3>(eigenvectors));
 }
 
+SYCL_EXTERNAL inline void normalize_covariance(Covariance& cov) {
+    Eigen::Vector3f eigenvalues;
+    Eigen::Matrix3f eigenvectors;
+    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
+    eigenvalues(0) = std::clamp(eigenvalues(0) / (eigenvalues(2) + 1e-6f), 1e-3f, 1.0f);
+    eigenvalues(1) = std::clamp(eigenvalues(1) / (eigenvalues(2) + 1e-6f), 1e-3f, 1.0f);
+    eigenvalues(2) = 1.0f;
+
+    const auto diag = eigen_utils::as_diagonal<3>(eigenvalues);
+    cov.block<3, 3>(0, 0) = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
+                                                           eigen_utils::transpose<3, 3>(eigenvectors));
+}
+
 }  // namespace kernel
 
 /// @brief Async compute covariance using SYCL
@@ -244,6 +257,42 @@ inline sycl_utils::events covariance_update_plane_async(
 inline void covariance_update_plane(const PointCloudShared& points,
                                     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     covariance_update_plane_async(points, depends).wait();
+}
+
+/// @brief Async normalize covariance matrix
+/// @param points Point Cloud with covatiance
+/// @return events
+inline sycl_utils::events covariance_normalize_async(
+    const PointCloudShared& points, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+    if (!points.has_cov()) {
+        throw std::runtime_error("[covariance_normalize_async] not computed covariances");
+    }
+
+    const size_t N = points.size();
+    const size_t work_group_size = points.queue.get_work_group_size();
+    const size_t global_size = points.queue.get_global_size(N);
+
+    sycl_utils::events events;
+    events += points.queue.ptr->submit([&](sycl::handler& h) {
+        const auto cov_ptr = points.covs->data();
+
+        h.depends_on(depends);
+        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+            const size_t i = item.get_global_id(0);
+            if (i >= N) return;
+
+            kernel::normalize_covariance(cov_ptr[i]);
+        });
+    });
+
+    return events;
+}
+
+/// @brief Normalize covariance matrix
+/// @param points Point Cloud with covatiance
+inline void covariance_normalize(const PointCloudShared& points,
+                                 const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+    covariance_normalize_async(points, depends).wait();
 }
 
 }  // namespace covariance

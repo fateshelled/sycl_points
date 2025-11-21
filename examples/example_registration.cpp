@@ -48,17 +48,11 @@ int main() {
     const size_t WARM_UP = 10;
     std::map<std::string, double> elapsed;
     for (size_t i = 0; i < LOOP + WARM_UP; ++i) {
-        if (i == 0) {
-            param.verbose = true;
-        } else {
-            param.verbose = false;
-        }
-
         auto t0 = std::chrono::high_resolution_clock::now();
 
         sycl_points::PointCloudShared source_shared(queue, source_points);
         sycl_points::PointCloudShared target_shared(queue, target_points);
-        auto dt_to_shared =
+        const auto dt_to_shared =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
@@ -76,54 +70,57 @@ int main() {
         source_downsampled.reserve_normals(source_downsampled.size());
         target_downsampled.reserve_normals(target_downsampled.size());
 
-        auto dt_downsampled =
+        const auto dt_downsampled =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
         const auto source_tree = sycl_points::algorithms::knn::KDTree::build(queue, source_downsampled);
         const auto target_tree = sycl_points::algorithms::knn::KDTree::build(queue, target_downsampled);
-        auto dt_build_kdtree =
+        const auto dt_build_kdtree =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
         const auto source_neighbors = source_tree->knn_search(source_downsampled, num_neighbors);
         const auto target_neighbors = target_tree->knn_search(target_downsampled, num_neighbors);
-        auto dt_knn_search_for_covs =
+        const auto dt_knn_search_for_covs =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::covariance::compute_covariances_async(source_neighbors, source_downsampled).wait();
         sycl_points::algorithms::covariance::compute_covariances_async(target_neighbors, target_downsampled).wait();
-        auto dt_covariance =
+        const auto dt_covariance =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::covariance::compute_normals_async(source_neighbors, source_downsampled).wait();
         sycl_points::algorithms::covariance::compute_normals_async(target_neighbors, target_downsampled).wait();
-        auto dt_normal =
+        const auto dt_normal =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
+                .count();
+
+        /* GICP matching requires updating to planar covariance or normalized covariance */
+        t0 = std::chrono::high_resolution_clock::now();
+        // sycl_points::algorithms::covariance::covariance_update_plane(source_downsampled);
+        // sycl_points::algorithms::covariance::covariance_update_plane(target_downsampled);
+        sycl_points::algorithms::covariance::covariance_normalize(source_downsampled);
+        sycl_points::algorithms::covariance::covariance_normalize(target_downsampled);
+        const auto dt_udpate_covs =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::covariance_update_plane(source_downsampled);
-        sycl_points::algorithms::covariance::covariance_update_plane(target_downsampled);
-        auto dt_to_plane =
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
-                .count();
-
         /* NOTE:
             Random downsampling after covariance computation maintains GICP accuracy
             while reducing processing time */
         // preprocess_filter->random_sampling(source_downsampled, 1000);
 
-        t0 = std::chrono::high_resolution_clock::now();
         sycl_points::TransformMatrix init_T = sycl_points::TransformMatrix::Identity();
         const auto ret = registration->align(source_downsampled, target_downsampled, *target_tree, init_T);
-        auto dt_registration =
+        const auto dt_registration =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
@@ -146,8 +143,8 @@ int main() {
             if (elapsed.count("6. compute Normals") == 0) elapsed["6. compute Normals"] = 0.0;
             elapsed["6. compute Normals"] += dt_normal;
 
-            if (elapsed.count("7. update Covariance") == 0) elapsed["7. update Covariance"] = 0.0;
-            elapsed["7. update Covariance"] += dt_to_plane;
+            if (elapsed.count("7. update Covariances") == 0) elapsed["7. update Covariances"] = 0.0;
+            elapsed["7. update Covariances"] += dt_udpate_covs;
 
             if (elapsed.count("8. Registration") == 0) elapsed["8. Registration"] = 0.0;
             elapsed["8. Registration"] += dt_registration;
