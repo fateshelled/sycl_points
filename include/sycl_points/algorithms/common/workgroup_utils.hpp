@@ -76,52 +76,50 @@ SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const s
                                                          KeyFunc key_of, EqualFunc equal, CombineFunc combine,
                                                          ResetFunc reset) {
     const size_t local_id = item.get_local_id(0);
-
-    if (local_id >= size) {
-        return;
-    }
+    const bool is_active = (local_id < size);
 
     auto sub_group = item.get_sub_group();
     const size_t sg_local_id = sub_group.get_local_id()[0];
     const size_t sg_size = sub_group.get_local_range()[0];
 
-    LocalData value = data[local_id];
-    const KeyType key = key_of(value);
+    LocalData value{};
+    KeyType key = invalid_key;
 
-    if (key == invalid_key) {
-        reset(data[local_id]);
-        return;
+    if (is_active) {
+        value = data[local_id];
+        key = key_of(value);
     }
 
+    // All work-items in a sub-group must execute the same collective operations.
     const KeyType prev_key = sycl::shift_group_right(sub_group, key, 1);
-    const bool is_head = (sg_local_id == 0) || !equal(key, prev_key);
-
-    if (!is_head) {
-        reset(data[local_id]);
-        return;
-    }
+    const bool is_valid = is_active && (key != invalid_key);
+    const bool is_head = is_valid && ((sg_local_id == 0) || !equal(key, prev_key));
 
     LocalData accumulated = value;
+    bool should_continue_accumulation = is_head;
 
     for (size_t offset = 1; offset < sg_size; ++offset) {
-        const size_t neighbor_lane = sg_local_id + offset;
-        const size_t neighbor_index = local_id + offset;
-
-        if (neighbor_lane >= sg_size || neighbor_index >= size) {
-            break;
-        }
-
         const KeyType neighbor_key = sycl::shift_group_left(sub_group, key, offset);
-
-        if (!equal(key, neighbor_key)) {
-            break;
-        }
-
         const LocalData neighbor_value = sycl::shift_group_left(sub_group, value, offset);
-        combine(accumulated, neighbor_value);
+
+        if (should_continue_accumulation) {
+            const size_t neighbor_lane = sg_local_id + offset;
+            const size_t neighbor_index = local_id + offset;
+
+            const bool neighbor_in_range = (neighbor_lane < sg_size) && (neighbor_index < size);
+            if (!neighbor_in_range || !equal(key, neighbor_key)) {
+                should_continue_accumulation = false;
+            } else {
+                combine(accumulated, neighbor_value);
+            }
+        }
     }
 
-    data[local_id] = accumulated;
+    if (is_head && is_valid) {
+        data[local_id] = accumulated;
+    } else if (is_active) {
+        reset(data[local_id]);
+    }
 }
 
 /// @brief Reduce consecutive entries sharing the same key within a sorted local buffer.
@@ -185,8 +183,15 @@ SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t siz
         bool should_reset = (current_key == invalid_key);
 
         if (!should_reset && local_id > 0) {
-            const KeyType prev_key = key_of(data[local_id - 1]);
-            should_reset = equal(prev_key, current_key);
+            size_t prev_index = local_id;
+            while (prev_index > 0) {
+                --prev_index;
+                const KeyType prev_key = key_of(data[prev_index]);
+                if (prev_key != invalid_key) {
+                    should_reset = equal(prev_key, current_key);
+                    break;
+                }
+            }
         }
 
         if (should_reset) {
