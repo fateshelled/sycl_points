@@ -69,7 +69,7 @@ struct PointCloudCPU {
     /// @brief has timestamp field or not
     bool has_timestamps() const {
         return this->timestamp_offsets != nullptr && this->timestamp_offsets->size() == this->points->size() &&
-               !this->timestamp_offsets->empty() && this->end_time_ms >= this->start_time_ms;
+               !this->timestamp_offsets->empty();
     }
 
     /// @brief Update the end timestamp based on available offsets.
