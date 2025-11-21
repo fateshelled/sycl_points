@@ -115,7 +115,7 @@ SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const s
         }
     }
 
-    if (is_head && is_valid) {
+    if (is_head) {
         data[local_id] = accumulated;
     } else if (is_active) {
         reset(data[local_id]);
@@ -245,6 +245,8 @@ SYCL_EXTERNAL void local_reduction(LocalData* local_data, const size_t point_num
         bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item, invalid_key, key_of, compare);
         subgroup_reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine,
                                              reset);
+        item.barrier(sycl::access::fence_space::local_space);
+        bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item, invalid_key, key_of, compare);
         reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine, reset);
     }
 }
