@@ -95,9 +95,6 @@ SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const s
     const bool is_valid = is_active && (key != invalid_key);
     const bool is_head = is_valid && ((sg_local_id == 0) || !equal(key, prev_key));
 
-    LocalData accumulated = value;
-    bool should_continue_accumulation = is_head;
-
     struct KeyValuePair {
         KeyType key;
         LocalData value;
@@ -105,24 +102,38 @@ SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const s
 
     KeyValuePair kv{key, value};
 
-    for (size_t offset = 1; offset < sg_size; ++offset) {
-        const KeyValuePair neighbor_kv = sycl::shift_group_left(sub_group, kv, offset);
+    // Parallel segmented inclusive scan so the tail lane of each segment holds the full reduction.
+    kv = sycl::inclusive_scan_over_group(sub_group, kv, [&](KeyValuePair lhs, KeyValuePair rhs) {
+        if (lhs.key == invalid_key || rhs.key == invalid_key || !equal(lhs.key, rhs.key)) {
+            return rhs;
+        }
 
-        if (should_continue_accumulation) {
-            const size_t neighbor_lane = sg_local_id + offset;
-            const size_t neighbor_index = local_id + offset;
+        KeyValuePair out = rhs;
+        combine(out.value, lhs.value);
+        return out;
+    });
 
-            const bool neighbor_in_range = (neighbor_lane < sg_size) && (neighbor_index < size);
-            if (!neighbor_in_range || !equal(key, neighbor_kv.key)) {
-                should_continue_accumulation = false;
-            } else {
-                combine(accumulated, neighbor_kv.value);
-            }
+    // Identify the tail lane for each contiguous segment and broadcast its reduction back to the head.
+    const KeyType next_key = sycl::shift_group_left(sub_group, key, 1);
+    const bool has_neighbor = (sg_local_id + 1 < sg_size) && ((local_id + 1) < size);
+    const bool is_tail = is_valid && (!has_neighbor || !equal(key, next_key));
+
+    size_t tail_lane = is_tail ? sg_local_id : sg_size;
+    for (size_t offset = 1; offset < sg_size; offset <<= 1) {
+        const size_t neighbor_lane = sycl::shift_group_left(sub_group, tail_lane, offset);
+        const KeyType neighbor_key = sycl::shift_group_left(sub_group, key, offset);
+
+        const bool neighbor_in_range = (sg_local_id + offset < sg_size) && (local_id + offset < size);
+        if (is_valid && neighbor_in_range && equal(key, neighbor_key)) {
+            tail_lane = std::min(tail_lane, neighbor_lane);
         }
     }
 
+    const size_t safe_tail_lane = (tail_lane < sg_size) ? tail_lane : sg_local_id;
+    const LocalData segment_total = sycl::select_from_group(sub_group, kv.value, safe_tail_lane);
+
     if (is_head) {
-        data[local_id] = accumulated;
+        data[local_id] = segment_total;
     } else if (is_active) {
         reset(data[local_id]);
     }
