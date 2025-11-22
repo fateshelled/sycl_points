@@ -38,8 +38,6 @@ public:
         // mem_advise to host
         {
             this->queue_.set_accessed_by_host(source.data(), N);
-            this->queue_.set_accessed_by_host(source.data(), N);
-            this->queue_.set_accessed_by_host(output.data(), N);
             this->queue_.set_accessed_by_host(output.data(), N);
             this->queue_.set_accessed_by_host(flags.data(), N);
         }
@@ -54,8 +52,6 @@ public:
         // mem_advise clear
         {
             this->queue_.clear_accessed_by_host(source.data(), N);
-            this->queue_.clear_accessed_by_host(source.data(), N);
-            this->queue_.clear_accessed_by_host(output.data(), N);
             this->queue_.clear_accessed_by_host(output.data(), N);
             this->queue_.clear_accessed_by_host(flags.data(), N);
         }
