@@ -100,16 +100,16 @@ public:
         }
         const auto start_time_ms = cloud.start_time_ms;
         const auto end_time_ms = cloud.end_time_ms;
-        // compute Voxel map on host
+        // compute points map on host
         const auto voxel_map = this->compute_voxel_bit_and_voxel_map(*cloud.points);
 
-        // compute RGB map on host
+        // compute other fields map on host
         const auto rgb_map =
             cloud.has_rgb() ? this->compute_voxel_map<RGBType>(*cloud.rgb) : std::unordered_map<uint64_t, RGBType>{};
         const auto intensity_map = cloud.has_intensity() ? this->compute_voxel_map<float>(*cloud.intensities)
                                                          : std::unordered_map<uint64_t, float>{};
         const auto timestamp_map = cloud.has_timestamps() ? this->compute_voxel_map<float>(*cloud.timestamp_offsets)
-                                                         : std::unordered_map<uint64_t, float>{};
+                                                          : std::unordered_map<uint64_t, float>{};
 
         // Voxel map to point cloud on host
         this->voxel_map_to_cloud(voxel_map, rgb_map, intensity_map, timestamp_map, result);
@@ -248,10 +248,15 @@ private:
             const auto point_count = point.w();
             if (point_count >= min_voxel_count) {
                 result.points->emplace_back(point / point_count);
-                if (has_rgb) result.rgb->emplace_back(voxel_map_rgb.at(voxel_idx) / point_count);
-                if (has_intensity) result.intensities->emplace_back(voxel_map_intensity.at(voxel_idx) / point_count);
-                if (has_timestamp)
+                if (has_rgb) {
+                    result.rgb->emplace_back(voxel_map_rgb.at(voxel_idx) / point_count);
+                }
+                if (has_intensity) {
+                    result.intensities->emplace_back(voxel_map_intensity.at(voxel_idx) / point_count);
+                }
+                if (has_timestamp) {
                     result.timestamp_offsets->emplace_back(voxel_map_timestamp.at(voxel_idx) / point_count);
+                }
             }
         }
     }
