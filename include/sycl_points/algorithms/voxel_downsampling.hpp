@@ -98,6 +98,8 @@ public:
             result.resize_points(0);
             return;
         }
+        const auto start_time_ms = cloud.start_time_ms;
+        const auto end_time_ms = cloud.end_time_ms;
         // compute Voxel map on host
         const auto voxel_map = this->compute_voxel_bit_and_voxel_map(*cloud.points);
 
@@ -107,10 +109,14 @@ public:
         const auto intensity_map = cloud.has_intensity() ? this->compute_voxel_map<float>(*cloud.intensities)
                                                          : std::unordered_map<uint64_t, float>{};
         const auto timestamp_map = cloud.has_timestamps() ? this->compute_voxel_map<float>(*cloud.timestamp_offsets)
-                                                          : std::unordered_map<uint64_t, float>{};
+                                                         : std::unordered_map<uint64_t, float>{};
 
         // Voxel map to point cloud on host
         this->voxel_map_to_cloud(voxel_map, rgb_map, intensity_map, timestamp_map, result);
+        if (cloud.has_timestamps()) {
+            result.start_time_ms = start_time_ms;
+            result.end_time_ms = end_time_ms;
+        }
     }
 
 private:
