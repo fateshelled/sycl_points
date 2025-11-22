@@ -258,6 +258,7 @@ sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloud
 
     const bool has_rgb = cloud.has_rgb();
     const bool has_intensity = cloud.has_intensity();
+    const bool has_timestamp = cloud.has_timestamps();
 
     // add fields
     {
@@ -287,6 +288,12 @@ sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloud
             field.offset += sizeof(float);
             msg->fields.push_back(field);
         }
+        if (has_timestamp) {
+            field.name = "timestamp";
+            field.datatype = sensor_msgs::msg::PointField::FLOAT64;
+            field.offset += sizeof(double);
+            msg->fields.push_back(field);
+        }
     }
 
     msg->width = cloud.size();
@@ -298,13 +305,16 @@ sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloud
     if (has_intensity) {
         msg->point_step += sizeof(float);
     }
+    if (has_timestamp) {
+        msg->point_step += sizeof(double);
+    }
     msg->row_step = msg->point_step * cloud.size();
     msg->is_bigendian = false;
     msg->is_dense = true;
 
     msg->data.reserve(msg->row_step);
 
-    if (has_rgb || has_intensity) {
+    if (has_rgb || has_intensity || has_timestamp) {
         // point + (rgb and/or intensity)
         for (size_t i = 0; i < cloud.size(); ++i) {
             const auto& pt = cloud.points->data()[i];
@@ -321,6 +331,12 @@ sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloud
                 const float intensity = cloud.intensities->data()[i];
                 const auto intensity_ptr = reinterpret_cast<const uint8_t*>(&intensity);
                 msg->data.insert(msg->data.end(), intensity_ptr, intensity_ptr + sizeof(float));
+            }
+            if (has_timestamp) {
+                const float offset = cloud.timestamp_offsets->data()[i];
+                const double timestamp = (cloud.start_time_ms + static_cast<double>(offset)) * 1e-3;
+                const auto timestamp_ptr = reinterpret_cast<const uint8_t*>(&timestamp);
+                msg->data.insert(msg->data.end(), timestamp_ptr, timestamp_ptr + sizeof(double));
             }
         }
     } else {
