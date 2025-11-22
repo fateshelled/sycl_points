@@ -98,8 +98,9 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             return;
         }
 
-        cloud->start_time_ms = static_cast<double>(msg.header.stamp.sec) * 1000.0 +
+        const double start_time_ms = static_cast<double>(msg.header.stamp.sec) * 1000.0 +
                                static_cast<double>(msg.header.stamp.nanosec) * 1e-6;
+        cloud->start_time_ms = start_time_ms;
 
         auto* offsets = cloud->timestamp_offsets->data();
         const auto* msg_bytes = reinterpret_cast<const uint8_t*>(msg.data.data());
@@ -123,9 +124,9 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             }
 
             const double timestamp_ms = timestamp_seconds * 1e3;
-            const double clamped_ms = std::min(timestamp_ms, max_offset);
-            offsets[i] = static_cast<TimestampOffset>(clamped_ms);
-            max_offset_ms = std::max(max_offset_ms, clamped_ms);
+            const double offset = timestamp_ms - start_time_ms;
+            offsets[i] = static_cast<float>(offset);
+            max_offset_ms = std::max(max_offset_ms, offset);
         }
 
         cloud->end_time_ms = cloud->start_time_ms + max_offset_ms;
