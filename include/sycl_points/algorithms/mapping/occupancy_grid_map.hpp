@@ -114,6 +114,7 @@ public:
 
         const size_t N = cloud.size();
 
+        // Prepare hashing buffers for the expected number of insertions in this frame.
         this->ensure_rehash();
 
         const bool has_rgb = cloud.has_rgb();
@@ -121,15 +122,19 @@ public:
         this->has_rgb_data_ = this->has_rgb_data_ || has_rgb;
         this->has_intensity_data_ = this->has_intensity_data_ || has_intensity;
 
+        // Integrate hits: transform to world frame, hash, and accumulate statistics.
         this->integrate_points(cloud, sensor_pose, has_rgb, has_intensity);
 
         if (this->log_odds_miss_ != 0.0f) {
+            // Traverse rays and record free-space updates before applying log-odds.
             this->update_free_space(cloud, sensor_pose);
         }
 
+        // Apply pending log-odds changes from hits and misses to the main storage.
         this->apply_pending_log_odds();
 
         if (this->log_odds_miss_ != 0.0f) {
+            // Decay occupancy for voxels close to the sensor that were not revisited.
             this->apply_visibility_decay(sensor_pose.translation());
         }
 
