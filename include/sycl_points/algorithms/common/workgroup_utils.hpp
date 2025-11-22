@@ -95,23 +95,19 @@ SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const s
     const bool is_valid = is_active && (key != invalid_key);
     const bool is_head = is_valid && ((sg_local_id == 0) || !equal(key, prev_key));
 
-    struct KeyValuePair {
-        KeyType key;
-        LocalData value;
-    };
+    // Perform a manual segmented prefix reduction because sycl::inclusive_scan_over_group only supports
+    // arithmetic types. This loop accumulates contributions from lanes with the same key that appear
+    // earlier in the sub-group, so the tail lane of each segment holds the full reduction.
+    LocalData prefix = value;
+    for (size_t offset = 1; offset < sg_size; offset <<= 1) {
+        const KeyType neighbor_key = sycl::shift_group_right(sub_group, key, offset);
+        const LocalData neighbor_value = sycl::shift_group_right(sub_group, prefix, offset);
 
-    KeyValuePair kv{key, value};
-
-    // Parallel segmented inclusive scan so the tail lane of each segment holds the full reduction.
-    kv = sycl::inclusive_scan_over_group(sub_group, kv, [&](KeyValuePair lhs, KeyValuePair rhs) {
-        if (lhs.key == invalid_key || rhs.key == invalid_key || !equal(lhs.key, rhs.key)) {
-            return rhs;
+        const bool neighbor_in_range = (sg_local_id >= offset) && (local_id >= offset);
+        if (is_valid && neighbor_in_range && equal(key, neighbor_key)) {
+            combine(prefix, neighbor_value);
         }
-
-        KeyValuePair out = rhs;
-        combine(out.value, lhs.value);
-        return out;
-    });
+    }
 
     // Identify the tail lane for each contiguous segment and broadcast its reduction back to the head.
     const KeyType next_key = sycl::shift_group_left(sub_group, key, 1);
@@ -130,7 +126,7 @@ SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const s
     }
 
     const size_t safe_tail_lane = (tail_lane < sg_size) ? tail_lane : sg_local_id;
-    const LocalData segment_total = sycl::select_from_group(sub_group, kv.value, safe_tail_lane);
+    const LocalData segment_total = sycl::select_from_group(sub_group, prefix, safe_tail_lane);
 
     if (is_head) {
         data[local_id] = segment_total;
@@ -199,10 +195,10 @@ SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t siz
         current_key = key_of(data[local_id]);
     }
 
-    auto group = item.get_group();
-    const KeyType previous_valid_key = sycl::exclusive_scan_over_group(
-        group, current_key, invalid_key,
-        [&](const KeyType& lhs, const KeyType& rhs) { return (rhs != invalid_key) ? rhs : lhs; });
+    KeyType previous_valid_key = invalid_key;
+    if (local_id > 0 && local_id < size) {
+        previous_valid_key = key_of(data[local_id - 1]);
+    }
 
     if (local_id < size) {
         const bool is_valid = (current_key != invalid_key);
