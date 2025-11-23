@@ -87,9 +87,10 @@ public:
     }
 
     /// @brief add PointCloud to voxel map
-    /// @param pc Point Cloud
-    void add_point_cloud(const PointCloudShared& pc) {
-        const size_t N = pc.size();
+    /// @param cloud Point cloud in the sensor frame.
+    /// @param sensor_pose Sensor pose expressed in the map frame.
+    void add_point_cloud(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) {
+        const size_t N = cloud.size();
 
         // rehash
         if (this->rehash_threshold_ < (float)this->voxel_num_ / (float)this->capacity_) {
@@ -101,7 +102,7 @@ public:
 
         if (N > 0) {
             // add PointCloud to voxel map
-            this->add_point_cloud_impl(pc);
+            this->add_point_cloud_impl(cloud, sensor_pose);
         }
 
         // remove old data
@@ -387,16 +388,15 @@ private:
         return (voxel_hash + probe * hash2(voxel_hash, capacity)) % capacity;
     }
 
-    void add_point_cloud_impl(const PointCloudShared& pc) {
-        const size_t N = pc.size();
+    void add_point_cloud_impl(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) {
+        const size_t N = cloud.size();
         if (N == 0) return;
 
-        const bool has_rgb = pc.has_rgb();
-        const bool has_intensity = pc.has_intensity();
+        const bool has_rgb = cloud.has_rgb();
+        const bool has_intensity = cloud.has_intensity();
         this->has_rgb_data_ |= has_rgb;
         this->has_intensity_data_ |= has_intensity;
 
-        // using `mem_advise to device` is slow
         // add to voxel hash map
         shared_vector<uint32_t> voxel_num_vec(1, this->voxel_num_, *this->queue_.ptr);
 
@@ -408,6 +408,7 @@ private:
 
             // Allocate local memory for work group operations
             const auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(local_size, h);
+            const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             size_t power_of_2 = 1;
             while (power_of_2 < local_size) {
@@ -419,9 +420,9 @@ private:
             const auto sum_ptr = this->sum_ptr_.get();
             const auto last_update_ptr = this->last_update_ptr_.get();
 
-            const auto point_ptr = pc.points_ptr();
-            const auto rgb_ptr = has_rgb ? pc.rgb_ptr() : static_cast<RGBType*>(nullptr);
-            const auto intensity_ptr = has_intensity ? pc.intensities_ptr() : static_cast<float*>(nullptr);
+            const auto point_ptr = cloud.points_ptr();
+            const auto rgb_ptr = has_rgb ? cloud.rgb_ptr() : static_cast<RGBType*>(nullptr);
+            const auto intensity_ptr = has_intensity ? cloud.intensities_ptr() : static_cast<float*>(nullptr);
 
             const auto vs_inv = this->voxel_size_inv_;
             const auto cp = this->capacity_;
@@ -429,12 +430,16 @@ private:
             const auto max_probe = this->max_probe_length_;
 
             auto load_entry = [=](VoxelLocalData& entry, const size_t idx) {
-                const auto voxel_hash = kernel::compute_voxel_bit(point_ptr[idx], vs_inv);
+                const PointType local_point = point_ptr[idx];
+                PointType world_point;
+                transform::kernel::transform_point(local_point, world_point, trans);
+
+                const auto voxel_hash = kernel::compute_voxel_bit(world_point, vs_inv);
 
                 entry.voxel_idx = voxel_hash;
-                entry.pt.x = point_ptr[idx].x();
-                entry.pt.y = point_ptr[idx].y();
-                entry.pt.z = point_ptr[idx].z();
+                entry.pt.x = world_point.x();
+                entry.pt.y = world_point.y();
+                entry.pt.z = world_point.z();
                 entry.pt.count = 1U;
                 entry.pt.r = 0.0f;
                 entry.pt.g = 0.0f;
@@ -514,9 +519,9 @@ private:
 
                     // Reduction on workgroup
                     common::local_reduction<false, VoxelLocalData>(
-                        local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size,
-                        power_of_2, item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord,
-                        key_of_entry, compare_keys, equal_keys);
+                        local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size, power_of_2,
+                        item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord, key_of_entry,
+                        compare_keys, equal_keys);
 
                     if (global_id >= N) return;
 

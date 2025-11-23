@@ -74,7 +74,7 @@ TEST(VoxelHashMapTest, AggregatesPointsWithinSameVoxel) {
         };
 
         auto cloud = MakePointCloud(queue, input_positions);
-        voxel_map.add_point_cloud(cloud);
+        voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
         voxel_map.downsampling(result, Eigen::Vector3f::Zero());
@@ -127,7 +127,7 @@ TEST(VoxelHashMapTest, AggregatesRgbAndIntensityWithinVoxel) {
         const std::vector<float> intensities = {10.0f, 20.0f};
 
         auto cloud = MakePointCloud(queue, input_positions, &colors, &intensities);
-        voxel_map.add_point_cloud(cloud);
+        voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
         voxel_map.downsampling(result, Eigen::Vector3f::Zero());
@@ -169,7 +169,7 @@ TEST(VoxelHashMapTest, AppliesMinimumPointThresholdPerVoxel) {
         };
 
         auto cloud = MakePointCloud(queue, input_positions);
-        voxel_map.add_point_cloud(cloud);
+        voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
         voxel_map.downsampling(result, Eigen::Vector3f::Zero());
@@ -204,13 +204,13 @@ TEST(VoxelHashMapTest, PreservesAttributesWhenBelowThresholdCountsExist) {
         const std::vector<float> intensities = {10.0f, 20.0f};
 
         auto colored_cloud = MakePointCloud(queue, colored_positions, &colors, &intensities);
-        voxel_map.add_point_cloud(colored_cloud);
+        voxel_map.add_point_cloud(colored_cloud, Eigen::Isometry3f::Identity());
 
         const std::vector<Eigen::Vector3f> colorless_positions = {
             {0.03f, 0.01f, 0.0f},
         };
         auto colorless_cloud = MakePointCloud(queue, colorless_positions);
-        voxel_map.add_point_cloud(colorless_cloud);
+        voxel_map.add_point_cloud(colorless_cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
         voxel_map.downsampling(result, Eigen::Vector3f::Zero());
@@ -247,7 +247,7 @@ TEST(VoxelHashMapTest, DownsamplingRespectsAxisAlignedBoundingBox) {
         };
 
         auto cloud = MakePointCloud(queue, input_positions);
-        voxel_map.add_point_cloud(cloud);
+        voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
         voxel_map.downsampling(result, Eigen::Vector3f(1.0f, 0.0f, 0.0f), 0.2f);
@@ -276,19 +276,19 @@ TEST(VoxelHashMapTest, RemovesStaleVoxelsAfterConfiguredCycles) {
         voxel_map.set_remove_old_data_cycle(1);
 
         auto old_cloud = MakePointCloud(queue, {{0.0f, 0.0f, 0.0f}});
-        voxel_map.add_point_cloud(old_cloud);
+        voxel_map.add_point_cloud(old_cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
         voxel_map.downsampling(result, Eigen::Vector3f::Zero());
         ASSERT_EQ(result.size(), 1U);
 
         auto recent_cloud = MakePointCloud(queue, {{1.0f, 0.0f, 0.0f}});
-        voxel_map.add_point_cloud(recent_cloud);
+        voxel_map.add_point_cloud(recent_cloud, Eigen::Isometry3f::Identity());
         voxel_map.downsampling(result, Eigen::Vector3f::Zero());
         ASSERT_EQ(result.size(), 2U);
 
         sycl_points::PointCloudShared empty_cloud(queue);
-        voxel_map.add_point_cloud(empty_cloud);
+        voxel_map.add_point_cloud(empty_cloud, Eigen::Isometry3f::Identity());
         voxel_map.downsampling(result, Eigen::Vector3f::Zero());
         ASSERT_EQ(result.size(), 1U);
 
