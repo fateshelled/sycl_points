@@ -97,33 +97,6 @@ inline sycl_utils::events transform_async(PointCloudShared& cloud, const Transfo
 /// @param trans transform matrix
 inline void transform(PointCloudShared& cloud, const TransformMatrix& trans) { transform_async(cloud, trans).wait(); }
 
-/// @brief Transform point cloud
-/// @param cloud Point Cloud
-/// @param trans transform matrix
-/// @return Transformed Point Cloud
-PointCloudShared transform_copy(const PointCloudShared& cloud, const TransformMatrix& trans) {
-    std::shared_ptr<PointCloudShared> ret = std::make_shared<PointCloudShared>(cloud.queue);
-    ret->resize_points(cloud.size());
-    if (cloud.size() == 0) {
-        return *ret;
-    }
-
-    sycl_utils::events events;
-    if (cloud.has_cov()) {
-        ret->resize_covs(cloud.size());
-        events += cloud.queue.ptr->submit([&](sycl::handler& h) {
-            const auto covs = cloud.covs_ptr();
-            const auto output_covs = ret->covs_ptr();
-            h.memcpy(output_covs, covs, cloud.size() * sizeof(Covariance));
-        });
-    }
-    events += cloud.queue.ptr->memcpy(ret->points_ptr(), cloud.points_ptr(), cloud.size() * sizeof(PointType));
-    events.wait();
-
-    transform(*ret, trans);
-    return *ret;
-}
-
 /// @brief Transform on CPU
 /// @param cloud Point Cloud
 /// @param trans transform matrix
