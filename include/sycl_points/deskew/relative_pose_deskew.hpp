@@ -98,7 +98,7 @@ inline bool deskew_point_cloud_constant_velocity(PointCloudShared& cloud,
         (*cloud.points)[idx].head<3>() = corrected_point;
 
         // Rotate normals and covariances using the integrated angular velocity.
-        const Eigen::Vector3f integrated_omega = velocity.angular_velocity * timestamp_seconds;
+        const Eigen::Vector3f integrated_omega = scaled_twist.head<3>();
         const Eigen::Matrix3f rotation = eigen_utils::lie::so3_exp(integrated_omega).toRotationMatrix();
         if (cloud.has_normal()) {
             (*cloud.normals)[idx].head<3>() = rotation * (*cloud.normals)[idx].head<3>();
