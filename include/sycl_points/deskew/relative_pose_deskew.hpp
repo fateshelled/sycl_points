@@ -61,14 +61,18 @@ inline bool deskew_point_cloud_constant_velocity(PointCloudShared& cloud,
         return false;
     }
 
-    ConstantBodyVelocity velocity;
-    if (!estimate_constant_body_velocity(previous_relative_pose, current_relative_pose, delta_time_seconds,
-                                         velocity)) {
+    if (delta_time_seconds <= 0.0f) {
         return false;
     }
 
-    const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(previous_relative_pose.inverse() *
-                                                                          current_relative_pose);
+    // Compute motion between the two poses and map it to the twist vector.
+    const Eigen::Transform<float, 3, 1> delta_pose = previous_relative_pose.inverse() * current_relative_pose;
+    const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(delta_pose);
+
+    ConstantBodyVelocity velocity;
+    const float inv_dt = 1.0f / delta_time_seconds;
+    velocity.angular_velocity = delta_twist.head<3>() * inv_dt;
+    velocity.linear_velocity = delta_twist.tail<3>() * inv_dt;
 
     // Hint to the runtime that host-side access will follow for shared memory.
     cloud.queue.set_accessed_by_host(cloud.timestamp_offsets->data(), cloud.timestamp_offsets->size());
