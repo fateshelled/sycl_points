@@ -141,10 +141,10 @@ public:
         ++this->frame_index_;
     }
 
-    /// @brief Extract occupied voxels from the sensor pose to L2 distance.
+    /// @brief Extract occupied voxels from the sensor pose to L∞ distance.
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
-    /// @param max_distance Maximum extract L2 distance in meters.
+    /// @param max_distance Maximum extract L-infinity distance in meters.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
                                  const float max_distance = 100.0f) const {
         result.resize_points(0);
@@ -1146,7 +1146,6 @@ private:
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
                                       const float max_distance) const {
         const size_t N = this->capacity_;
-        const float max_distance_sq = max_distance * max_distance;
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
         result.resize_points(this->voxel_num_);
@@ -1169,7 +1168,7 @@ private:
             const float sensor_x = sensor_position.x();
             const float sensor_y = sensor_position.y();
             const float sensor_z = sensor_position.z();
-            const float max_dist_sq = max_distance_sq;
+            const float max_dist = max_distance;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
             auto counter_ptr = counter.data();
@@ -1190,11 +1189,10 @@ private:
                 const float cy = data.sum_y * inv_count;
                 const float cz = data.sum_z * inv_count;
 
-                const float dx = cx - sensor_x;
-                const float dy = cy - sensor_y;
-                const float dz = cz - sensor_z;
-                const float dist_sq = dx * dx + dy * dy + dz * dz;
-                if (dist_sq > max_dist_sq) {
+                const float dx = sycl::fabs(cx - sensor_x);
+                const float dy = sycl::fabs(cy - sensor_y);
+                const float dz = sycl::fabs(cz - sensor_z);
+                if (sycl::fmax(sycl::fmax(dx, dy), dz) > max_dist) {
                     return;
                 }
 
