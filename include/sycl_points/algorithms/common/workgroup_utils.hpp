@@ -36,7 +36,7 @@ SYCL_EXTERNAL void bitonic_sort_local_data(LocalData* data, const size_t size, c
             for (size_t i = local_id; i < size_power_of_2; i += local_range) {
                 const size_t ixj = i ^ j;
 
-                if (ixj > i && i < size_power_of_2) {
+                if (ixj > i) {
                     const bool ascending = ((i & k) == 0);
 
                     const KeyType val_i = (i < size) ? key_of(data[i]) : invalid_key;

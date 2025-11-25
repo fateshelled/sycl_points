@@ -407,16 +407,16 @@ private:
         auto reduction_event = this->queue_.ptr->submit([&](sycl::handler& h) {
             // Use the configured work-group size as the kernel's local size.
             const size_t local_size = this->wg_size_add_point_cloud_;
-            const size_t threads_per_group = local_size * kPointsPerThread;
-            const size_t num_work_groups = (N + threads_per_group - 1) / threads_per_group;
+            const size_t points_per_group = local_size * kPointsPerThread;
+            const size_t num_work_groups = (N + points_per_group - 1) / points_per_group;
             const size_t global_size = num_work_groups * local_size;
 
             // Allocate local memory for work group operations
-            const auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(threads_per_group, h);
+            const auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(points_per_group, h);
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             size_t power_of_2 = 1;
-            while (power_of_2 < threads_per_group) {
+            while (power_of_2 < points_per_group) {
                 power_of_2 <<= 1;
             }
 
@@ -507,9 +507,9 @@ private:
                         item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord, key_of_entry,
                         compare_keys, equal_keys);
 
-                    const size_t group_offset = item.get_group(0) * threads_per_group;
+                    const size_t group_offset = item.get_group(0) * points_per_group;
                     const size_t remaining_points = (N > group_offset) ? (N - group_offset) : 0;
-                    const size_t active_entries = std::min(threads_per_group, remaining_points);
+                    const size_t active_entries = std::min(points_per_group, remaining_points);
 
                     // Reduction on global memory
                     for (size_t local_index = local_id; local_index < active_entries; local_index += local_size) {
@@ -533,9 +533,9 @@ private:
                         item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord, key_of_entry,
                         compare_keys, equal_keys);
 
-                    const size_t group_offset = item.get_group(0) * threads_per_group;
+                    const size_t group_offset = item.get_group(0) * points_per_group;
                     const size_t remaining_points = (N > group_offset) ? (N - group_offset) : 0;
-                    const size_t active_entries = std::min(threads_per_group, remaining_points);
+                    const size_t active_entries = std::min(points_per_group, remaining_points);
 
                     // Reduction on global memory
                     for (size_t local_index = local_id; local_index < active_entries; local_index += local_size) {
