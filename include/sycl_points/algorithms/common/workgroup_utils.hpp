@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <sycl/sycl.hpp>
 
 namespace sycl_points {
@@ -24,6 +25,7 @@ SYCL_EXTERNAL void bitonic_sort_local_data(LocalData* data, const size_t size, c
                                            const sycl::nd_item<1>& item, const KeyType invalid_key, KeyFunc key_of,
                                            CompareFunc compare) {
     const size_t local_id = item.get_local_id(0);
+    const size_t local_range = item.get_local_range(0);
 
     if (size <= 1) {
         return;
@@ -31,19 +33,20 @@ SYCL_EXTERNAL void bitonic_sort_local_data(LocalData* data, const size_t size, c
 
     for (size_t k = 2; k <= size_power_of_2; k *= 2) {
         for (size_t j = k / 2; j > 0; j /= 2) {
-            const size_t i = local_id;
-            const size_t ixj = i ^ j;
+            for (size_t i = local_id; i < size_power_of_2; i += local_range) {
+                const size_t ixj = i ^ j;
 
-            if (ixj > i && i < size_power_of_2) {
-                const bool ascending = ((i & k) == 0);
+                if (ixj > i && i < size_power_of_2) {
+                    const bool ascending = ((i & k) == 0);
 
-                const KeyType val_i = (i < size) ? key_of(data[i]) : invalid_key;
-                const KeyType val_ixj = (ixj < size) ? key_of(data[ixj]) : invalid_key;
+                    const KeyType val_i = (i < size) ? key_of(data[i]) : invalid_key;
+                    const KeyType val_ixj = (ixj < size) ? key_of(data[ixj]) : invalid_key;
 
-                const bool should_swap = ascending ? compare(val_ixj, val_i) : compare(val_i, val_ixj);
+                    const bool should_swap = ascending ? compare(val_ixj, val_i) : compare(val_i, val_ixj);
 
-                if (should_swap && i < size && ixj < size) {
-                    std::swap(data[i], data[ixj]);
+                    if (should_swap && i < size && ixj < size) {
+                        std::swap(data[i], data[ixj]);
+                    }
                 }
             }
 
@@ -53,6 +56,7 @@ SYCL_EXTERNAL void bitonic_sort_local_data(LocalData* data, const size_t size, c
 }
 
 /// @brief Reduce consecutive entries sharing the same key within a sorted local buffer.
+/// @tparam PointsPerThread Number of local entries handled by each work-item.
 /// @tparam LocalData Structure type stored in local memory.
 /// @tparam KeyType Key type returned by @p key_of.
 /// @tparam KeyFunc Functor that extracts the key from a local entry.
@@ -70,55 +74,66 @@ SYCL_EXTERNAL void bitonic_sort_local_data(LocalData* data, const size_t size, c
 /// neighbours located at exponentially increasing offsets. After @p log2(size) steps the first
 /// element of each segment holds the aggregated value, while all other entries belonging to that
 /// segment are reset.
-template <typename LocalData, typename KeyType, typename KeyFunc, typename EqualFunc, typename CombineFunc,
-          typename ResetFunc>
+template <size_t PointsPerThread = 1, typename LocalData, typename KeyType, typename KeyFunc, typename EqualFunc,
+          typename CombineFunc, typename ResetFunc>
 SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t size, const sycl::nd_item<1>& item,
                                                const KeyType invalid_key, KeyFunc key_of, EqualFunc equal,
                                                CombineFunc combine, ResetFunc reset) {
     const size_t local_id = item.get_local_id(0);
+    const size_t local_range = item.get_local_range(0);
+
+    std::array<bool, PointsPerThread> should_add{};
+    std::array<size_t, PointsPerThread> indices{};
+    std::array<LocalData, PointsPerThread> contributions{};
+
     for (size_t stride = 1; stride < size; stride *= 2) {
         item.barrier(sycl::access::fence_space::local_space);
 
-        bool should_add = false;
-        LocalData contribution{};
+        size_t processed = 0;
+        for (size_t idx = local_id; idx < size; idx += local_range) {
+            indices[processed] = idx;
+            should_add[processed] = false;
 
-        if (local_id < size) {
-            const KeyType current_key = key_of(data[local_id]);
+            const KeyType current_key = key_of(data[idx]);
 
             if (current_key != invalid_key) {
-                const size_t neighbor_index = local_id + stride;
+                const size_t neighbor_index = idx + stride;
                 if (neighbor_index < size) {
                     const KeyType neighbor_key = key_of(data[neighbor_index]);
 
                     if (equal(current_key, neighbor_key)) {
-                        contribution = data[neighbor_index];
-                        should_add = true;
+                        contributions[processed] = data[neighbor_index];
+                        should_add[processed] = true;
                     }
                 }
             }
+
+            ++processed;
         }
 
         item.barrier(sycl::access::fence_space::local_space);
 
-        if (should_add) {
-            combine(data[local_id], contribution);
+        for (size_t i = 0; i < processed; ++i) {
+            if (should_add[i]) {
+                combine(data[indices[i]], contributions[i]);
+            }
         }
 
         item.barrier(sycl::access::fence_space::local_space);
     }
 
-    if (local_id < size) {
-        const KeyType current_key = key_of(data[local_id]);
+    for (size_t idx = local_id; idx < size; idx += local_range) {
+        const KeyType current_key = key_of(data[idx]);
 
         bool should_reset = (current_key == invalid_key);
 
-        if (!should_reset && local_id > 0) {
-            const KeyType prev_key = key_of(data[local_id - 1]);
+        if (!should_reset && idx > 0) {
+            const KeyType prev_key = key_of(data[idx - 1]);
             should_reset = equal(prev_key, current_key);
         }
 
         if (should_reset) {
-            reset(data[local_id]);
+            reset(data[idx]);
         }
     }
 
@@ -180,7 +195,8 @@ SYCL_EXTERNAL void local_reduction(LocalData* local_data, const size_t point_num
         const size_t active_size = std::min(wg_size * PointsPerThread, remaining_points);
 
         bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item, invalid_key, key_of, compare);
-        reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine, reset);
+        reduction_sorted_local_data<PointsPerThread>(local_data, active_size, item, invalid_key, key_of, equal,
+                                                     combine, reset);
     }
 }
 

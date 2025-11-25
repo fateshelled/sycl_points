@@ -417,7 +417,7 @@ private:
 
             size_t power_of_2 = 1;
             while (power_of_2 < threads_per_group) {
-                power_of_2 *= 2;
+                power_of_2 <<= 1;
             }
 
             // memory ptr
