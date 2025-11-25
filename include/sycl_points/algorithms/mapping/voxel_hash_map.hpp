@@ -7,8 +7,10 @@
 #include <sycl_points/algorithms/common/prefix_sum.hpp>
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
 #include <sycl_points/algorithms/common/workgroup_utils.hpp>
+#include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/points/point_cloud.hpp>
+#include <sycl_points/utils/eigen_utils.hpp>
 
 namespace sycl_points {
 namespace algorithms {
@@ -389,6 +391,8 @@ private:
     }
 
     void add_point_cloud_impl(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) {
+        static constexpr size_t kPointsPerThread = 2;
+
         const size_t N = cloud.size();
         if (N == 0) return;
 
@@ -403,15 +407,16 @@ private:
         auto reduction_event = this->queue_.ptr->submit([&](sycl::handler& h) {
             // Use the configured work-group size as the kernel's local size.
             const size_t local_size = this->wg_size_add_point_cloud_;
-            const size_t num_work_groups = (N + local_size - 1) / local_size;
+            const size_t threads_per_group = local_size * kPointsPerThread;
+            const size_t num_work_groups = (N + threads_per_group - 1) / threads_per_group;
             const size_t global_size = num_work_groups * local_size;
 
             // Allocate local memory for work group operations
-            const auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(local_size, h);
+            const auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(threads_per_group, h);
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             size_t power_of_2 = 1;
-            while (power_of_2 < local_size) {
+            while (power_of_2 < threads_per_group) {
                 power_of_2 *= 2;
             }
 
@@ -494,41 +499,55 @@ private:
                 auto voxel_num = sycl::reduction(voxel_num_vec.data(), sycl::plus<uint32_t>());
 
                 h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
-                    const size_t global_id = item.get_global_id(0);
                     const size_t local_id = item.get_local_id(0);
 
                     // Reduction on workgroup
-                    common::local_reduction<true, VoxelLocalData>(
+                    common::local_reduction<true, kPointsPerThread, VoxelLocalData>(
                         local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size, power_of_2,
                         item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord, key_of_entry,
                         compare_keys, equal_keys);
 
-                    if (global_id >= N) return;
+                    const size_t group_offset = item.get_group(0) * threads_per_group;
+                    const size_t remaining_points = (N > group_offset) ? (N - group_offset) : 0;
+                    const size_t active_entries = std::min(threads_per_group, remaining_points);
 
                     // Reduction on global memory
-                    global_reduction(local_voxel_data[local_id].voxel_idx, local_voxel_data[local_id].pt, key_ptr,
-                                     sum_ptr, current, last_update_ptr, max_probe, cp,
-                                     [&](uint32_t num) { voxel_num_arg += num; });
+                    for (size_t local_index = local_id; local_index < active_entries; local_index += local_size) {
+                        const VoxelLocalData local = local_voxel_data[local_index];
+                        if (local.voxel_idx == VoxelConstants::invalid_coord) {
+                            continue;
+                        }
+                        global_reduction(local.voxel_idx, local.pt, key_ptr, sum_ptr, current, last_update_ptr,
+                                         max_probe, cp, [&](uint32_t num) { voxel_num_arg += num; });
+                    }
                 });
             } else {
                 auto voxel_num_ptr = voxel_num_vec.data();
 
                 h.parallel_for(range, [=](sycl::nd_item<1> item) {
-                    const size_t global_id = item.get_global_id(0);
                     const size_t local_id = item.get_local_id(0);
 
                     // Reduction on workgroup
-                    common::local_reduction<false, VoxelLocalData>(
+                    common::local_reduction<false, kPointsPerThread, VoxelLocalData>(
                         local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size, power_of_2,
                         item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord, key_of_entry,
                         compare_keys, equal_keys);
 
-                    if (global_id >= N) return;
+                    const size_t group_offset = item.get_group(0) * threads_per_group;
+                    const size_t remaining_points = (N > group_offset) ? (N - group_offset) : 0;
+                    const size_t active_entries = std::min(threads_per_group, remaining_points);
 
                     // Reduction on global memory
-                    global_reduction(local_voxel_data[local_id].voxel_idx, local_voxel_data[local_id].pt, key_ptr,
-                                     sum_ptr, current, last_update_ptr, max_probe, cp,
-                                     [&](uint32_t num) { atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(num); });
+                    for (size_t local_index = local_id; local_index < active_entries; local_index += local_size) {
+                        const VoxelLocalData local = local_voxel_data[local_index];
+                        if (local.voxel_idx == VoxelConstants::invalid_coord) {
+                            continue;
+                        }
+                        global_reduction(local.voxel_idx, local.pt, key_ptr, sum_ptr, current, last_update_ptr,
+                                         max_probe, cp, [&](uint32_t num) {
+                                             atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(num);
+                                         });
+                    }
                 });
             }
         });

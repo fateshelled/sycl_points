@@ -127,6 +127,7 @@ SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t siz
 
 /// @brief Populate local work-group data and optionally aggregate voxels using the shared utilities.
 /// @tparam Aggregate When true the routine performs bitonic sort and reduction after loading the data.
+/// @tparam PointsPerThread Number of points processed by each work-item.
 /// @tparam LocalData Structure type stored in local memory.
 /// @tparam LoaderFunc Functor that populates a LocalData entry from a global point index.
 /// @tparam CombineFunc Functor merging the payload of two LocalData entries.
@@ -138,7 +139,7 @@ SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t siz
 /// @param local_data Pointer to the local memory buffer that stores temporary reductions.
 /// @param point_num Total number of points processed by the kernel.
 /// @param wg_size Size of the work-group executing the kernel.
-/// @param wg_size_power_of_2 Power-of-two value equal to or larger than the work-group size.
+/// @param wg_size_power_of_2 Power-of-two value equal to or larger than the number of local entries.
 /// @param item Work-item descriptor providing local identifiers and synchronization primitives.
 /// @param loader Functor responsible for writing the LocalData entry when the global id is valid.
 /// @param combine Functor merging two LocalData entries when aggregation is required.
@@ -147,8 +148,8 @@ SYCL_EXTERNAL void reduction_sorted_local_data(LocalData* data, const size_t siz
 /// @param key_of Functor returning the key from a local entry.
 /// @param compare Comparator defining ascending order for the keys.
 /// @param equal Equality predicate that identifies entries belonging to the same group.
-template <bool Aggregate, typename LocalData, typename LoaderFunc, typename CombineFunc, typename ResetFunc,
-          typename KeyType, typename KeyFunc, typename CompareFunc, typename EqualFunc>
+template <bool Aggregate, size_t PointsPerThread = 1, typename LocalData, typename LoaderFunc, typename CombineFunc,
+          typename ResetFunc, typename KeyType, typename KeyFunc, typename CompareFunc, typename EqualFunc>
 SYCL_EXTERNAL void local_reduction(LocalData* local_data, const size_t point_num, const size_t wg_size,
                                    const size_t wg_size_power_of_2, const sycl::nd_item<1>& item, LoaderFunc loader,
                                    CombineFunc combine, ResetFunc reset, const KeyType invalid_key, KeyFunc key_of,
@@ -156,19 +157,27 @@ SYCL_EXTERNAL void local_reduction(LocalData* local_data, const size_t point_num
     const size_t local_id = item.get_local_id(0);
     const size_t global_id = item.get_global_id(0);
 
-    if (global_id < point_num) {
-        loader(local_data[local_id], global_id);
-    } else {
-        reset(local_data[local_id]);
+    const size_t local_offset = local_id * PointsPerThread;
+    const size_t global_offset = global_id * PointsPerThread;
+
+    // Populate a contiguous block in local memory so that aggregation can cover all entries.
+    for (size_t i = 0; i < PointsPerThread; ++i) {
+        const size_t local_index = local_offset + i;
+        const size_t global_index = global_offset + i;
+        if (global_index < point_num) {
+            loader(local_data[local_index], global_index);
+        } else {
+            reset(local_data[local_index]);
+        }
     }
 
     item.barrier(sycl::access::fence_space::local_space);
 
     if constexpr (Aggregate) {
         const size_t group_id = item.get_group(0);
-        const size_t group_offset = group_id * wg_size;
+        const size_t group_offset = group_id * wg_size * PointsPerThread;
         const size_t remaining_points = (point_num > group_offset) ? point_num - group_offset : 0;
-        const size_t active_size = std::min(wg_size, remaining_points);
+        const size_t active_size = std::min(wg_size * PointsPerThread, remaining_points);
 
         bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item, invalid_key, key_of, compare);
         reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine, reset);

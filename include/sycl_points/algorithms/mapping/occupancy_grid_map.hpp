@@ -747,20 +747,23 @@ private:
 
     void integrate_points(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose, const bool has_rgb,
                           const bool has_intensity) {
+        static constexpr size_t kPointsPerThread = 2;
+
         const size_t N = cloud.size();
         shared_vector<uint32_t> voxel_counter(1, this->voxel_num_, *this->queue_.ptr);
 
         // Parallel reduction merges per-point contributions into hashed voxels.
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t local_size = this->compute_work_group_size();
-            const size_t num_work_groups = (N + local_size - 1) / local_size;
+            const size_t threads_per_group = local_size * kPointsPerThread;
+            const size_t num_work_groups = (N + threads_per_group - 1) / threads_per_group;
             const size_t global_size = num_work_groups * local_size;
 
-            auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(local_size, h);
+            auto local_voxel_data = sycl::local_accessor<VoxelLocalData>(threads_per_group, h);
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             size_t power_of_2 = 1;
-            while (power_of_2 < local_size) {
+            while (power_of_2 < threads_per_group) {
                 power_of_2 <<= 1;
             }
 
@@ -841,38 +844,49 @@ private:
                 h.parallel_for(  //
                     sycl::nd_range<1>(global_size, local_size), reduction,
                     [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
-                        common::local_reduction<true, VoxelLocalData>(
+                        common::local_reduction<true, kPointsPerThread, VoxelLocalData>(
                             local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size,
                             power_of_2, item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord,
                             key_of_entry, compare_keys, equal_keys);
 
                         const size_t lid = item.get_local_id(0);
-                        if (item.get_global_id(0) >= N) {
-                            return;
-                        }
+                        const size_t group_offset = item.get_group(0) * threads_per_group;
+                        const size_t remaining_points = (N > group_offset) ? (N - group_offset) : 0;
+                        const size_t active_entries = std::min(threads_per_group, remaining_points);
 
-                        const VoxelLocalData local = local_voxel_data[lid];
-                        global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
-                                         [&](uint32_t add) { voxel_num_arg += add; });
+                        for (size_t local_index = lid; local_index < active_entries; local_index += local_size) {
+                            const VoxelLocalData local = local_voxel_data[local_index];
+                            if (local.voxel_idx == VoxelConstants::invalid_coord) {
+                                continue;
+                            }
+                            global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                                             [&](uint32_t add) { voxel_num_arg += add; });
+                        }
                     });
             } else {
                 auto voxel_ptr_counter = voxel_counter.data();
                 h.parallel_for(  //
                     sycl::nd_range<1>(global_size, local_size), [=](sycl::nd_item<1> item) {
-                        common::local_reduction<false, VoxelLocalData>(
+                        common::local_reduction<false, kPointsPerThread, VoxelLocalData>(
                             local_voxel_data.get_multi_ptr<sycl::access::decorated::no>().get(), N, local_size,
                             power_of_2, item, load_entry, combine_entry, reset_entry, VoxelConstants::invalid_coord,
                             key_of_entry, compare_keys, equal_keys);
 
                         const size_t lid = item.get_local_id(0);
-                        if (item.get_global_id(0) >= N) {
-                            return;
-                        }
+                        const size_t group_offset = item.get_group(0) * threads_per_group;
+                        const size_t remaining_points = (N > group_offset) ? (N - group_offset) : 0;
+                        const size_t active_entries = std::min(threads_per_group, remaining_points);
 
-                        const VoxelLocalData local = local_voxel_data[lid];
-                        global_reduction(
-                            local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
-                            [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); });
+                        for (size_t local_index = lid; local_index < active_entries; local_index += local_size) {
+                            const VoxelLocalData local = local_voxel_data[local_index];
+                            if (local.voxel_idx == VoxelConstants::invalid_coord) {
+                                continue;
+                            }
+                            global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                                             [&](uint32_t add) {
+                                                 atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add);
+                                             });
+                        }
                     });
             }
         });
