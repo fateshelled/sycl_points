@@ -48,16 +48,18 @@ inline bool estimate_constant_body_velocity(const Eigen::Transform<float, 3, 1>&
 /// translation. Normals and covariances are rotated using the angular velocity
 /// model to keep them roughly aligned with the deskewed points, while color and
 /// intensity gradients are cleared.
-/// @param cloud Point cloud to be updated in-place. Timestamps must be present.
+/// @param input_cloud Point cloud with timestamps. The data in this cloud is never modified.
+/// @param output_cloud Point cloud receiving the deskewed data. Containers will be resized as needed.
 /// @param previous_relative_pose Relative pose at the start of the scan interval.
 /// @param current_relative_pose Relative pose at the end of the scan interval.
 /// @param delta_time_seconds Time difference between the two poses in seconds (float precision).
 /// @return true when deskewing succeeds, false if prerequisites are not met.
-inline bool deskew_point_cloud_constant_velocity(PointCloudShared& cloud,
+inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_cloud,
+                                                 PointCloudShared& output_cloud,
                                                  const Eigen::Transform<float, 3, 1>& previous_relative_pose,
                                                  const Eigen::Transform<float, 3, 1>& current_relative_pose,
                                                  float delta_time_seconds) {
-    if (cloud.size() == 0 || !cloud.has_timestamps()) {
+    if (input_cloud.size() == 0 || !input_cloud.has_timestamps()) {
         return false;
     }
 
@@ -74,18 +76,77 @@ inline bool deskew_point_cloud_constant_velocity(PointCloudShared& cloud,
     velocity.angular_velocity = delta_twist.head<3>() * inv_dt;
     velocity.linear_velocity = delta_twist.tail<3>() * inv_dt;
 
-    // Hint to the runtime that host-side access will follow for shared memory.
-    cloud.queue.set_accessed_by_host(cloud.timestamp_offsets->data(), cloud.timestamp_offsets->size());
-    cloud.queue.set_accessed_by_host(cloud.points->data(), cloud.points->size());
-    if (cloud.has_normal()) {
-        cloud.queue.set_accessed_by_host(cloud.normals->data(), cloud.normals->size());
+    // Copy metadata so the output stays synchronized with the input timing information.
+    output_cloud.start_time_ms = input_cloud.start_time_ms;
+    output_cloud.end_time_ms = input_cloud.end_time_ms;
+
+    // Mirror input fields into the output so non-deskewed attributes remain intact.
+    output_cloud.timestamp_offsets->assign(input_cloud.timestamp_offsets->begin(),
+                                           input_cloud.timestamp_offsets->end());
+    output_cloud.points->assign(input_cloud.points->begin(), input_cloud.points->end());
+
+    if (input_cloud.has_normal()) {
+        output_cloud.normals->assign(input_cloud.normals->begin(), input_cloud.normals->end());
+    } else {
+        output_cloud.normals->clear();
     }
-    if (cloud.has_cov()) {
-        cloud.queue.set_accessed_by_host(cloud.covs->data(), cloud.covs->size());
+    if (input_cloud.has_cov()) {
+        output_cloud.covs->assign(input_cloud.covs->begin(), input_cloud.covs->end());
+    } else {
+        output_cloud.covs->clear();
+    }
+    if (input_cloud.has_rgb()) {
+        output_cloud.rgb->assign(input_cloud.rgb->begin(), input_cloud.rgb->end());
+    } else {
+        output_cloud.rgb->clear();
+    }
+    if (input_cloud.has_intensity()) {
+        output_cloud.intensities->assign(input_cloud.intensities->begin(), input_cloud.intensities->end());
+    } else {
+        output_cloud.intensities->clear();
+    }
+    if (input_cloud.has_color_gradient()) {
+        output_cloud.color_gradients->assign(input_cloud.color_gradients->begin(), input_cloud.color_gradients->end());
+    } else {
+        output_cloud.color_gradients->clear();
+    }
+    if (input_cloud.has_intensity_gradient()) {
+        output_cloud.intensity_gradients->assign(input_cloud.intensity_gradients->begin(),
+                                                 input_cloud.intensity_gradients->end());
+    } else {
+        output_cloud.intensity_gradients->clear();
     }
 
-    for (size_t idx = 0; idx < cloud.size(); ++idx) {
-        const float timestamp_seconds = static_cast<float>((*cloud.timestamp_offsets)[idx]) * 1e-3f;
+    // Hint to the runtime that host-side access will follow for shared memory.
+    if (!input_cloud.timestamp_offsets->empty()) {
+        input_cloud.queue.set_accessed_by_host(input_cloud.timestamp_offsets->data(),
+                                               input_cloud.timestamp_offsets->size());
+    }
+    if (!input_cloud.points->empty()) {
+        input_cloud.queue.set_accessed_by_host(input_cloud.points->data(), input_cloud.points->size());
+    }
+    if (input_cloud.has_normal()) {
+        input_cloud.queue.set_accessed_by_host(input_cloud.normals->data(), input_cloud.normals->size());
+    }
+    if (input_cloud.has_cov()) {
+        input_cloud.queue.set_accessed_by_host(input_cloud.covs->data(), input_cloud.covs->size());
+    }
+    if (!output_cloud.points->empty()) {
+        output_cloud.queue.set_accessed_by_host(output_cloud.points->data(), output_cloud.points->size());
+    }
+    if (!output_cloud.timestamp_offsets->empty()) {
+        output_cloud.queue.set_accessed_by_host(output_cloud.timestamp_offsets->data(),
+                                                output_cloud.timestamp_offsets->size());
+    }
+    if (output_cloud.has_normal()) {
+        output_cloud.queue.set_accessed_by_host(output_cloud.normals->data(), output_cloud.normals->size());
+    }
+    if (output_cloud.has_cov()) {
+        output_cloud.queue.set_accessed_by_host(output_cloud.covs->data(), output_cloud.covs->size());
+    }
+
+    for (size_t idx = 0; idx < input_cloud.size(); ++idx) {
+        const float timestamp_seconds = static_cast<float>((*input_cloud.timestamp_offsets)[idx]) * 1e-3f;
         if (!std::isfinite(timestamp_seconds)) {
             continue;
         }
@@ -98,25 +159,26 @@ inline bool deskew_point_cloud_constant_velocity(PointCloudShared& cloud,
         const Eigen::Transform<float, 3, 1> point_motion = eigen_utils::lie::se3_exp(scaled_twist);
         const Eigen::Transform<float, 3, 1> point_pose = previous_relative_pose * point_motion;
 
-        const Eigen::Vector3f corrected_point = point_pose * (*cloud.points)[idx].head<3>();
-        (*cloud.points)[idx].head<3>() = corrected_point;
+        const Eigen::Vector3f corrected_point = point_pose * (*input_cloud.points)[idx].head<3>();
+        (*output_cloud.points)[idx].head<3>() = corrected_point;
 
         // Rotate normals and covariances using the integrated angular velocity.
         const Eigen::Vector3f integrated_omega = scaled_twist.head<3>();
         const Eigen::Matrix3f rotation = eigen_utils::lie::so3_exp(integrated_omega).toRotationMatrix();
-        if (cloud.has_normal()) {
-            (*cloud.normals)[idx].head<3>() = rotation * (*cloud.normals)[idx].head<3>();
+        if (input_cloud.has_normal() && output_cloud.has_normal()) {
+            (*output_cloud.normals)[idx].head<3>() = rotation * (*input_cloud.normals)[idx].head<3>();
         }
-        if (cloud.has_cov()) {
-            Eigen::Matrix3f rotated_cov = rotation * (*cloud.covs)[idx].topLeftCorner<3, 3>() * rotation.transpose();
-            (*cloud.covs)[idx].topLeftCorner<3, 3>() = rotated_cov;
+        if (input_cloud.has_cov() && output_cloud.has_cov()) {
+            Eigen::Matrix3f rotated_cov =
+                rotation * (*input_cloud.covs)[idx].topLeftCorner<3, 3>() * rotation.transpose();
+            (*output_cloud.covs)[idx].topLeftCorner<3, 3>() = rotated_cov;
         }
     }
-    if (cloud.has_color_gradient()) {
-        cloud.color_gradients->clear();
+    if (output_cloud.has_color_gradient()) {
+        output_cloud.color_gradients->clear();
     }
-    if (cloud.has_intensity_gradient()) {
-        cloud.intensity_gradients->clear();
+    if (output_cloud.has_intensity_gradient()) {
+        output_cloud.intensity_gradients->clear();
     }
 
     return true;

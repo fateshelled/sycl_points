@@ -73,17 +73,18 @@ TEST(RelativePoseDeskewTest, DeskewsPointsWithConstantVelocity) {
     ASSERT_TRUE(cloud.has_normal());
     ASSERT_TRUE(cloud.has_cov());
 
-    const bool success = deskew_point_cloud_constant_velocity(cloud, start_pose, end_pose, 1.0f);
+    PointCloudShared deskewed_cloud(queue);
+    const bool success = deskew_point_cloud_constant_velocity(cloud, deskewed_cloud, start_pose, end_pose, 1.0f);
     ASSERT_TRUE(success);
 
-    for (size_t idx = 0; idx < cloud.size(); ++idx) {
-        const Eigen::Vector3f corrected_point = (*cloud.points)[idx].head<3>();
+    for (size_t idx = 0; idx < deskewed_cloud.size(); ++idx) {
+        const Eigen::Vector3f corrected_point = (*deskewed_cloud.points)[idx].head<3>();
         EXPECT_NEAR((corrected_point - world_point).norm(), 0.0f, 1e-5f);
 
-        const Eigen::Vector3f corrected_normal = (*cloud.normals)[idx].head<3>();
+        const Eigen::Vector3f corrected_normal = (*deskewed_cloud.normals)[idx].head<3>();
         EXPECT_NEAR((corrected_normal - world_normal).norm(), 0.0f, 1e-5f);
 
-        const Eigen::Matrix3f corrected_covariance = (*cloud.covs)[idx].topLeftCorner<3, 3>();
+        const Eigen::Matrix3f corrected_covariance = (*deskewed_cloud.covs)[idx].topLeftCorner<3, 3>();
         const Eigen::Matrix3f diff = corrected_covariance - world_covariance;
         EXPECT_NEAR(diff.norm(), 0.0f, 1e-6f);
     }
@@ -107,7 +108,8 @@ TEST(RelativePoseDeskewTest, HandlesNonPositiveDuration) {
     cloud.points->push_back(point);
     cloud.end_time_ms = cloud.start_time_ms;
 
-    EXPECT_FALSE(deskew_point_cloud_constant_velocity(cloud, start_pose, end_pose, 0.0f));
+    PointCloudShared deskewed_cloud(queue);
+    EXPECT_FALSE(deskew_point_cloud_constant_velocity(cloud, deskewed_cloud, start_pose, end_pose, 0.0f));
 }
 
 }  // namespace
