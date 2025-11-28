@@ -517,31 +517,91 @@ private:
         this->allocate_storage();
         this->initialize_storage();
 
-        size_t voxel_count = 0;
-        for (size_t i = 0; i < old_capacity; ++i) {
-            const uint64_t key = old_keys.get()[i];
-            if (key == VoxelConstants::invalid_coord) {
-                continue;
-            }
+        shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
+        shared_vector<uint32_t> failure_flag(1, 0U, *this->queue_.ptr);
 
-            bool inserted = false;
-            for (size_t probe = 0; probe < this->max_probe_length_; ++probe) {
-                const size_t slot = this->compute_slot_id(key, probe, this->capacity_);
-                uint64_t& dst_key = this->key_ptr_.get()[slot];
-                if (dst_key == VoxelConstants::invalid_coord) {
-                    dst_key = key;
-                    this->data_ptr_.get()[slot] = old_data.get()[i];
-                    ++voxel_count;
-                    inserted = true;
-                    break;
+        this->queue_.ptr
+            ->submit([&](sycl::handler& h) {
+                const size_t N = old_capacity;
+                const size_t work_group_size = this->queue_.get_work_group_size();
+                const size_t global_size = this->queue_.get_global_size(N);
+
+                const auto old_key_ptr = old_keys.get();
+                const auto old_data_ptr = old_data.get();
+                auto new_key_ptr = this->key_ptr_.get();
+                auto new_data_ptr = this->data_ptr_.get();
+                const size_t new_capacity_local = this->capacity_;
+                const size_t max_probe = this->max_probe_length_;
+                auto voxel_num_ptr = voxel_counter.data();
+                auto failure_ptr = failure_flag.data();
+                auto range = sycl::nd_range<1>(global_size, work_group_size);
+
+                if (this->queue_.is_nvidia()) {
+                    // Count inserted voxels via reduction when running on NVIDIA GPUs.
+                    auto voxel_num = sycl::reduction(voxel_num_ptr, sycl::plus<uint32_t>());
+
+                    h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
+                        const uint32_t i = item.get_global_id(0);
+                        if (i >= N) return;
+
+                        const uint64_t key = old_key_ptr[i];
+                        if (key == VoxelConstants::invalid_coord) return;
+
+                        const VoxelData data = old_data_ptr[i];
+                        bool inserted = false;
+
+                        for (size_t probe = 0; probe < max_probe; ++probe) {
+                            const size_t slot = compute_slot_id(key, probe, new_capacity_local);
+                            uint64_t expected = VoxelConstants::invalid_coord;
+
+                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                                new_data_ptr[slot] = data;
+                                voxel_num_arg += 1U;
+                                inserted = true;
+                                break;
+                            }
+                        }
+
+                        if (!inserted) {
+                            atomic_ref_uint32_t(failure_ptr[0]).store(1U);
+                        }
+                    });
+                } else {
+                    h.parallel_for(range, [=](sycl::nd_item<1> item) {
+                        const uint32_t i = item.get_global_id(0);
+                        if (i >= N) return;
+
+                        const uint64_t key = old_key_ptr[i];
+                        if (key == VoxelConstants::invalid_coord) return;
+
+                        const VoxelData data = old_data_ptr[i];
+                        bool inserted = false;
+
+                        for (size_t probe = 0; probe < max_probe; ++probe) {
+                            const size_t slot = compute_slot_id(key, probe, new_capacity_local);
+                            uint64_t expected = VoxelConstants::invalid_coord;
+
+                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                                new_data_ptr[slot] = data;
+                                atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
+                                inserted = true;
+                                break;
+                            }
+                        }
+
+                        if (!inserted) {
+                            atomic_ref_uint32_t(failure_ptr[0]).store(1U);
+                        }
+                    });
                 }
-            }
-            if (!inserted) {
-                throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
-            }
+            })
+            .wait();
+
+        if (failure_flag.at(0) != 0U) {
+            throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
         }
 
-        this->voxel_num_ = voxel_count;
+        this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
     }
 
     template <typename CounterFunc>
