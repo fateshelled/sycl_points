@@ -985,15 +985,15 @@ private:
                 const int64_t target_iy = static_cast<int64_t>(sycl::floor(scaled_target_y));
                 const int64_t target_iz = static_cast<int64_t>(sycl::floor(scaled_target_z));
 
-                // Approximate the number of traversed voxels with a Chebyshev distance
-                // between the origin and target grid coordinates. This avoids the full
-                // ray traversal used during the actual free-space update.
+                // Approximate the number of traversed voxels with the sum of axis steps
+                // between the origin and target grid coordinates. This mirrors the
+                // traversal behavior in traverse_ray_exclusive_impl without performing
+                // the full ray walk during estimation.
                 const int64_t diff_ix = sycl::abs(target_ix - origin_ix);
                 const int64_t diff_iy = sycl::abs(target_iy - origin_iy);
                 const int64_t diff_iz = sycl::abs(target_iz - origin_iz);
 
-                const uint32_t local_count =
-                    static_cast<uint32_t>(sycl::max(sycl::max(diff_ix, diff_iy), diff_iz));
+                const uint32_t local_count = static_cast<uint32_t>(diff_ix + diff_iy + diff_iz);
 
                 visit_acc += local_count;
             });
