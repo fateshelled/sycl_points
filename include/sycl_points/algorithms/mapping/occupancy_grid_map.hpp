@@ -766,23 +766,6 @@ private:
         return grid_to_key_device(x, y, z, key);
     }
 
-    VoxelData* find_or_insert_voxel_host(const uint64_t key, bool& inserted) {
-        inserted = false;
-        for (size_t probe = 0; probe < this->max_probe_length_; ++probe) {
-            const size_t slot = this->compute_slot_id(key, probe, this->capacity_);
-            uint64_t& stored_key = this->key_ptr_.get()[slot];
-            if (stored_key == key) {
-                return &this->data_ptr_.get()[slot];
-            }
-            if (stored_key == VoxelConstants::invalid_coord) {
-                stored_key = key;
-                inserted = true;
-                return &this->data_ptr_.get()[slot];
-            }
-        }
-        return nullptr;
-    }
-
     static void atomic_add_voxel_data(const VoxelAccumulator& src, VoxelData& dst) {
         atomic_ref_float(dst.sum_x).fetch_add(src.sum_x);
         atomic_ref_float(dst.sum_y).fetch_add(src.sum_y);
