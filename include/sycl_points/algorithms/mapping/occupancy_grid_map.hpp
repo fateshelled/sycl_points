@@ -985,16 +985,17 @@ private:
                 const int64_t target_iy = static_cast<int64_t>(sycl::floor(scaled_target_y));
                 const int64_t target_iz = static_cast<int64_t>(sycl::floor(scaled_target_z));
 
-                uint32_t local_count = 0U;
-                if (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz) {
-                    ++local_count;
-                }
+                // Calculate the number of traversed voxels with the sum of axis steps
+                // between the origin and target grid coordinates. This mirrors the
+                // traversal behavior in traverse_ray_exclusive_impl without performing
+                // the full ray walk during estimation.
+                const int64_t diff_ix = sycl::abs(target_ix - origin_ix);
+                const int64_t diff_iy = sycl::abs(target_iy - origin_iy);
+                const int64_t diff_iz = sycl::abs(target_iz - origin_iz);
 
-                traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, world_x, world_y, world_z, inv_voxel_size,
-                                            [&](int64_t, int64_t, int64_t) {
-                                                ++local_count;
-                                                return true;
-                                            });
+                const int64_t traversal_count = diff_ix + diff_iy + diff_iz;
+                // The total count includes the origin voxel plus the traversed voxels.
+                const uint32_t local_count = (traversal_count > 0) ? static_cast<uint32_t>(traversal_count + 1) : 0U;
 
                 visit_acc += local_count;
             });
