@@ -985,7 +985,7 @@ private:
                 const int64_t target_iy = static_cast<int64_t>(sycl::floor(scaled_target_y));
                 const int64_t target_iz = static_cast<int64_t>(sycl::floor(scaled_target_z));
 
-                // Approximate the number of traversed voxels with the sum of axis steps
+                // Calculate the number of traversed voxels with the sum of axis steps
                 // between the origin and target grid coordinates. This mirrors the
                 // traversal behavior in traverse_ray_exclusive_impl without performing
                 // the full ray walk during estimation.
