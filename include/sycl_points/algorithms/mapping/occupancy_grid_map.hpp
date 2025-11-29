@@ -1252,7 +1252,7 @@ private:
                 points_ptr[index].z() = cz;
                 points_ptr[index].w() = 1.0f;
 
-                if (has_rgb && rgb_ptr) {
+                if (has_rgb) {
                     if (data.color_count > 0U) {
                         const float inv_color = 1.0f / static_cast<float>(data.color_count);
                         rgb_ptr[index].x() = data.sum_r * inv_color;
@@ -1264,7 +1264,7 @@ private:
                     }
                 }
 
-                if (has_intensity && intensity_ptr) {
+                if (has_intensity) {
                     if (data.intensity_count > 0U) {
                         const float inv_intensity = 1.0f / static_cast<float>(data.intensity_count);
                         intensity_ptr[index] = data.sum_intensity * inv_intensity;
