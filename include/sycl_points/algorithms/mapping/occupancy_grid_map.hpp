@@ -993,7 +993,9 @@ private:
                 const int64_t diff_iy = sycl::abs(target_iy - origin_iy);
                 const int64_t diff_iz = sycl::abs(target_iz - origin_iz);
 
-                const uint32_t local_count = static_cast<uint32_t>(diff_ix + diff_iy + diff_iz);
+                const int64_t traversal_count = diff_ix + diff_iy + diff_iz;
+                // The total count includes the origin voxel plus the traversed voxels.
+                const uint32_t local_count = (traversal_count > 0) ? static_cast<uint32_t>(traversal_count + 1) : 0U;
 
                 visit_acc += local_count;
             });
