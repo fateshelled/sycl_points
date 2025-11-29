@@ -76,6 +76,9 @@ public:
     /// @brief Configure the log-odds decrement applied on misses.
     void set_log_odds_miss(const float value) { this->log_odds_miss_ = value; }
 
+    /// @brief Enable or disable free-space carving along measurement rays.
+    void set_free_space_updates_enabled(const bool enabled) { this->free_space_updates_enabled_ = enabled; }
+
     /// @brief Set the visibility decay range in meters.
     void set_visibility_decay_range(const float distance) {
         if (!(distance >= 0.0f)) {
@@ -83,6 +86,9 @@ public:
         }
         this->visibility_decay_range_ = distance;
     }
+
+    /// @brief Enable or disable the visibility decay pass.
+    void set_visibility_decay_enabled(const bool enabled) { this->visibility_decay_enabled_ = enabled; }
 
     /// @brief Get the visibility decay range in meters.
     float visibility_decay_range() const { return this->visibility_decay_range_; }
@@ -125,7 +131,7 @@ public:
         // Integrate hits: transform to world frame, hash, and accumulate statistics.
         this->integrate_points(cloud, sensor_pose, has_rgb, has_intensity);
 
-        if (this->log_odds_miss_ != 0.0f) {
+        if (this->free_space_updates_enabled_ && this->log_odds_miss_ != 0.0f) {
             // Traverse rays and record free-space updates before applying log-odds.
             this->update_free_space(cloud, sensor_pose);
         }
@@ -133,7 +139,7 @@ public:
         // Apply pending log-odds changes from hits and misses to the main storage.
         this->apply_pending_log_odds();
 
-        if (this->log_odds_miss_ != 0.0f) {
+        if (this->visibility_decay_enabled_ && this->log_odds_miss_ != 0.0f) {
             // Decay occupancy for voxels close to the sensor that were not revisited.
             this->apply_visibility_decay(sensor_pose.translation());
         }
@@ -1305,6 +1311,8 @@ private:
     float max_log_odds_ = 4.0f;
     float occupancy_threshold_log_odds_ = probability_to_log_odds(0.5f);
     float visibility_decay_range_ = 30.0f;
+    bool free_space_updates_enabled_ = true;
+    bool visibility_decay_enabled_ = true;
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
     uint32_t frame_index_ = 0U;
