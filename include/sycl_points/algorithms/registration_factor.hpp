@@ -74,7 +74,7 @@ SYCL_EXTERNAL inline Eigen::Matrix<float, 4, 6> compute_se3_jacobian(const std::
     const Eigen::Matrix3f T_skewed = eigen_utils::multiply<3, 3, 3>(R, skewed);
 
     // rotation part
-    J.block<3, 3>(0, 0) = R * skewed;
+    J.block<3, 3>(0, 0) = T_skewed;
     // translation part: J_trans = -R
     J.block<3, 3>(0, 3) = -R;
 
