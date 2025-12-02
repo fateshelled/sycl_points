@@ -43,7 +43,7 @@ int main() {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::covariance::compute_covariances_async(*kdtree, shared_points,
                                                                        k_correspondence_covariance)
-            .wait();
+            .wait_and_throw();
         if (i > 0) {
             dt_covariances +=
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)

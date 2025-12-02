@@ -144,7 +144,7 @@ private:
                 bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], voxel_size_inv);
             });
         });
-        event.wait();
+        event.wait_and_throw();
 
         // mem_advise clear
         {

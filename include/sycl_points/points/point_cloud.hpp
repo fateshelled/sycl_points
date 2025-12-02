@@ -194,7 +194,7 @@ struct PointCloudShared {
                 }
             }
         }
-        copy_events.wait();
+        copy_events.wait_and_throw();
     }
 
     /// @brief Copy from other shared point cloud using the same queue as the source.
@@ -231,7 +231,7 @@ struct PointCloudShared {
                              copy_events);
         this->copy_attribute(this->points, other.points, N, true, same_context, copy_queue, copy_events);
 
-        copy_events.wait();
+        copy_events.wait_and_throw();
     }
 
     /// @brief destructor

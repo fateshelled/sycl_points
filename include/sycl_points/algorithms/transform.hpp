@@ -95,7 +95,7 @@ inline sycl_utils::events transform_async(PointCloudShared& cloud, const Transfo
 /// @brief Transform point cloud
 /// @param cloud Point Cloud
 /// @param trans transform matrix
-inline void transform(PointCloudShared& cloud, const TransformMatrix& trans) { transform_async(cloud, trans).wait(); }
+inline void transform(PointCloudShared& cloud, const TransformMatrix& trans) { transform_async(cloud, trans).wait_and_throw(); }
 
 /// @brief Transform point cloud
 /// @param cloud Point Cloud

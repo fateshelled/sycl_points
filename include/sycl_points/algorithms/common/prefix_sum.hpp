@@ -57,7 +57,7 @@ public:
             init_event += this->queue_.ptr->fill(this->group_sums_ptr_->data(), (uint32_t)0, num_groups);
             init_event += this->queue_.ptr->fill(this->group_prefix_ptr_->data(), (uint32_t)0, num_groups);
         }
-        init_event.wait();
+        init_event.wait_and_throw();
 
         // Step 1: Inclusive scan within each work group
         {
@@ -92,7 +92,7 @@ public:
                     }
                 });
             });
-            event1.wait();
+            event1.wait_and_throw();
         }
 
         // Complete if only one group
@@ -155,7 +155,7 @@ public:
                     }
                 });
             });
-            event3.wait();
+            event3.wait_and_throw();
         }
         // mem_advise clear
         {

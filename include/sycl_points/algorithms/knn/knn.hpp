@@ -39,7 +39,7 @@ public:
     KNNResult knn_search(const PointCloudShared& queries, const size_t k,
                          const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
         KNNResult result;
-        knn_search_async(queries, k, result, depends).wait();
+        knn_search_async(queries, k, result, depends).wait_and_throw();
         return result;
     }
 
@@ -61,7 +61,7 @@ public:
     /// @return knn search event
     void nearest_neighbor_search(const PointCloudShared& queries, KNNResult& result,
                                  const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
-        nearest_neighbor_search_async(queries, result, depends).wait();
+        nearest_neighbor_search_async(queries, result, depends).wait_and_throw();
     }
 };
 

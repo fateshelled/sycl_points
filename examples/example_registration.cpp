@@ -89,15 +89,15 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_covariances_async(source_neighbors, source_downsampled).wait();
-        sycl_points::algorithms::covariance::compute_covariances_async(target_neighbors, target_downsampled).wait();
+        sycl_points::algorithms::covariance::compute_covariances_async(source_neighbors, source_downsampled).wait_and_throw();
+        sycl_points::algorithms::covariance::compute_covariances_async(target_neighbors, target_downsampled).wait_and_throw();
         const auto dt_covariance =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_normals_async(source_neighbors, source_downsampled).wait();
-        sycl_points::algorithms::covariance::compute_normals_async(target_neighbors, target_downsampled).wait();
+        sycl_points::algorithms::covariance::compute_normals_async(source_neighbors, source_downsampled).wait_and_throw();
+        sycl_points::algorithms::covariance::compute_normals_async(target_neighbors, target_downsampled).wait_and_throw();
         const auto dt_normal =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
