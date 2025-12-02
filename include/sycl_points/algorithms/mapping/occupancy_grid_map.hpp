@@ -76,6 +76,9 @@ public:
     /// @brief Configure the log-odds decrement applied on misses.
     void set_log_odds_miss(const float value) { this->log_odds_miss_ = value; }
 
+    /// @brief Enable or disable free-space carving along measurement rays.
+    void set_free_space_updates_enabled(const bool enabled) { this->free_space_updates_enabled_ = enabled; }
+
     /// @brief Set the visibility decay range in meters.
     void set_visibility_decay_range(const float distance) {
         if (!(distance >= 0.0f)) {
@@ -83,6 +86,9 @@ public:
         }
         this->visibility_decay_range_ = distance;
     }
+
+    /// @brief Enable or disable the visibility decay pass.
+    void set_visibility_decay_enabled(const bool enabled) { this->visibility_decay_enabled_ = enabled; }
 
     /// @brief Get the visibility decay range in meters.
     float visibility_decay_range() const { return this->visibility_decay_range_; }
@@ -114,6 +120,7 @@ public:
 
         const size_t N = cloud.size();
 
+        // Prepare hashing buffers for the expected number of insertions in this frame.
         this->ensure_rehash();
 
         const bool has_rgb = cloud.has_rgb();
@@ -121,25 +128,29 @@ public:
         this->has_rgb_data_ = this->has_rgb_data_ || has_rgb;
         this->has_intensity_data_ = this->has_intensity_data_ || has_intensity;
 
+        // Integrate hits: transform to world frame, hash, and accumulate statistics.
         this->integrate_points(cloud, sensor_pose, has_rgb, has_intensity);
 
-        if (this->log_odds_miss_ != 0.0f) {
+        if (this->free_space_updates_enabled_ && this->log_odds_miss_ != 0.0f) {
+            // Traverse rays and record free-space updates before applying log-odds.
             this->update_free_space(cloud, sensor_pose);
         }
 
+        // Apply pending log-odds changes from hits and misses to the main storage.
         this->apply_pending_log_odds();
 
-        if (this->log_odds_miss_ != 0.0f) {
+        if (this->visibility_decay_enabled_ && this->log_odds_miss_ != 0.0f) {
+            // Decay occupancy for voxels close to the sensor that were not revisited.
             this->apply_visibility_decay(sensor_pose.translation());
         }
 
         ++this->frame_index_;
     }
 
-    /// @brief Extract occupied voxels from the sensor pose to L2 distance.
+    /// @brief Extract occupied voxels from the sensor pose to L∞ distance.
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
-    /// @param max_distance Maximum extract L2 distance in meters.
+    /// @param max_distance Maximum extract L-infinity distance in meters.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
                                  const float max_distance = 100.0f) const {
         result.resize_points(0);
@@ -512,31 +523,91 @@ private:
         this->allocate_storage();
         this->initialize_storage();
 
-        size_t voxel_count = 0;
-        for (size_t i = 0; i < old_capacity; ++i) {
-            const uint64_t key = old_keys.get()[i];
-            if (key == VoxelConstants::invalid_coord) {
-                continue;
-            }
+        shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
+        shared_vector<uint32_t> failure_flag(1, 0U, *this->queue_.ptr);
 
-            bool inserted = false;
-            for (size_t probe = 0; probe < this->max_probe_length_; ++probe) {
-                const size_t slot = this->compute_slot_id(key, probe, this->capacity_);
-                uint64_t& dst_key = this->key_ptr_.get()[slot];
-                if (dst_key == VoxelConstants::invalid_coord) {
-                    dst_key = key;
-                    this->data_ptr_.get()[slot] = old_data.get()[i];
-                    ++voxel_count;
-                    inserted = true;
-                    break;
+        this->queue_.ptr
+            ->submit([&](sycl::handler& h) {
+                const size_t N = old_capacity;
+                const size_t work_group_size = this->queue_.get_work_group_size();
+                const size_t global_size = this->queue_.get_global_size(N);
+
+                const auto old_key_ptr = old_keys.get();
+                const auto old_data_ptr = old_data.get();
+                auto new_key_ptr = this->key_ptr_.get();
+                auto new_data_ptr = this->data_ptr_.get();
+                const size_t new_capacity_local = this->capacity_;
+                const size_t max_probe = this->max_probe_length_;
+                auto voxel_num_ptr = voxel_counter.data();
+                auto failure_ptr = failure_flag.data();
+                auto range = sycl::nd_range<1>(global_size, work_group_size);
+
+                if (this->queue_.is_nvidia()) {
+                    // Count inserted voxels via reduction when running on NVIDIA GPUs.
+                    auto voxel_num = sycl::reduction(voxel_num_ptr, sycl::plus<uint32_t>());
+
+                    h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
+                        const uint32_t i = item.get_global_id(0);
+                        if (i >= N) return;
+
+                        const uint64_t key = old_key_ptr[i];
+                        if (key == VoxelConstants::invalid_coord) return;
+
+                        const VoxelData data = old_data_ptr[i];
+                        bool inserted = false;
+
+                        for (size_t probe = 0; probe < max_probe; ++probe) {
+                            const size_t slot = compute_slot_id(key, probe, new_capacity_local);
+                            uint64_t expected = VoxelConstants::invalid_coord;
+
+                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                                new_data_ptr[slot] = data;
+                                voxel_num_arg += 1U;
+                                inserted = true;
+                                break;
+                            }
+                        }
+
+                        if (!inserted) {
+                            atomic_ref_uint32_t(failure_ptr[0]).store(1U);
+                        }
+                    });
+                } else {
+                    h.parallel_for(range, [=](sycl::nd_item<1> item) {
+                        const uint32_t i = item.get_global_id(0);
+                        if (i >= N) return;
+
+                        const uint64_t key = old_key_ptr[i];
+                        if (key == VoxelConstants::invalid_coord) return;
+
+                        const VoxelData data = old_data_ptr[i];
+                        bool inserted = false;
+
+                        for (size_t probe = 0; probe < max_probe; ++probe) {
+                            const size_t slot = compute_slot_id(key, probe, new_capacity_local);
+                            uint64_t expected = VoxelConstants::invalid_coord;
+
+                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                                new_data_ptr[slot] = data;
+                                atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
+                                inserted = true;
+                                break;
+                            }
+                        }
+
+                        if (!inserted) {
+                            atomic_ref_uint32_t(failure_ptr[0]).store(1U);
+                        }
+                    });
                 }
-            }
-            if (!inserted) {
-                throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
-            }
+            })
+            .wait_and_throw();
+
+        if (failure_flag.at(0) != 0U) {
+            throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
         }
 
-        this->voxel_num_ = voxel_count;
+        this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
     }
 
     template <typename CounterFunc>
@@ -699,23 +770,6 @@ private:
 
     bool grid_to_key(const int64_t x, const int64_t y, const int64_t z, uint64_t& key) const {
         return grid_to_key_device(x, y, z, key);
-    }
-
-    VoxelData* find_or_insert_voxel_host(const uint64_t key, bool& inserted) {
-        inserted = false;
-        for (size_t probe = 0; probe < this->max_probe_length_; ++probe) {
-            const size_t slot = this->compute_slot_id(key, probe, this->capacity_);
-            uint64_t& stored_key = this->key_ptr_.get()[slot];
-            if (stored_key == key) {
-                return &this->data_ptr_.get()[slot];
-            }
-            if (stored_key == VoxelConstants::invalid_coord) {
-                stored_key = key;
-                inserted = true;
-                return &this->data_ptr_.get()[slot];
-            }
-        }
-        return nullptr;
     }
 
     static void atomic_add_voxel_data(const VoxelAccumulator& src, VoxelData& dst) {
@@ -931,16 +985,17 @@ private:
                 const int64_t target_iy = static_cast<int64_t>(sycl::floor(scaled_target_y));
                 const int64_t target_iz = static_cast<int64_t>(sycl::floor(scaled_target_z));
 
-                uint32_t local_count = 0U;
-                if (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz) {
-                    ++local_count;
-                }
+                // Calculate the number of traversed voxels with the sum of axis steps
+                // between the origin and target grid coordinates. This mirrors the
+                // traversal behavior in traverse_ray_exclusive_impl without performing
+                // the full ray walk during estimation.
+                const int64_t diff_ix = sycl::abs(target_ix - origin_ix);
+                const int64_t diff_iy = sycl::abs(target_iy - origin_iy);
+                const int64_t diff_iz = sycl::abs(target_iz - origin_iz);
 
-                traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, world_x, world_y, world_z, inv_voxel_size,
-                                            [&](int64_t, int64_t, int64_t) {
-                                                ++local_count;
-                                                return true;
-                                            });
+                const int64_t traversal_count = diff_ix + diff_iy + diff_iz;
+                // The total count includes the origin voxel plus the traversed voxels.
+                const uint32_t local_count = (traversal_count > 0) ? static_cast<uint32_t>(traversal_count + 1) : 0U;
 
                 visit_acc += local_count;
             });
@@ -1141,7 +1196,6 @@ private:
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
                                       const float max_distance) const {
         const size_t N = this->capacity_;
-        const float max_distance_sq = max_distance * max_distance;
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
         result.resize_points(this->voxel_num_);
@@ -1164,7 +1218,7 @@ private:
             const float sensor_x = sensor_position.x();
             const float sensor_y = sensor_position.y();
             const float sensor_z = sensor_position.z();
-            const float max_dist_sq = max_distance_sq;
+            const float max_dist = max_distance;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
             auto counter_ptr = counter.data();
@@ -1185,11 +1239,10 @@ private:
                 const float cy = data.sum_y * inv_count;
                 const float cz = data.sum_z * inv_count;
 
-                const float dx = cx - sensor_x;
-                const float dy = cy - sensor_y;
-                const float dz = cz - sensor_z;
-                const float dist_sq = dx * dx + dy * dy + dz * dz;
-                if (dist_sq > max_dist_sq) {
+                const float dx = sycl::fabs(cx - sensor_x);
+                const float dy = sycl::fabs(cy - sensor_y);
+                const float dz = sycl::fabs(cz - sensor_z);
+                if (sycl::fmax(sycl::fmax(dx, dy), dz) > max_dist) {
                     return;
                 }
 
@@ -1199,7 +1252,7 @@ private:
                 points_ptr[index].z() = cz;
                 points_ptr[index].w() = 1.0f;
 
-                if (has_rgb && rgb_ptr) {
+                if (has_rgb) {
                     if (data.color_count > 0U) {
                         const float inv_color = 1.0f / static_cast<float>(data.color_count);
                         rgb_ptr[index].x() = data.sum_r * inv_color;
@@ -1211,7 +1264,7 @@ private:
                     }
                 }
 
-                if (has_intensity && intensity_ptr) {
+                if (has_intensity) {
                     if (data.intensity_count > 0U) {
                         const float inv_intensity = 1.0f / static_cast<float>(data.intensity_count);
                         intensity_ptr[index] = data.sum_intensity * inv_intensity;
@@ -1259,6 +1312,8 @@ private:
     float max_log_odds_ = 4.0f;
     float occupancy_threshold_log_odds_ = probability_to_log_odds(0.5f);
     float visibility_decay_range_ = 30.0f;
+    bool free_space_updates_enabled_ = true;
+    bool visibility_decay_enabled_ = true;
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
     uint32_t frame_index_ = 0U;

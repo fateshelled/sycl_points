@@ -209,14 +209,24 @@ public:
             result.resize_points(0);
             return;
         }
+        const auto start_time_ms = cloud.start_time_ms;
+        const auto end_time_ms = cloud.end_time_ms;
+        // compute points map on host
         const auto voxel_map = this->compute_voxel_bit_and_voxel_map(*cloud.points);
 
-        if (cloud.has_rgb() || cloud.has_intensity()) {
-            const auto rgb_map = this->compute_voxel_map(*cloud.rgb);
-            const auto intensity_map = this->compute_voxel_map(*cloud.intensities);
-            this->voxel_map_to_cloud(voxel_map, rgb_map, intensity_map, result);
-        } else {
-            this->voxel_map_to_cloud(voxel_map, *result.points);
+        // compute other fields map on host
+        const auto rgb_map =
+            cloud.has_rgb() ? this->compute_voxel_map<RGBType>(*cloud.rgb) : std::unordered_map<uint64_t, RGBType>{};
+        const auto intensity_map = cloud.has_intensity() ? this->compute_voxel_map<float>(*cloud.intensities)
+                                                         : std::unordered_map<uint64_t, float>{};
+        const auto timestamp_map = cloud.has_timestamps() ? this->compute_voxel_map<float>(*cloud.timestamp_offsets)
+                                                          : std::unordered_map<uint64_t, float>{};
+
+        // Voxel map to point cloud on host
+        this->voxel_map_to_cloud(voxel_map, rgb_map, intensity_map, timestamp_map, result);
+        if (cloud.has_timestamps()) {
+            result.start_time_ms = start_time_ms;
+            result.end_time_ms = end_time_ms;
         }
     }
 
@@ -355,18 +365,23 @@ private:
     void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
                             const std::unordered_map<uint64_t, RGBType>& voxel_map_rgb,
                             const std::unordered_map<uint64_t, float>& voxel_map_intensity,
+                            const std::unordered_map<uint64_t, float>& voxel_map_timestamp,
                             PointCloudShared& result) const {
         const size_t N = voxel_map.size();
         const bool has_rgb = voxel_map_rgb.size() == N;
         const bool has_intensity = voxel_map_intensity.size() == N;
+        const bool has_timestamp = voxel_map_timestamp.size() == N;
         result.clear();
 
         result.reserve_points(N);
         if (has_rgb) {
-            result.reserve_rgb(voxel_map_rgb.size());
+            result.reserve_rgb(N);
         }
         if (has_intensity) {
-            result.reserve_intensities(voxel_map_intensity.size());
+            result.reserve_intensities(N);
+        }
+        if (has_timestamp) {
+            result.reserve_timestamps(N);
         }
 
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
@@ -374,8 +389,15 @@ private:
             const auto point_count = point.w();
             if (point_count >= min_voxel_count) {
                 result.points->emplace_back(point / point_count);
-                if (has_rgb) result.rgb->emplace_back(voxel_map_rgb.at(voxel_idx) / point_count);
-                if (has_intensity) result.intensities->emplace_back(voxel_map_intensity.at(voxel_idx) / point_count);
+                if (has_rgb) {
+                    result.rgb->emplace_back(voxel_map_rgb.at(voxel_idx) / point_count);
+                }
+                if (has_intensity) {
+                    result.intensities->emplace_back(voxel_map_intensity.at(voxel_idx) / point_count);
+                }
+                if (has_timestamp) {
+                    result.timestamp_offsets->emplace_back(voxel_map_timestamp.at(voxel_idx) / point_count);
+                }
             }
         }
     }

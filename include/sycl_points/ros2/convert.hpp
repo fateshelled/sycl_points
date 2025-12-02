@@ -1,5 +1,10 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 
@@ -13,12 +18,14 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
     uint8_t z_type = 0;
     uint8_t rgb_type = 0;
     uint8_t intensity_type = 0;
+    uint8_t timestamp_type = 0;
 
     int32_t x_offset = -1;
     int32_t y_offset = -1;
     int32_t z_offset = -1;
     int32_t rgb_offset = -1;
     int32_t intensity_offset = -1;
+    int32_t timestamp_offset = -1;
 
     for (const auto& field : msg.fields) {
         if (field.name == "x") {
@@ -36,6 +43,9 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         } else if (field.name == "intensity") {
             intensity_type = field.datatype;
             intensity_offset = field.offset;
+        } else if (field.name == "time" || field.name == "timestamp") {
+            timestamp_type = field.datatype;
+            timestamp_offset = field.offset;
         }
     }
     if (x_offset < 0 || y_offset < 0 || z_offset < 0) {
@@ -73,6 +83,54 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
     if (intensity_offset >= 0 && !has_intensity_field) {
         std::cerr << "Not supported intensity field type" << std::endl;
     }
+
+    const bool has_timestamp_field =
+        (timestamp_offset >= 0) && (timestamp_type == sensor_msgs::msg::PointField::FLOAT32 ||
+                                    timestamp_type == sensor_msgs::msg::PointField::FLOAT64);
+    if (timestamp_offset >= 0 && !has_timestamp_field) {
+        std::cerr << "Not supported timestamp field type" << std::endl;
+    }
+
+    // Convert ROS2 timestamp fields (seconds relative to the header stamp) into
+    // the start-plus-offset representation used by PointCloudShared.
+    auto assign_timestamp_offsets = [&]() {
+        if (!has_timestamp_field) {
+            return;
+        }
+
+        const double start_time_ms = static_cast<double>(msg.header.stamp.sec) * 1000.0 +
+                               static_cast<double>(msg.header.stamp.nanosec) * 1e-6;
+        cloud->start_time_ms = start_time_ms;
+
+        auto* offsets = cloud->timestamp_offsets->data();
+        const auto* msg_bytes = reinterpret_cast<const uint8_t*>(msg.data.data());
+        const double max_offset = static_cast<double>(std::numeric_limits<TimestampOffset>::max());
+        double max_offset_ms = 0.0;
+
+        for (size_t i = 0; i < point_size; ++i) {
+            const size_t base = point_step * i + timestamp_offset;
+            double timestamp_seconds = 0.0;
+            if (timestamp_type == sensor_msgs::msg::PointField::FLOAT32) {
+                timestamp_seconds = static_cast<double>(reinterpret_cast<const float*>(&msg_bytes[base])[0]);
+            } else {
+                timestamp_seconds = reinterpret_cast<const double*>(&msg_bytes[base])[0];
+            }
+
+            if (!std::isfinite(timestamp_seconds)) {
+                timestamp_seconds = 0.0;
+            }
+            if (timestamp_seconds < 0.0) {
+                timestamp_seconds = 0.0;
+            }
+
+            const double timestamp_ms = timestamp_seconds * 1e3;
+            const double offset = timestamp_ms - start_time_ms;
+            offsets[i] = static_cast<float>(offset);
+            max_offset_ms = std::max(max_offset_ms, offset);
+        }
+
+        cloud->end_time_ms = cloud->start_time_ms + max_offset_ms;
+    };
 
     auto submit_device_conversion = [&](auto scalar_tag) {
         using ScalarT = decltype(scalar_tag);
@@ -132,16 +190,21 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         if (has_intensity_field) {
             cloud->resize_intensities(point_size);
         }
+        if (has_timestamp_field) {
+            cloud->resize_timestamps(point_size);
+        }
     };
 
     if (x_type == sensor_msgs::msg::PointField::FLOAT32) {
         submit_device_conversion(float{});
+        assign_timestamp_offsets();
         return true;
     }
 
     if (x_type == sensor_msgs::msg::PointField::FLOAT64) {
         if (queue.is_supported_double()) {
             submit_device_conversion(double{});
+            assign_timestamp_offsets();
             return true;
         }
 
@@ -173,6 +236,7 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
                 (*cloud->intensities)[i] = intensity;
             }
         }
+        assign_timestamp_offsets();
         return true;
     }
 
@@ -194,6 +258,7 @@ sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloud
 
     const bool has_rgb = cloud.has_rgb();
     const bool has_intensity = cloud.has_intensity();
+    const bool has_timestamp = cloud.has_timestamps();
 
     // add fields
     {
@@ -223,6 +288,12 @@ sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloud
             field.offset += sizeof(float);
             msg->fields.push_back(field);
         }
+        if (has_timestamp) {
+            field.name = "timestamp";
+            field.datatype = sensor_msgs::msg::PointField::FLOAT64;
+            field.offset += sizeof(double);
+            msg->fields.push_back(field);
+        }
     }
 
     msg->width = cloud.size();
@@ -234,13 +305,16 @@ sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloud
     if (has_intensity) {
         msg->point_step += sizeof(float);
     }
+    if (has_timestamp) {
+        msg->point_step += sizeof(double);
+    }
     msg->row_step = msg->point_step * cloud.size();
     msg->is_bigendian = false;
     msg->is_dense = true;
 
     msg->data.reserve(msg->row_step);
 
-    if (has_rgb || has_intensity) {
+    if (has_rgb || has_intensity || has_timestamp) {
         // point + (rgb and/or intensity)
         for (size_t i = 0; i < cloud.size(); ++i) {
             const auto& pt = cloud.points->data()[i];
@@ -257,6 +331,12 @@ sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloud
                 const float intensity = cloud.intensities->data()[i];
                 const auto intensity_ptr = reinterpret_cast<const uint8_t*>(&intensity);
                 msg->data.insert(msg->data.end(), intensity_ptr, intensity_ptr + sizeof(float));
+            }
+            if (has_timestamp) {
+                const float offset = cloud.timestamp_offsets->data()[i];
+                const double timestamp = (cloud.start_time_ms + static_cast<double>(offset)) * 1e-3;
+                const auto timestamp_ptr = reinterpret_cast<const uint8_t*>(&timestamp);
+                msg->data.insert(msg->data.end(), timestamp_ptr, timestamp_ptr + sizeof(double));
             }
         }
     } else {

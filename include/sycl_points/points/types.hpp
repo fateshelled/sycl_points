@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
+#include <cstdint>
 #include <sycl_points/utils/sycl_utils.hpp>
 #include <vector>
 
@@ -18,6 +20,9 @@ using ColorGradient = Eigen::Matrix3f;
 /// @brief Intensity gradient type (gradient along x, y, z)
 using IntensityGradient = Eigen::Vector3f;
 using TransformMatrix = Eigen::Matrix4f;
+
+/// @brief Timestamp offset in milliseconds relative to the first measurement.
+using TimestampOffset = float;
 
 // Vector of point on CPU. Accessible from CPU process only.
 using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
@@ -53,5 +58,10 @@ using IntensityGradientContainerShared = shared_vector<IntensityGradient>;
 using IntensityContainerCPU = std::vector<float, Eigen::aligned_allocator<float>>;
 // Vector of RGB on shared memory
 using IntensityContainerShared = shared_vector<float>;
+
+// Vector of timestamp offsets on CPU
+using TimestampContainerCPU = std::vector<TimestampOffset>;
+// Vector of timestamp offsets on shared memory
+using TimestampContainerShared = shared_vector<TimestampOffset>;
 
 }  // namespace sycl_points

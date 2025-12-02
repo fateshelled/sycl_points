@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <limits>
 #include <stdexcept>
 
 #include <sycl_points/points/types.hpp>
@@ -25,6 +27,12 @@ struct PointCloudCPU {
     std::shared_ptr<IntensityGradientContainerCPU> intensity_gradients = nullptr;
     /// @brief intensity container
     std::shared_ptr<IntensityContainerCPU> intensities = nullptr;
+    /// @brief timestamp offset container
+    std::shared_ptr<TimestampContainerCPU> timestamp_offsets = nullptr;
+    /// @brief timestamp start time in milliseconds
+    double start_time_ms = 0.0;
+    /// @brief timestamp end time in milliseconds
+    double end_time_ms = 0.0;
 
     /// @brief Constructor
     PointCloudCPU() {
@@ -35,6 +43,7 @@ struct PointCloudCPU {
         this->color_gradients = std::make_shared<ColorGradientContainerCPU>();
         this->intensity_gradients = std::make_shared<IntensityGradientContainerCPU>();
         this->intensities = std::make_shared<IntensityContainerCPU>();
+        this->timestamp_offsets = std::make_shared<TimestampContainerCPU>();
     }
 
     /// @brief number of point
@@ -56,6 +65,21 @@ struct PointCloudCPU {
     /// @brief has intensity field or not
     bool has_intensity() const {
         return this->intensities != nullptr && this->intensities->size() == this->points->size();
+    }
+    /// @brief has timestamp field or not
+    bool has_timestamps() const {
+        return this->timestamp_offsets != nullptr && this->timestamp_offsets->size() == this->points->size() &&
+               !this->timestamp_offsets->empty();
+    }
+
+    /// @brief Update the end timestamp based on available offsets.
+    void update_end_time() {
+        if (this->timestamp_offsets && !this->timestamp_offsets->empty()) {
+            const auto max_offset = *std::max_element(this->timestamp_offsets->begin(), this->timestamp_offsets->end());
+            this->end_time_ms = this->start_time_ms + static_cast<double>(max_offset);
+        } else {
+            this->end_time_ms = this->start_time_ms;
+        }
     }
 };
 
@@ -80,6 +104,12 @@ struct PointCloudShared {
     std::shared_ptr<IntensityGradientContainerShared> intensity_gradients = nullptr;
     /// @brief intensity container
     std::shared_ptr<IntensityContainerShared> intensities = nullptr;
+    /// @brief timestamp offset container
+    std::shared_ptr<TimestampContainerShared> timestamp_offsets = nullptr;
+    /// @brief timestamp start time in milliseconds
+    double start_time_ms = 0.0;
+    /// @brief timestamp end time in milliseconds
+    double end_time_ms = 0.0;
 
     /// @brief Constructor
     /// @param queue SYCL queue
@@ -91,6 +121,7 @@ struct PointCloudShared {
         this->color_gradients = std::make_shared<ColorGradientContainerShared>(0, *this->queue.ptr);
         this->intensity_gradients = std::make_shared<IntensityGradientContainerShared>(0, *this->queue.ptr);
         this->intensities = std::make_shared<IntensityContainerShared>(0, *this->queue.ptr);
+        this->timestamp_offsets = std::make_shared<TimestampContainerShared>(0, *this->queue.ptr);
     }
 
     /// @brief Copy from CPU point cloud
@@ -184,6 +215,24 @@ struct PointCloudShared {
             this->intensities = std::make_shared<IntensityContainerShared>(0, *this->queue.ptr);
         }
 
+        if (cpu.has_timestamps()) {
+            this->timestamp_offsets = std::make_shared<TimestampContainerShared>(N, *this->queue.ptr);
+            if (is_cpu) {
+                copy_events += this->queue.ptr->memcpy(this->timestamp_offsets->data(), cpu.timestamp_offsets->data(),
+                                                       N * sizeof(TimestampOffset));
+            } else {
+                for (size_t i = 0; i < N; ++i) {
+                    this->timestamp_offsets->data()[i] = cpu.timestamp_offsets->data()[i];
+                }
+            }
+            this->start_time_ms = cpu.start_time_ms;
+            this->end_time_ms = cpu.end_time_ms;
+        } else {
+            this->timestamp_offsets = std::make_shared<TimestampContainerShared>(0, *this->queue.ptr);
+            this->start_time_ms = 0.0;
+            this->end_time_ms = 0.0;
+        }
+
         this->points = std::make_shared<PointContainerShared>(N, *this->queue.ptr);
         if (N > 0) {
             if (is_cpu) {
@@ -230,6 +279,10 @@ struct PointCloudShared {
         this->copy_attribute(this->intensities, other.intensities, N, other.has_intensity(), same_context, copy_queue,
                              copy_events);
         this->copy_attribute(this->points, other.points, N, true, same_context, copy_queue, copy_events);
+        this->copy_attribute(this->timestamp_offsets, other.timestamp_offsets, N, other.has_timestamps(), same_context,
+                             copy_queue, copy_events);
+        this->start_time_ms = other.has_timestamps() ? other.start_time_ms : 0.0;
+        this->end_time_ms = other.has_timestamps() ? other.end_time_ms : 0.0;
 
         copy_events.wait_and_throw();
     }
@@ -255,6 +308,10 @@ struct PointCloudShared {
     bool has_intensity() const {
         return this->intensities->size() > 0 && this->intensities->size() == this->points->size();
     }
+    /// @brief has timestamp field or not
+    bool has_timestamps() const {
+        return this->timestamp_offsets->size() > 0 && this->timestamp_offsets->size() == this->points->size();
+    }
 
     /// @brief pointer of points
     PointType* points_ptr() const { return this->points->data(); }
@@ -270,6 +327,8 @@ struct PointCloudShared {
     IntensityGradient* intensity_gradients_ptr() const { return this->intensity_gradients->data(); }
     /// @brief pointer of intensity
     float* intensities_ptr() const { return this->intensities->data(); }
+    /// @brief pointer of timestamp offsets
+    TimestampOffset* timestamp_offsets_ptr() const { return this->timestamp_offsets->data(); }
 
     /// @brief resize point container
     /// @param N size
@@ -292,6 +351,8 @@ struct PointCloudShared {
     /// @brief resize intensity container
     /// @param N size
     void resize_intensities(size_t N) const { this->intensities->resize(N); }
+    /// @brief resize timestamp container
+    void resize_timestamps(size_t N) const { this->timestamp_offsets->resize(N); }
 
     /// @brief reserve point container
     /// @param N size
@@ -314,6 +375,8 @@ struct PointCloudShared {
     /// @brief reserve intensity container
     /// @param N size
     void reserve_intensities(size_t N) const { this->intensities->reserve(N); }
+    /// @brief reserve timestamp container
+    void reserve_timestamps(size_t N) const { this->timestamp_offsets->reserve(N); }
 
     /// @brief Erase all points and covariances data.
     void clear() {
@@ -324,6 +387,9 @@ struct PointCloudShared {
         this->color_gradients->clear();
         this->intensity_gradients->clear();
         this->intensities->clear();
+        this->timestamp_offsets->clear();
+        this->start_time_ms = 0.0;
+        this->end_time_ms = 0.0;
     }
 
     void extend(const PointCloudShared& other) {
@@ -351,6 +417,8 @@ struct PointCloudShared {
             this->intensities->insert(this->intensities->end(), other.intensities->begin(), other.intensities->end());
         }
         this->points->insert(this->points->end(), other.points->begin(), other.points->end());
+
+        this->merge_timestamp_offsets(other, org_size);
     }
 
     void erase(size_t start_idx, size_t end_idx) {
@@ -373,6 +441,18 @@ struct PointCloudShared {
         }
         if (this->has_intensity()) {
             this->intensities->erase(this->intensities->begin() + start_idx, this->intensities->begin() + end_idx);
+        }
+        if (this->has_timestamps()) {
+            this->timestamp_offsets->erase(this->timestamp_offsets->begin() + start_idx,
+                                           this->timestamp_offsets->begin() + end_idx);
+            if (this->timestamp_offsets->empty()) {
+                this->start_time_ms = 0.0;
+                this->end_time_ms = 0.0;
+            } else {
+                const auto max_offset =
+                    *std::max_element(this->timestamp_offsets->begin(), this->timestamp_offsets->end());
+                this->end_time_ms = this->start_time_ms + static_cast<double>(max_offset);
+            }
         }
         this->points->erase(this->points->begin() + start_idx, this->points->begin() + end_idx);
     }
@@ -400,6 +480,88 @@ private:
         } else {
             dest->assign(src->begin(), src->end());
         }
+    }
+
+    /// @brief Reset timestamp information when inconsistent combinations are requested.
+    void invalidate_timestamps() {
+        this->timestamp_offsets->clear();
+        this->start_time_ms = 0.0;
+        this->end_time_ms = 0.0;
+    }
+
+    /// @brief Shift the local timestamp base towards an earlier value.
+    void shift_timestamp_base(double new_start_time_ms) {
+        if (!this->has_timestamps() || new_start_time_ms >= this->start_time_ms) {
+            if (new_start_time_ms > this->start_time_ms) {
+                // Later bases would require negative offsets which are unsupported.
+                this->invalidate_timestamps();
+            }
+            return;
+        }
+
+        const double delta_ms = this->start_time_ms - new_start_time_ms;
+        const double max_value = static_cast<double>(std::numeric_limits<TimestampOffset>::max());
+
+        for (auto& offset : *this->timestamp_offsets) {
+            const double adjusted_offset = static_cast<double>(offset) + delta_ms;
+            if (adjusted_offset > max_value) {
+                throw std::runtime_error("Timestamp offset overflow while shifting base");
+            }
+            offset = static_cast<TimestampOffset>(adjusted_offset);
+        }
+
+        this->start_time_ms = new_start_time_ms;
+    }
+
+    /// @brief Merge timestamp offsets when extending point clouds.
+    void merge_timestamp_offsets(const PointCloudShared& other, size_t original_size) {
+        if (other.size() == 0) {
+            return;
+        }
+
+        if (!other.has_timestamps()) {
+            if (this->has_timestamps()) {
+                this->invalidate_timestamps();
+            }
+            return;
+        }
+
+        if (!this->has_timestamps()) {
+            if (original_size == 0) {
+                // This cloud was empty, so we can just adopt the timestamps from the other cloud.
+                this->timestamp_offsets->insert(this->timestamp_offsets->end(), other.timestamp_offsets->begin(),
+                                                other.timestamp_offsets->end());
+                this->start_time_ms = other.start_time_ms;
+                this->end_time_ms = other.end_time_ms;
+            } else {
+                // This cloud has points but no timestamps. The merged cloud will also not have timestamps
+                // to maintain consistency. Timestamps from `other` are intentionally dropped.
+                // No action is needed as `this->timestamp_offsets` is already empty.
+            }
+            return;
+        }
+
+        const double new_start_ms = std::min(this->start_time_ms, other.start_time_ms);
+        if (new_start_ms < this->start_time_ms) {
+            this->shift_timestamp_base(new_start_ms);
+        }
+
+        const double base_delta_ms = other.start_time_ms - new_start_ms;
+        const double max_value = static_cast<double>(std::numeric_limits<TimestampOffset>::max());
+        if (base_delta_ms > max_value) {
+            throw std::runtime_error("Timestamp base delta exceeds representable offset range");
+        }
+
+        this->timestamp_offsets->reserve(this->timestamp_offsets->size() + other.timestamp_offsets->size());
+        for (const auto offset : *other.timestamp_offsets) {
+            const double adjusted_offset = static_cast<double>(offset) + base_delta_ms;
+            if (adjusted_offset > max_value) {
+                throw std::runtime_error("Timestamp offset overflow while merging clouds");
+            }
+            this->timestamp_offsets->push_back(static_cast<TimestampOffset>(adjusted_offset));
+        }
+        this->start_time_ms = new_start_ms;
+        this->end_time_ms = std::max(this->end_time_ms, other.end_time_ms);
     }
 };
 

@@ -237,6 +237,9 @@ private:
         if (data.has_intensity()) {
             this->filter_->filter_by_flags(*data.intensities, *this->flags_);
         }
+        if (data.has_timestamps()) {
+            this->filter_->filter_by_flags(*data.timestamp_offsets, *this->flags_);
+        }
         this->filter_->filter_by_flags(*data.points, *this->flags_);
     }
 };

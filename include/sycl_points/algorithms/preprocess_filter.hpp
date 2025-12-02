@@ -271,6 +271,9 @@ private:
         if (source.has_intensity()) {
             this->filter_->filter_by_flags(*source.intensities, *output.intensities, *this->flags_);
         }
+        if (source.has_timestamps()) {
+            this->filter_->filter_by_flags(*source.timestamp_offsets, *output.timestamp_offsets, *this->flags_);
+        }
         this->filter_->filter_by_flags(*source.points, *output.points, *this->flags_);
     }
 };
