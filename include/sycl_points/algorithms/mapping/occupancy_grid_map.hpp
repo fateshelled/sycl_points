@@ -361,7 +361,7 @@ public:
             });
         });
 
-        event.wait();
+        event.wait_and_throw();
 
         const uint32_t final_count = counter.at(0);
         result.resize_points(final_count);
@@ -493,7 +493,7 @@ private:
         sycl_utils::events evs;
         evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
         evs += this->queue_.ptr->fill<VoxelData>(this->data_ptr_.get(), VoxelData{}, this->capacity_);
-        evs.wait();
+        evs.wait_and_throw();
     }
 
     void ensure_rehash() {
@@ -601,7 +601,7 @@ private:
                     });
                 }
             })
-            .wait();
+            .wait_and_throw();
 
         if (failure_flag.at(0) != 0U) {
             throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
@@ -926,7 +926,7 @@ private:
             }
         });
 
-        event.wait();
+        event.wait_and_throw();
         this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
     }
 
@@ -1001,7 +1001,7 @@ private:
             });
         });
 
-        estimate_event.wait();
+        estimate_event.wait_and_throw();
         const size_t expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0));
 
         if (expected_voxel_visits == 0U) {
@@ -1107,7 +1107,7 @@ private:
             });
         });
 
-        event.wait();
+        event.wait_and_throw();
         this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
     }
 
@@ -1136,7 +1136,7 @@ private:
                 voxel_ptr[i].pending_log_odds = 0.0f;
             });
         });
-        event.wait();
+        event.wait_and_throw();
     }
 
     void apply_visibility_decay(const Eigen::Vector3f& sensor_position) {
@@ -1190,7 +1190,7 @@ private:
                 voxel_ptr[i].log_odds = updated;
             });
         });
-        event.wait();
+        event.wait_and_throw();
     }
 
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
@@ -1275,7 +1275,7 @@ private:
             });
         });
 
-        event.wait();
+        event.wait_and_throw();
 
         const uint32_t final_count = counter.at(0);
         result.resize_points(final_count);

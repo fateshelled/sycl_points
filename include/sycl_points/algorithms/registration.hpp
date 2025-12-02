@@ -326,7 +326,7 @@ public:
             }
         }
         // wait for transform
-        transform_events.wait();
+        transform_events.wait_and_throw();
 
         return result;
     }
@@ -468,7 +468,7 @@ private:
         } else {
             throw std::runtime_error("Unknown robust loss type.");
         }
-        events.wait();
+        events.wait_and_throw();
         return this->linearlized_on_device_->toCPU(0);
     }
 
@@ -550,7 +550,7 @@ private:
                     ++sum_inlier_arg;
                 });
         });
-        event.wait();
+        event.wait_and_throw();
         return {error[0], inlier[0]};
     }
 

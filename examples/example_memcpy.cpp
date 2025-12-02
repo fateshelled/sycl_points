@@ -33,7 +33,7 @@ int main() {
         queue
             .memcpy(shared_points.data(), source_points.points->data(),
                     source_points.size() * sizeof(sycl_points::PointType))
-            .wait();
+            .wait_and_throw();
         const auto dt_memcpy_to_shared =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
@@ -43,7 +43,7 @@ int main() {
         s = std::chrono::high_resolution_clock::now();
         device_ptr = sycl::malloc_device<sycl_points::PointType>(source_points.size(), queue);
         queue.memcpy(device_ptr, source_points.points->data(), source_points.size() * sizeof(sycl_points::PointType))
-            .wait();
+            .wait_and_throw();
         const auto dt_memcpy_to_device =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
@@ -51,7 +51,7 @@ int main() {
 
         // copy from device ptr to shared container
         s = std::chrono::high_resolution_clock::now();
-        queue.memcpy(shared_points.data(), device_ptr, shared_points.size() * sizeof(sycl_points::PointType)).wait();
+        queue.memcpy(shared_points.data(), device_ptr, shared_points.size() * sizeof(sycl_points::PointType)).wait_and_throw();
         const auto dt_memcpy_from_device_to_shared =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
@@ -89,7 +89,7 @@ int main() {
                     result_ptr[i][3] = 1.0f;
                 });
             });
-            queue.wait();
+            queue.wait_and_throw();
             sycl::free(trans_ptr, queue);
 
             if (_ > 0) {

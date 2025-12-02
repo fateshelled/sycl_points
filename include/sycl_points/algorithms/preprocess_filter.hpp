@@ -59,7 +59,7 @@ public:
         const size_t N = source.size();
         if (N == 0) return;
 
-        this->initialize_flags(N).wait();
+        this->initialize_flags(N).wait_and_throw();
 
         // mem_advise set to device
         {
@@ -83,7 +83,7 @@ public:
                 kernel::box_filter(point_ptr[i], flag_ptr[i], min_distance, max_distance);
             });
         });
-        event.wait();
+        event.wait_and_throw();
 
         // mem_advise clear
         {
@@ -103,7 +103,7 @@ public:
         if (N == 0) return;
         if (N <= sampling_num) return;
 
-        this->initialize_flags(N, REMOVE_FLAG).wait();
+        this->initialize_flags(N, REMOVE_FLAG).wait_and_throw();
 
         // mem_advise to host
         this->queue_.set_accessed_by_host(this->flags_->data(), N);
@@ -156,7 +156,7 @@ public:
             init_events += this->queue_.ptr->fill(this->dist_sq_->data(), std::numeric_limits<float>::max(), N);
         }
 
-        init_events.wait();
+        init_events.wait_and_throw();
 
         // ramdom select initial point
         std::uniform_int_distribution<size_t> dist(0, N - 1);
@@ -186,7 +186,7 @@ public:
                         dist_sq_ptr[gid] = sycl::min(dist_sq_ptr[gid], dist_sq);
                     });
                 })
-                .wait();
+                .wait_and_throw();
 
             // find farthest point
             {

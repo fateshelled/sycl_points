@@ -243,7 +243,7 @@ struct PointCloudShared {
                 }
             }
         }
-        copy_events.wait();
+        copy_events.wait_and_throw();
     }
 
     /// @brief Copy from other shared point cloud using the same queue as the source.
@@ -284,7 +284,7 @@ struct PointCloudShared {
         this->start_time_ms = other.has_timestamps() ? other.start_time_ms : 0.0;
         this->end_time_ms = other.has_timestamps() ? other.end_time_ms : 0.0;
 
-        copy_events.wait();
+        copy_events.wait_and_throw();
     }
 
     /// @brief destructor

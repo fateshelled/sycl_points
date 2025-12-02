@@ -325,7 +325,7 @@ public:
             timeout = std::chrono::steady_clock::duration(0);
         }
 
-        this->queue.execute_with_mutex(this->mutex_, remove_task, {}, true, timeout).wait();
+        this->queue.execute_with_mutex(this->mutex_, remove_task, {}, true, timeout).wait_and_throw();
 
         // mem_advise clear
         {

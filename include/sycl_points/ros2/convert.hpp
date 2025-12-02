@@ -177,7 +177,7 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
                 }
             });
         });
-        events.wait();
+        events.wait_and_throw();
     };
 
     // prepare container

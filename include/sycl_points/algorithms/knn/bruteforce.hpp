@@ -89,7 +89,7 @@ inline KNNResult knn_search_bruteforce(const sycl_utils::DeviceQueue& queue, con
             }
         });
     });
-    event.wait();
+    event.wait_and_throw();
 
     return result;
 }

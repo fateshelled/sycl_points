@@ -285,7 +285,7 @@ private:
                 kernel_launch(std::integral_constant<CoordinateSystem, CoordinateSystem::CAMERA>{});
             }
         });
-        event.wait();
+        event.wait_and_throw();
 
         // mem_advise clear
         {
