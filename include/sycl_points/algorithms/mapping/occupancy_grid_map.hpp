@@ -79,19 +79,8 @@ public:
     /// @brief Enable or disable free-space carving along measurement rays.
     void set_free_space_updates_enabled(const bool enabled) { this->free_space_updates_enabled_ = enabled; }
 
-    /// @brief Set the visibility decay range in meters.
-    void set_visibility_decay_range(const float distance) {
-        if (!(distance >= 0.0f)) {
-            throw std::invalid_argument("distance must be non-negative.");
-        }
-        this->visibility_decay_range_ = distance;
-    }
-
-    /// @brief Enable or disable the visibility decay pass.
-    void set_visibility_decay_enabled(const bool enabled) { this->visibility_decay_enabled_ = enabled; }
-
-    /// @brief Get the visibility decay range in meters.
-    float visibility_decay_range() const { return this->visibility_decay_range_; }
+    /// @brief Enable or disable pruning of stale voxels.
+    void set_voxel_pruning_enabled(const bool enabled) { this->voxel_pruning_enabled_ = enabled; }
 
     /// @brief Configure the minimum and maximum allowed log-odds.
     void set_log_odds_limits(const float minimum, const float maximum) {
@@ -139,7 +128,7 @@ public:
         // Apply pending log-odds changes from hits and misses to the main storage.
         this->apply_pending_log_odds();
 
-        if (this->visibility_decay_enabled_ && this->log_odds_miss_ != 0.0f) {
+        if (this->voxel_pruning_enabled_ && this->log_odds_miss_ != 0.0f) {
             // Remove voxels that have not been updated recently to keep the map fresh.
             this->prune_stale_voxels();
         }
@@ -1175,8 +1164,7 @@ private:
 
                 const VoxelData& data = voxel_ptr[i];
                 // Evict voxels whose last update frame is older than the allowed threshold.
-                const bool is_stale = current_frame > data.last_updated &&
-                                      (current_frame - data.last_updated) > stale_threshold;
+                const bool is_stale = (current_frame - data.last_updated) > stale_threshold;
                 if (is_stale) {
                     key_ptr[i] = VoxelConstants::deleted_coord;
                     voxel_ptr[i] = VoxelData{};
@@ -1309,9 +1297,8 @@ private:
     float min_log_odds_ = -4.0f;
     float max_log_odds_ = 4.0f;
     float occupancy_threshold_log_odds_ = probability_to_log_odds(0.5f);
-    float visibility_decay_range_ = 30.0f;
     bool free_space_updates_enabled_ = true;
-    bool visibility_decay_enabled_ = true;
+    bool voxel_pruning_enabled_ = true;
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
     uint32_t frame_index_ = 0U;

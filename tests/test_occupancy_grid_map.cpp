@@ -269,8 +269,6 @@ TEST(OccupancyGridMapTest, DisablingVoxelPruningPreservesAllVoxels) {
         sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
         map.set_log_odds_hit(1.0f);
         map.set_log_odds_miss(-0.5f);
-        map.set_visibility_decay_range(0.3f);
-
         const std::vector<Eigen::Vector3f> first_scan = {
             {0.0f, 0.0f, 0.0f},
             {0.2f, 0.0f, 0.0f},
@@ -281,7 +279,7 @@ TEST(OccupancyGridMapTest, DisablingVoxelPruningPreservesAllVoxels) {
         const Eigen::Vector3f unobserved_query(0.2f, 0.0f, 0.0f);
         const float baseline_probability = map.voxel_probability(unobserved_query);
 
-        map.set_visibility_decay_enabled(false);
+        map.set_voxel_pruning_enabled(false);
 
         const std::vector<Eigen::Vector3f> second_scan = {
             {0.0f, 0.0f, 0.0f},
@@ -304,7 +302,8 @@ TEST(OccupancyGridMapTest, PruneStaleVoxelsByFrameAge) {
         sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
         map.set_log_odds_hit(1.0f);
         map.set_log_odds_miss(-0.5f);
-        map.set_visibility_decay_enabled(true);
+        map.set_free_space_updates_enabled(false);
+        map.set_voxel_pruning_enabled(true);
 
         // Insert a single voxel at the origin.
         const std::vector<Eigen::Vector3f> first_scan = {
