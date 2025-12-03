@@ -622,6 +622,7 @@ private:
             auto key_ref = atomic_ref_uint64_t(key_ptr[slot_idx]);
             uint64_t expected = key_ref.load();
             if (expected == VoxelConstants::invalid_coord || expected == VoxelConstants::deleted_coord) {
+                // Attempt to insert. On CAS failure, `expected` is updated, and we fall through.
                 if (key_ref.compare_exchange_strong(expected, voxel_hash)) {
                     counter(1U);
                     atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
@@ -629,6 +630,7 @@ private:
                     break;
                 }
             }
+            // If the slot was already occupied, or if another thread just inserted our key, update it.
             if (expected == voxel_hash) {
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                 atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
