@@ -128,7 +128,7 @@ public:
         // Apply pending log-odds changes from hits and misses to the main storage.
         this->apply_pending_log_odds();
 
-        if (this->voxel_pruning_enabled_ && this->log_odds_miss_ != 0.0f) {
+        if (this->voxel_pruning_enabled_) {
             // Remove voxels that have not been updated recently to keep the map fresh.
             this->prune_stale_voxels();
         }
@@ -629,7 +629,6 @@ private:
                     atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                     break;
                 }
-                stored = key_ref.load();
             }
             if (stored == voxel_hash) {
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
@@ -1116,7 +1115,6 @@ private:
 
     void apply_pending_log_odds() {
         const size_t N = this->capacity_;
-        const uint32_t current_frame = this->frame_index_;
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_.get();
