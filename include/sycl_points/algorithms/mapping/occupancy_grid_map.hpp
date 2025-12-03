@@ -225,7 +225,7 @@ public:
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
                 const uint64_t current_key = key_ptr[i];
-                if (current_key == VoxelConstants::invalid_coord) {
+                if (current_key == VoxelConstants::invalid_coord || current_key == VoxelConstants::deleted_coord) {
                     return;
                 }
 
@@ -323,6 +323,9 @@ public:
                                 if (stored_key == VoxelConstants::invalid_coord) {
                                     return true;
                                 }
+                                if (stored_key == VoxelConstants::deleted_coord) {
+                                    continue;
+                                }
                             }
                             return true;
                         });
@@ -374,6 +377,9 @@ public:
 
         return;
     }
+
+    /// @brief Get the frame-age threshold used to prune stale voxels.
+    static constexpr uint32_t stale_frame_threshold() { return kStaleFrameThreshold; }
 
 private:
     inline static constexpr float kPi = 3.1415927f;
@@ -467,6 +473,9 @@ private:
             if (stored_key == VoxelConstants::invalid_coord) {
                 break;
             }
+            if (stored_key == VoxelConstants::deleted_coord) {
+                continue;
+            }
         }
         return nullptr;
     }
@@ -552,7 +561,7 @@ private:
                         if (i >= N) return;
 
                         const uint64_t key = old_key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord) return;
+                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
                         const VoxelData data = old_data_ptr[i];
                         bool inserted = false;
@@ -579,7 +588,7 @@ private:
                         if (i >= N) return;
 
                         const uint64_t key = old_key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord) return;
+                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
                         const VoxelData data = old_data_ptr[i];
                         bool inserted = false;
@@ -622,13 +631,17 @@ private:
 
         for (size_t probe = 0; probe < max_probe; ++probe) {
             const size_t slot_idx = compute_slot_id(voxel_hash, probe, capacity);
-            uint64_t expected = VoxelConstants::invalid_coord;
-            if (atomic_ref_uint64_t(key_ptr[slot_idx]).compare_exchange_strong(expected, voxel_hash)) {
-                counter(1U);
-                atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
-                break;
+            auto key_ref = atomic_ref_uint64_t(key_ptr[slot_idx]);
+            uint64_t stored = key_ref.load();
+            if (stored == VoxelConstants::invalid_coord || stored == VoxelConstants::deleted_coord) {
+                if (key_ref.compare_exchange_strong(stored, voxel_hash)) {
+                    counter(1U);
+                    atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
+                    break;
+                }
+                stored = key_ref.load();
             }
-            if (expected == voxel_hash) {
+            if (stored == voxel_hash) {
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                 break;
             }
@@ -1122,7 +1135,7 @@ private:
             const uint32_t update_frame = current_frame;
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord) {
+                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
                     return;
                 }
 
@@ -1156,7 +1169,7 @@ private:
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord) {
+                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
                     return;
                 }
 
@@ -1165,7 +1178,7 @@ private:
                 const bool is_stale = current_frame > data.last_updated &&
                                       (current_frame - data.last_updated) > stale_threshold;
                 if (is_stale) {
-                    key_ptr[i] = VoxelConstants::invalid_coord;
+                    key_ptr[i] = VoxelConstants::deleted_coord;
                     voxel_ptr[i] = VoxelData{};
                     return;
                 }
@@ -1210,7 +1223,7 @@ private:
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord) {
+                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
                     return;
                 }
 
