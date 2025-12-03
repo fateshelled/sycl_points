@@ -99,6 +99,9 @@ public:
         this->occupancy_threshold_log_odds_ = this->probability_to_log_odds(probability);
     }
 
+    /// @brief Set the frame-age threshold used to prune stale voxels.
+    void set_stale_frame_threshold(const uint32_t threshold) { this->stale_frame_threshold_ = threshold; }
+
     /// @brief Insert a point cloud captured at the given pose.
     /// @param cloud Point cloud in the sensor frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
@@ -367,14 +370,10 @@ public:
         return;
     }
 
-    /// @brief Get the frame-age threshold used to prune stale voxels.
-    static constexpr uint32_t stale_frame_threshold() { return kStaleFrameThreshold; }
-
 private:
     inline static constexpr float kPi = 3.1415927f;
     inline static constexpr float kFovTolerance = 1e-6f;
     inline static constexpr float kOcclusionEpsilon = 1e-6f;
-    inline static constexpr uint32_t kStaleFrameThreshold = 100U;
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint32_t = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint64_t = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
@@ -1144,7 +1143,7 @@ private:
     void prune_stale_voxels() {
         const size_t N = this->capacity_;
         const uint32_t current_frame = this->frame_index_;
-        const uint32_t stale_threshold = kStaleFrameThreshold;
+        const uint32_t stale_threshold = this->stale_frame_threshold_;
 
         shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
         shared_vector<uint32_t> pruned_counter(1, 0U, *this->queue_.ptr);
@@ -1308,6 +1307,7 @@ private:
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
     uint32_t frame_index_ = 0U;
+    uint32_t stale_frame_threshold_ = 100U;
 
     inline static constexpr std::array<size_t, 11> kCapacityCandidates = {
         30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};

@@ -304,6 +304,8 @@ TEST(OccupancyGridMapTest, PruneStaleVoxelsByFrameAge) {
         map.set_log_odds_miss(-0.5f);
         map.set_free_space_updates_enabled(false);
         map.set_voxel_pruning_enabled(true);
+        const uint32_t stale_frame_threshold = 100U;
+        map.set_stale_frame_threshold(stale_frame_threshold);
 
         // Insert a single voxel at the origin.
         const std::vector<Eigen::Vector3f> first_scan = {
@@ -317,7 +319,7 @@ TEST(OccupancyGridMapTest, PruneStaleVoxelsByFrameAge) {
             {1.0f, 0.0f, 0.0f},
         };
         auto filler_cloud = MakePointCloud(queue, filler_scan);
-        for (uint32_t i = 0; i <= sycl_points::algorithms::mapping::OccupancyGridMap::stale_frame_threshold(); ++i) {
+        for (uint32_t i = 0; i <= stale_frame_threshold; ++i) {
             map.add_point_cloud(filler_cloud, Eigen::Isometry3f::Identity());
         }
 
