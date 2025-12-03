@@ -621,16 +621,16 @@ private:
         for (size_t probe = 0; probe < max_probe; ++probe) {
             const size_t slot_idx = compute_slot_id(voxel_hash, probe, capacity);
             auto key_ref = atomic_ref_uint64_t(key_ptr[slot_idx]);
-            uint64_t stored = key_ref.load();
-            if (stored == VoxelConstants::invalid_coord || stored == VoxelConstants::deleted_coord) {
-                if (key_ref.compare_exchange_strong(stored, voxel_hash)) {
+            uint64_t expected = key_ref.load();
+            if (expected == VoxelConstants::invalid_coord || expected == VoxelConstants::deleted_coord) {
+                if (key_ref.compare_exchange_strong(expected, voxel_hash)) {
                     counter(1U);
                     atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                     atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                     break;
                 }
             }
-            if (stored == voxel_hash) {
+            if (expected == voxel_hash) {
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                 atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                 break;
@@ -1147,11 +1147,13 @@ private:
         const uint32_t stale_threshold = kStaleFrameThreshold;
 
         shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
+        shared_vector<uint32_t> pruned_counter(1, 0U, *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             auto counter_ptr = voxel_counter.data();
+            auto pruned_ptr = pruned_counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1165,6 +1167,7 @@ private:
                 if (is_stale) {
                     key_ptr[i] = VoxelConstants::deleted_coord;
                     voxel_ptr[i] = VoxelData{};
+                    atomic_ref_uint32_t(pruned_ptr[0]).fetch_add(1U);
                     return;
                 }
 
@@ -1174,6 +1177,12 @@ private:
         event.wait_and_throw();
 
         this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+
+        const size_t pruned = static_cast<size_t>(pruned_counter.at(0));
+        const bool should_compact = pruned > 0 && pruned * 4 >= this->capacity_;
+        if (should_compact) {
+            this->rehash(this->capacity_);
+        }
     }
 
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
