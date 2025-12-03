@@ -626,12 +626,14 @@ private:
                 if (key_ref.compare_exchange_strong(stored, voxel_hash)) {
                     counter(1U);
                     atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
+                    atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                     break;
                 }
                 stored = key_ref.load();
             }
             if (stored == voxel_hash) {
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
+                atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                 break;
             }
         }
@@ -1121,7 +1123,6 @@ private:
             auto voxel_ptr = this->data_ptr_.get();
             const float min_log_odds = this->min_log_odds_;
             const float max_log_odds = this->max_log_odds_;
-            const uint32_t update_frame = current_frame;
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
                 if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
@@ -1137,8 +1138,6 @@ private:
                 current_log_odds = sycl::fmax(min_log_odds, sycl::fmin(max_log_odds, current_log_odds + delta));
                 voxel_ptr[i].log_odds = current_log_odds;
                 voxel_ptr[i].pending_log_odds = 0.0f;
-                // Track the frame in which the voxel was actually updated.
-                voxel_ptr[i].last_updated = update_frame;
             });
         });
         event.wait_and_throw();
