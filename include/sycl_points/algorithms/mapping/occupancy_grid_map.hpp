@@ -140,8 +140,8 @@ public:
         this->apply_pending_log_odds();
 
         if (this->visibility_decay_enabled_ && this->log_odds_miss_ != 0.0f) {
-            // Decay occupancy for voxels close to the sensor that were not revisited.
-            this->apply_visibility_decay(sensor_pose.translation());
+            // Remove voxels that have not been updated recently to keep the map fresh.
+            this->prune_stale_voxels();
         }
 
         ++this->frame_index_;
@@ -379,6 +379,7 @@ private:
     inline static constexpr float kPi = 3.1415927f;
     inline static constexpr float kFovTolerance = 1e-6f;
     inline static constexpr float kOcclusionEpsilon = 1e-6f;
+    inline static constexpr uint32_t kStaleFrameThreshold = 100U;
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint32_t = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint64_t = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
@@ -397,7 +398,7 @@ private:
         uint32_t hit_count = 0U;
         uint32_t color_count = 0U;
         uint32_t intensity_count = 0U;
-        uint32_t last_observed = 0U;
+        uint32_t last_updated = 0U;  // Frame index when the voxel was last modified.
     };
 
     struct VoxelAccumulator {
@@ -625,12 +626,10 @@ private:
             if (atomic_ref_uint64_t(key_ptr[slot_idx]).compare_exchange_strong(expected, voxel_hash)) {
                 counter(1U);
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
-                atomic_ref_uint32_t(voxel_ptr[slot_idx].last_observed).store(current_frame);
                 break;
             }
             if (expected == voxel_hash) {
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
-                atomic_ref_uint32_t(voxel_ptr[slot_idx].last_observed).store(current_frame);
                 break;
             }
         }
@@ -1113,12 +1112,14 @@ private:
 
     void apply_pending_log_odds() {
         const size_t N = this->capacity_;
+        const uint32_t current_frame = this->frame_index_;
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             const float min_log_odds = this->min_log_odds_;
             const float max_log_odds = this->max_log_odds_;
+            const uint32_t update_frame = current_frame;
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
                 if (key_ptr[i] == VoxelConstants::invalid_coord) {
@@ -1134,28 +1135,24 @@ private:
                 current_log_odds = sycl::fmax(min_log_odds, sycl::fmin(max_log_odds, current_log_odds + delta));
                 voxel_ptr[i].log_odds = current_log_odds;
                 voxel_ptr[i].pending_log_odds = 0.0f;
+                // Track the frame in which the voxel was actually updated.
+                voxel_ptr[i].last_updated = update_frame;
             });
         });
         event.wait_and_throw();
     }
 
-    void apply_visibility_decay(const Eigen::Vector3f& sensor_position) {
+    void prune_stale_voxels() {
         const size_t N = this->capacity_;
-        const float max_distance_sq = this->visibility_decay_range_ * this->visibility_decay_range_;
         const uint32_t current_frame = this->frame_index_;
-        const float log_odds_miss = this->log_odds_miss_;
-        const float min_log_odds = this->min_log_odds_;
+        const uint32_t stale_threshold = kStaleFrameThreshold;
+
+        shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
-            const float sensor_x = sensor_position.x();
-            const float sensor_y = sensor_position.y();
-            const float sensor_z = sensor_position.z();
-            const float max_dist_sq = max_distance_sq;
-            const float log_miss = log_odds_miss;
-            const float min_log = min_log_odds;
-            const float max_log = this->max_log_odds_;
+            auto counter_ptr = voxel_counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1164,33 +1161,21 @@ private:
                 }
 
                 const VoxelData& data = voxel_ptr[i];
-                if (data.last_observed == current_frame) {
+                // Evict voxels whose last update frame is older than the allowed threshold.
+                const bool is_stale = current_frame > data.last_updated &&
+                                      (current_frame - data.last_updated) > stale_threshold;
+                if (is_stale) {
+                    key_ptr[i] = VoxelConstants::invalid_coord;
+                    voxel_ptr[i] = VoxelData{};
                     return;
                 }
 
-                if (data.hit_count == 0U) {
-                    return;
-                }
-
-                const float inv_count = 1.0f / static_cast<float>(data.hit_count);
-                const float cx = data.sum_x * inv_count;
-                const float cy = data.sum_y * inv_count;
-                const float cz = data.sum_z * inv_count;
-
-                const float dx = cx - sensor_x;
-                const float dy = cy - sensor_y;
-                const float dz = cz - sensor_z;
-                const float dist_sq = dx * dx + dy * dy + dz * dz;
-                if (dist_sq > max_dist_sq) {
-                    return;
-                }
-
-                float updated = data.log_odds + log_miss;
-                updated = sycl::fmax(min_log, sycl::fmin(max_log, updated));
-                voxel_ptr[i].log_odds = updated;
+                atomic_ref_uint32_t(counter_ptr[0]).fetch_add(1U);
             });
         });
         event.wait_and_throw();
+
+        this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
     }
 
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
