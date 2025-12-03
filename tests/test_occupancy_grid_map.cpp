@@ -224,7 +224,7 @@ TEST(OccupancyGridMapTest, DisablingFreeSpaceSkipsCarving) {
     }
 }
 
-TEST(OccupancyGridMapTest, VisibilityDecayReducesUnobservedVoxels) {
+TEST(OccupancyGridMapTest, RepeatedObservationsIncreaseConfidence) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
@@ -261,7 +261,7 @@ TEST(OccupancyGridMapTest, VisibilityDecayReducesUnobservedVoxels) {
     }
 }
 
-TEST(OccupancyGridMapTest, DisablingVisibilityDecayPreservesUnseenVoxels) {
+TEST(OccupancyGridMapTest, DisablingVoxelPruningPreservesAllVoxels) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         sycl_points::sycl_utils::DeviceQueue queue(device);
@@ -269,8 +269,6 @@ TEST(OccupancyGridMapTest, DisablingVisibilityDecayPreservesUnseenVoxels) {
         sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
         map.set_log_odds_hit(1.0f);
         map.set_log_odds_miss(-0.5f);
-        map.set_visibility_decay_range(0.3f);
-
         const std::vector<Eigen::Vector3f> first_scan = {
             {0.0f, 0.0f, 0.0f},
             {0.2f, 0.0f, 0.0f},
@@ -281,7 +279,7 @@ TEST(OccupancyGridMapTest, DisablingVisibilityDecayPreservesUnseenVoxels) {
         const Eigen::Vector3f unobserved_query(0.2f, 0.0f, 0.0f);
         const float baseline_probability = map.voxel_probability(unobserved_query);
 
-        map.set_visibility_decay_enabled(false);
+        map.set_voxel_pruning_enabled(false);
 
         const std::vector<Eigen::Vector3f> second_scan = {
             {0.0f, 0.0f, 0.0f},
@@ -291,6 +289,45 @@ TEST(OccupancyGridMapTest, DisablingVisibilityDecayPreservesUnseenVoxels) {
 
         const float updated_probability = map.voxel_probability(unobserved_query);
         EXPECT_NEAR(updated_probability, baseline_probability, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(OccupancyGridMapTest, PruneStaleVoxelsByFrameAge) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
+        map.set_log_odds_hit(1.0f);
+        map.set_log_odds_miss(-0.5f);
+        map.set_free_space_updates_enabled(false);
+        map.set_voxel_pruning_enabled(true);
+        const uint32_t stale_frame_threshold = 100U;
+        map.set_stale_frame_threshold(stale_frame_threshold);
+
+        // Insert a single voxel at the origin.
+        const std::vector<Eigen::Vector3f> first_scan = {
+            {0.0f, 0.0f, 0.0f},
+        };
+        auto first_cloud = MakePointCloud(queue, first_scan);
+        map.add_point_cloud(first_cloud, Eigen::Isometry3f::Identity());
+
+        // Advance frames with observations that do not update the origin voxel.
+        const std::vector<Eigen::Vector3f> filler_scan = {
+            {1.0f, 0.0f, 0.0f},
+        };
+        auto filler_cloud = MakePointCloud(queue, filler_scan);
+        for (uint32_t i = 0; i <= stale_frame_threshold; ++i) {
+            map.add_point_cloud(filler_cloud, Eigen::Isometry3f::Identity());
+        }
+
+        // The origin voxel should have been pruned while the filler voxel remains.
+        const Eigen::Vector3f stale_query(0.0f, 0.0f, 0.0f);
+        const Eigen::Vector3f kept_query(1.0f, 0.0f, 0.0f);
+        EXPECT_NEAR(map.voxel_probability(stale_query), 0.5f, 1e-5f);
+        EXPECT_GT(map.voxel_probability(kept_query), 0.5f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }

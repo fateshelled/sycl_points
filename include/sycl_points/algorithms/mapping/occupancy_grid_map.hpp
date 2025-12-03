@@ -79,19 +79,8 @@ public:
     /// @brief Enable or disable free-space carving along measurement rays.
     void set_free_space_updates_enabled(const bool enabled) { this->free_space_updates_enabled_ = enabled; }
 
-    /// @brief Set the visibility decay range in meters.
-    void set_visibility_decay_range(const float distance) {
-        if (!(distance >= 0.0f)) {
-            throw std::invalid_argument("distance must be non-negative.");
-        }
-        this->visibility_decay_range_ = distance;
-    }
-
-    /// @brief Enable or disable the visibility decay pass.
-    void set_visibility_decay_enabled(const bool enabled) { this->visibility_decay_enabled_ = enabled; }
-
-    /// @brief Get the visibility decay range in meters.
-    float visibility_decay_range() const { return this->visibility_decay_range_; }
+    /// @brief Enable or disable pruning of stale voxels.
+    void set_voxel_pruning_enabled(const bool enabled) { this->voxel_pruning_enabled_ = enabled; }
 
     /// @brief Configure the minimum and maximum allowed log-odds.
     void set_log_odds_limits(const float minimum, const float maximum) {
@@ -109,6 +98,9 @@ public:
         }
         this->occupancy_threshold_log_odds_ = this->probability_to_log_odds(probability);
     }
+
+    /// @brief Set the frame-age threshold used to prune stale voxels.
+    void set_stale_frame_threshold(const uint32_t threshold) { this->stale_frame_threshold_ = threshold; }
 
     /// @brief Insert a point cloud captured at the given pose.
     /// @param cloud Point cloud in the sensor frame.
@@ -139,9 +131,9 @@ public:
         // Apply pending log-odds changes from hits and misses to the main storage.
         this->apply_pending_log_odds();
 
-        if (this->visibility_decay_enabled_ && this->log_odds_miss_ != 0.0f) {
-            // Decay occupancy for voxels close to the sensor that were not revisited.
-            this->apply_visibility_decay(sensor_pose.translation());
+        if (this->voxel_pruning_enabled_) {
+            // Remove voxels that have not been updated recently to keep the map fresh.
+            this->prune_stale_voxels();
         }
 
         ++this->frame_index_;
@@ -225,7 +217,7 @@ public:
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
                 const uint64_t current_key = key_ptr[i];
-                if (current_key == VoxelConstants::invalid_coord) {
+                if (current_key == VoxelConstants::invalid_coord || current_key == VoxelConstants::deleted_coord) {
                     return;
                 }
 
@@ -323,6 +315,9 @@ public:
                                 if (stored_key == VoxelConstants::invalid_coord) {
                                     return true;
                                 }
+                                if (stored_key == VoxelConstants::deleted_coord) {
+                                    continue;
+                                }
                             }
                             return true;
                         });
@@ -397,7 +392,7 @@ private:
         uint32_t hit_count = 0U;
         uint32_t color_count = 0U;
         uint32_t intensity_count = 0U;
-        uint32_t last_observed = 0U;
+        uint32_t last_updated = 0U;  // Frame index when the voxel was last modified.
     };
 
     struct VoxelAccumulator {
@@ -465,6 +460,9 @@ private:
             }
             if (stored_key == VoxelConstants::invalid_coord) {
                 break;
+            }
+            if (stored_key == VoxelConstants::deleted_coord) {
+                continue;
             }
         }
         return nullptr;
@@ -551,7 +549,7 @@ private:
                         if (i >= N) return;
 
                         const uint64_t key = old_key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord) return;
+                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
                         const VoxelData data = old_data_ptr[i];
                         bool inserted = false;
@@ -578,7 +576,7 @@ private:
                         if (i >= N) return;
 
                         const uint64_t key = old_key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord) return;
+                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
                         const VoxelData data = old_data_ptr[i];
                         bool inserted = false;
@@ -621,16 +619,21 @@ private:
 
         for (size_t probe = 0; probe < max_probe; ++probe) {
             const size_t slot_idx = compute_slot_id(voxel_hash, probe, capacity);
-            uint64_t expected = VoxelConstants::invalid_coord;
-            if (atomic_ref_uint64_t(key_ptr[slot_idx]).compare_exchange_strong(expected, voxel_hash)) {
-                counter(1U);
-                atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
-                atomic_ref_uint32_t(voxel_ptr[slot_idx].last_observed).store(current_frame);
-                break;
+            auto key_ref = atomic_ref_uint64_t(key_ptr[slot_idx]);
+            uint64_t expected = key_ref.load();
+            if (expected == VoxelConstants::invalid_coord || expected == VoxelConstants::deleted_coord) {
+                // Attempt to insert. On CAS failure, `expected` is updated, and we fall through.
+                if (key_ref.compare_exchange_strong(expected, voxel_hash)) {
+                    counter(1U);
+                    atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
+                    atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
+                    break;
+                }
             }
+            // If the slot was already occupied, or if another thread just inserted our key, update it.
             if (expected == voxel_hash) {
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
-                atomic_ref_uint32_t(voxel_ptr[slot_idx].last_observed).store(current_frame);
+                atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                 break;
             }
         }
@@ -1121,7 +1124,7 @@ private:
             const float max_log_odds = this->max_log_odds_;
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord) {
+                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
                     return;
                 }
 
@@ -1139,58 +1142,48 @@ private:
         event.wait_and_throw();
     }
 
-    void apply_visibility_decay(const Eigen::Vector3f& sensor_position) {
+    void prune_stale_voxels() {
         const size_t N = this->capacity_;
-        const float max_distance_sq = this->visibility_decay_range_ * this->visibility_decay_range_;
         const uint32_t current_frame = this->frame_index_;
-        const float log_odds_miss = this->log_odds_miss_;
-        const float min_log_odds = this->min_log_odds_;
+        const uint32_t stale_threshold = this->stale_frame_threshold_;
+
+        shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
+        shared_vector<uint32_t> pruned_counter(1, 0U, *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
-            const float sensor_x = sensor_position.x();
-            const float sensor_y = sensor_position.y();
-            const float sensor_z = sensor_position.z();
-            const float max_dist_sq = max_distance_sq;
-            const float log_miss = log_odds_miss;
-            const float min_log = min_log_odds;
-            const float max_log = this->max_log_odds_;
+            auto counter_ptr = voxel_counter.data();
+            auto pruned_ptr = pruned_counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord) {
+                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
                     return;
                 }
 
                 const VoxelData& data = voxel_ptr[i];
-                if (data.last_observed == current_frame) {
+                // Evict voxels whose last update frame is older than the allowed threshold.
+                const bool is_stale = (current_frame - data.last_updated) > stale_threshold;
+                if (is_stale) {
+                    key_ptr[i] = VoxelConstants::deleted_coord;
+                    voxel_ptr[i] = VoxelData{};
+                    atomic_ref_uint32_t(pruned_ptr[0]).fetch_add(1U);
                     return;
                 }
 
-                if (data.hit_count == 0U) {
-                    return;
-                }
-
-                const float inv_count = 1.0f / static_cast<float>(data.hit_count);
-                const float cx = data.sum_x * inv_count;
-                const float cy = data.sum_y * inv_count;
-                const float cz = data.sum_z * inv_count;
-
-                const float dx = cx - sensor_x;
-                const float dy = cy - sensor_y;
-                const float dz = cz - sensor_z;
-                const float dist_sq = dx * dx + dy * dy + dz * dz;
-                if (dist_sq > max_dist_sq) {
-                    return;
-                }
-
-                float updated = data.log_odds + log_miss;
-                updated = sycl::fmax(min_log, sycl::fmin(max_log, updated));
-                voxel_ptr[i].log_odds = updated;
+                atomic_ref_uint32_t(counter_ptr[0]).fetch_add(1U);
             });
         });
         event.wait_and_throw();
+
+        this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+
+        const size_t pruned = static_cast<size_t>(pruned_counter.at(0));
+        const bool should_compact = pruned > 0 && pruned * 4 >= this->capacity_;
+        if (should_compact) {
+            this->rehash(this->capacity_);
+        }
     }
 
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
@@ -1225,7 +1218,7 @@ private:
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord) {
+                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
                     return;
                 }
 
@@ -1311,12 +1304,12 @@ private:
     float min_log_odds_ = -4.0f;
     float max_log_odds_ = 4.0f;
     float occupancy_threshold_log_odds_ = probability_to_log_odds(0.5f);
-    float visibility_decay_range_ = 30.0f;
     bool free_space_updates_enabled_ = true;
-    bool visibility_decay_enabled_ = true;
+    bool voxel_pruning_enabled_ = true;
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
     uint32_t frame_index_ = 0U;
+    uint32_t stale_frame_threshold_ = 100U;
 
     inline static constexpr std::array<size_t, 11> kCapacityCandidates = {
         30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};
