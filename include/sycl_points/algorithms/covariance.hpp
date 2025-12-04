@@ -220,7 +220,7 @@ inline sycl_utils::events compute_normals_from_covariances_async(
 inline void compute_normals_from_covariances(const PointCloudShared& points,
                                              const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = points.size();
-    compute_normals_from_covariances_async(points, depends).wait();
+    compute_normals_from_covariances_async(points, depends).wait_and_throw();
 }
 
 /// @brief Async update covariance matrix to a plane
@@ -256,7 +256,7 @@ inline sycl_utils::events covariance_update_plane_async(
 /// @param points Point Cloud with covatiance
 inline void covariance_update_plane(const PointCloudShared& points,
                                     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    covariance_update_plane_async(points, depends).wait();
+    covariance_update_plane_async(points, depends).wait_and_throw();
 }
 
 /// @brief Async normalize covariance matrix
@@ -292,7 +292,7 @@ inline sycl_utils::events covariance_normalize_async(
 /// @param points Point Cloud with covatiance
 inline void covariance_normalize(const PointCloudShared& points,
                                  const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    covariance_normalize_async(points, depends).wait();
+    covariance_normalize_async(points, depends).wait_and_throw();
 }
 
 }  // namespace covariance

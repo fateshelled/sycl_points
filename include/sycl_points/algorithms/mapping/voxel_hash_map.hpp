@@ -7,6 +7,7 @@
 #include <sycl_points/algorithms/common/prefix_sum.hpp>
 #include <sycl_points/algorithms/common/voxel_constants.hpp>
 #include <sycl_points/algorithms/common/workgroup_utils.hpp>
+#include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
@@ -325,7 +326,7 @@ private:
         evs += this->queue_.ptr->fill<VoxelPoint>(this->sum_ptr_.get(), VoxelPoint{}, this->capacity_);
         evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
         evs += this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_.get(), 0, this->capacity_);
-        evs.wait();
+        evs.wait_and_throw();
     }
 
     size_t get_next_capacity_value() const {
@@ -534,7 +535,7 @@ private:
                 });
             }
         });
-        reduction_event.wait();
+        reduction_event.wait_and_throw();
         this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
     }
 
@@ -600,7 +601,7 @@ private:
                     });
                 }
             })
-            .wait();
+            .wait_and_throw();
         this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
     }
 
@@ -663,7 +664,7 @@ private:
                     });
                 }
             })
-            .wait();
+            .wait_and_throw();
         this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
     }
 
@@ -713,7 +714,7 @@ private:
                         valid_flags[global_id] = 1U;
                     });
                 })
-                .wait();
+                .wait_and_throw();
             // compute prefix sum
             filtered_voxel_count = this->prefix_sum_->compute(*this->valid_flags_ptr_);
         }
@@ -777,7 +778,7 @@ private:
                     });
                 }
             })
-            .wait();
+            .wait_and_throw();
 
         if (!is_nvidia) {
             filtered_voxel_count = static_cast<size_t>(point_num_vec.at(0));

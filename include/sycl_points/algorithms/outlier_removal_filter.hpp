@@ -88,7 +88,7 @@ public:
                         global_sum += mean_distance;
                     });
             })
-            .wait();
+            .wait_and_throw();
 
         // compute variance
         shared_vector<float> global_variance_vec(1, 0.0f, *this->queue_.ptr);
@@ -113,7 +113,7 @@ public:
                         global_var += sub * sub;
                     });
             })
-            .wait();
+            .wait_and_throw();
 
         // compute flags
         this->queue_.ptr
@@ -136,7 +136,7 @@ public:
                     flag_ptr[index] = (mean_dist > threshold) ? REMOVE_FLAG : INCLUDE_FLAG;
                 });
             })
-            .wait();
+            .wait_and_throw();
 
         // filter
         this->filter_by_flags(cloud);
@@ -191,7 +191,7 @@ public:
                     flag_ptr[index] = (max_dist > threshold) ? REMOVE_FLAG : INCLUDE_FLAG;
                 });
             })
-            .wait();
+            .wait_and_throw();
 
         // filter
         this->filter_by_flags(cloud);
