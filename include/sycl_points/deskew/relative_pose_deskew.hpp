@@ -2,6 +2,7 @@
 
 #include <Eigen/Geometry>
 #include <algorithm>
+#include <array>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
@@ -74,34 +75,73 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
     // Compute motion between the two poses and map it to the twist vector.
     const Eigen::Transform<float, 3, 1> delta_pose = previous_relative_pose.inverse() * current_relative_pose;
     const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(delta_pose);
-    for (size_t idx = 0; idx < input_cloud.size(); ++idx) {
-        const float timestamp_seconds = (*input_cloud.timestamp_offsets)[idx] * 1e-3f;
-        if (!std::isfinite(timestamp_seconds)) {
-            continue;
-        }
+    std::array<float, 6> delta_twist_array{};
+    std::copy(delta_twist.data(), delta_twist.data() + delta_twist.size(), delta_twist_array.begin());
 
-        // Normalize with respect to the scan duration using timestamp offsets directly.
-        const float normalized_time =
-            delta_time_seconds > 0.0f ? std::clamp(timestamp_seconds / delta_time_seconds, 0.0f, 1.0f) : 0.0f;
+    const auto work_group_size = input_cloud.queue.get_work_group_size();
+    const auto global_size = input_cloud.queue.get_global_size(input_cloud.size());
+    const size_t cloud_size = output_cloud.size();
 
-        const Eigen::Vector<float, 6> scaled_twist = (delta_twist * normalized_time).eval();
+    // Cache raw pointers for the device kernel.
+    auto* points_in = input_cloud.points->data();
+    auto* points_out = output_cloud.points->data();
+    auto* normals_in = input_cloud.has_normal() ? input_cloud.normals->data() : nullptr;
+    auto* normals_out = output_cloud.has_normal() ? output_cloud.normals->data() : nullptr;
+    auto* covs_in = input_cloud.has_cov() ? input_cloud.covs->data() : nullptr;
+    auto* covs_out = output_cloud.has_cov() ? output_cloud.covs->data() : nullptr;
+    auto* timestamps = output_cloud.timestamp_offsets->data();
 
-        const Eigen::Transform<float, 3, 1> point_motion = eigen_utils::lie::se3_exp(scaled_twist);
-        const Eigen::Vector3f corrected_point = point_motion * (*input_cloud.points)[idx].head<3>();
-        (*output_cloud.points)[idx].head<3>() = corrected_point;
+    const bool process_normals = normals_in != nullptr && normals_out != nullptr;
+    const bool process_covs = covs_in != nullptr && covs_out != nullptr;
 
-        // Rotate normals and covariances using the integrated angular velocity.
-        const Eigen::Vector3f integrated_omega = scaled_twist.head<3>();
-        const Eigen::Matrix3f rotation = eigen_utils::lie::so3_exp(integrated_omega).toRotationMatrix();
-        if (input_cloud.has_normal() && output_cloud.has_normal()) {
-            (*output_cloud.normals)[idx].head<3>() = rotation * (*input_cloud.normals)[idx].head<3>();
-        }
-        if (input_cloud.has_cov() && output_cloud.has_cov()) {
-            Eigen::Matrix3f rotated_cov =
-                rotation * (*input_cloud.covs)[idx].topLeftCorner<3, 3>() * rotation.transpose();
-            (*output_cloud.covs)[idx].topLeftCorner<3, 3>() = rotated_cov;
-        }
-    }
+    // Launch device kernel to deskew each point independently.
+    sycl::event deskew_event = input_cloud.queue.ptr->submit([&](sycl::handler& cgh) {
+        cgh.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+            const size_t idx = item.get_global_linear_id();
+            if (idx >= cloud_size) {
+                return;
+            }
+
+            const float timestamp_seconds = timestamps[idx] * 1e-3f;
+            if (!sycl::isfinite(timestamp_seconds)) {
+                return;
+            }
+
+            // Normalize with respect to the scan duration using timestamp offsets directly.
+            const float normalized_time = sycl::clamp(timestamp_seconds / delta_time_seconds, 0.0f, 1.0f);
+
+            Eigen::Vector<float, 6> scaled_twist;
+            for (size_t i = 0; i < delta_twist_array.size(); ++i) {
+                scaled_twist[static_cast<Eigen::Index>(i)] = delta_twist_array[i] * normalized_time;
+            }
+
+            const Eigen::Transform<float, 3, 1> point_motion = eigen_utils::lie::se3_exp(scaled_twist);
+
+            // Apply rotation and translation to deskew the point in the device kernel.
+            const Eigen::Matrix3f rotation = point_motion.linear();
+            const Eigen::Vector3f translation = point_motion.translation();
+            const Eigen::Vector3f point_in = points_in[idx].template head<3>();
+            const Eigen::Vector3f rotated_point = eigen_utils::multiply<3, 3>(rotation, point_in);
+            points_out[idx].template head<3>() = eigen_utils::add<3, 1>(rotated_point, translation);
+
+            // Rotate normals and covariances using the integrated angular velocity.
+            const Eigen::Vector3f integrated_omega = scaled_twist.template head<3>();
+            const Eigen::Matrix3f rotation_omega = eigen_utils::lie::so3_exp(integrated_omega).toRotationMatrix();
+            if (process_normals) {
+                const Eigen::Vector3f normal_in = normals_in[idx].template head<3>();
+                normals_out[idx].template head<3>() = eigen_utils::multiply<3, 3>(rotation_omega, normal_in);
+            }
+            if (process_covs) {
+                const Eigen::Matrix3f cov_in = covs_in[idx].topLeftCorner<3, 3>();
+                const Eigen::Matrix3f rotation_omega_t = eigen_utils::transpose(rotation_omega);
+                const Eigen::Matrix3f rotated_cov =
+                    eigen_utils::multiply<3, 3, 3>(rotation_omega, eigen_utils::multiply<3, 3, 3>(cov_in, rotation_omega_t));
+                covs_out[idx].topLeftCorner<3, 3>() = rotated_cov;
+            }
+        });
+    });
+
+    deskew_event.wait();
 
     return true;
 }
