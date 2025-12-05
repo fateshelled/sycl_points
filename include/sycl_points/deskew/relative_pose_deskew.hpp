@@ -76,9 +76,7 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
     const Eigen::Transform<float, 3, 1> delta_pose = previous_relative_pose.inverse() * current_relative_pose;
     const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(delta_pose);
     std::array<float, 6> delta_twist_array{};
-    for (size_t i = 0; i < delta_twist_array.size(); ++i) {
-        delta_twist_array[i] = delta_twist[static_cast<Eigen::Index>(i)];
-    }
+    std::copy(delta_twist.data(), delta_twist.data() + delta_twist.size(), delta_twist_array.begin());
 
     const auto work_group_size = input_cloud.queue.get_work_group_size();
     const auto global_size = input_cloud.queue.get_global_size(input_cloud.size());
@@ -135,7 +133,7 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
             }
             if (process_covs) {
                 const Eigen::Matrix3f cov_in = covs_in[idx].topLeftCorner<3, 3>();
-                const Eigen::Matrix3f rotation_omega_t = rotation_omega.transpose();
+                const Eigen::Matrix3f rotation_omega_t = eigen_utils::transpose(rotation_omega);
                 const Eigen::Matrix3f rotated_cov =
                     eigen_utils::multiply<3, 3, 3>(rotation_omega, eigen_utils::multiply<3, 3, 3>(cov_in, rotation_omega_t));
                 covs_out[idx].topLeftCorner<3, 3>() = rotated_cov;
