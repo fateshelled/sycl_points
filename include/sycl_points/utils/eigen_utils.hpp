@@ -739,7 +739,7 @@ SYCL_EXTERNAL inline Eigen::Matrix3<T> skew(const Eigen::Vector4<T>& x) {
 /// https://github.com/koide3/small_gicp/blob/master/include/small_gicp/util/lie.hpp
 template <typename T = float>
 inline Eigen::Quaternion<T> so3_exp(const Eigen::Vector3<T>& omega) {
-    const T theta_sq = omega.dot(omega);
+    const T theta_sq = eigen_utils::dot<3>(omega, omega);
 
     T imag_factor;
     T real_factor;
@@ -767,7 +767,7 @@ inline Eigen::Transform<T, 3, 1> se3_exp(const Eigen::Vector<T, 6>& a) {
     using Isometry3 = Eigen::Transform<T, 3, 1>;
     const Eigen::Vector3<T> omega(a[0], a[1], a[2]);
 
-    const T theta_sq = omega.dot(omega);
+    const T theta_sq = eigen_utils::dot<3>(omega, omega);
     const T theta = std::sqrt(theta_sq);
 
     Isometry3 se3 = Isometry3::Identity();
