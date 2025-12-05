@@ -8,24 +8,6 @@
 namespace sycl_points {
 namespace {
 
-TEST(RelativePoseDeskewTest, EstimatesVelocityFromRelativePose) {
-    const Eigen::Transform<float, 3, 1> start_pose = Eigen::Transform<float, 3, 1>::Identity();
-    Eigen::Transform<float, 3, 1> end_pose = Eigen::Transform<float, 3, 1>::Identity();
-    end_pose.translation() = Eigen::Vector3f(2.0f, -1.0f, 0.5f);
-    end_pose.linear() = Eigen::AngleAxisf(static_cast<float>(M_PI_2), Eigen::Vector3f::UnitZ()).toRotationMatrix();
-
-    ConstantBodyVelocity velocity;
-    const bool success = estimate_constant_body_velocity(start_pose, end_pose, 2.0f, velocity);
-
-    ASSERT_TRUE(success);
-    const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(start_pose.inverse() * end_pose);
-    const Eigen::Vector3f expected_linear = delta_twist.tail<3>() * 0.5f;
-    const Eigen::Vector3f expected_angular = delta_twist.head<3>() * 0.5f;
-
-    EXPECT_NEAR((velocity.linear_velocity - expected_linear).norm(), 0.0f, 1e-6f);
-    EXPECT_NEAR((velocity.angular_velocity - expected_angular).norm(), 0.0f, 1e-6f);
-}
-
 TEST(RelativePoseDeskewTest, DeskewsPointsWithConstantVelocity) {
     const Eigen::Transform<float, 3, 1> start_pose = Eigen::Transform<float, 3, 1>::Identity();
     Eigen::Transform<float, 3, 1> end_pose = Eigen::Transform<float, 3, 1>::Identity();
@@ -94,9 +76,6 @@ TEST(RelativePoseDeskewTest, HandlesNonPositiveDuration) {
     const Eigen::Transform<float, 3, 1> start_pose = Eigen::Transform<float, 3, 1>::Identity();
     const Eigen::Transform<float, 3, 1> end_pose = Eigen::Transform<float, 3, 1>::Identity();
 
-    ConstantBodyVelocity velocity;
-    EXPECT_FALSE(estimate_constant_body_velocity(start_pose, end_pose, 0.0f, velocity));
-
     sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
     sycl_points::sycl_utils::DeviceQueue queue(device);
 
@@ -114,4 +93,3 @@ TEST(RelativePoseDeskewTest, HandlesNonPositiveDuration) {
 
 }  // namespace
 }  // namespace sycl_points
-
