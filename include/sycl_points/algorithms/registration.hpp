@@ -5,10 +5,10 @@
 #include <limits>
 #include <random>
 #include <sycl_points/algorithms/covariance.hpp>
+#include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/algorithms/registration_factor.hpp>
 #include <sycl_points/algorithms/transform.hpp>
-#include <sycl_points/deskew/relative_pose_deskew.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 
 namespace sycl_points {
@@ -377,7 +377,8 @@ public:
                         std::cout << "deskewed[" << deskew_iter << "]: angle=" << delta_angle << ", dist=" << delta_dist
                                   << std::endl;
                     }
-                    deskew_point_cloud_constant_velocity(source, deskewed, Eigen::Isometry3f(prev_pose), result.T, dt);
+                    deskew::deskew_point_cloud_constant_velocity(source, deskewed, Eigen::Isometry3f(prev_pose),
+                                                                 result.T, dt);
 
                     for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
                         // Nearest neighbor search on device

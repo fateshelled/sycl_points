@@ -9,6 +9,10 @@
 
 namespace sycl_points {
 
+namespace algorithms {
+
+namespace deskew {
+
 /// @brief Deskew a point cloud assuming constant body velocity between two poses.
 ///
 /// Points are transformed from the sensor frame at their sampling time into the
@@ -148,4 +152,6 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
     return true;
 }
 
+}  // namespace deskew
+}  // namespace algorithms
 }  // namespace sycl_points

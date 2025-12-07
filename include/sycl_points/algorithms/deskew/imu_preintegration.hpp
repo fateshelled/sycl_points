@@ -9,6 +9,10 @@
 
 namespace sycl_points {
 
+namespace algorithms {
+
+namespace deskew {
+
 /// @brief Preintegrate IMU rotations and output cumulative orientations.
 /// @param imu_samples Sequence of IMU measurements ordered by timestamp.
 /// @return Quaternion sequence aligned with @p imu_samples.
@@ -29,12 +33,9 @@ struct IMUMotionState {
 /// rotation).
 /// @return Motion state sequence aligned with @p imu_samples.
 inline std::vector<IMUMotionState> preintegrate_imu_motion(const IMUDataContainerCPU& imu_samples,
-                                                          const Eigen::Vector3f& gyro_bias =
-                                                              Eigen::Vector3f::Zero(),
-                                                          const Eigen::Vector3f& accel_bias =
-                                                              Eigen::Vector3f::Zero(),
-                                                          const Eigen::Vector3f& gravity =
-                                                              Eigen::Vector3f::Zero()) {
+                                                           const Eigen::Vector3f& gyro_bias = Eigen::Vector3f::Zero(),
+                                                           const Eigen::Vector3f& accel_bias = Eigen::Vector3f::Zero(),
+                                                           const Eigen::Vector3f& gravity = Eigen::Vector3f::Zero()) {
     std::vector<IMUMotionState> motion_states;
     motion_states.reserve(imu_samples.size());
     if (imu_samples.empty()) {
@@ -142,8 +143,8 @@ inline bool deskew_point_cloud(PointCloudCPU& cloud, const IMUDataContainerCPU& 
         return false;
     }
 
-    const std::vector<IMUMotionState> motion_states = preintegrate_imu_motion(imu_samples, gyro_bias,
-                                                                             accel_bias, gravity);
+    const std::vector<IMUMotionState> motion_states =
+        preintegrate_imu_motion(imu_samples, gyro_bias, accel_bias, gravity);
     if (motion_states.size() != imu_samples.size()) {
         return false;
     }
@@ -182,4 +183,6 @@ inline bool deskew_point_cloud(PointCloudCPU& cloud, const IMUDataContainerCPU& 
     return true;
 }
 
+}  // namespace deskew
+}  // namespace algorithms
 }  // namespace sycl_points

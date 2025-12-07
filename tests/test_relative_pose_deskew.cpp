@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
 
-#include <sycl_points/deskew/relative_pose_deskew.hpp>
+#include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
 
-namespace sycl_points {
+namespace sycl_points::algorithms::deskew {
 namespace {
 
 TEST(RelativePoseDeskewTest, DeskewsPointsWithConstantVelocity) {

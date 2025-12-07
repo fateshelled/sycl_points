@@ -2,11 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
-#include <sycl_points/deskew/imu_preintegration.hpp>
+#include <sycl_points/algorithms/deskew/imu_preintegration.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <vector>
 
-namespace sycl_points {
+namespace sycl_points::algorithms::deskew {
 namespace {
 
 /// @brief Helper to construct IMU sample timestamps from floating seconds.
