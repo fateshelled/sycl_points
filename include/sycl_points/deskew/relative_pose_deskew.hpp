@@ -16,7 +16,8 @@ namespace sycl_points {
 /// translation. Normals and covariances are rotated using the angular velocity
 /// model to keep them roughly aligned with the deskewed points, while color and
 /// intensity gradients are cleared.
-/// @param input_cloud Point cloud with timestamps. The data in this cloud is never modified.
+/// @param input_cloud Point cloud with timestamps. The data in this cloud is modified during in-place operation (i.e.
+/// `&input_cloud == &output_cloud`).
 /// @param output_cloud Point cloud receiving the deskewed data. Containers will be resized as needed.
 /// @param previous_relative_pose Relative pose at the start of the scan interval.
 /// @param current_relative_pose Relative pose at the end of the scan interval.
@@ -118,7 +119,7 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
             const Eigen::Matrix4f point_motion = eigen_utils::lie::se3_exp(scaled_twist);
 
             // Apply rotation and translation to deskew the point in the device kernel.
-            const auto&[rotation, translation] = eigen_utils::geometry::matrix4_to_isometry3(point_motion);
+            const auto& [rotation, translation] = eigen_utils::geometry::matrix4_to_isometry3(point_motion);
 
             const Eigen::Vector3f point_in = points_in[idx].template head<3>();
             const Eigen::Vector3f rotated_point = eigen_utils::multiply<3, 3>(rotation, point_in);

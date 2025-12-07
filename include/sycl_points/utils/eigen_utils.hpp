@@ -858,15 +858,12 @@ SYCL_EXTERNAL inline Eigen::Matrix4f se3_exp(const Eigen::Vector<float, 6>& a) {
         se3(2, 3) = trans[2];
     } else {
         const Eigen::Matrix3f Omega = skew(omega);
-        // const Eigen::Matrix3<T> V = Eigen::Matrix3<T>::Identity() + ((T)1.0f - std::cos(theta)) / theta_sq * Omega +
-        //                             (theta - std::sin(theta)) / (theta_sq * theta) * Omega * Omega;
         // V = I + (1.0 - cosθ / θ^1/2) * Omega + ((θ - sinθ) / (θ^1/2 * θ)) * Omega^2
-        const Eigen::Matrix3f V = add<3, 3>(Eigen::Matrix3f::Identity(),                                     //
-                                            add<3, 3>(                                                       //
-                                                multiply<3, 3>(Omega, (1.0f - std::cos(theta)) / theta_sq),  //
-                                                multiply<3, 3>(                                              //
-                                                    multiply<3, 3, 3>(Omega, Omega),                         //
-                                                    (theta - std::sin(theta)) / (theta_sq * theta))));
+        const Eigen::Matrix3f Omega_sq = multiply<3, 3, 3>(Omega, Omega);
+        const auto A = (1.0f - std::cos(theta)) / theta_sq;
+        const auto B = (theta - std::sin(theta)) / (theta_sq * theta);
+        const Eigen::Matrix3f V =
+            add<3, 3>(Eigen::Matrix3f::Identity(), add<3, 3>(multiply<3, 3>(Omega, A), multiply<3, 3>(Omega_sq, B)));
         const Eigen::Vector3f trans = multiply<3, 3>(V, Eigen::Vector3f(a[3], a[4], a[5]));
         se3(0, 3) = trans[0];
         se3(1, 3) = trans[1];
@@ -917,55 +914,54 @@ SYCL_EXTERNAL inline Eigen::Vector3f so3_log(const Eigen::Vector4f& quat) {
     const auto scale = theta / xyz_norm;
 
     return scale * xyz;
-}
 
-/// @brief SE3 logmap (Rotation-first).
-/// @param transform SE3 transformation matrix (Isometry3)
-/// @return Twist vector [rx, ry, rz, tx, ty, tz]
-SYCL_EXTERNAL inline Eigen::Vector<float, 6> se3_log(const Eigen::Transform<float, 3, 1>& transform) {
-    // Extract rotation and translation
-    const Eigen::Matrix3f R = transform.linear();
-    const Eigen::Vector3f t = transform.translation();
+    /// @brief SE3 logmap (Rotation-first).
+    /// @param transform SE3 transformation matrix (Isometry3)
+    /// @return Twist vector [rx, ry, rz, tx, ty, tz]
+    inline Eigen::Vector<float, 6> se3_log(const Eigen::Transform<float, 3, 1>& transform) {
+        // Extract rotation and translation
+        const Eigen::Matrix3f R = transform.linear();
+        const Eigen::Vector3f t = transform.translation();
 
-    // Convert rotation matrix to quaternion and then to rotation vector
-    const Eigen::Vector4f quat = geometry::rotation_matrix_to_quaternion(R);
-    const Eigen::Vector3f omega = so3_log(quat);
+        // Convert rotation matrix to quaternion and then to rotation vector
+        const Eigen::Vector4f quat = geometry::rotation_matrix_to_quaternion(R);
+        const Eigen::Vector3f omega = so3_log(quat);
 
-    const auto theta = frobenius_norm<3>(omega);
+        const auto theta = frobenius_norm<3>(omega);
 
-    Eigen::Vector<float, 6> result;
-    result[0] = omega[0];
-    result[1] = omega[1];
-    result[2] = omega[2];
+        Eigen::Vector<float, 6> result;
+        result[0] = omega[0];
+        result[1] = omega[1];
+        result[2] = omega[2];
 
-    // Handle small angle case
-    if (theta < 1e-6f) {
-        // For small angles: V^-1 ≈ I - 0.5 * skew(omega)
-        const Eigen::Vector3f V_inv_t = (Eigen::Matrix3f::Identity() - 0.5f * skew(omega)) * t;
+        // Handle small angle case
+        if (theta < 1e-6f) {
+            // For small angles: V^-1 ≈ I - 0.5 * skew(omega)
+            const Eigen::Vector3f V_inv_t = (Eigen::Matrix3f::Identity() - 0.5f * skew(omega)) * t;
+            result[3] = V_inv_t[0];
+            result[4] = V_inv_t[1];
+            result[5] = V_inv_t[2];
+            return result;
+        }
+
+        // General case: compute V^-1
+        const auto half_theta = 0.5f * theta;
+        const auto sin_half_theta = sycl::sin(half_theta);
+        const auto cos_half_theta = sycl::cos(half_theta);
+
+        // V^-1 = I - 0.5 * Omega + (1/theta^2) * (1 - theta*sin_half_theta/(2*sin_half_theta^2)) * Omega^2
+        // Simplified: V^-1 = I - 0.5 * Omega + coeff * Omega^2
+        const auto coeff = (1.0f - theta * cos_half_theta / (2.0f * sin_half_theta)) / (theta * theta);
+
+        const Eigen::Matrix3f Omega = skew(omega);
+        const Eigen::Vector3f V_inv_t = (Eigen::Matrix3f::Identity() - 0.5f * Omega + coeff * Omega * Omega) * t;
+
         result[3] = V_inv_t[0];
         result[4] = V_inv_t[1];
         result[5] = V_inv_t[2];
+
         return result;
     }
-
-    // General case: compute V^-1
-    const auto half_theta = 0.5f * theta;
-    const auto sin_half_theta = sycl::sin(half_theta);
-    const auto cos_half_theta = sycl::cos(half_theta);
-
-    // V^-1 = I - 0.5 * Omega + (1/theta^2) * (1 - theta*sin_half_theta/(2*sin_half_theta^2)) * Omega^2
-    // Simplified: V^-1 = I - 0.5 * Omega + coeff * Omega^2
-    const auto coeff = (1.0f - theta * cos_half_theta / (2.0f * sin_half_theta)) / (theta * theta);
-
-    const Eigen::Matrix3f Omega = skew(omega);
-    const Eigen::Vector3f V_inv_t = (Eigen::Matrix3f::Identity() - 0.5f * Omega + coeff * Omega * Omega) * t;
-
-    result[3] = V_inv_t[0];
-    result[4] = V_inv_t[1];
-    result[5] = V_inv_t[2];
-
-    return result;
-}
 
 }  // namespace lie
 }  // namespace eigen_utils
