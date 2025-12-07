@@ -20,40 +20,8 @@ using ColorGradient = Eigen::Matrix3f;
 /// @brief Intensity gradient type (gradient along x, y, z)
 using IntensityGradient = Eigen::Vector3f;
 using TransformMatrix = Eigen::Matrix4f;
-
 /// @brief Timestamp offset in milliseconds relative to the first measurement.
 using TimestampOffset = float;
-
-/// @brief IMU measurement packet bundled for deskewing.
-struct IMUData {
-    /// @brief Timestamp seconds following ROS2 format.
-    int32_t timestamp_sec{0};
-    /// @brief Timestamp nanoseconds following ROS2 format.
-    uint32_t timestamp_nanosec{0};
-    Eigen::Vector3f angular_velocity{Eigen::Vector3f::Zero()};
-    Eigen::Vector3f linear_acceleration{Eigen::Vector3f::Zero()};
-
-    /// @brief Default constructor for containers.
-    IMUData() = default;
-
-    /// @brief Construct an IMU sample with explicit values.
-    /// @param sec Timestamp seconds component.
-    /// @param nanosec Timestamp nanoseconds component.
-    /// @param angular_vel Angular velocity (rad/s).
-    /// @param linear_acc Linear acceleration (m/s^2).
-    IMUData(int32_t sec, uint32_t nanosec, const Eigen::Vector3f& angular_vel, const Eigen::Vector3f& linear_acc)
-        : timestamp_sec(sec),
-          timestamp_nanosec(nanosec),
-          angular_velocity(angular_vel),
-          linear_acceleration(linear_acc) {}
-
-    /// @brief Convert ROS2 timestamp representation to seconds.
-    /// @return Timestamp in seconds as double precision floating point.
-    double timestamp_seconds() const {
-        constexpr double kNanoToSec = 1e-9;
-        return static_cast<double>(timestamp_sec) + static_cast<double>(timestamp_nanosec) * kNanoToSec;
-    }
-};
 
 // Vector of point on CPU. Accessible from CPU process only.
 using PointContainerCPU = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
@@ -94,10 +62,5 @@ using IntensityContainerShared = shared_vector<float>;
 using TimestampContainerCPU = std::vector<TimestampOffset>;
 // Vector of timestamp offsets on shared memory
 using TimestampContainerShared = shared_vector<TimestampOffset>;
-
-// Vector of IMU data on CPU.
-using IMUDataContainerCPU = std::vector<IMUData>;
-// Vector of IMU data on shared memory.
-using IMUDataContainerShared = shared_vector<IMUData>;
 
 }  // namespace sycl_points
