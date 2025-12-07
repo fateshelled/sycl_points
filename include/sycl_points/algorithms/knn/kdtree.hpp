@@ -10,6 +10,7 @@
 #include <sycl_points/algorithms/common/filter_by_flags.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/algorithms/knn/result.hpp>
+#include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
 
@@ -347,7 +348,8 @@ public:
     template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
     sycl_utils::events knn_search_async(const PointType* queries, const size_t query_size, const size_t k,
                                         KNNResult& result,
-                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
+                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                        const TransformMatrix& transT = TransformMatrix::Identity()) const {
         if (query_size == 0) {
             if (result.indices == nullptr || result.distances == nullptr) {
                 result.allocate(this->queue, 0, 0);
@@ -380,6 +382,7 @@ public:
             const auto distance_ptr = result.distances->data();
             const auto index_ptr = result.indices->data();
             const auto tree_ptr = (*this->tree_).data();
+            const auto trans_vec = eigen_utils::to_sycl_vec(transT);
 
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t queryIdx = item.get_global_id(0);
@@ -387,7 +390,8 @@ public:
                 if (queryIdx >= query_size) return;  // Early return for extra threads
 
                 // Query point
-                const PointType query = query_ptr[queryIdx];
+                PointType query;
+                transform::kernel::transform_point(query_ptr[queryIdx], query, trans_vec);
 
                 // Arrays to store K nearest points
                 NodeEntry bestK[MAX_K];
@@ -479,27 +483,27 @@ public:
     /// @param depends depends sycl events
     /// @return knn search event
     sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
-                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
+                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                        const TransformMatrix& transT = TransformMatrix::Identity()) const {
         constexpr size_t MAX_DEPTH = 32;
         if (k == 1) {
-            return knn_search_async<1, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+            return knn_search_async<1, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
         } else if (k <= 10) {
-            return knn_search_async<10, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+            return knn_search_async<10, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
         } else if (k <= 20) {
-            return knn_search_async<20, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+            return knn_search_async<20, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
         } else if (k <= 30) {
-            return knn_search_async<30, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+            return knn_search_async<30, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
         } else if (k <= 40) {
-            return knn_search_async<40, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+            return knn_search_async<40, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
         } else if (k <= 50) {
-            return knn_search_async<50, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+            return knn_search_async<50, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
         } else if (k <= 100) {
-            return knn_search_async<100, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends);
+            return knn_search_async<100, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
         } else {
             throw std::runtime_error("`k` is too large. not support.");
         }
     }
-
 };
 
 }  // namespace knn

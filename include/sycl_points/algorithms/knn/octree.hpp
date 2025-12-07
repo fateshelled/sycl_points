@@ -13,6 +13,7 @@
 #include <sycl_points/algorithms/common/filter_by_flags.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/algorithms/knn/result.hpp>
+#include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/sycl_utils.hpp>
 #include <type_traits>
@@ -104,9 +105,9 @@ public:
     /// @tparam MAX_DEPTH Maximum number of nodes kept on the traversal stack.
     /// @tparam MAX_K Maximum number of neighbours that can be requested.
     /// @return Result container that stores neighbour indices and squared distances.
-    sycl_utils::events knn_search_async(
-        const PointCloudShared& queries, const size_t k, KNNResult& result,
-        const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const override;
+    sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
+                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                        const TransformMatrix& transT = TransformMatrix::Identity()) const override;
 
     /// @brief Accessor for the resolution that was requested at build time.
     [[nodiscard]] float resolution() const { return this->resolution_; }
@@ -182,7 +183,8 @@ private:
 
     template <size_t MAX_K, size_t MAX_DEPTH>
     sycl_utils::events knn_search_async_impl(const PointCloudShared& queries, size_t k, KNNResult& result,
-                                             const std::vector<sycl::event>& depends) const;
+                                             const std::vector<sycl::event>& depends,
+                                             const TransformMatrix& transT = TransformMatrix::Identity()) const;
 };
 
 /// @brief Initialise the octree with the provided execution queue and parameters.
@@ -593,7 +595,8 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
 
 // Dispatch helper that selects an appropriate MAX_K bound at compile time.
 inline sycl_utils::events Octree::knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
-                                                   const std::vector<sycl::event>& depends) const {
+                                                   const std::vector<sycl::event>& depends,
+                                                   const TransformMatrix& transT) const {
     constexpr size_t MAX_STACK_DEPTH = 32;
     if (k == 0) {
         const size_t query_size = queries.points ? queries.points->size() : 0;
@@ -606,19 +609,19 @@ inline sycl_utils::events Octree::knn_search_async(const PointCloudShared& queri
     }
 
     if (k == 1) {
-        return knn_search_async_impl<1, MAX_STACK_DEPTH>(queries, k, result, depends);
+        return knn_search_async_impl<1, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     } else if (k <= 10) {
-        return knn_search_async_impl<10, MAX_STACK_DEPTH>(queries, k, result, depends);
+        return knn_search_async_impl<10, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     } else if (k <= 20) {
-        return knn_search_async_impl<20, MAX_STACK_DEPTH>(queries, k, result, depends);
+        return knn_search_async_impl<20, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     } else if (k <= 30) {
-        return knn_search_async_impl<30, MAX_STACK_DEPTH>(queries, k, result, depends);
+        return knn_search_async_impl<30, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     } else if (k <= 40) {
-        return knn_search_async_impl<40, MAX_STACK_DEPTH>(queries, k, result, depends);
+        return knn_search_async_impl<40, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     } else if (k <= 50) {
-        return knn_search_async_impl<50, MAX_STACK_DEPTH>(queries, k, result, depends);
+        return knn_search_async_impl<50, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     } else if (k <= 100) {
-        return knn_search_async_impl<100, MAX_STACK_DEPTH>(queries, k, result, depends);
+        return knn_search_async_impl<100, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     }
 
     throw std::runtime_error("Requested neighbour count exceeds the supported maximum");
@@ -627,7 +630,8 @@ inline sycl_utils::events Octree::knn_search_async(const PointCloudShared& queri
 template <size_t MAX_K, size_t MAX_DEPTH>
 // Core implementation of the octree kNN search.
 inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& queries, size_t k, KNNResult& result,
-                                                        const std::vector<sycl::event>& depends) const {
+                                                        const std::vector<sycl::event>& depends,
+                                                        const TransformMatrix& transT) const {
     static_assert(MAX_DEPTH > 0, "MAX_DEPTH must be greater than zero");
     static_assert(MAX_K > 0, "MAX_K must be greater than zero");
 
@@ -672,6 +676,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
         const auto nodes_ptr = this->nodes_.data();
         const auto leaf_points_ptr = this->device_points_.data();
         const auto leaf_ids_ptr = this->device_point_ids_.data();
+        const auto trans_vec = eigen_utils::to_sycl_vec(transT);
 
         handler.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t query_idx = item.get_global_id(0);
@@ -683,7 +688,8 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 return;
             }
 
-            const auto query_point = query_points_ptr[query_idx];
+            Eigen::Vector4f query_point;
+            transform::kernel::transform_point(query_points_ptr[query_idx], query_point, trans_vec);
             const Eigen::Vector3f query_point_vec(query_point.x(), query_point.y(), query_point.z());
 
             NodeEntry bestK[MAX_K];  // descending order. head data is largest dist_sq
