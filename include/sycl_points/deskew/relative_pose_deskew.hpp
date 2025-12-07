@@ -115,27 +115,28 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
                 scaled_twist[static_cast<Eigen::Index>(i)] = delta_twist_array[i] * normalized_time;
             }
 
-            const Eigen::Transform<float, 3, 1> point_motion = eigen_utils::lie::se3_exp(scaled_twist);
+            const Eigen::Matrix4f point_motion = eigen_utils::lie::se3_exp(scaled_twist);
 
             // Apply rotation and translation to deskew the point in the device kernel.
-            const Eigen::Matrix3f rotation = point_motion.linear();
-            const Eigen::Vector3f translation = point_motion.translation();
+            const auto&[rotation, translation] = eigen_utils::geometry::matrix4_to_isometry3(point_motion);
+
             const Eigen::Vector3f point_in = points_in[idx].template head<3>();
             const Eigen::Vector3f rotated_point = eigen_utils::multiply<3, 3>(rotation, point_in);
             points_out[idx].template head<3>() = eigen_utils::add<3, 1>(rotated_point, translation);
 
             // Rotate normals and covariances using the integrated angular velocity.
             const Eigen::Vector3f integrated_omega = scaled_twist.template head<3>();
-            const Eigen::Matrix3f rotation_omega = eigen_utils::lie::so3_exp(integrated_omega).toRotationMatrix();
+            const Eigen::Matrix3f rotation_omega =
+                eigen_utils::geometry::quaternion_to_rotation_matrix(eigen_utils::lie::so3_exp(integrated_omega));
             if (process_normals) {
                 const Eigen::Vector3f normal_in = normals_in[idx].template head<3>();
                 normals_out[idx].template head<3>() = eigen_utils::multiply<3, 3>(rotation_omega, normal_in);
             }
             if (process_covs) {
                 const Eigen::Matrix3f cov_in = covs_in[idx].topLeftCorner<3, 3>();
-                const Eigen::Matrix3f rotation_omega_t = eigen_utils::transpose(rotation_omega);
-                const Eigen::Matrix3f rotated_cov =
-                    eigen_utils::multiply<3, 3, 3>(rotation_omega, eigen_utils::multiply<3, 3, 3>(cov_in, rotation_omega_t));
+                const Eigen::Matrix3f rotation_omega_t = eigen_utils::transpose<3, 3>(rotation_omega);
+                const Eigen::Matrix3f rotated_cov = eigen_utils::multiply<3, 3, 3>(
+                    rotation_omega, eigen_utils::multiply<3, 3, 3>(cov_in, rotation_omega_t));
                 covs_out[idx].topLeftCorner<3, 3>() = rotated_cov;
             }
         });

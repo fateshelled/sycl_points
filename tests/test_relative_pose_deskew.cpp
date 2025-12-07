@@ -29,8 +29,8 @@ TEST(RelativePoseDeskewTest, DeskewsPointsWithConstantVelocity) {
 
     for (double timestamp : timestamps) {
         const double ratio = timestamp / 1.0;
-        const Eigen::Transform<float, 3, 1> pose =
-            start_pose * eigen_utils::lie::se3_exp((delta_twist * static_cast<float>(ratio)).eval());
+        const Eigen::Isometry3f pose(start_pose *
+                                     eigen_utils::lie::se3_exp((delta_twist * static_cast<float>(ratio)).eval()));
         const Eigen::Vector3f observed_point = pose.inverse() * world_point;
         const Eigen::Vector3f observed_normal = pose.linear().transpose() * world_normal;
         const Eigen::Matrix3f observed_covariance = pose.linear().transpose() * world_covariance * pose.linear();

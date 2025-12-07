@@ -582,7 +582,7 @@ private:
                                                   .ldlt()
                                                   .solve(-linearlized_result.b);
         result.converged = this->is_converged(delta);
-        result.T = result.T * eigen_utils::lie::se3_exp(delta);
+        result.T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
         result.iterations = iter;
         result.H = linearlized_result.H;
         result.b = linearlized_result.b;
@@ -612,7 +612,7 @@ private:
         for (size_t i = 0; i < this->params_.lm.max_inner_iterations; ++i) {
             const Eigen::Vector<float, 6> delta =
                 (H + lambda * Eigen::Matrix<float, 6, 6>::Identity()).ldlt().solve(-g);
-            const Eigen::Isometry3f new_T = result.T * eigen_utils::lie::se3_exp(delta);
+            const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
 
             const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
                                                            max_correspondence_distance_2, robust_scale);
@@ -747,7 +747,7 @@ private:
             return updated;
         }
 
-        const Eigen::Isometry3f new_T = result.T * eigen_utils::lie::se3_exp(p_dl);
+        const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(p_dl));
         const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
                                                        max_correspondence_distance_2, robust_scale);
 
