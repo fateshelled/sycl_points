@@ -48,7 +48,7 @@ struct RegistrationParams {
         RobustLossType type = RobustLossType::NONE;  // robust loss function type
         bool auto_scale = false;                     // enable auto robust scale
         float init_scale = 10.0f;                    // scale for robust loss function
-        float scaling_factor = 0.5f;                 // decrease scaling factor (0.0f ~ 1.0f)
+        float min_scale = 0.5f;                      // minimum scale
         size_t scaling_iter = 4;                     // scaling iteration
     };
     struct PhotometricTerm {
@@ -164,17 +164,12 @@ public:
         this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(1, knn::KNNResult(), *this->queue_.ptr);
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
 
-        this->aligned_ = std::make_shared<PointCloudShared>(this->queue_);
         this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_);
         this->linearlized_on_host_ =
             std::make_shared<shared_vector<LinearlizedResult>>(1, LinearlizedResult(), *this->queue_.ptr);
         this->error_on_host_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->inlier_on_host_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
     }
-
-    /// @brief Get aligned point cloud
-    /// @return aligned point cloud pointer
-    PointCloudShared::Ptr get_aligned_point_cloud() const { return this->aligned_; }
 
     /// @brief validate parameters
     void validate_params(const PointCloudShared& source, const PointCloudShared& target) {
@@ -226,17 +221,20 @@ public:
         }
         if (this->params_.robust.type != RobustLossType::NONE) {
             if (this->params_.robust.init_scale <= 0.0f) {
-                std::cout << "[Caution] `init_scale` must be greater than zero. Disable robust loss." << std::endl;
+                std::cout << "[Caution] `robust.init_scale` must be greater than zero. Disable robust loss."
+                          << std::endl;
                 this->params_.robust.type = RobustLossType::NONE;
             }
             if (this->params_.robust.auto_scale) {
-                if (this->params_.robust.scaling_factor <= 0.0f || this->params_.robust.scaling_factor >= 1.0) {
-                    std::cout << "[Caution] `scaling_factor` must be in range (0.0f, 1.0f). Disable auto scaling."
-                              << std::endl;
+                if (this->params_.robust.min_scale <= 0.0f ||
+                    this->params_.robust.min_scale >= this->params_.robust.init_scale) {
+                    std::cout
+                        << "[Caution] `robust.min_scale` must be greater than zero and less than robust.init_scale."
+                        << std::endl;
                     this->params_.robust.auto_scale = false;
                 }
                 if (this->params_.robust.scaling_iter <= 0) {
-                    std::cout << "[Caution] `scaling_iter` must be greater than zero. Disable auto scaling."
+                    std::cout << "[Caution] `robust.scaling_iter` must be greater than zero. Disable auto scaling."
                               << std::endl;
                     this->params_.robust.auto_scale = false;
                 }
@@ -248,28 +246,19 @@ public:
     /// @param source Source point cloud
     /// @param target Target point cloud
     /// @param target_knn Target KNN search
-    /// @param init_T Initial transformation matrix
+    /// @param initial_guess Initial transformation matrix
     /// @return Registration result
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,
-                             const TransformMatrix& init_T = TransformMatrix::Identity()) {
+                             const TransformMatrix& initial_guess = TransformMatrix::Identity()) {
         const size_t N = source.size();
         const size_t TARGET_SIZE = target.size();
         RegistrationResult result;
-        result.T.matrix() = init_T;
+        result.T.matrix() = initial_guess;
 
         if (N == 0) return result;
 
         this->validate_params(source, target);
-
-        Eigen::Isometry3f prev_T = Eigen::Isometry3f::Identity();
-        // copy
-        this->aligned_ = std::make_shared<PointCloudShared>(source);
-
-        // transform to initial pose
-        transform::transform(*this->aligned_, init_T);
-
-        sycl_utils::events transform_events;
 
         {
             const float max_dist_2 =
@@ -281,6 +270,10 @@ public:
                 this->params_.robust.type != RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
                 enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
+            const float rosbust_scaling_factor =
+                robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
+                                             1.0f / static_cast<float>(robust_levels - 1))
+                                  : 1.0f;
 
             // Iterate over each configured robust loss scale and perform the standard ICP update cycle.
             for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
@@ -288,11 +281,9 @@ public:
                     std::cout << "Robust scale: " << robust_scale << std::endl;
                 }
                 for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
-                    prev_T = result.T;
-
                     // Nearest neighbor search on device
-                    auto knn_event = target_knn.nearest_neighbor_search_async(*this->aligned_, (*this->neighbors_)[0],
-                                                                              transform_events.evs);
+                    auto knn_event =
+                        target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, result.T.matrix());
 
                     // Linearize on device for the current robust scale level
                     const LinearlizedResult linearlized_result =
@@ -312,21 +303,14 @@ public:
                             this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
                             break;
                     }
-
-                    // Async transform source points on device so the next iteration uses the updated pose
-                    transform_events =
-                        transform::transform_async(*this->aligned_, result.T.matrix() * prev_T.matrix().inverse());
-
                     if (result.converged) {
                         break;
                     }
                 }
 
-                robust_scale *= this->params_.robust.scaling_factor;
+                robust_scale *= rosbust_scaling_factor;
             }
         }
-        // wait for transform
-        transform_events.wait_and_throw();
 
         return result;
     }
@@ -334,7 +318,7 @@ public:
 private:
     RegistrationParams params_;
     sycl_utils::DeviceQueue queue_;
-    PointCloudShared::Ptr aligned_ = nullptr;
+
     shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
     shared_vector_ptr<LinearlizedResult> linearlized_on_host_ = nullptr;
@@ -366,18 +350,23 @@ private:
             // input
             const auto source_ptr = source.points_ptr();
             const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
+
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
             const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
+
             const auto source_intensity_ptr = source.has_intensity() ? source.intensities_ptr() : nullptr;
             const auto target_intensity_ptr = target.has_intensity() ? target.intensities_ptr() : nullptr;
+
             const auto target_intensity_grad_ptr =
                 target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
             const float photometric_weight =
                 this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
+
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
@@ -406,16 +395,21 @@ private:
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
+
                     const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
+
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+
                     const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
                     const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
                     const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
+
                     const float source_intensity = source_intensity_ptr ? source_intensity_ptr[index] : 0.0f;
                     const float target_intensity = target_intensity_ptr ? target_intensity_ptr[target_idx] : 0.0f;
                     const auto target_intensity_grad =
                         target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
+
                     const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
@@ -546,7 +540,6 @@ private:
                         source_intensity, target_intensity, target_intensity_grad, use_intensity, photometric_weight);
 
                     sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
-                    ;
                     ++sum_inlier_arg;
                 });
         });

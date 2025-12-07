@@ -35,7 +35,7 @@ int main() {
     param.robust.type = sycl_points::algorithms::registration::RobustLossType::GEMAN_MCCLURE;
     param.robust.init_scale = 10.0f;
     param.robust.auto_scale = true;
-    param.robust.scaling_factor = 0.5f;
+    param.robust.min_scale = 2.5f;
     param.robust.scaling_iter = 3;
 
     const auto registration = std::make_shared<sycl_points::algorithms::registration::RegistrationGICP>(queue, param);
