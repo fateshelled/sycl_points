@@ -1315,7 +1315,7 @@ private:
         30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};
     size_t capacity_ = kCapacityCandidates[0];
     size_t voxel_num_ = 0;
-    const size_t max_probe_length_ = 100;
+    const size_t max_probe_length_ = 128;
     float rehash_threshold_ = 0.7f;
 
     std::shared_ptr<uint64_t> key_ptr_ = nullptr;
