@@ -128,7 +128,7 @@ SYCL_EXTERNAL Eigen::Vector<float, M> multiply(const Eigen::Matrix<float, M, N>&
 /// @tparam M Number of rows
 /// @tparam N Number of columns
 /// @param A Matrix
-/// @param scalar Scalar valur
+/// @param scalar Scalar value
 /// @return Result of A x scalar
 template <size_t M, size_t N>
 SYCL_EXTERNAL Eigen::Matrix<float, M, N> multiply(const Eigen::Matrix<float, M, N>& A, float scalar) {
@@ -700,6 +700,85 @@ inline Eigen::Vector<float, 6> from_sycl_vec(const std::array<sycl::float3, 2>& 
     return ret;
 }
 
+namespace geometry {
+
+Eigen::Vector4f rotation_matrix_to_quaternion(const Eigen::Matrix3f& R) {
+    Eigen::Vector4f quat;
+    const auto trace = R(0, 0) + R(1, 1) + R(2, 2);
+    if (trace > 0.0f) {
+        const auto S = sycl::sqrt(trace + 1.0f) * 2.0f;
+        quat.x() = (R(2, 1) - R(1, 2)) / S;
+        quat.y() = (R(0, 2) - R(2, 0)) / S;
+        quat.z() = (R(1, 0) - R(0, 1)) / S;
+        quat.w() = 0.25f * S;
+    } else if ((R(0, 0) > R(1, 1)) && (R(0, 0) > R(2, 2))) {
+        const auto S = sycl::sqrt(1.0f + R(0, 0) - R(1, 1) - R(2, 2)) * 2.0f;
+        quat.x() = 0.25f * S;
+        quat.y() = (R(0, 1) + R(1, 0)) / S;
+        quat.z() = (R(0, 2) + R(2, 0)) / S;
+        quat.w() = (R(2, 1) - R(1, 2)) / S;
+    } else if (R(1, 1) > R(2, 2)) {
+        const auto S = sycl::sqrt(1.0f + R(1, 1) - R(0, 0) - R(2, 2)) * 2.0f;
+        quat.x() = (R(0, 1) + R(1, 0)) / S;
+        quat.y() = 0.25f * S;
+        quat.z() = (R(1, 2) + R(2, 1)) / S;
+        quat.w() = (R(0, 2) - R(2, 0)) / S;
+    } else {
+        const auto S = sycl::sqrt(1.0f + R(2, 2) - R(0, 0) - R(1, 1)) * 2.0f;
+        quat.z() = 0.25f * S;
+        quat.w() = (R(1, 0) - R(0, 1)) / S;
+        quat.x() = (R(0, 2) + R(2, 0)) / S;
+        quat.y() = (R(1, 2) + R(2, 1)) / S;
+    }
+    return quat;
+}
+
+/// @brief Convert a quaternion to a 3x3 rotation matrix.
+/// @param quat Input quaternion (x, y, z, w). Assumes it is a unit quaternion.
+/// @return 3x3 rotation matrix.
+SYCL_EXTERNAL inline Eigen::Matrix3f quaternion_to_rotation_matrix(const Eigen::Vector4f& quat) {
+    const auto x = quat.x();
+    const auto y = quat.y();
+    const auto z = quat.z();
+    const auto w = quat.w();
+
+    const auto x2 = x * x;
+    const auto y2 = y * y;
+    const auto z2 = z * z;
+    const auto xy = x * y;
+    const auto xz = x * z;
+    const auto yz = y * z;
+    const auto wx = w * x;
+    const auto wy = w * y;
+    const auto wz = w * z;
+
+    Eigen::Matrix3f R;
+    R(0, 0) = 1.0f - 2.0f * (y2 + z2);
+    R(0, 1) = 2.0f * (xy - wz);
+    R(0, 2) = 2.0f * (xz + wy);
+    R(1, 0) = 2.0f * (xy + wz);
+    R(1, 1) = 1.0f - 2.0f * (x2 + z2);
+    R(1, 2) = 2.0f * (yz - wx);
+    R(2, 0) = 2.0f * (xz - wy);
+    R(2, 1) = 2.0f * (yz + wx);
+    R(2, 2) = 1.0f - 2.0f * (x2 + y2);
+
+    return R;
+}
+
+SYCL_EXTERNAL inline std::pair<Eigen::Matrix3f, Eigen::Vector3f> matrix4_to_isometry3(const Eigen::Matrix4f& matrix) {
+    Eigen::Matrix3f rotation;
+    rotation << matrix(0, 0), matrix(0, 1), matrix(0, 2), matrix(1, 0), matrix(1, 1), matrix(1, 2), matrix(2, 0),
+        matrix(2, 1), matrix(2, 2);
+
+    Eigen::Vector3f translation;
+    translation << matrix(0, 3), matrix(1, 3), matrix(2, 3);
+
+    return {rotation, translation};
+}
+
+}  // namespace geometry
+
 /// @brief Lie algebra and Lie group operations
 namespace lie {
 
@@ -709,12 +788,11 @@ namespace lie {
 ///                       |-y,  x,  0 |
 /// @param x vector
 /// @return skew-symmetric matrix
-template <typename T = float>
-SYCL_EXTERNAL inline Eigen::Matrix3<T> skew(const Eigen::Vector3<T>& x) {
-    Eigen::Matrix3<T> ret;
-    ret << (T)0.0, -x[2], x[1],  // nolint
-        x[2], (T)0.0, -x[0],     // nolint
-        -x[1], x[0], (T)0.0;
+SYCL_EXTERNAL inline Eigen::Matrix3f skew(const Eigen::Vector3f& x) {
+    Eigen::Matrix3f ret;
+    ret << 0.0f, -x[2], x[1],  // nolint
+        x[2], 0.0f, -x[0],     // nolint
+        -x[1], x[0], 0.0f;
     return ret;
 }
 
@@ -724,12 +802,11 @@ SYCL_EXTERNAL inline Eigen::Matrix3<T> skew(const Eigen::Vector3<T>& x) {
 ///                       |-y,  x,  0 |
 /// @param x vector
 /// @return skew-symmetric matrix
-template <typename T = float>
-SYCL_EXTERNAL inline Eigen::Matrix3<T> skew(const Eigen::Vector4<T>& x) {
-    Eigen::Matrix3<T> ret;
-    ret << (T)0.0, -x[2], x[1],  // nolint
-        x[2], (T)0.0, -x[0],     // nolint
-        -x[1], x[0], (T)0.0;
+SYCL_EXTERNAL inline Eigen::Matrix3f skew(const Eigen::Vector4f& x) {
+    Eigen::Matrix3f ret;
+    ret << 0.0f, -x[2], x[1],  // nolint
+        x[2], 0.0f, -x[0],     // nolint
+        -x[1], x[0], 0.0f;
     return ret;
 }
 
@@ -737,24 +814,22 @@ SYCL_EXTERNAL inline Eigen::Matrix3<T> skew(const Eigen::Vector4<T>& x) {
 /// @param omega Rotation vector [rx, ry, rz]
 /// @return Quaternion
 /// https://github.com/koide3/small_gicp/blob/master/include/small_gicp/util/lie.hpp
-template <typename T = float>
-inline Eigen::Quaternion<T> so3_exp(const Eigen::Vector3<T>& omega) {
-    const T theta_sq = eigen_utils::dot<3>(omega, omega);
+SYCL_EXTERNAL inline Eigen::Vector4f so3_exp(const Eigen::Vector3f& omega) {
+    const auto theta_sq = eigen_utils::dot<3>(omega, omega);
 
-    T imag_factor;
-    T real_factor;
-    if (theta_sq < (T)1e-6) {
-        const float theta_quad = theta_sq * theta_sq;
-        imag_factor = (T)0.5 - (T)1.0 / (T)48.0 * theta_sq + (T)1.0 / (T)3840.0 * theta_quad;
-        real_factor = (T)1.0 - (T)1.0 / (T)8.0 * theta_sq + (T)1.0 / (T)384.0 * theta_quad;
+    float imag_factor;
+    float real_factor;
+    if (theta_sq < 1e-6f) {
+        const auto theta_quad = theta_sq * theta_sq;
+        imag_factor = 0.5f - 1.0f / 48.0f * theta_sq + 1.0f / 3840.0f * theta_quad;
+        real_factor = 1.0f - 1.0f / 8.0f * theta_sq + 1.0f / 384.0f * theta_quad;
     } else {
-        const T theta = std::sqrt(theta_sq);
-        const T half_theta = (T)0.5 * theta;
+        const auto theta = std::sqrt(theta_sq);
+        const auto half_theta = 0.5f * theta;
         imag_factor = std::sin(half_theta) / theta;
         real_factor = std::cos(half_theta);
     }
-
-    return Eigen::Quaternion<T>(real_factor, imag_factor * omega.x(), imag_factor * omega.y(), imag_factor * omega.z());
+    return Eigen::Vector4f(imag_factor * omega.x(), imag_factor * omega.y(), imag_factor * omega.z(), real_factor);
 }
 
 // Rotation-first
@@ -762,26 +837,40 @@ inline Eigen::Quaternion<T> so3_exp(const Eigen::Vector3<T>& omega) {
 /// @param a Twist vector [rx, ry, rz, tx, ty, tz]
 /// @return SE3 matrix (Isometry3)
 /// https://github.com/koide3/small_gicp/blob/master/include/small_gicp/util/lie.hpp
-template <typename T = float>
-inline Eigen::Transform<T, 3, 1> se3_exp(const Eigen::Vector<T, 6>& a) {
-    using Isometry3 = Eigen::Transform<T, 3, 1>;
-    const Eigen::Vector3<T> omega(a[0], a[1], a[2]);
+SYCL_EXTERNAL inline Eigen::Matrix4f se3_exp(const Eigen::Vector<float, 6>& a) {
+    const Eigen::Vector3f omega(a[0], a[1], a[2]);
 
-    const T theta_sq = eigen_utils::dot<3>(omega, omega);
-    const T theta = std::sqrt(theta_sq);
+    const auto theta_sq = eigen_utils::dot<3>(omega, omega);
+    const auto theta = std::sqrt(theta_sq);
+    const Eigen::Matrix3f R = geometry::quaternion_to_rotation_matrix(so3_exp(omega));
 
-    Isometry3 se3 = Isometry3::Identity();
-    se3.linear() = so3_exp(omega).toRotationMatrix();
+    Eigen::Matrix4f se3 = Eigen::Matrix4f::Identity();
+    for (size_t col = 0; col < 3; ++col) {
+        for (size_t row = 0; row < 3; ++row) {
+            se3(row, col) = R(row, col);
+        }
+    }
 
-    const T threshold = std::is_same_v<T, float> ? (T)1e-6 : (T)1e-12;
-    if (theta < threshold) {
-        se3.translation() = se3.linear() * Eigen::Vector3<T>(a[3], a[4], a[5]);
-        /// Note: That is an accurate expansion!
+    if (theta < 1e-6f) {
+        const Eigen::Vector3f trans = multiply<3, 3>(R, Eigen::Vector3f(a[3], a[4], a[5]));
+        se3(0, 3) = trans[0];
+        se3(1, 3) = trans[1];
+        se3(2, 3) = trans[2];
     } else {
-        const Eigen::Matrix3<T> Omega = skew(omega);
-        const Eigen::Matrix3<T> V = (Eigen::Matrix3<T>::Identity() + ((T)1.0f - std::cos(theta)) / theta_sq * Omega +
-                                     (theta - std::sin(theta)) / (theta_sq * theta) * Omega * Omega);
-        se3.translation() = V * Eigen::Vector3<T>(a[3], a[4], a[5]);
+        const Eigen::Matrix3f Omega = skew(omega);
+        // const Eigen::Matrix3<T> V = Eigen::Matrix3<T>::Identity() + ((T)1.0f - std::cos(theta)) / theta_sq * Omega +
+        //                             (theta - std::sin(theta)) / (theta_sq * theta) * Omega * Omega;
+        // V = I + (1.0 - cosθ / θ^1/2) * Omega + ((θ - sinθ) / (θ^1/2 * θ)) * Omega^2
+        const Eigen::Matrix3f V = add<3, 3>(Eigen::Matrix3f::Identity(),                                     //
+                                            add<3, 3>(                                                       //
+                                                multiply<3, 3>(Omega, (1.0f - std::cos(theta)) / theta_sq),  //
+                                                multiply<3, 3>(                                              //
+                                                    multiply<3, 3, 3>(Omega, Omega),                         //
+                                                    (theta - std::sin(theta)) / (theta_sq * theta))));
+        const Eigen::Vector3f trans = multiply<3, 3>(V, Eigen::Vector3f(a[3], a[4], a[5]));
+        se3(0, 3) = trans[0];
+        se3(1, 3) = trans[1];
+        se3(2, 3) = trans[2];
     }
 
     return se3;
@@ -790,40 +879,42 @@ inline Eigen::Transform<T, 3, 1> se3_exp(const Eigen::Vector<T, 6>& a) {
 /// @brief SO3 logmap.
 /// @param quat Quaternion
 /// @return Rotation vector [rx, ry, rz]
-template <typename T = float>
-inline Eigen::Vector3<T> so3_log(const Eigen::Quaternion<T>& quat) {
+SYCL_EXTERNAL inline Eigen::Vector3f so3_log(const Eigen::Vector4f& quat) {
     // Normalize quaternion to ensure unit quaternion
-    Eigen::Quaternion<T> q = quat.normalized();
+    Eigen::Vector4f q = normalize<4>(quat);
 
     // Ensure w >= 0 for canonical representation (shortest rotation)
-    if (q.w() < (T)0.0) {
-        q.coeffs() *= (T)-1.0;
+    if (q.w() < 0.0f) {
+        q.x() *= -1.0f;
+        q.y() *= -1.0f;
+        q.z() *= -1.0f;
+        q.w() *= -1.0f;
     }
 
-    const T w = q.w();
-    const Eigen::Vector3<T> xyz(q.x(), q.y(), q.z());
+    const auto w = q.w();
+    const Eigen::Vector3f xyz(q.x(), q.y(), q.z());
 
     // Calculate the magnitude of the imaginary part
-    const T xyz_norm = xyz.norm();
+    const auto xyz_norm = frobenius_norm<3>(xyz);
 
     // Handle small angle case (near identity)
-    if (xyz_norm < (T)1e-6) {
+    if (xyz_norm < 1e-6f) {
         // For small angles: omega ≈ 2 * xyz / w
         // Using Taylor expansion to avoid numerical issues
-        const T scale = (T)2.0 / w * ((T)1.0 + xyz_norm * xyz_norm / ((T)6.0 * w * w));
+        const auto scale = 2.0f / w * (1.0f + xyz_norm * xyz_norm / (6.0f * w * w));
         return scale * xyz;
     }
 
     // Handle large angle case (near 180 degrees)
-    if (sycl::fabs(w) < (T)1e-6) {
+    if (sycl::fabs(w) < 1e-6f) {
         // For angles near π: theta ≈ π, axis = xyz / ||xyz||
-        const T theta = PI;
+        const auto theta = PI;
         return (theta / xyz_norm) * xyz;
     }
 
     // General case
-    const T theta = (T)2.0 * sycl::atan2(xyz_norm, sycl::fabs(w));
-    const T scale = theta / xyz_norm;
+    const auto theta = 2.0f * sycl::atan2(xyz_norm, sycl::fabs(w));
+    const auto scale = theta / xyz_norm;
 
     return scale * xyz;
 }
@@ -831,27 +922,26 @@ inline Eigen::Vector3<T> so3_log(const Eigen::Quaternion<T>& quat) {
 /// @brief SE3 logmap (Rotation-first).
 /// @param transform SE3 transformation matrix (Isometry3)
 /// @return Twist vector [rx, ry, rz, tx, ty, tz]
-template <typename T = float>
-inline Eigen::Vector<T, 6> se3_log(const Eigen::Transform<T, 3, 1>& transform) {
+SYCL_EXTERNAL inline Eigen::Vector<float, 6> se3_log(const Eigen::Transform<float, 3, 1>& transform) {
     // Extract rotation and translation
-    const Eigen::Matrix3<T> R = transform.linear();
-    const Eigen::Vector3<T> t = transform.translation();
+    const Eigen::Matrix3f R = transform.linear();
+    const Eigen::Vector3f t = transform.translation();
 
     // Convert rotation matrix to quaternion and then to rotation vector
-    const Eigen::Quaternion<T> quat(R);
-    const Eigen::Vector3<T> omega = so3_log(quat);
+    const Eigen::Vector4f quat = geometry::rotation_matrix_to_quaternion(R);
+    const Eigen::Vector3f omega = so3_log(quat);
 
-    const T theta = omega.norm();
+    const auto theta = frobenius_norm<3>(omega);
 
-    Eigen::Vector<T, 6> result;
+    Eigen::Vector<float, 6> result;
     result[0] = omega[0];
     result[1] = omega[1];
     result[2] = omega[2];
 
     // Handle small angle case
-    if (theta < (T)1e-6) {
+    if (theta < 1e-6f) {
         // For small angles: V^-1 ≈ I - 0.5 * skew(omega)
-        const Eigen::Vector3<T> V_inv_t = (Eigen::Matrix3<T>::Identity() - (T)0.5 * skew(omega)) * t;
+        const Eigen::Vector3f V_inv_t = (Eigen::Matrix3f::Identity() - 0.5f * skew(omega)) * t;
         result[3] = V_inv_t[0];
         result[4] = V_inv_t[1];
         result[5] = V_inv_t[2];
@@ -859,16 +949,16 @@ inline Eigen::Vector<T, 6> se3_log(const Eigen::Transform<T, 3, 1>& transform) {
     }
 
     // General case: compute V^-1
-    const T half_theta = (T)0.5 * theta;
-    const T sin_half_theta = sycl::sin(half_theta);
-    const T cos_half_theta = sycl::cos(half_theta);
+    const auto half_theta = 0.5f * theta;
+    const auto sin_half_theta = sycl::sin(half_theta);
+    const auto cos_half_theta = sycl::cos(half_theta);
 
     // V^-1 = I - 0.5 * Omega + (1/theta^2) * (1 - theta*sin_half_theta/(2*sin_half_theta^2)) * Omega^2
     // Simplified: V^-1 = I - 0.5 * Omega + coeff * Omega^2
-    const T coeff = ((T)1.0 - theta * cos_half_theta / ((T)2.0 * sin_half_theta)) / (theta * theta);
+    const auto coeff = (1.0f - theta * cos_half_theta / (2.0f * sin_half_theta)) / (theta * theta);
 
-    const Eigen::Matrix3<T> Omega = skew(omega);
-    const Eigen::Vector3<T> V_inv_t = (Eigen::Matrix3<T>::Identity() - (T)0.5 * Omega + coeff * Omega * Omega) * t;
+    const Eigen::Matrix3f Omega = skew(omega);
+    const Eigen::Vector3f V_inv_t = (Eigen::Matrix3f::Identity() - 0.5f * Omega + coeff * Omega * Omega) * t;
 
     result[3] = V_inv_t[0];
     result[4] = V_inv_t[1];
