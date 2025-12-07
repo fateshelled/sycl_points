@@ -20,7 +20,6 @@ using ColorGradient = Eigen::Matrix3f;
 /// @brief Intensity gradient type (gradient along x, y, z)
 using IntensityGradient = Eigen::Vector3f;
 using TransformMatrix = Eigen::Matrix4f;
-
 /// @brief Timestamp offset in milliseconds relative to the first measurement.
 using TimestampOffset = float;
 

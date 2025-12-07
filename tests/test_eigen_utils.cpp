@@ -701,7 +701,7 @@ TEST_F(EigenUtilsTest, to_from_sycl_vec) {
 TEST_F(EigenUtilsTest, so3_exp_log) {
     for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         const Eigen::Vector3f omega = Eigen::Vector3f::Random();
-        const Eigen::Quaternionf q = lie::so3_exp(omega);
+        const Eigen::Vector4f q = lie::so3_exp(omega);
         const Eigen::Vector3f back = lie::so3_log(q);
         EXPECT_VECTOR_NEAR(omega, back, BASE_EPSILON);
     }
@@ -710,7 +710,7 @@ TEST_F(EigenUtilsTest, so3_exp_log) {
 TEST_F(EigenUtilsTest, se3_exp_log) {
     for (size_t iter = 0; iter < TEST_ITERATIONS; ++iter) {
         Eigen::Vector<float, 6> twist = Eigen::Vector<float, 6>::Random();
-        const Eigen::Isometry3f T = lie::se3_exp(twist);
+        const Eigen::Isometry3f T(lie::se3_exp(twist));
         const Eigen::Vector<float, 6> back = lie::se3_log(T);
         EXPECT_VECTOR_NEAR(twist, back, BASE_EPSILON);
     }
