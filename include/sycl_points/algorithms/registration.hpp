@@ -56,6 +56,9 @@ struct RegistrationParams {
         bool enable = false;              // If true, use photometric term.
         float photometric_weight = 0.2f;  // weight for photometric term (0.0f ~ 1.0f)
     };
+    struct GenZ {
+        float planarity_threshold = 0.2f;
+    };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)
         float lambda_factor = 2.0f;        // lambda increase factor (for LM method)
@@ -79,6 +82,7 @@ struct RegistrationParams {
     Criteria crireria;
     Robust robust;
     PhotometricTerm photometric;
+    GenZ genz;
     LevenbergMarquardt lm;
     Dogleg dogleg;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
@@ -426,9 +430,64 @@ private:
     shared_vector_ptr<float> error_on_host_ = nullptr;
     shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
+    float genz_alpha_ = 1.0f;
+
     bool is_converged(const Eigen::Vector<float, 6>& delta) const {
         return delta.template head<3>().norm() < this->params_.crireria.rotation &&
                delta.template tail<3>().norm() < this->params_.crireria.translation;
+    }
+
+    float compute_genz_alpha(
+        const PointCloudShared& source, //
+        const PointCloudShared& target,  //
+        float max_correspondence_distance_2) {
+        sycl_points::shared_vector<uint32_t> counter_inlier(1, 0, *this->queue_.ptr);
+        sycl_points::shared_vector<uint32_t> counter_plane(1, 0, *this->queue_.ptr);
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = source.size();
+
+            const size_t work_group_size = this->queue_.get_work_group_size_for_parallel_reduction();
+            const size_t global_size = this->queue_.get_global_size_for_parallel_reduction(N);
+
+            // const auto source_cov_ptr = source.covs_ptr();
+            const auto target_cov_ptr = target.covs_ptr();
+            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+
+            auto sum_inlier = sycl::reduction(counter_inlier.data(), sycl::plus<uint32_t>());
+            auto sum_plane = sycl::reduction(counter_plane.data(), sycl::plus<uint32_t>());
+
+            const float planarity_threshold = this->params_.genz.planarity_threshold;
+            const float max_corr_dist2 = max_correspondence_distance_2;
+
+            h.parallel_for(                                       //
+                sycl::nd_range<1>(global_size, work_group_size),  // range
+                sum_inlier, sum_plane,                            // reduction
+                [=](sycl::nd_item<1> item, auto& sum_inlier_arg, auto& sum_plane_arg) {
+                    const size_t index = item.get_global_id(0);
+                    if (index >= N) return;
+
+                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
+                        return;
+                    }
+
+                    // const auto cov = source_cov_ptr[index];
+                    const auto target_idx = neighbors_index_ptr[index];
+                    const auto cov = target_cov_ptr[target_idx];
+
+                    Eigen::Vector3f eigenvalues;
+                    Eigen::Matrix3f eigenvectors;
+                    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
+                    const float surface_variation = eigenvalues(0) / (eigenvalues(0) + eigenvalues(1) + eigenvalues(2));
+                    if (surface_variation < planarity_threshold) {
+                        ++sum_plane_arg;
+                    }
+                    ++sum_inlier_arg;
+                });
+        });
+        event.wait_and_throw();
+        return static_cast<float>(counter_plane[0]) / static_cast<float>(counter_inlier[0]);
     }
 
     template <RobustLossType loss = RobustLossType::NONE>
@@ -436,6 +495,10 @@ private:
                                                            const PointCloudShared& target, const Eigen::Matrix4f transT,
                                                            float max_correspondence_distance_2, float robust_scale,
                                                            const std::vector<sycl::event>& depends) {
+        if constexpr (icp == ICPType::GENZ) {
+            this->genz_alpha_ = compute_genz_alpha(source, target, max_correspondence_distance_2);
+        }
+
         // The robust_scale argument controls the influence of the robust loss inside the reduction kernel.
         sycl_utils::events events;
         events += this->queue_.ptr->submit([&](sycl::handler& h) {
@@ -470,6 +533,8 @@ private:
 
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+
+            const float genz_alpha = this->genz_alpha_;
 
             // reduction
             this->linearlized_on_device_->setZero();
@@ -520,22 +585,19 @@ private:
                                                 target_ptr[target_idx], target_cov, target_normal,  //
                                                 source_rgb, target_rgb, target_grad, use_color,     //
                                                 source_intensity, target_intensity,                 //
-                                                target_intensity_grad, use_intensity, photometric_weight);
-                    if (linearlized.inlier == 1U) {
-                        const float robust_weight =
-                            kernel::compute_robust_weight<loss>(linearlized.error, robust_scale);
+                                                target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
+                    const float robust_weight = kernel::compute_robust_weight<loss>(linearlized.error, robust_scale);
 
-                        // reduction on device
-                        const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearlized.H);
-                        const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearlized.b);
-                        sum_H0_arg += H0 * robust_weight;
-                        sum_H1_arg += H1 * robust_weight;
-                        sum_H2_arg += H2 * robust_weight;
-                        sum_b0_arg += b0 * robust_weight;
-                        sum_b1_arg += b1 * robust_weight;
-                        sum_error_arg += kernel::compute_robust_error<loss>(linearlized.error, robust_scale);
-                        ++sum_inlier_arg;
-                    }
+                    // reduction on device
+                    const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearlized.H);
+                    const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearlized.b);
+                    sum_H0_arg += H0 * robust_weight;
+                    sum_H1_arg += H1 * robust_weight;
+                    sum_H2_arg += H2 * robust_weight;
+                    sum_b0_arg += b0 * robust_weight;
+                    sum_b1_arg += b1 * robust_weight;
+                    sum_error_arg += kernel::compute_robust_error<loss>(linearlized.error, robust_scale);
+                    ++sum_inlier_arg;
                 });
         });
         return events;
@@ -604,6 +666,8 @@ private:
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
+            const float genz_alpha = this->genz_alpha_;
+
             // output
             auto sum_error = sycl::reduction(error.data(), sycl::plus<float>());
             auto sum_inlier = sycl::reduction(inlier.data(), sycl::plus<uint32_t>());
@@ -633,12 +697,13 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const float err = kernel::calculate_error<icp>(
-                        cur_T,                                              //
-                        source_ptr[index], source_cov,                      // source
-                        target_ptr[target_idx], target_cov, target_normal,  // target
-                        source_rgb, target_rgb, target_grad, use_color,     //
-                        source_intensity, target_intensity, target_intensity_grad, use_intensity, photometric_weight);
+                    const float err =
+                        kernel::calculate_error<icp>(cur_T,                                              //
+                                                     source_ptr[index], source_cov,                      // source
+                                                     target_ptr[target_idx], target_cov, target_normal,  // target
+                                                     source_rgb, target_rgb, target_grad, use_color,     //
+                                                     source_intensity, target_intensity, target_intensity_grad,
+                                                     use_intensity, photometric_weight, genz_alpha);
 
                     sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
                     ++sum_inlier_arg;
@@ -880,6 +945,11 @@ private:
 using RegistrationPointToPoint = Registration<ICPType::POINT_TO_POINT>;
 using RegistrationPointToPlane = Registration<ICPType::POINT_TO_PLANE>;
 using RegistrationGICP = Registration<ICPType::GICP>;
+
+/// @brief GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)
+/// @authors Daehan Lee, Hyungtae Lim, Soohee Han
+/// @cite https://arxiv.org/abs/2411.06766
+using RegistrationGenZ = Registration<ICPType::GENZ>;
 
 }  // namespace registration
 
