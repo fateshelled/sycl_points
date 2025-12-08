@@ -177,18 +177,30 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_plane(const std::arra
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
-    const PointType plane_error = eigen_utils::element_wise_multiply<4, 1>(target_normal, residual);
 
-    const Eigen::Matrix4f weight_matrix =
-        eigen_utils::as_diagonal<4>({target_normal.x(), target_normal.y(), target_normal.z(), 0.0f});
-    const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, weight_matrix);
+    // Project the residual onto the target normal using SYCL-friendly helpers.
+    const Eigen::Vector3f normal = target_normal.head<3>();
+    const float projected_residual = eigen_utils::dot<3>(normal, residual.head<3>());
+
+    // Build the weighting matrix n n^T in the upper-left 3x3 block using eigen_utils.
+    Eigen::Matrix4f weight_matrix = Eigen::Matrix4f::Zero();
+    weight_matrix.block<3, 3>(0, 0) = eigen_utils::outer<3>(normal, normal);
+
+    // Weighted residual aligns with the target normal (n (n^T r)).
+    const PointType plane_error = eigen_utils::multiply<4, 4>(weight_matrix, residual);
+
+    // Apply the same projection to the Jacobian to match the scalar point-to-plane constraint.
+    const Eigen::Matrix<float, 4, 6> J =
+        eigen_utils::multiply<4, 4, 6>(weight_matrix, compute_se3_jacobian(T, source_pt));
 
     LinearlizedResult ret;
     const auto J_T = eigen_utils::transpose<4, 6>(J);
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
     ret.b = eigen_utils::multiply<6, 4>(J_T, plane_error);
-    const float squared_norm = eigen_utils::frobenius_norm_squared<4>(plane_error);
-    residual_norm = sycl::sqrt(squared_norm);
+
+    // Scalar point-to-plane error uses the squared projection length.
+    const float squared_norm = projected_residual * projected_residual;
+    residual_norm = sycl::fabs(projected_residual);
     ret.error = 0.5f * squared_norm;
     ret.inlier = 1;
     return ret;
@@ -208,8 +220,10 @@ SYCL_EXTERNAL inline float calculate_point_to_plane_error(const std::array<sycl:
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
-    const PointType plane_error = eigen_utils::element_wise_multiply<4, 1>(target_normal, residual);
-    return 0.5f * eigen_utils::frobenius_norm_squared<4>(plane_error);
+
+    // Error is the squared projection of the residual onto the target normal.
+    const float projected_residual = eigen_utils::dot<3>(target_normal.head<3>(), residual.head<3>());
+    return 0.5f * projected_residual * projected_residual;
 }
 
 /// @brief Generalized Iterative Closest Point (GICP)

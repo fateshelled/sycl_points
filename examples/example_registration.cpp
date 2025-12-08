@@ -38,7 +38,9 @@ int main() {
     param.robust.min_scale = 2.5f;
     param.robust.scaling_iter = 3;
 
-    const auto registration = std::make_shared<sycl_points::algorithms::registration::RegistrationGICP>(queue, param);
+    // Use point-to-plane ICP for registration to match surface normals.
+    const auto registration =
+        std::make_shared<sycl_points::algorithms::registration::RegistrationPointToPlane>(queue, param);
     const auto voxel_grid = std::make_shared<sycl_points::algorithms::filter::VoxelGrid>(queue, voxel_size);
     const auto preprocess_filter = std::make_shared<sycl_points::algorithms::filter::PreprocessFilter>(queue);
 
@@ -102,15 +104,9 @@ int main() {
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
-        /* GICP matching requires updating to planar covariance or normalized covariance */
-        t0 = std::chrono::high_resolution_clock::now();
-        // sycl_points::algorithms::covariance::covariance_update_plane(source_downsampled);
-        // sycl_points::algorithms::covariance::covariance_update_plane(target_downsampled);
-        sycl_points::algorithms::covariance::covariance_normalize(source_downsampled);
-        sycl_points::algorithms::covariance::covariance_normalize(target_downsampled);
-        const auto dt_udpate_covs =
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
-                .count();
+        /* Normal estimation already uses the covariances computed above.
+           Additional covariance conditioning for GICP is unnecessary for point-to-plane ICP, so skip it. */
+        const auto dt_udpate_covs = 0.0;
 
         t0 = std::chrono::high_resolution_clock::now();
         /* NOTE:
