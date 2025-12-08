@@ -318,8 +318,12 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_geometry(const std::array<sycl
     } else if constexpr (icp == ICPType::GICP) {
         return linearlize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
     } else if constexpr (icp == ICPType::GENZ) {
-        const auto pt2pt_result = linearlize_point_to_point(T, source_pt, target_pt, residual_norm);
-        const auto pt2pl_result = linearlize_point_to_plane(T, source_pt, target_pt, target_normal, residual_norm);
+        float pt2pt_residual_norm = 0.0f;
+        float pt2pl_residual_norm = 0.0f;
+        const auto pt2pt_result = linearlize_point_to_point(T, source_pt, target_pt, pt2pt_residual_norm);
+        const auto pt2pl_result = linearlize_point_to_plane(T, source_pt, target_pt, target_normal, pt2pl_residual_norm);
+
+        residual_norm = pt2pt_residual_norm * (1.0f - genz_alpha) + pt2pl_residual_norm * genz_alpha;
 
         LinearlizedResult result;
         result.H = eigen_utils::add<6, 6>(eigen_utils::multiply<6, 6>(pt2pt_result.H, 1.0f - genz_alpha),

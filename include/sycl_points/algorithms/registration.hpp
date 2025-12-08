@@ -440,7 +440,7 @@ private:
     float compute_genz_alpha(
         const PointCloudShared& source, //
         const PointCloudShared& target,  //
-        float max_correspondence_distance_2) {
+        float max_correspondence_distance_2, const std::vector<sycl::event>& depends = {}) {
         sycl_points::shared_vector<uint32_t> counter_inlier(1, 0, *this->queue_.ptr);
         sycl_points::shared_vector<uint32_t> counter_plane(1, 0, *this->queue_.ptr);
 
@@ -461,6 +461,7 @@ private:
             const float planarity_threshold = this->params_.genz.planarity_threshold;
             const float max_corr_dist2 = max_correspondence_distance_2;
 
+            h.depends_on(depends);
             h.parallel_for(                                       //
                 sycl::nd_range<1>(global_size, work_group_size),  // range
                 sum_inlier, sum_plane,                            // reduction
@@ -479,7 +480,8 @@ private:
                     Eigen::Vector3f eigenvalues;
                     Eigen::Matrix3f eigenvectors;
                     eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
-                    const float surface_variation = eigenvalues(0) / (eigenvalues(0) + eigenvalues(1) + eigenvalues(2));
+                    const float sum_eigenvalues = eigenvalues(0) + eigenvalues(1) + eigenvalues(2);
+                    const float surface_variation = (sum_eigenvalues > std::numeric_limits<float>::epsilon()) ?  eigenvalues(0) / sum_eigenvalues : 1.0f;
                     if (surface_variation < planarity_threshold) {
                         ++sum_plane_arg;
                     }
@@ -487,7 +489,11 @@ private:
                 });
         });
         event.wait_and_throw();
-        return static_cast<float>(counter_plane[0]) / static_cast<float>(counter_inlier[0]);
+        const auto inlier_count = counter_inlier[0];
+        if (inlier_count == 0U) {
+            return 1.0f;
+        }
+        return static_cast<float>(counter_plane[0]) / static_cast<float>(inlier_count);
     }
 
     template <RobustLossType loss = RobustLossType::NONE>
@@ -496,7 +502,7 @@ private:
                                                            float max_correspondence_distance_2, float robust_scale,
                                                            const std::vector<sycl::event>& depends) {
         if constexpr (icp == ICPType::GENZ) {
-            this->genz_alpha_ = compute_genz_alpha(source, target, max_correspondence_distance_2);
+            this->genz_alpha_ = compute_genz_alpha(source, target, max_correspondence_distance_2, depends);
         }
 
         // The robust_scale argument controls the influence of the robust loss inside the reduction kernel.
