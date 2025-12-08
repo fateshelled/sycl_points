@@ -42,8 +42,7 @@ struct PhotometricWeights {
 /// @param use_color True when RGB photometric residuals are available.
 /// @param use_intensity True when intensity photometric residuals are available.
 /// @return Normalized weights for geometry, color, and intensity contributions.
-inline PhotometricWeights compute_photometric_weights(float photometric_weight, bool use_color,
-                                                      bool use_intensity) {
+inline PhotometricWeights compute_photometric_weights(float photometric_weight, bool use_color, bool use_intensity) {
     PhotometricWeights weights{};
 
     if (0.0f < photometric_weight && photometric_weight <= 1.0f) {
@@ -177,18 +176,31 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_plane(const std::arra
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
-    const PointType plane_error = eigen_utils::element_wise_multiply<4, 1>(target_normal, residual);
 
-    const Eigen::Matrix4f weight_matrix =
-        eigen_utils::as_diagonal<4>({target_normal.x(), target_normal.y(), target_normal.z(), 0.0f});
-    const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, weight_matrix);
+    // Project the residual onto the target normal using SYCL-friendly helpers.
+    const Eigen::Vector3f normal = target_normal.head<3>();
+    const float projected_residual = eigen_utils::dot<3>(normal, residual.head<3>());
+
+    // Weighted residual aligns with the target normal (n * (n^T * r)).
+    PointType plane_error = PointType::Zero();
+    plane_error.head<3>() = normal * projected_residual;
+
+    // Apply the same projection to the Jacobian to match the scalar point-to-plane constraint.
+    // This computes n * (n^T * J_se3) without forming n*n^T.
+    const auto se3_jacobian = compute_se3_jacobian(T, source_pt);
+    const auto projected_jacobian_row =
+        eigen_utils::multiply<1, 3, 6>(normal.transpose(), se3_jacobian.block<3, 6>(0, 0));
+    Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
+    J.block<3, 6>(0, 0) = eigen_utils::multiply<3, 1, 6>(normal, projected_jacobian_row);
 
     LinearlizedResult ret;
     const auto J_T = eigen_utils::transpose<4, 6>(J);
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T, J));
     ret.b = eigen_utils::multiply<6, 4>(J_T, plane_error);
-    const float squared_norm = eigen_utils::frobenius_norm_squared<4>(plane_error);
-    residual_norm = sycl::sqrt(squared_norm);
+
+    // Scalar point-to-plane error uses the squared projection length.
+    const float squared_norm = projected_residual * projected_residual;
+    residual_norm = sycl::fabs(projected_residual);
     ret.error = 0.5f * squared_norm;
     ret.inlier = 1;
     return ret;
@@ -208,8 +220,10 @@ SYCL_EXTERNAL inline float calculate_point_to_plane_error(const std::array<sycl:
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
-    const PointType plane_error = eigen_utils::element_wise_multiply<4, 1>(target_normal, residual);
-    return 0.5f * eigen_utils::frobenius_norm_squared<4>(plane_error);
+
+    // Error is the squared projection of the residual onto the target normal.
+    const float projected_residual = eigen_utils::dot<3>(target_normal.head<3>(), residual.head<3>());
+    return 0.5f * projected_residual * projected_residual;
 }
 
 /// @brief Generalized Iterative Closest Point (GICP)
@@ -404,13 +418,13 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
 /// @param target_normal Target surface normal
 /// @param target_intensity_grad Spatial gradient of the target intensity
 SYCL_EXTERNAL inline LinearlizedResult linearlize_intensity(
-    const std::array<sycl::float4, 4>& T,         ///< SE(3) transform
-    const PointType& source_pt,                   ///< Source point
-    const PointType& target_pt,                   ///< Target point
-    float source_intensity,                       ///< Source intensity
-    float target_intensity,                       ///< Target intensity
-    const Normal& target_normal,                  ///< Target normal
-    const IntensityGradient& target_intensity_grad ///< Target intensity gradient
+    const std::array<sycl::float4, 4>& T,           ///< SE(3) transform
+    const PointType& source_pt,                     ///< Source point
+    const PointType& target_pt,                     ///< Target point
+    float source_intensity,                         ///< Source intensity
+    float target_intensity,                         ///< Target intensity
+    const Normal& target_normal,                    ///< Target normal
+    const IntensityGradient& target_intensity_grad  ///< Target intensity gradient
 ) {
     // Offset between the projected point and the target point on the tangent plane
     const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
@@ -468,12 +482,9 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
 /// @param target_intensity Intensity observed at the target point
 /// @param target_normal Target surface normal
 /// @param target_intensity_grad Spatial gradient of the target intensity
-SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::float4, 4>& T,
-                                                     const PointType& source_pt,
-                                                     const PointType& target_pt,
-                                                     float source_intensity,
-                                                     float target_intensity,
-                                                     const Normal& target_normal,
+SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+                                                     const PointType& target_pt, float source_intensity,
+                                                     float target_intensity, const Normal& target_normal,
                                                      const IntensityGradient& target_intensity_grad) {
     const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
     const float intensity_diff = source_intensity - target_intensity;
@@ -532,9 +543,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
         }
 
         if (weights.intensity > 0.0f) {
-            auto intensity_result =
-                linearlize_intensity(T, source_pt, target_pt, source_intensity, target_intensity, target_normal,
-                                     target_intensity_grad);
+            auto intensity_result = linearlize_intensity(T, source_pt, target_pt, source_intensity, target_intensity,
+                                                         target_normal, target_intensity_grad);
 
             eigen_utils::multiply_inplace<6, 6>(intensity_result.H, weights.intensity);
             eigen_utils::add_inplace<6, 6>(result.H, intensity_result.H);
@@ -569,10 +579,9 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
                                            const Covariance& source_cov, const PointType& target_pt,
                                            const Covariance& target_cov, const Normal& target_normal,
                                            const RGBType& source_rgb, const RGBType& target_rgb,
-                                           const ColorGradient& target_rgb_grad, bool use_color,
-                                           float source_intensity, float target_intensity,
-                                           const IntensityGradient& target_intensity_grad, bool use_intensity,
-                                           float photometric_weight) {
+                                           const ColorGradient& target_rgb_grad, bool use_color, float source_intensity,
+                                           float target_intensity, const IntensityGradient& target_intensity_grad,
+                                           bool use_intensity, float photometric_weight) {
     const float geo_error =
         calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal);
 
@@ -584,15 +593,14 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
         total_error = weights.geometry * geo_error;
 
         if (weights.color > 0.0f) {
-            const float color_error = calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal,
-                                                            target_rgb_grad);
+            const float color_error =
+                calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_rgb_grad);
             total_error = sycl::fma(weights.color, color_error, total_error);
         }
 
         if (weights.intensity > 0.0f) {
-            const float intensity_error =
-                calculate_intensity_error(T, source_pt, target_pt, source_intensity, target_intensity, target_normal,
-                                          target_intensity_grad);
+            const float intensity_error = calculate_intensity_error(
+                T, source_pt, target_pt, source_intensity, target_intensity, target_normal, target_intensity_grad);
             total_error = sycl::fma(weights.intensity, intensity_error, total_error);
         }
     }
