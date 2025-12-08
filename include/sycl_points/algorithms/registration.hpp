@@ -348,7 +348,7 @@ public:
         auto deskewed = source;
 
         {
-            const float max_corr_dist = this->params_.max_correspondence_distance ;
+            const float max_corr_dist = this->params_.max_correspondence_distance;
             float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
@@ -399,8 +399,9 @@ public:
                                                                    linearlized_result, lambda, iter, robust_scale);
                                 break;
                             case OptimizationMethod::POWELL_DOGLEG:
-                                this->optimize_powell_dogleg(deskewed, target, max_corr_dist, result, linearlized_result,
-                                                             trust_region_radius, iter, robust_scale);
+                                this->optimize_powell_dogleg(deskewed, target, max_corr_dist, result,
+                                                             linearlized_result, trust_region_radius, iter,
+                                                             robust_scale);
                                 break;
                             case OptimizationMethod::GAUSS_NEWTON:
                                 this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
@@ -436,10 +437,9 @@ private:
                delta.template tail<3>().norm() < this->params_.crireria.translation;
     }
 
-    float compute_genz_alpha(
-        const PointCloudShared& source, //
-        const PointCloudShared& target,  //
-        float max_correspondence_distance, const std::vector<sycl::event>& depends = {}) {
+    float compute_genz_alpha(const PointCloudShared& source,  //
+                             const PointCloudShared& target,  //
+                             float max_correspondence_distance, const std::vector<sycl::event>& depends = {}) {
         sycl_points::shared_vector<uint32_t> counter_inlier(1, 0, *this->queue_.ptr);
         sycl_points::shared_vector<uint32_t> counter_plane(1, 0, *this->queue_.ptr);
 
@@ -480,7 +480,9 @@ private:
                     Eigen::Matrix3f eigenvectors;
                     eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
                     const float sum_eigenvalues = eigenvalues(0) + eigenvalues(1) + eigenvalues(2);
-                    const float surface_variation = (sum_eigenvalues > std::numeric_limits<float>::epsilon()) ?  eigenvalues(0) / sum_eigenvalues : 1.0f;
+                    const float surface_variation = (sum_eigenvalues > std::numeric_limits<float>::epsilon())
+                                                        ? eigenvalues(0) / sum_eigenvalues
+                                                        : 1.0f;
                     if (surface_variation < planarity_threshold) {
                         ++sum_plane_arg;
                     }
