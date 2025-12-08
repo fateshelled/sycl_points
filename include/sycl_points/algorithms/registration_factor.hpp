@@ -182,16 +182,17 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_point_to_plane(const std::arra
     const Eigen::Vector3f normal = target_normal.head<3>();
     const float projected_residual = eigen_utils::dot<3>(normal, residual.head<3>());
 
-    // Build the weighting matrix n n^T in the upper-left 3x3 block using eigen_utils.
-    Eigen::Matrix4f weight_matrix = Eigen::Matrix4f::Zero();
-    weight_matrix.block<3, 3>(0, 0) = eigen_utils::outer<3>(normal, normal);
-
-    // Weighted residual aligns with the target normal (n (n^T r)).
-    const PointType plane_error = eigen_utils::multiply<4, 4>(weight_matrix, residual);
+    // Weighted residual aligns with the target normal (n * (n^T * r)).
+    PointType plane_error = PointType::Zero();
+    plane_error.head<3>() = normal * projected_residual;
 
     // Apply the same projection to the Jacobian to match the scalar point-to-plane constraint.
-    const Eigen::Matrix<float, 4, 6> J =
-        eigen_utils::multiply<4, 4, 6>(weight_matrix, compute_se3_jacobian(T, source_pt));
+    // This computes n * (n^T * J_se3) without forming n*n^T.
+    const auto se3_jacobian = compute_se3_jacobian(T, source_pt);
+    const auto projected_jacobian_row =
+        eigen_utils::multiply<1, 3, 6>(normal.transpose(), se3_jacobian.block<3, 6>(0, 0));
+    Eigen::Matrix<float, 4, 6> J = Eigen::Matrix<float, 4, 6>::Zero();
+    J.block<3, 6>(0, 0) = eigen_utils::multiply<3, 1, 6>(normal, projected_jacobian_row);
 
     LinearlizedResult ret;
     const auto J_T = eigen_utils::transpose<4, 6>(J);
