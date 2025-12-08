@@ -348,8 +348,7 @@ public:
         auto deskewed = source;
 
         {
-            const float max_dist_2 =
-                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            const float max_corr_dist = this->params_.max_correspondence_distance ;
             float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
@@ -391,16 +390,16 @@ public:
 
                         // Linearize on device for the current robust scale level
                         const LinearlizedResult linearlized_result = this->linearlize(
-                            deskewed, target, result.T.matrix(), max_dist_2, robust_scale, knn_event.evs);
+                            deskewed, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
 
                         // Optimize on Host
                         switch (this->params_.optimization_method) {
                             case OptimizationMethod::LEVENBERG_MARQUARDT:
-                                this->optimize_levenberg_marquardt(deskewed, target, max_dist_2, result,
+                                this->optimize_levenberg_marquardt(deskewed, target, max_corr_dist, result,
                                                                    linearlized_result, lambda, iter, robust_scale);
                                 break;
                             case OptimizationMethod::POWELL_DOGLEG:
-                                this->optimize_powell_dogleg(deskewed, target, max_dist_2, result, linearlized_result,
+                                this->optimize_powell_dogleg(deskewed, target, max_corr_dist, result, linearlized_result,
                                                              trust_region_radius, iter, robust_scale);
                                 break;
                             case OptimizationMethod::GAUSS_NEWTON:
@@ -440,7 +439,7 @@ private:
     float compute_genz_alpha(
         const PointCloudShared& source, //
         const PointCloudShared& target,  //
-        float max_correspondence_distance_2, const std::vector<sycl::event>& depends = {}) {
+        float max_correspondence_distance, const std::vector<sycl::event>& depends = {}) {
         sycl_points::shared_vector<uint32_t> counter_inlier(1, 0, *this->queue_.ptr);
         sycl_points::shared_vector<uint32_t> counter_plane(1, 0, *this->queue_.ptr);
 
@@ -459,7 +458,7 @@ private:
             auto sum_plane = sycl::reduction(counter_plane.data(), sycl::plus<uint32_t>());
 
             const float planarity_threshold = this->params_.genz.planarity_threshold;
-            const float max_corr_dist2 = max_correspondence_distance_2;
+            const float max_corr_dist2 = max_correspondence_distance * max_correspondence_distance;
 
             h.depends_on(depends);
             h.parallel_for(                                       //
@@ -499,10 +498,10 @@ private:
     template <RobustLossType loss = RobustLossType::NONE>
     sycl_utils::events linearlize_parallel_reduction_async(const PointCloudShared& source,
                                                            const PointCloudShared& target, const Eigen::Matrix4f transT,
-                                                           float max_correspondence_distance_2, float robust_scale,
+                                                           float max_correspondence_distance, float robust_scale,
                                                            const std::vector<sycl::event>& depends) {
         if constexpr (icp == ICPType::GENZ) {
-            this->genz_alpha_ = compute_genz_alpha(source, target, max_correspondence_distance_2, depends);
+            this->genz_alpha_ = compute_genz_alpha(source, target, max_correspondence_distance, depends);
         }
 
         // The robust_scale argument controls the influence of the robust loss inside the reduction kernel.
@@ -540,6 +539,7 @@ private:
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
+            const float max_corr_dist2 = max_correspondence_distance * max_correspondence_distance;
             const float genz_alpha = this->genz_alpha_;
 
             // reduction
@@ -563,7 +563,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
@@ -610,24 +610,24 @@ private:
     }
 
     LinearlizedResult linearlize(const PointCloudShared& source, const PointCloudShared& target,
-                                 const Eigen::Matrix4f transT, float max_correspondence_distance_2, float robust_scale,
+                                 const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale,
                                  const std::vector<sycl::event>& depends) {
         sycl_utils::events events;
         if (this->params_.robust.type == RobustLossType::NONE) {
             events += this->linearlize_parallel_reduction_async<RobustLossType::NONE>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
+                source, target, transT, max_correspondence_distance, robust_scale, depends);
         } else if (this->params_.robust.type == RobustLossType::HUBER) {
             events += this->linearlize_parallel_reduction_async<RobustLossType::HUBER>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
+                source, target, transT, max_correspondence_distance, robust_scale, depends);
         } else if (this->params_.robust.type == RobustLossType::TUKEY) {
             events += this->linearlize_parallel_reduction_async<RobustLossType::TUKEY>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
+                source, target, transT, max_correspondence_distance, robust_scale, depends);
         } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
             events += this->linearlize_parallel_reduction_async<RobustLossType::CAUCHY>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
+                source, target, transT, max_correspondence_distance, robust_scale, depends);
         } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
             events += this->linearlize_parallel_reduction_async<RobustLossType::GEMAN_MCCLURE>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
+                source, target, transT, max_correspondence_distance, robust_scale, depends);
         } else {
             throw std::runtime_error("Unknown robust loss type.");
         }
@@ -638,7 +638,7 @@ private:
     template <RobustLossType loss = RobustLossType::NONE>
     std::tuple<float, uint32_t> compute_error_parallel_reduction(
         const PointCloudShared& source, const PointCloudShared& target, const knn::KNNResult& knn_results,
-        const Eigen::Matrix4f transT, float max_correspondence_distance_2, float robust_scale) {
+        const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale) {
         // The robust_scale argument ensures error reduction uses the caller-provided loss scale.
         shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
         shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
@@ -672,6 +672,7 @@ private:
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
+            const float max_corr_dist2 = max_correspondence_distance * max_correspondence_distance;
             const float genz_alpha = this->genz_alpha_;
 
             // output
@@ -685,7 +686,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
@@ -721,22 +722,22 @@ private:
 
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
                                               const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
-                                              float max_correspondence_distance_2, float robust_scale) {
+                                              float max_correspondence_distance, float robust_scale) {
         if (this->params_.robust.type == RobustLossType::NONE) {
             return this->compute_error_parallel_reduction<RobustLossType::NONE>(  //
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
+                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
         } else if (this->params_.robust.type == RobustLossType::HUBER) {
             return this->compute_error_parallel_reduction<RobustLossType::HUBER>(
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
+                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
         } else if (this->params_.robust.type == RobustLossType::TUKEY) {
             return this->compute_error_parallel_reduction<RobustLossType::TUKEY>(
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
+                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
         } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
             return this->compute_error_parallel_reduction<RobustLossType::CAUCHY>(
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
+                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
         } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
             return this->compute_error_parallel_reduction<RobustLossType::GEMAN_MCCLURE>(
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
+                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
         }
         throw std::runtime_error("Unknown robust loss type.");
     }
@@ -764,7 +765,7 @@ private:
     }
 
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
-                                      float max_correspondence_distance_2, RegistrationResult& result,
+                                      float max_correspondence_distance, RegistrationResult& result,
                                       const LinearlizedResult& linearlized_result, float& lambda, size_t iter,
                                       float robust_scale) {
         const auto& H = linearlized_result.H;
@@ -780,7 +781,7 @@ private:
             const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
 
             const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
-                                                           max_correspondence_distance_2, robust_scale);
+                                                           max_correspondence_distance, robust_scale);
 
             if (this->params_.verbose) {
                 std::cout << "iter [" << iter << "] ";
@@ -824,7 +825,7 @@ private:
     }
 
     bool optimize_powell_dogleg(const PointCloudShared& source, const PointCloudShared& target,
-                                float max_correspondence_distance_2, RegistrationResult& result,
+                                float max_correspondence_distance, RegistrationResult& result,
                                 const LinearlizedResult& linearlized_result, float& trust_region_radius, size_t iter,
                                 float robust_scale) {
         bool updated = false;
@@ -914,7 +915,7 @@ private:
 
         const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(p_dl));
         const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
-                                                       max_correspondence_distance_2, robust_scale);
+                                                       max_correspondence_distance, robust_scale);
 
         const float actual_reduction = current_error - new_error;
         const float rho = actual_reduction / predicted_reduction;
