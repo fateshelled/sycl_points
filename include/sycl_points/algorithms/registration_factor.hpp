@@ -42,8 +42,7 @@ struct PhotometricWeights {
 /// @param use_color True when RGB photometric residuals are available.
 /// @param use_intensity True when intensity photometric residuals are available.
 /// @return Normalized weights for geometry, color, and intensity contributions.
-inline PhotometricWeights compute_photometric_weights(float photometric_weight, bool use_color,
-                                                      bool use_intensity) {
+inline PhotometricWeights compute_photometric_weights(float photometric_weight, bool use_color, bool use_intensity) {
     PhotometricWeights weights{};
 
     if (0.0f < photometric_weight && photometric_weight <= 1.0f) {
@@ -419,13 +418,13 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_color(
 /// @param target_normal Target surface normal
 /// @param target_intensity_grad Spatial gradient of the target intensity
 SYCL_EXTERNAL inline LinearlizedResult linearlize_intensity(
-    const std::array<sycl::float4, 4>& T,         ///< SE(3) transform
-    const PointType& source_pt,                   ///< Source point
-    const PointType& target_pt,                   ///< Target point
-    float source_intensity,                       ///< Source intensity
-    float target_intensity,                       ///< Target intensity
-    const Normal& target_normal,                  ///< Target normal
-    const IntensityGradient& target_intensity_grad ///< Target intensity gradient
+    const std::array<sycl::float4, 4>& T,           ///< SE(3) transform
+    const PointType& source_pt,                     ///< Source point
+    const PointType& target_pt,                     ///< Target point
+    float source_intensity,                         ///< Source intensity
+    float target_intensity,                         ///< Target intensity
+    const Normal& target_normal,                    ///< Target normal
+    const IntensityGradient& target_intensity_grad  ///< Target intensity gradient
 ) {
     // Offset between the projected point and the target point on the tangent plane
     const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
@@ -483,12 +482,9 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
 /// @param target_intensity Intensity observed at the target point
 /// @param target_normal Target surface normal
 /// @param target_intensity_grad Spatial gradient of the target intensity
-SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::float4, 4>& T,
-                                                     const PointType& source_pt,
-                                                     const PointType& target_pt,
-                                                     float source_intensity,
-                                                     float target_intensity,
-                                                     const Normal& target_normal,
+SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
+                                                     const PointType& target_pt, float source_intensity,
+                                                     float target_intensity, const Normal& target_normal,
                                                      const IntensityGradient& target_intensity_grad) {
     const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
     const float intensity_diff = source_intensity - target_intensity;
@@ -547,9 +543,8 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
         }
 
         if (weights.intensity > 0.0f) {
-            auto intensity_result =
-                linearlize_intensity(T, source_pt, target_pt, source_intensity, target_intensity, target_normal,
-                                     target_intensity_grad);
+            auto intensity_result = linearlize_intensity(T, source_pt, target_pt, source_intensity, target_intensity,
+                                                         target_normal, target_intensity_grad);
 
             eigen_utils::multiply_inplace<6, 6>(intensity_result.H, weights.intensity);
             eigen_utils::add_inplace<6, 6>(result.H, intensity_result.H);
@@ -584,10 +579,9 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
                                            const Covariance& source_cov, const PointType& target_pt,
                                            const Covariance& target_cov, const Normal& target_normal,
                                            const RGBType& source_rgb, const RGBType& target_rgb,
-                                           const ColorGradient& target_rgb_grad, bool use_color,
-                                           float source_intensity, float target_intensity,
-                                           const IntensityGradient& target_intensity_grad, bool use_intensity,
-                                           float photometric_weight) {
+                                           const ColorGradient& target_rgb_grad, bool use_color, float source_intensity,
+                                           float target_intensity, const IntensityGradient& target_intensity_grad,
+                                           bool use_intensity, float photometric_weight) {
     const float geo_error =
         calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal);
 
@@ -599,15 +593,14 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
         total_error = weights.geometry * geo_error;
 
         if (weights.color > 0.0f) {
-            const float color_error = calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal,
-                                                            target_rgb_grad);
+            const float color_error =
+                calculate_color_error(T, source_pt, target_pt, source_rgb, target_rgb, target_normal, target_rgb_grad);
             total_error = sycl::fma(weights.color, color_error, total_error);
         }
 
         if (weights.intensity > 0.0f) {
-            const float intensity_error =
-                calculate_intensity_error(T, source_pt, target_pt, source_intensity, target_intensity, target_normal,
-                                          target_intensity_grad);
+            const float intensity_error = calculate_intensity_error(
+                T, source_pt, target_pt, source_intensity, target_intensity, target_normal, target_intensity_grad);
             total_error = sycl::fma(weights.intensity, intensity_error, total_error);
         }
     }
