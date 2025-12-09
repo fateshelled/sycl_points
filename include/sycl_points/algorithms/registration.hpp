@@ -75,6 +75,7 @@ struct RegistrationParams {
         float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
     };
 
+    RegType reg_type = RegType::GICP;          // Registration Type
     size_t max_iterations = 20;                // max iteration
     float lambda = 1e-6f;                      // damping factor
     float max_correspondence_distance = 2.0f;  // max correspondence distance
@@ -155,11 +156,9 @@ struct LinearlizedDevice {
 }  // namespace
 
 /// @brief Point cloud registration
-/// @tparam icp icp type
-template <ICPType icp = ICPType::GICP>
 class Registration {
 public:
-    using Ptr = std::shared_ptr<Registration<icp>>;
+    using Ptr = std::shared_ptr<Registration>;
 
     /// @brief Constructor
     /// @param queue SYCL queue
@@ -178,26 +177,25 @@ public:
 
     /// @brief validate parameters
     void validate_params(const PointCloudShared& source, const PointCloudShared& target) {
-        if constexpr (icp == ICPType::POINT_TO_PLANE) {
+        if (this->params_.reg_type == RegType::POINT_TO_PLANE) {
             if (!target.has_normal()) {
                 if (!target.has_cov()) {
                     throw std::runtime_error(
                         "Normal vector or covariance matrices of target must be pre-computed before performing "
-                        "Point-to-Plane "
-                        "ICP matching.");
+                        "Point-to-Plane ICP matching.");
                 }
                 std::cout << "[Caution] Normal vectors for Point-to-Plane ICP are not provided. " << std::endl;
                 std::cout << "          Attempting to derive them from pre-computed covariance matrices." << std::endl;
                 covariance::compute_normals_from_covariances(target);
             }
         }
-        if constexpr (icp == ICPType::GICP) {
+        if (this->params_.reg_type == RegType::GICP) {
             if (!source.has_cov() || !target.has_cov()) {
                 throw std::runtime_error(
                     "Covariance matrices of source and target must be pre-computed before performing GICP matching.");
             }
         }
-        if constexpr (icp == ICPType::GENZ) {
+        if (this->params_.reg_type == RegType::GENZ) {
             if (!target.has_cov()) {
                 throw std::runtime_error(
                     "Covariance matrices of target must be pre-computed before performing GenZ-ICP matching.");
@@ -446,6 +444,41 @@ private:
 
     float genz_alpha_ = 1.0f;
 
+    template <typename Func>
+    sycl_utils::events dispatch(Func&& exec) {
+        sycl_utils::events events;
+        auto dispatch_inner = [&]<RegType reg, typename RobustLossTypeTags, size_t... Js>(RobustLossType loss,
+                                                                                          std::index_sequence<Js...>) {
+            // Search for RobustLossType candidates
+            return (
+                ((loss == std::tuple_element_t<Js, RobustLossTypeTags>::value)
+                     ? (events += exec.template operator()<reg, std::tuple_element_t<Js, RobustLossTypeTags>::value>(),
+                        true)
+                     : false) ||
+                ...);
+        };
+        auto dispatch_outer = [&]<typename RegTypeTags, typename RobustLossTypeTags, size_t... Is>(
+                                  RegType reg, RobustLossType loss, std::index_sequence<Is...>) {
+            // Search for RegType candidates
+            return (((reg == std::tuple_element_t<Is, RegTypeTags>::value)
+                         ? dispatch_inner
+                               .template operator()<std::tuple_element_t<Is, RegTypeTags>::value, RobustLossTypeTags>(
+                                   loss, std::make_index_sequence<std::tuple_size_v<RobustLossTypeTags>>())
+                         : false) ||
+                    ...);
+        };
+
+        // Start search
+        bool found = dispatch_outer.template operator()<RegTypeTags, RobustLossTypeTags>(
+            this->params_.reg_type, this->params_.robust.type,
+            std::make_index_sequence<std::tuple_size_v<RegTypeTags>>());
+
+        if (!found) {
+            std::cout << "Error: Combination not found in tags!" << std::endl;
+        }
+        return events;
+    }
+
     bool is_converged(const Eigen::Vector<float, 6>& delta) const {
         return delta.template head<3>().norm() < this->params_.crireria.rotation &&
                delta.template tail<3>().norm() < this->params_.crireria.translation;
@@ -509,12 +542,12 @@ private:
         return static_cast<float>(counter_plane[0]) / static_cast<float>(inlier_count);
     }
 
-    template <RobustLossType loss = RobustLossType::NONE>
+    template <RegType reg, RobustLossType loss>
     sycl_utils::events linearlize_parallel_reduction_async(const PointCloudShared& source,
                                                            const PointCloudShared& target, const Eigen::Matrix4f transT,
                                                            float max_correspondence_distance, float robust_scale,
                                                            const std::vector<sycl::event>& depends) {
-        if constexpr (icp == ICPType::GENZ) {
+        if constexpr (reg == RegType::GENZ) {
             this->genz_alpha_ = compute_genz_alpha(source, target, max_correspondence_distance, depends);
         }
 
@@ -601,7 +634,7 @@ private:
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
                     const LinearlizedResult linearlized =
-                        kernel::linearlize<icp>(cur_T, source_ptr[index], source_cov,               //
+                        kernel::linearlize<reg>(cur_T, source_ptr[index], source_cov,               //
                                                 target_ptr[target_idx], target_cov, target_normal,  //
                                                 source_rgb, target_rgb, target_grad, use_color,     //
                                                 source_intensity, target_intensity,                 //
@@ -626,30 +659,16 @@ private:
     LinearlizedResult linearlize(const PointCloudShared& source, const PointCloudShared& target,
                                  const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale,
                                  const std::vector<sycl::event>& depends) {
-        sycl_utils::events events;
-        if (this->params_.robust.type == RobustLossType::NONE) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::NONE>(
+        auto events = this->dispatch([&]<RegType reg, RobustLossType loss>() {
+            return this->linearlize_parallel_reduction_async<reg, loss>(
                 source, target, transT, max_correspondence_distance, robust_scale, depends);
-        } else if (this->params_.robust.type == RobustLossType::HUBER) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::HUBER>(
-                source, target, transT, max_correspondence_distance, robust_scale, depends);
-        } else if (this->params_.robust.type == RobustLossType::TUKEY) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::TUKEY>(
-                source, target, transT, max_correspondence_distance, robust_scale, depends);
-        } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::CAUCHY>(
-                source, target, transT, max_correspondence_distance, robust_scale, depends);
-        } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::GEMAN_MCCLURE>(
-                source, target, transT, max_correspondence_distance, robust_scale, depends);
-        } else {
-            throw std::runtime_error("Unknown robust loss type.");
-        }
+        });
+
         events.wait_and_throw();
         return this->linearlized_on_device_->toCPU(0);
     }
 
-    template <RobustLossType loss = RobustLossType::NONE>
+    template <RegType reg, RobustLossType loss>
     std::tuple<float, uint32_t> compute_error_parallel_reduction(
         const PointCloudShared& source, const PointCloudShared& target, const knn::KNNResult& knn_results,
         const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale) {
@@ -719,7 +738,7 @@ private:
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
                     const float err =
-                        kernel::calculate_error<icp>(cur_T,                                              //
+                        kernel::calculate_error<reg>(cur_T,                                              //
                                                      source_ptr[index], source_cov,                      // source
                                                      target_ptr[target_idx], target_cov, target_normal,  // target
                                                      source_rgb, target_rgb, target_grad, use_color,     //
@@ -737,23 +756,13 @@ private:
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
                                               const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
                                               float max_correspondence_distance, float robust_scale) {
-        if (this->params_.robust.type == RobustLossType::NONE) {
-            return this->compute_error_parallel_reduction<RobustLossType::NONE>(  //
-                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
-        } else if (this->params_.robust.type == RobustLossType::HUBER) {
-            return this->compute_error_parallel_reduction<RobustLossType::HUBER>(
-                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
-        } else if (this->params_.robust.type == RobustLossType::TUKEY) {
-            return this->compute_error_parallel_reduction<RobustLossType::TUKEY>(
-                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
-        } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
-            return this->compute_error_parallel_reduction<RobustLossType::CAUCHY>(
-                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
-        } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
-            return this->compute_error_parallel_reduction<RobustLossType::GEMAN_MCCLURE>(
-                source, target, knn_results, transT, max_correspondence_distance, robust_scale);
-        }
-        throw std::runtime_error("Unknown robust loss type.");
+        std::tuple<float, uint32_t> result = {0.0f, 0};
+        this->dispatch([&]<RegType reg, RobustLossType loss>() {
+            result = this->compute_error_parallel_reduction<reg, loss>(source, target, knn_results, transT,
+                                                                       max_correspondence_distance, robust_scale);
+            return sycl_utils::events{};
+        });
+        return result;
     }
 
     void optimize_gauss_newton(RegistrationResult& result, const LinearlizedResult& linearlized_result, float lambda,
@@ -962,15 +971,6 @@ private:
         return updated;
     }
 };
-
-using RegistrationPointToPoint = Registration<ICPType::POINT_TO_POINT>;
-using RegistrationPointToPlane = Registration<ICPType::POINT_TO_PLANE>;
-using RegistrationGICP = Registration<ICPType::GICP>;
-
-/// @brief GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)
-/// @authors Daehan Lee, Hyungtae Lim, Soohee Han
-/// @cite https://arxiv.org/abs/2411.06766
-using RegistrationGenZ = Registration<ICPType::GENZ>;
 
 }  // namespace registration
 

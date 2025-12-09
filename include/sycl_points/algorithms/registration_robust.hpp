@@ -15,6 +15,15 @@ enum class RobustLossType {
     GEMAN_MCCLURE  // Geman-McClure loss
 };
 
+/// @brief Robust loss Type tags
+using RobustLossTypeTags = std::tuple<                                //
+    std::integral_constant<RobustLossType, RobustLossType::NONE>,          //
+    std::integral_constant<RobustLossType, RobustLossType::HUBER>,         //
+    std::integral_constant<RobustLossType, RobustLossType::TUKEY>,         //
+    std::integral_constant<RobustLossType, RobustLossType::CAUCHY>,        //
+    std::integral_constant<RobustLossType, RobustLossType::GEMAN_MCCLURE>  //
+    >;
+
 RobustLossType RobustLossType_from_string(const std::string& str) {
     std::string upper = str;
     std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
