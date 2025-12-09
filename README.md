@@ -16,15 +16,18 @@ This project was developed with reference to small_gicp and gtsam_points
     - Data structures accessible from CPU and device kernel
 - K-nearest neighbor search
     - KD-trees
+    - Octree
     - Brute force
 - Point cloud registration
     - Iterative Closest Point (ICP)
       - Point to Point
       - Point to Plane
       - Generalized ICP (GICP)
+      - Genz-ICP
     - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
     - Colored ICP
         - Set `0.0 < photometric_weight <= 1.0` in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB fields, and the target cloud requires pre-computed color gradients and geometric normal vector.
+    - Velocity updating ICP (VICP)
 - Preprocessing filter
     - L∞ distance (chebyshev distance) filter
     - Random sampling
@@ -51,6 +54,7 @@ note:
 
 ## Requirements
 
+- C++20 or later
 - Eigen
 - GTest
 - Intel oneAPI DPC++
