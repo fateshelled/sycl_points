@@ -266,8 +266,7 @@ public:
         this->validate_params(source, target);
 
         {
-            const float max_dist_2 =
-                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            const float max_corr_dist = this->params_.max_correspondence_distance;
             float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
@@ -292,16 +291,16 @@ public:
 
                     // Linearize on device for the current robust scale level
                     const LinearlizedResult linearlized_result =
-                        this->linearlize(source, target, result.T.matrix(), max_dist_2, robust_scale, knn_event.evs);
+                        this->linearlize(source, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
 
                     // Optimize on Host
                     switch (this->params_.optimization_method) {
                         case OptimizationMethod::LEVENBERG_MARQUARDT:
-                            this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result,
-                                                               lambda, iter, robust_scale);
+                            this->optimize_levenberg_marquardt(source, target, max_corr_dist, result,
+                                                               linearlized_result, lambda, iter, robust_scale);
                             break;
                         case OptimizationMethod::POWELL_DOGLEG:
-                            this->optimize_powell_dogleg(source, target, max_dist_2, result, linearlized_result,
+                            this->optimize_powell_dogleg(source, target, max_corr_dist, result, linearlized_result,
                                                          trust_region_radius, iter, robust_scale);
                             break;
                         case OptimizationMethod::GAUSS_NEWTON:
