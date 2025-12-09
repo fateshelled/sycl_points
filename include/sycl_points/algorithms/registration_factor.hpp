@@ -12,7 +12,12 @@ namespace algorithms {
 
 namespace registration {
 
-enum class ICPType { POINT_TO_POINT, POINT_TO_PLANE, GICP };
+enum class ICPType {
+    POINT_TO_POINT = 0,  //
+    POINT_TO_PLANE,
+    GICP,
+    GENZ
+};
 
 /// @brief Registration Linearlized Result
 struct LinearlizedResult {
@@ -304,13 +309,30 @@ template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline LinearlizedResult linearlize_geometry(const std::array<sycl::float4, 4>& T,  //
                                                            const PointType& source_pt, const Covariance& source_cov,
                                                            const PointType& target_pt, const Covariance& target_cov,
-                                                           const Normal& target_normal, float& residual_norm) {
+                                                           const Normal& target_normal, float& residual_norm,
+                                                           float genz_alpha) {
     if constexpr (icp == ICPType::POINT_TO_POINT) {
         return linearlize_point_to_point(T, source_pt, target_pt, residual_norm);
     } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
         return linearlize_point_to_plane(T, source_pt, target_pt, target_normal, residual_norm);
     } else if constexpr (icp == ICPType::GICP) {
         return linearlize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
+    } else if constexpr (icp == ICPType::GENZ) {
+        float pt2pt_residual_norm = 0.0f;
+        float pt2pl_residual_norm = 0.0f;
+        const auto pt2pt_result = linearlize_point_to_point(T, source_pt, target_pt, pt2pt_residual_norm);
+        const auto pt2pl_result = linearlize_point_to_plane(T, source_pt, target_pt, target_normal, pt2pl_residual_norm);
+
+        residual_norm = pt2pt_residual_norm * (1.0f - genz_alpha) + pt2pl_residual_norm * genz_alpha;
+
+        LinearlizedResult result;
+        result.H = eigen_utils::add<6, 6>(eigen_utils::multiply<6, 6>(pt2pt_result.H, 1.0f - genz_alpha),
+                                          eigen_utils::multiply<6, 6>(pt2pl_result.H, genz_alpha));
+        result.b = eigen_utils::add<6, 1>(eigen_utils::multiply<6, 1>(pt2pt_result.b, 1.0f - genz_alpha),
+                                          eigen_utils::multiply<6, 1>(pt2pl_result.b, genz_alpha));
+        result.error = pt2pt_result.error * (1.0f - genz_alpha) + pt2pl_result.error * genz_alpha;
+        result.inlier = 1;
+        return result;
     } else {
         static_assert("not support type");
     }
@@ -328,13 +350,17 @@ template <ICPType icp = ICPType::GICP>
 SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float4, 4>& T,                      //
                                                     const PointType& source_pt, const Covariance& source_cov,  //
                                                     const PointType& target_pt, const Covariance& target_cov,  //
-                                                    const Normal& target_normal) {
+                                                    const Normal& target_normal, const float genz_alpha = 1.0f) {
     if constexpr (icp == ICPType::POINT_TO_POINT) {
         return calculate_point_to_point_error(T, source_pt, target_pt);
     } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
         return calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
     } else if constexpr (icp == ICPType::GICP) {
         return calculate_gicp_error(T, source_pt, source_cov, target_pt, target_cov);
+    } else if constexpr (icp == ICPType::GENZ) {
+        const float pt2pt_err = calculate_point_to_point_error(T, source_pt, target_pt);
+        const float pt2pl_err = calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
+        return pt2pt_err * (1.0f - genz_alpha) + pt2pl_err * genz_alpha;
     } else {
         static_assert("not support type");
     }
@@ -514,10 +540,10 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
                                                   const ColorGradient& target_grad, bool use_color,
                                                   float source_intensity, float target_intensity,
                                                   const IntensityGradient& target_intensity_grad, bool use_intensity,
-                                                  float photometric_weight) {
+                                                  float photometric_weight, float genz_alpha) {
     float geo_residual_norm = 0.0f;
-    LinearlizedResult result =
-        linearlize_geometry<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, geo_residual_norm);
+    LinearlizedResult result = linearlize_geometry<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal,
+                                                        geo_residual_norm, genz_alpha);
 
     float total_error = result.error;
     const PhotometricWeights weights = compute_photometric_weights(photometric_weight, use_color, use_intensity);
@@ -581,9 +607,9 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
                                            const RGBType& source_rgb, const RGBType& target_rgb,
                                            const ColorGradient& target_rgb_grad, bool use_color, float source_intensity,
                                            float target_intensity, const IntensityGradient& target_intensity_grad,
-                                           bool use_intensity, float photometric_weight) {
+                                           bool use_intensity, float photometric_weight, float genz_alpha) {
     const float geo_error =
-        calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal);
+        calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, genz_alpha);
 
     float total_error = geo_error;
     const PhotometricWeights weights = compute_photometric_weights(photometric_weight, use_color, use_intensity);
