@@ -182,18 +182,33 @@ public:
             if (!target.has_normal()) {
                 if (!target.has_cov()) {
                     throw std::runtime_error(
-                        "Normal vector or covariance matrices must be pre-computed before performing Point-to-Plane "
+                        "Normal vector or covariance matrices of target must be pre-computed before performing "
+                        "Point-to-Plane "
                         "ICP matching.");
                 }
                 std::cout << "[Caution] Normal vectors for Point-to-Plane ICP are not provided. " << std::endl;
                 std::cout << "          Attempting to derive them from pre-computed covariance matrices." << std::endl;
-                target.reserve_covs(target.size());
                 covariance::compute_normals_from_covariances(target);
             }
         }
         if constexpr (icp == ICPType::GICP) {
             if (!source.has_cov() || !target.has_cov()) {
-                throw std::runtime_error("Covariance matrices must be pre-computed before performing GICP matching.");
+                throw std::runtime_error(
+                    "Covariance matrices of source and target must be pre-computed before performing GICP matching.");
+            }
+        }
+        if constexpr (icp == ICPType::GENZ) {
+            if (!target.has_cov()) {
+                throw std::runtime_error(
+                    "Covariance matrices of target must be pre-computed before performing GenZ-ICP matching.");
+            }
+            if (!target.has_normal()) {
+                if (target.has_cov()) {
+                    std::cout << "[Caution] Normal vectors for GenZ-ICP are not provided. " << std::endl;
+                    std::cout << "          Attempting to derive them from pre-computed covariance matrices."
+                              << std::endl;
+                    covariance::compute_normals_from_covariances(target);
+                }
             }
         }
         if (this->params_.photometric.enable) {
@@ -448,7 +463,6 @@ private:
             const size_t work_group_size = this->queue_.get_work_group_size_for_parallel_reduction();
             const size_t global_size = this->queue_.get_global_size_for_parallel_reduction(N);
 
-            // const auto source_cov_ptr = source.covs_ptr();
             const auto target_cov_ptr = target.covs_ptr();
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
@@ -471,7 +485,6 @@ private:
                         return;
                     }
 
-                    // const auto cov = source_cov_ptr[index];
                     const auto target_idx = neighbors_index_ptr[index];
                     const auto cov = target_cov_ptr[target_idx];
 
