@@ -1,6 +1,8 @@
 #pragma once
 
 #include <sycl_points/utils/sycl_utils.hpp>
+#include <tuple>
+#include <type_traits>
 
 namespace sycl_points {
 namespace algorithms {
@@ -16,7 +18,7 @@ enum class RobustLossType {
 };
 
 /// @brief Robust loss Type tags
-using RobustLossTypeTags = std::tuple<                                //
+using RobustLossTypeTags = std::tuple<                                     //
     std::integral_constant<RobustLossType, RobustLossType::NONE>,          //
     std::integral_constant<RobustLossType, RobustLossType::HUBER>,         //
     std::integral_constant<RobustLossType, RobustLossType::TUKEY>,         //

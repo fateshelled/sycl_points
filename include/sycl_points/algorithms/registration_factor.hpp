@@ -5,6 +5,8 @@
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
+#include <tuple>
+#include <type_traits>
 
 namespace sycl_points {
 
@@ -25,13 +27,12 @@ enum class RegType {
 };
 
 /// @brief Registration Type tags
-using RegTypeTags = std::tuple<                           //
+using RegTypeTags = std::tuple<                                //
     std::integral_constant<RegType, RegType::POINT_TO_POINT>,  //
     std::integral_constant<RegType, RegType::POINT_TO_PLANE>,  //
     std::integral_constant<RegType, RegType::GICP>,            //
     std::integral_constant<RegType, RegType::GENZ>             //
     >;
-
 
 RegType RegType_from_string(const std::string& str) {
     std::string upper = str;
