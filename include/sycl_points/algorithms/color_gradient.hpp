@@ -140,7 +140,7 @@ inline sycl_utils::events compute_intensity_gradients_async(
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = cloud.size();
     if (!cloud.has_intensity()) {
-        throw std::runtime_error("[compute_color_gradients_async] Intensity field not found");
+        throw std::runtime_error("[compute_intensity_gradients_async] Intensity field not found");
     }
 
     if (cloud.intensity_gradients->size() != N) {
