@@ -66,7 +66,7 @@ private:
         const size_t valid_count = countValidPoints(cloud);
 
         if (valid_count == 0) {
-            throw std::runtime_error("No valid points to write");
+            throw std::runtime_error("[PointCloudWriter::writePLY] No valid points to write");
         }
 
         // Set memory access hints for shared memory
@@ -101,7 +101,7 @@ private:
         file << "end_header\n";
 
         if (file.fail()) {
-            throw std::runtime_error("Failed to write PLY header");
+            throw std::runtime_error("[PointCloudWriter::writePLY] Failed to write PLY header");
         }
 
         // Write data
@@ -159,7 +159,7 @@ private:
         }
 
         if (file.fail()) {
-            throw std::runtime_error("Failed to write PLY data");
+            throw std::runtime_error("[PointCloudWriter::writePLY] Failed to write PLY data");
         }
     }
 
@@ -173,7 +173,7 @@ private:
         const size_t valid_count = countValidPoints(cloud);
 
         if (valid_count == 0) {
-            throw std::runtime_error("No valid points to write");
+            throw std::runtime_error("[PointCloudWriter::writePCD] No valid points to write");
         }
 
         // Set memory access hints for shared memory
@@ -224,7 +224,7 @@ private:
         }
 
         if (file.fail()) {
-            throw std::runtime_error("Failed to write PCD header");
+            throw std::runtime_error("[PointCloudWriter::writePCD] Failed to write PCD header");
         }
 
         // Write data
@@ -274,7 +274,7 @@ private:
         }
 
         if (file.fail()) {
-            throw std::runtime_error("Failed to write PCD data");
+            throw std::runtime_error("[PointCloudWriter::writePCD] Failed to write PCD data");
         }
     }
 
@@ -285,7 +285,7 @@ public:
     /// @param binary Whether to use binary format (default: false = ASCII)
     static void writeFile(const std::string& filename, const PointCloudCPU& cloud, bool binary = false) {
         if (cloud.size() == 0) {
-            throw std::runtime_error("Cannot write empty point cloud");
+            throw std::runtime_error("[PointCloudWriter::writeFile] Cannot write empty point cloud");
         }
 
         std::ofstream file;
@@ -296,7 +296,7 @@ public:
         }
 
         if (!file.is_open()) {
-            throw std::runtime_error("Failed to open file for writing: " + filename);
+            throw std::runtime_error("[PointCloudWriter::writeFile] Failed to open file for writing: " + filename);
         }
 
         const std::string extension = get_file_extension(filename);
@@ -307,7 +307,7 @@ public:
             } else if (extension == "pcd") {
                 writePCD(file, cloud, binary);
             } else {
-                throw std::runtime_error("Unsupported file format: " + extension);
+                throw std::runtime_error("[PointCloudWriter::writeFile] Unsupported file format: " + extension);
             }
         } catch (const std::exception& e) {
             file.close();
@@ -316,7 +316,7 @@ public:
 
         file.close();
         if (file.fail()) {
-            throw std::runtime_error("Failed to close file: " + filename);
+            throw std::runtime_error("[PointCloudWriter::writeFile] Failed to close file: " + filename);
         }
     }
 
@@ -326,7 +326,7 @@ public:
     /// @param binary Whether to use binary format (default: false = ASCII)
     static void writeFile(const std::string& filename, const PointCloudShared& cloud, bool binary = false) {
         if (cloud.size() == 0) {
-            throw std::runtime_error("Cannot write empty point cloud");
+            throw std::runtime_error("[PointCloudWriter::writeFile] Cannot write empty point cloud");
         }
 
         std::ofstream file;
@@ -337,7 +337,7 @@ public:
         }
 
         if (!file.is_open()) {
-            throw std::runtime_error("Failed to open file for writing: " + filename);
+            throw std::runtime_error("[PointCloudWriter::writeFile] Failed to open file for writing: " + filename);
         }
 
         const std::string extension = get_file_extension(filename);
@@ -348,7 +348,7 @@ public:
             } else if (extension == "pcd") {
                 writePCD(file, cloud, binary);
             } else {
-                throw std::runtime_error("Unsupported file format: " + extension);
+                throw std::runtime_error("[PointCloudWriter::writeFile] Unsupported file format: " + extension);
             }
         } catch (const std::exception& e) {
             file.close();
@@ -357,7 +357,7 @@ public:
 
         file.close();
         if (file.fail()) {
-            throw std::runtime_error("Failed to close file: " + filename);
+            throw std::runtime_error("[PointCloudWriter::writeFile] Failed to close file: " + filename);
         }
     }
 

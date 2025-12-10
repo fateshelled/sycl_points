@@ -233,13 +233,13 @@ inline void Octree::reset_tree_state() {
 /// @param points Input point cloud.
 inline void Octree::build_from_cloud(const PointCloudShared& points) {
     if (!this->queue_.ptr) {
-        throw std::runtime_error("Octree queue is not initialised");
+        throw std::runtime_error("[Octree::build_from_cloud] queue is not initialised");
     }
 
     // Reset cached host/device structures before rebuilding the tree.
     this->reset_tree_state();
     if (!points.points) {
-        throw std::runtime_error("Point cloud is not initialised");
+        throw std::runtime_error("[Octree::build_from_cloud] Point cloud is not initialised");
     }
 
     const size_t point_count = points.points->size();
@@ -276,16 +276,17 @@ inline void Octree::build_from_cloud(const PointCloudShared& points) {
 
 inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
     if (!this->queue_.ptr) {
-        throw std::runtime_error("Octree queue is not initialised");
+        throw std::runtime_error("[Octree::remove_nodes_by_flags] Octree queue is not initialised");
     }
 
     if (flags.size() != indices.size()) {
-        throw std::runtime_error("flags and indices must have the same size");
+        throw std::runtime_error("[Octree::remove_nodes_by_flags] flags and indices must have the same size");
     }
 
     const size_t expected_size = static_cast<size_t>(this->next_point_id_);
     if (flags.size() != expected_size) {
-        throw std::runtime_error("flags and indices must match the octree point identifier range");
+        throw std::runtime_error(
+            "[Octree::remove_nodes_by_flags] flags and indices must match the octree point identifier range");
     }
 
     if (expected_size == 0 || this->root_index_ < 0 || this->host_nodes_.empty()) {
@@ -315,7 +316,8 @@ inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags, c
 
             const size_t id_index = static_cast<size_t>(record_id);
             if (id_index >= expected_size) {
-                throw std::runtime_error("flags array does not cover the stored point identifier");
+                throw std::runtime_error(
+                    "[Octree::remove_nodes_by_flags] flags array does not cover the stored point identifier");
             }
 
             const int32_t new_id = indices[id_index];
@@ -326,7 +328,8 @@ inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags, c
             }
 
             if (new_id >= static_cast<int32_t>(expected_size)) {
-                throw std::runtime_error("remapped point identifier in indices exceeds the allocated range");
+                throw std::runtime_error(
+                    "[Octree::remove_nodes_by_flags] remapped point identifier in indices exceeds the allocated range");
             }
 
             if (new_id != record_id) {
@@ -371,7 +374,7 @@ inline void Octree::remove_nodes_by_flags(const shared_vector<uint8_t>& flags, c
     const int64_t total_count_candidate = static_cast<int64_t>(this->total_point_count_);
     const int64_t next_id_64 = std::max(candidate_next_id, total_count_candidate);
     if (next_id_64 > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
-        throw std::runtime_error("compacted point identifiers exceed int32_t capacity");
+        throw std::runtime_error("[Octree::remove_nodes_by_flags] compacted point identifiers exceed int32_t capacity");
     }
 
     this->next_point_id_ = static_cast<int32_t>(next_id_64);
@@ -585,7 +588,7 @@ inline Octree::Ptr Octree::build(const sycl_utils::DeviceQueue& queue, const Poi
                                  size_t max_points_per_node) {
     auto tree = std::make_shared<Octree>(queue, resolution, max_points_per_node);
     if (!queue.ptr) {
-        throw std::runtime_error("Octree queue is not initialised");
+        throw std::runtime_error("[Octree::build] queue is not initialised");
     }
 
     tree->build_from_cloud(points);
@@ -624,7 +627,7 @@ inline sycl_utils::events Octree::knn_search_async(const PointCloudShared& queri
         return knn_search_async_impl<100, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     }
 
-    throw std::runtime_error("Requested neighbour count exceeds the supported maximum");
+    throw std::runtime_error("[Octree::knn_search_async] Requested neighbour count exceeds the supported maximum");
 }
 
 template <size_t MAX_K, size_t MAX_DEPTH>
@@ -636,13 +639,14 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
     static_assert(MAX_K > 0, "MAX_K must be greater than zero");
 
     if (!this->queue_.ptr) {
-        throw std::runtime_error("Octree queue is not initialised");
+        throw std::runtime_error("[Octree::knn_search_async_impl] queue is not initialised");
     }
     if (!queries.points) {
-        throw std::runtime_error("Query cloud is not initialised");
+        throw std::runtime_error("[Octree::knn_search_async_impl] Query cloud is not initialised");
     }
     if (k > MAX_K) {
-        throw std::runtime_error("Requested neighbour count exceeds the compile-time limit");
+        throw std::runtime_error(
+            "[Octree::knn_search_async_impl] Requested neighbour count exceeds the compile-time limit");
     }
 
     this->sync_device_buffers();
@@ -659,10 +663,10 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
     }
 
     if (target_size > 0 && (node_count == 0 || this->device_points_.empty())) {
-        throw std::runtime_error("Octree structure has not been initialized");
+        throw std::runtime_error("[Octree::knn_search_async_impl] Octree structure has not been initialized");
     }
 
-    auto search_task = [=](sycl::handler& handler) {
+    auto search_task = [&](sycl::handler& handler) {
         const size_t work_group_size = this->queue_.get_work_group_size();
         const size_t global_size = this->queue_.get_global_size(query_size);
 

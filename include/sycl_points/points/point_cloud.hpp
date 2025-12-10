@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
-
 #include <sycl_points/points/types.hpp>
 
 namespace sycl_points {
@@ -189,9 +188,8 @@ struct PointCloudShared {
         if (cpu.has_intensity_gradient()) {
             this->intensity_gradients = std::make_shared<IntensityGradientContainerShared>(N, *this->queue.ptr);
             if (is_cpu) {
-                copy_events +=
-                    this->queue.ptr->memcpy(this->intensity_gradients->data(), cpu.intensity_gradients->data(),
-                                             N * sizeof(IntensityGradient));
+                copy_events += this->queue.ptr->memcpy(this->intensity_gradients->data(),
+                                                       cpu.intensity_gradients->data(), N * sizeof(IntensityGradient));
             } else {
                 for (size_t i = 0; i < N; ++i) {
                     this->intensity_gradients->data()[i] = cpu.intensity_gradients->data()[i];
@@ -255,13 +253,13 @@ struct PointCloudShared {
     /// @param other shared point cloud
     PointCloudShared(const sycl_utils::DeviceQueue& target_queue, const PointCloudShared& other) : queue(target_queue) {
         if (!this->queue.ptr) {
-            throw std::runtime_error("Target queue is not initialised");
+            throw std::runtime_error("[PointCloudShared] Target queue is not initialised");
         }
         if (!other.queue.ptr) {
-            throw std::runtime_error("Source point cloud queue is not initialised");
+            throw std::runtime_error("[PointCloudShared] Source point cloud queue is not initialised");
         }
         if (!other.points) {
-            throw std::runtime_error("Source point cloud points are not initialised");
+            throw std::runtime_error("[PointCloudShared] Source point cloud points are not initialised");
         }
 
         const size_t N = other.size();
@@ -270,7 +268,8 @@ struct PointCloudShared {
         sycl::queue& copy_queue = *other.queue.ptr;
 
         this->copy_attribute(this->covs, other.covs, N, other.has_cov(), same_context, copy_queue, copy_events);
-        this->copy_attribute(this->normals, other.normals, N, other.has_normal(), same_context, copy_queue, copy_events);
+        this->copy_attribute(this->normals, other.normals, N, other.has_normal(), same_context, copy_queue,
+                             copy_events);
         this->copy_attribute(this->rgb, other.rgb, N, other.has_rgb(), same_context, copy_queue, copy_events);
         this->copy_attribute(this->color_gradients, other.color_gradients, N, other.has_color_gradient(), same_context,
                              copy_queue, copy_events);
@@ -462,8 +461,7 @@ struct PointCloudShared {
 private:
     template <typename Container>
     void copy_attribute(std::shared_ptr<Container>& dest, const std::shared_ptr<Container>& src, size_t count,
-                        bool should_copy, bool same_context, sycl::queue& copy_queue,
-                        sycl_utils::events& copy_events) {
+                        bool should_copy, bool same_context, sycl::queue& copy_queue, sycl_utils::events& copy_events) {
         const size_t allocation_size = should_copy ? count : 0;
         dest = std::make_shared<Container>(allocation_size, *this->queue.ptr);
 
@@ -505,7 +503,8 @@ private:
         for (auto& offset : *this->timestamp_offsets) {
             const double adjusted_offset = static_cast<double>(offset) + delta_ms;
             if (adjusted_offset > max_value) {
-                throw std::runtime_error("Timestamp offset overflow while shifting base");
+                throw std::runtime_error(
+                    "[PointCloudShared::shift_timestamp_base] Timestamp offset overflow while shifting base");
             }
             offset = static_cast<TimestampOffset>(adjusted_offset);
         }
@@ -549,14 +548,16 @@ private:
         const double base_delta_ms = other.start_time_ms - new_start_ms;
         const double max_value = static_cast<double>(std::numeric_limits<TimestampOffset>::max());
         if (base_delta_ms > max_value) {
-            throw std::runtime_error("Timestamp base delta exceeds representable offset range");
+            throw std::runtime_error(
+                "[PointCloudShared::merge_timestamp_offsets] Timestamp base delta exceeds representable offset range");
         }
 
         this->timestamp_offsets->reserve(this->timestamp_offsets->size() + other.timestamp_offsets->size());
         for (const auto offset : *other.timestamp_offsets) {
             const double adjusted_offset = static_cast<double>(offset) + base_delta_ms;
             if (adjusted_offset > max_value) {
-                throw std::runtime_error("Timestamp offset overflow while merging clouds");
+                throw std::runtime_error(
+                    "[PointCloudShared::merge_timestamp_offsets] Timestamp offset overflow while merging clouds");
             }
             this->timestamp_offsets->push_back(static_cast<TimestampOffset>(adjusted_offset));
         }

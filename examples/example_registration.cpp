@@ -37,8 +37,9 @@ int main() {
     param.robust.auto_scale = true;
     param.robust.min_scale = 2.5f;
     param.robust.scaling_iter = 3;
+    param.reg_type = sycl_points::algorithms::registration::RegType::GICP;
 
-    const auto registration = std::make_shared<sycl_points::algorithms::registration::RegistrationGICP>(queue, param);
+    const auto registration = std::make_shared<sycl_points::algorithms::registration::Registration>(queue, param);
     const auto voxel_grid = std::make_shared<sycl_points::algorithms::filter::VoxelGrid>(queue, voxel_size);
     const auto preprocess_filter = std::make_shared<sycl_points::algorithms::filter::PreprocessFilter>(queue);
 
@@ -89,15 +90,19 @@ int main() {
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_covariances_async(source_neighbors, source_downsampled).wait_and_throw();
-        sycl_points::algorithms::covariance::compute_covariances_async(target_neighbors, target_downsampled).wait_and_throw();
+        sycl_points::algorithms::covariance::compute_covariances_async(source_neighbors, source_downsampled)
+            .wait_and_throw();
+        sycl_points::algorithms::covariance::compute_covariances_async(target_neighbors, target_downsampled)
+            .wait_and_throw();
         const auto dt_covariance =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
         t0 = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_normals_async(source_neighbors, source_downsampled).wait_and_throw();
-        sycl_points::algorithms::covariance::compute_normals_async(target_neighbors, target_downsampled).wait_and_throw();
+        sycl_points::algorithms::covariance::compute_normals_async(source_neighbors, source_downsampled)
+            .wait_and_throw();
+        sycl_points::algorithms::covariance::compute_normals_async(target_neighbors, target_downsampled)
+            .wait_and_throw();
         const auto dt_normal =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();

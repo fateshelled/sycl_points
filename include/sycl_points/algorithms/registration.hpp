@@ -34,7 +34,7 @@ OptimizationMethod OptimizationMethod_from_string(const std::string& str) {
     } else if (upper.compare("DOGLEG") == 0 || upper.compare("POWELL_DOGLEG") == 0) {
         return OptimizationMethod::POWELL_DOGLEG;
     }
-    std::string error_str = "Invalid OptimizationMethod str [";
+    std::string error_str = "[OptimizationMethod_from_string] Invalid OptimizationMethod str [";
     error_str += str;
     error_str += "]";
     throw std::runtime_error(error_str);
@@ -56,6 +56,9 @@ struct RegistrationParams {
         bool enable = false;              // If true, use photometric term.
         float photometric_weight = 0.2f;  // weight for photometric term (0.0f ~ 1.0f)
     };
+    struct GenZ {
+        float planarity_threshold = 0.2f;
+    };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)
         float lambda_factor = 2.0f;        // lambda increase factor (for LM method)
@@ -72,6 +75,7 @@ struct RegistrationParams {
         float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
     };
 
+    RegType reg_type = RegType::GICP;          // Registration Type
     size_t max_iterations = 20;                // max iteration
     float lambda = 1e-6f;                      // damping factor
     float max_correspondence_distance = 2.0f;  // max correspondence distance
@@ -79,6 +83,7 @@ struct RegistrationParams {
     Criteria crireria;
     Robust robust;
     PhotometricTerm photometric;
+    GenZ genz;
     LevenbergMarquardt lm;
     Dogleg dogleg;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
@@ -151,11 +156,9 @@ struct LinearlizedDevice {
 }  // namespace
 
 /// @brief Point cloud registration
-/// @tparam icp icp type
-template <ICPType icp = ICPType::GICP>
 class Registration {
 public:
-    using Ptr = std::shared_ptr<Registration<icp>>;
+    using Ptr = std::shared_ptr<Registration>;
 
     /// @brief Constructor
     /// @param queue SYCL queue
@@ -174,27 +177,45 @@ public:
 
     /// @brief validate parameters
     void validate_params(const PointCloudShared& source, const PointCloudShared& target) {
-        if constexpr (icp == ICPType::POINT_TO_PLANE) {
+        if (this->params_.reg_type == RegType::POINT_TO_PLANE) {
             if (!target.has_normal()) {
                 if (!target.has_cov()) {
                     throw std::runtime_error(
-                        "Normal vector or covariance matrices must be pre-computed before performing Point-to-Plane "
-                        "ICP matching.");
+                        "[Registration::validate_params] "
+                        "Normal vector or covariance matrices of target must be pre-computed before performing "
+                        "Point-to-Plane ICP matching.");
                 }
                 std::cout << "[Caution] Normal vectors for Point-to-Plane ICP are not provided. " << std::endl;
                 std::cout << "          Attempting to derive them from pre-computed covariance matrices." << std::endl;
-                target.reserve_covs(target.size());
                 covariance::compute_normals_from_covariances(target);
             }
         }
-        if constexpr (icp == ICPType::GICP) {
+        if (this->params_.reg_type == RegType::GICP) {
             if (!source.has_cov() || !target.has_cov()) {
-                throw std::runtime_error("Covariance matrices must be pre-computed before performing GICP matching.");
+                throw std::runtime_error(
+                    "[Registration::validate_params] "
+                    "Covariance matrices of source and target must be pre-computed before performing GICP matching.");
+            }
+        }
+        if (this->params_.reg_type == RegType::GENZ) {
+            if (!target.has_cov()) {
+                throw std::runtime_error(
+                    "[Registration::validate_params] "
+                    "Covariance matrices of target must be pre-computed before performing GenZ-ICP matching.");
+            }
+            if (!target.has_normal()) {
+                if (target.has_cov()) {
+                    std::cout << "[Caution] Normal vectors for GenZ-ICP are not provided. " << std::endl;
+                    std::cout << "          Attempting to derive them from pre-computed covariance matrices."
+                              << std::endl;
+                    covariance::compute_normals_from_covariances(target);
+                }
             }
         }
         if (this->params_.photometric.enable) {
             if (!target.has_normal()) {
                 throw std::runtime_error(
+                    "[Registration::validate_params] "
                     "Target normal vector must be pre-computed before performing photometric matching.");
             }
 
@@ -204,6 +225,7 @@ public:
 
             if (!color_ready && !intensity_ready) {
                 throw std::runtime_error(
+                    "[Registration::validate_params] "
                     "RGB fields with gradients or intensity fields with gradients are required for photometric "
                     "matching.");
             }
@@ -262,8 +284,7 @@ public:
         this->validate_params(source, target);
 
         {
-            const float max_dist_2 =
-                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            const float max_corr_dist = this->params_.max_correspondence_distance;
             float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
@@ -288,16 +309,16 @@ public:
 
                     // Linearize on device for the current robust scale level
                     const LinearlizedResult linearlized_result =
-                        this->linearlize(source, target, result.T.matrix(), max_dist_2, robust_scale, knn_event.evs);
+                        this->linearlize(source, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
 
                     // Optimize on Host
                     switch (this->params_.optimization_method) {
                         case OptimizationMethod::LEVENBERG_MARQUARDT:
-                            this->optimize_levenberg_marquardt(source, target, max_dist_2, result, linearlized_result,
-                                                               lambda, iter, robust_scale);
+                            this->optimize_levenberg_marquardt(source, target, max_corr_dist, result,
+                                                               linearlized_result, lambda, iter, robust_scale);
                             break;
                         case OptimizationMethod::POWELL_DOGLEG:
-                            this->optimize_powell_dogleg(source, target, max_dist_2, result, linearlized_result,
+                            this->optimize_powell_dogleg(source, target, max_corr_dist, result, linearlized_result,
                                                          trust_region_radius, iter, robust_scale);
                             break;
                         case OptimizationMethod::GAUSS_NEWTON:
@@ -344,8 +365,7 @@ public:
         auto deskewed = source;
 
         {
-            const float max_dist_2 =
-                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            const float max_corr_dist = this->params_.max_correspondence_distance;
             float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
@@ -387,17 +407,18 @@ public:
 
                         // Linearize on device for the current robust scale level
                         const LinearlizedResult linearlized_result = this->linearlize(
-                            deskewed, target, result.T.matrix(), max_dist_2, robust_scale, knn_event.evs);
+                            deskewed, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
 
                         // Optimize on Host
                         switch (this->params_.optimization_method) {
                             case OptimizationMethod::LEVENBERG_MARQUARDT:
-                                this->optimize_levenberg_marquardt(deskewed, target, max_dist_2, result,
+                                this->optimize_levenberg_marquardt(deskewed, target, max_corr_dist, result,
                                                                    linearlized_result, lambda, iter, robust_scale);
                                 break;
                             case OptimizationMethod::POWELL_DOGLEG:
-                                this->optimize_powell_dogleg(deskewed, target, max_dist_2, result, linearlized_result,
-                                                             trust_region_radius, iter, robust_scale);
+                                this->optimize_powell_dogleg(deskewed, target, max_corr_dist, result,
+                                                             linearlized_result, trust_region_radius, iter,
+                                                             robust_scale);
                                 break;
                             case OptimizationMethod::GAUSS_NEWTON:
                                 this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
@@ -426,16 +447,115 @@ private:
     shared_vector_ptr<float> error_on_host_ = nullptr;
     shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
+    float genz_alpha_ = 1.0f;
+
+    template <typename Func>
+    sycl_utils::events dispatch(Func&& exec) {
+        sycl_utils::events events;
+        auto dispatch_inner = [&]<RegType reg, typename RobustLossTypeTags, size_t... Js>(RobustLossType loss,
+                                                                                          std::index_sequence<Js...>) {
+            // Search for RobustLossType candidates
+            return (
+                ((loss == std::tuple_element_t<Js, RobustLossTypeTags>::value)
+                     ? (events += exec.template operator()<reg, std::tuple_element_t<Js, RobustLossTypeTags>::value>(),
+                        true)
+                     : false) ||
+                ...);
+        };
+        auto dispatch_outer = [&]<typename RegTypeTags, typename RobustLossTypeTags, size_t... Is>(
+                                  RegType reg, RobustLossType loss, std::index_sequence<Is...>) {
+            // Search for RegType candidates
+            return (((reg == std::tuple_element_t<Is, RegTypeTags>::value)
+                         ? dispatch_inner
+                               .template operator()<std::tuple_element_t<Is, RegTypeTags>::value, RobustLossTypeTags>(
+                                   loss, std::make_index_sequence<std::tuple_size_v<RobustLossTypeTags>>())
+                         : false) ||
+                    ...);
+        };
+
+        // Start search
+        bool found = dispatch_outer.template operator()<RegTypeTags, RobustLossTypeTags>(
+            this->params_.reg_type, this->params_.robust.type,
+            std::make_index_sequence<std::tuple_size_v<RegTypeTags>>());
+
+        if (!found) {
+            throw std::runtime_error("[Registration::dispatch] Combination not found in tags!");
+        }
+        return events;
+    }
+
     bool is_converged(const Eigen::Vector<float, 6>& delta) const {
         return delta.template head<3>().norm() < this->params_.crireria.rotation &&
                delta.template tail<3>().norm() < this->params_.crireria.translation;
     }
 
-    template <RobustLossType loss = RobustLossType::NONE>
+    float compute_genz_alpha(const PointCloudShared& source,  //
+                             const PointCloudShared& target,  //
+                             float max_correspondence_distance, const std::vector<sycl::event>& depends = {}) {
+        sycl_points::shared_vector<uint32_t> counter_inlier(1, 0, *this->queue_.ptr);
+        sycl_points::shared_vector<uint32_t> counter_plane(1, 0, *this->queue_.ptr);
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = source.size();
+
+            const size_t work_group_size = this->queue_.get_work_group_size_for_parallel_reduction();
+            const size_t global_size = this->queue_.get_global_size_for_parallel_reduction(N);
+
+            const auto target_cov_ptr = target.covs_ptr();
+            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+
+            auto sum_inlier = sycl::reduction(counter_inlier.data(), sycl::plus<uint32_t>());
+            auto sum_plane = sycl::reduction(counter_plane.data(), sycl::plus<uint32_t>());
+
+            const float planarity_threshold = this->params_.genz.planarity_threshold;
+            const float max_corr_dist2 = max_correspondence_distance * max_correspondence_distance;
+
+            h.depends_on(depends);
+            h.parallel_for(                                       //
+                sycl::nd_range<1>(global_size, work_group_size),  // range
+                sum_inlier, sum_plane,                            // reduction
+                [=](sycl::nd_item<1> item, auto& sum_inlier_arg, auto& sum_plane_arg) {
+                    const size_t index = item.get_global_id(0);
+                    if (index >= N) return;
+
+                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
+                        return;
+                    }
+
+                    const auto target_idx = neighbors_index_ptr[index];
+                    const auto cov = target_cov_ptr[target_idx];
+
+                    Eigen::Vector3f eigenvalues;
+                    Eigen::Matrix3f eigenvectors;
+                    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
+                    const float sum_eigenvalues = eigenvalues(0) + eigenvalues(1) + eigenvalues(2);
+                    const float surface_variation = (sum_eigenvalues > std::numeric_limits<float>::epsilon())
+                                                        ? eigenvalues(0) / sum_eigenvalues
+                                                        : 1.0f;
+                    if (surface_variation < planarity_threshold) {
+                        ++sum_plane_arg;
+                    }
+                    ++sum_inlier_arg;
+                });
+        });
+        event.wait_and_throw();
+        const auto inlier_count = counter_inlier[0];
+        if (inlier_count == 0U) {
+            return 1.0f;
+        }
+        return static_cast<float>(counter_plane[0]) / static_cast<float>(inlier_count);
+    }
+
+    template <RegType reg, RobustLossType loss>
     sycl_utils::events linearlize_parallel_reduction_async(const PointCloudShared& source,
                                                            const PointCloudShared& target, const Eigen::Matrix4f transT,
-                                                           float max_correspondence_distance_2, float robust_scale,
+                                                           float max_correspondence_distance, float robust_scale,
                                                            const std::vector<sycl::event>& depends) {
+        if constexpr (reg == RegType::GENZ) {
+            this->genz_alpha_ = compute_genz_alpha(source, target, max_correspondence_distance, depends);
+        }
+
         // The robust_scale argument controls the influence of the robust loss inside the reduction kernel.
         sycl_utils::events events;
         events += this->queue_.ptr->submit([&](sycl::handler& h) {
@@ -471,6 +591,9 @@ private:
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
+            const float max_corr_dist2 = max_correspondence_distance * max_correspondence_distance;
+            const float genz_alpha = this->genz_alpha_;
+
             // reduction
             this->linearlized_on_device_->setZero();
             auto sum_H0 = sycl::reduction(this->linearlized_on_device_->H0, sycl::plus<sycl::float16>());
@@ -492,7 +615,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
@@ -516,61 +639,44 @@ private:
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
                     const LinearlizedResult linearlized =
-                        kernel::linearlize<icp>(cur_T, source_ptr[index], source_cov,               //
+                        kernel::linearlize<reg>(cur_T, source_ptr[index], source_cov,               //
                                                 target_ptr[target_idx], target_cov, target_normal,  //
                                                 source_rgb, target_rgb, target_grad, use_color,     //
                                                 source_intensity, target_intensity,                 //
-                                                target_intensity_grad, use_intensity, photometric_weight);
-                    if (linearlized.inlier == 1U) {
-                        const float robust_weight =
-                            kernel::compute_robust_weight<loss>(linearlized.error, robust_scale);
+                                                target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
+                    const float robust_weight = kernel::compute_robust_weight<loss>(linearlized.error, robust_scale);
 
-                        // reduction on device
-                        const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearlized.H);
-                        const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearlized.b);
-                        sum_H0_arg += H0 * robust_weight;
-                        sum_H1_arg += H1 * robust_weight;
-                        sum_H2_arg += H2 * robust_weight;
-                        sum_b0_arg += b0 * robust_weight;
-                        sum_b1_arg += b1 * robust_weight;
-                        sum_error_arg += kernel::compute_robust_error<loss>(linearlized.error, robust_scale);
-                        ++sum_inlier_arg;
-                    }
+                    // reduction on device
+                    const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearlized.H);
+                    const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearlized.b);
+                    sum_H0_arg += H0 * robust_weight;
+                    sum_H1_arg += H1 * robust_weight;
+                    sum_H2_arg += H2 * robust_weight;
+                    sum_b0_arg += b0 * robust_weight;
+                    sum_b1_arg += b1 * robust_weight;
+                    sum_error_arg += kernel::compute_robust_error<loss>(linearlized.error, robust_scale);
+                    ++sum_inlier_arg;
                 });
         });
         return events;
     }
 
     LinearlizedResult linearlize(const PointCloudShared& source, const PointCloudShared& target,
-                                 const Eigen::Matrix4f transT, float max_correspondence_distance_2, float robust_scale,
+                                 const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale,
                                  const std::vector<sycl::event>& depends) {
-        sycl_utils::events events;
-        if (this->params_.robust.type == RobustLossType::NONE) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::NONE>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
-        } else if (this->params_.robust.type == RobustLossType::HUBER) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::HUBER>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
-        } else if (this->params_.robust.type == RobustLossType::TUKEY) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::TUKEY>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
-        } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::CAUCHY>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
-        } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
-            events += this->linearlize_parallel_reduction_async<RobustLossType::GEMAN_MCCLURE>(
-                source, target, transT, max_correspondence_distance_2, robust_scale, depends);
-        } else {
-            throw std::runtime_error("Unknown robust loss type.");
-        }
+        auto events = this->dispatch([&]<RegType reg, RobustLossType loss>() {
+            return this->linearlize_parallel_reduction_async<reg, loss>(
+                source, target, transT, max_correspondence_distance, robust_scale, depends);
+        });
+
         events.wait_and_throw();
         return this->linearlized_on_device_->toCPU(0);
     }
 
-    template <RobustLossType loss = RobustLossType::NONE>
+    template <RegType reg, RobustLossType loss>
     std::tuple<float, uint32_t> compute_error_parallel_reduction(
         const PointCloudShared& source, const PointCloudShared& target, const knn::KNNResult& knn_results,
-        const Eigen::Matrix4f transT, float max_correspondence_distance_2, float robust_scale) {
+        const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale) {
         // The robust_scale argument ensures error reduction uses the caller-provided loss scale.
         shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
         shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
@@ -604,6 +710,9 @@ private:
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
+            const float max_corr_dist2 = max_correspondence_distance * max_correspondence_distance;
+            const float genz_alpha = this->genz_alpha_;
+
             // output
             auto sum_error = sycl::reduction(error.data(), sycl::plus<float>());
             auto sum_inlier = sycl::reduction(inlier.data(), sycl::plus<uint32_t>());
@@ -615,7 +724,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_correspondence_distance_2) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
@@ -633,12 +742,13 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const float err = kernel::calculate_error<icp>(
-                        cur_T,                                              //
-                        source_ptr[index], source_cov,                      // source
-                        target_ptr[target_idx], target_cov, target_normal,  // target
-                        source_rgb, target_rgb, target_grad, use_color,     //
-                        source_intensity, target_intensity, target_intensity_grad, use_intensity, photometric_weight);
+                    const float err =
+                        kernel::calculate_error<reg>(cur_T,                                              //
+                                                     source_ptr[index], source_cov,                      // source
+                                                     target_ptr[target_idx], target_cov, target_normal,  // target
+                                                     source_rgb, target_rgb, target_grad, use_color,     //
+                                                     source_intensity, target_intensity, target_intensity_grad,
+                                                     use_intensity, photometric_weight, genz_alpha);
 
                     sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
                     ++sum_inlier_arg;
@@ -650,24 +760,14 @@ private:
 
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
                                               const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
-                                              float max_correspondence_distance_2, float robust_scale) {
-        if (this->params_.robust.type == RobustLossType::NONE) {
-            return this->compute_error_parallel_reduction<RobustLossType::NONE>(  //
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
-        } else if (this->params_.robust.type == RobustLossType::HUBER) {
-            return this->compute_error_parallel_reduction<RobustLossType::HUBER>(
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
-        } else if (this->params_.robust.type == RobustLossType::TUKEY) {
-            return this->compute_error_parallel_reduction<RobustLossType::TUKEY>(
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
-        } else if (this->params_.robust.type == RobustLossType::CAUCHY) {
-            return this->compute_error_parallel_reduction<RobustLossType::CAUCHY>(
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
-        } else if (this->params_.robust.type == RobustLossType::GEMAN_MCCLURE) {
-            return this->compute_error_parallel_reduction<RobustLossType::GEMAN_MCCLURE>(
-                source, target, knn_results, transT, max_correspondence_distance_2, robust_scale);
-        }
-        throw std::runtime_error("Unknown robust loss type.");
+                                              float max_correspondence_distance, float robust_scale) {
+        std::tuple<float, uint32_t> result = {0.0f, 0};
+        this->dispatch([&]<RegType reg, RobustLossType loss>() {
+            result = this->compute_error_parallel_reduction<reg, loss>(source, target, knn_results, transT,
+                                                                       max_correspondence_distance, robust_scale);
+            return sycl_utils::events{};
+        });
+        return result;
     }
 
     void optimize_gauss_newton(RegistrationResult& result, const LinearlizedResult& linearlized_result, float lambda,
@@ -693,7 +793,7 @@ private:
     }
 
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
-                                      float max_correspondence_distance_2, RegistrationResult& result,
+                                      float max_correspondence_distance, RegistrationResult& result,
                                       const LinearlizedResult& linearlized_result, float& lambda, size_t iter,
                                       float robust_scale) {
         const auto& H = linearlized_result.H;
@@ -709,7 +809,7 @@ private:
             const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
 
             const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
-                                                           max_correspondence_distance_2, robust_scale);
+                                                           max_correspondence_distance, robust_scale);
 
             if (this->params_.verbose) {
                 std::cout << "iter [" << iter << "] ";
@@ -753,7 +853,7 @@ private:
     }
 
     bool optimize_powell_dogleg(const PointCloudShared& source, const PointCloudShared& target,
-                                float max_correspondence_distance_2, RegistrationResult& result,
+                                float max_correspondence_distance, RegistrationResult& result,
                                 const LinearlizedResult& linearlized_result, float& trust_region_radius, size_t iter,
                                 float robust_scale) {
         bool updated = false;
@@ -843,7 +943,7 @@ private:
 
         const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(p_dl));
         const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
-                                                       max_correspondence_distance_2, robust_scale);
+                                                       max_correspondence_distance, robust_scale);
 
         const float actual_reduction = current_error - new_error;
         const float rho = actual_reduction / predicted_reduction;
@@ -876,10 +976,6 @@ private:
         return updated;
     }
 };
-
-using RegistrationPointToPoint = Registration<ICPType::POINT_TO_POINT>;
-using RegistrationPointToPlane = Registration<ICPType::POINT_TO_PLANE>;
-using RegistrationGICP = Registration<ICPType::GICP>;
 
 }  // namespace registration
 
