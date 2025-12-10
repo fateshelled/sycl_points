@@ -474,7 +474,7 @@ private:
             std::make_index_sequence<std::tuple_size_v<RegTypeTags>>());
 
         if (!found) {
-            std::cout << "Error: Combination not found in tags!" << std::endl;
+            throw std::runtime_error("Registration::dispatch Combination not found in tags!");
         }
         return events;
     }
