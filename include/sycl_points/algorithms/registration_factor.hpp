@@ -46,9 +46,9 @@ RegType RegType_from_string(const std::string& str) {
     } else if (upper == "GENZ") {
         return RegType::GENZ;
     }
-    std::string error_str = "Invalid RegType str [";
+    std::string error_str = "[RegType_from_string] Invalid RegType str '";
     error_str += str;
-    error_str += "]";
+    error_str += "'";
     throw std::runtime_error(error_str);
 }
 

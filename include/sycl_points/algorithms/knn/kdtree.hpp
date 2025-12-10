@@ -286,7 +286,7 @@ public:
     void remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
         const size_t N = this->tree_->size();
         if (N != flags.size() || N != indices.size()) {
-            throw std::runtime_error("flags size must be equal to tree size.");
+            throw std::runtime_error("[KDTree::build] flags size must be equal to tree size.");
         }
         // mem_advise to device
         {
@@ -352,7 +352,7 @@ public:
         }
         constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;
         if (MAX_K < k) {
-            throw std::runtime_error("template arg `MAX_K` must be larger than `k`.");
+            throw std::runtime_error("[KDTree::knn_search_async] template arg `MAX_K` must be larger than `k`.");
         }
 
         const size_t treeSize = this->tree_->size();
@@ -456,7 +456,6 @@ public:
             });
         };
 
-
         sycl_utils::events events;
         events += this->queue.ptr->submit([&](sycl::handler& h) { search_task(h); });
         return events;
@@ -487,7 +486,7 @@ public:
         } else if (k <= 100) {
             return knn_search_async<100, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
         } else {
-            throw std::runtime_error("`k` is too large. not support.");
+            throw std::runtime_error("[KDTree::knn_search_async] `k` is too large. not support.");
         }
     }
 };

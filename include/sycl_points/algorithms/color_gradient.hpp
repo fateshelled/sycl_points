@@ -1,12 +1,11 @@
 #pragma once
 
 #include <memory>
-#include <vector>
-
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
+#include <vector>
 
 namespace sycl_points {
 
@@ -58,7 +57,7 @@ inline sycl_utils::events compute_color_gradients_async(
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = cloud.size();
     if (!cloud.has_rgb()) {
-        throw std::runtime_error("RGB field not found");
+        throw std::runtime_error("[compute_color_gradients_async] RGB field not found");
     }
 
     if (cloud.color_gradients->size() != N) {
@@ -141,7 +140,7 @@ inline sycl_utils::events compute_intensity_gradients_async(
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = cloud.size();
     if (!cloud.has_intensity()) {
-        throw std::runtime_error("Intensity field not found");
+        throw std::runtime_error("[compute_color_gradients_async] Intensity field not found");
     }
 
     if (cloud.intensity_gradients->size() != N) {

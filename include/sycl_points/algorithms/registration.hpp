@@ -34,7 +34,7 @@ OptimizationMethod OptimizationMethod_from_string(const std::string& str) {
     } else if (upper.compare("DOGLEG") == 0 || upper.compare("POWELL_DOGLEG") == 0) {
         return OptimizationMethod::POWELL_DOGLEG;
     }
-    std::string error_str = "Invalid OptimizationMethod str [";
+    std::string error_str = "[OptimizationMethod_from_string] Invalid OptimizationMethod str [";
     error_str += str;
     error_str += "]";
     throw std::runtime_error(error_str);
@@ -181,6 +181,7 @@ public:
             if (!target.has_normal()) {
                 if (!target.has_cov()) {
                     throw std::runtime_error(
+                        "[Registration::validate_params] "
                         "Normal vector or covariance matrices of target must be pre-computed before performing "
                         "Point-to-Plane ICP matching.");
                 }
@@ -192,12 +193,14 @@ public:
         if (this->params_.reg_type == RegType::GICP) {
             if (!source.has_cov() || !target.has_cov()) {
                 throw std::runtime_error(
+                    "[Registration::validate_params] "
                     "Covariance matrices of source and target must be pre-computed before performing GICP matching.");
             }
         }
         if (this->params_.reg_type == RegType::GENZ) {
             if (!target.has_cov()) {
                 throw std::runtime_error(
+                    "[Registration::validate_params] "
                     "Covariance matrices of target must be pre-computed before performing GenZ-ICP matching.");
             }
             if (!target.has_normal()) {
@@ -212,6 +215,7 @@ public:
         if (this->params_.photometric.enable) {
             if (!target.has_normal()) {
                 throw std::runtime_error(
+                    "[Registration::validate_params] "
                     "Target normal vector must be pre-computed before performing photometric matching.");
             }
 
@@ -221,6 +225,7 @@ public:
 
             if (!color_ready && !intensity_ready) {
                 throw std::runtime_error(
+                    "[Registration::validate_params] "
                     "RGB fields with gradients or intensity fields with gradients are required for photometric "
                     "matching.");
             }
@@ -474,7 +479,7 @@ private:
             std::make_index_sequence<std::tuple_size_v<RegTypeTags>>());
 
         if (!found) {
-            throw std::runtime_error("Registration::dispatch Combination not found in tags!");
+            throw std::runtime_error("[Registration::dispatch] Combination not found in tags!");
         }
         return events;
     }

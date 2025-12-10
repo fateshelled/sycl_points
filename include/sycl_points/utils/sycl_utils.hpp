@@ -356,13 +356,13 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
     } else if (device_vendor_lower == "amd") {
         vendor_id = VENDOR_ID::AMD;
     } else {
-        throw std::runtime_error("invalid device vendor: " + device_vendor);
+        throw std::runtime_error("[device_selector::select_device] invalid device vendor: " + device_vendor);
     }
 
     const bool select_cpu = device_type_lower == "cpu" ? true : false;
     const bool select_gpu = device_type_lower == "gpu" ? true : false;
     if (!select_cpu && !select_gpu) {
-        throw std::runtime_error("not support device type: " + device_type);
+        throw std::runtime_error("[device_selector::select_device] not support device type: " + device_type);
     }
 
     for (auto platform : sycl::platform::get_platforms()) {
@@ -381,7 +381,7 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
             }
         }
     }
-    throw std::runtime_error("not found device: " + device_vendor + "/" + device_type);
+    throw std::runtime_error("[device_selector::select_device] not found device: " + device_vendor + "/" + device_type);
 }
 
 }  // namespace device_selector
@@ -404,7 +404,7 @@ public:
             const std::string device_name = device.get_info<sycl::info::device::name>();
             const std::string backend_name = sycl::detail::get_backend_name_no_vendor(device.get_backend()).data();
             const std::string error_msg = device_name + " [" + backend_name + "]" + " is not supported.";
-            throw std::runtime_error(error_msg);
+            throw std::runtime_error("[DeviceQueue::DeviceQueue] " + error_msg);
         }
         this->work_group_size = sycl_utils::get_work_group_size(device);
         this->work_group_size_for_parallel_reduction = sycl_utils::get_work_group_size_for_parallel_reduction(device);
@@ -558,7 +558,8 @@ public:
                         return;
                     }
                 }
-                throw std::runtime_error("failed to acquire mutex lock in given timeout");
+                throw std::runtime_error(
+                    "[DeviceQueue::execute_with_mutex] failed to acquire mutex lock in given timeout");
             });
         });
 

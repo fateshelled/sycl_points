@@ -40,9 +40,9 @@ RobustLossType RobustLossType_from_string(const std::string& str) {
     } else if (upper == "GEMAN_MCCLURE") {
         return RobustLossType::GEMAN_MCCLURE;
     }
-    std::string error_str = "Invalid RobustLossType str [";
+    std::string error_str = "[RobustLossType_from_string] Invalid RobustLossType str '";
     error_str += str;
-    error_str += "]";
+    error_str += "'";
     throw std::runtime_error(error_str);
 }
 

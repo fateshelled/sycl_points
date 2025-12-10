@@ -52,7 +52,7 @@ std::filesystem::path locateDataFile(const std::string& relative_path) {
             return std::filesystem::canonical(candidate);
         }
     }
-    throw std::runtime_error("Unable to locate data file: " + relative_path);
+    throw std::runtime_error("[locateDataFile] Unable to locate data file: " + relative_path);
 }
 
 }  // namespace
