@@ -1149,13 +1149,11 @@ private:
         const uint32_t stale_threshold = this->stale_frame_threshold_;
 
         shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
-        shared_vector<uint32_t> pruned_counter(1, 0U, *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             auto counter_ptr = voxel_counter.data();
-            auto pruned_ptr = pruned_counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1169,7 +1167,6 @@ private:
                 if (is_stale) {
                     key_ptr[i] = VoxelConstants::deleted_coord;
                     voxel_ptr[i] = VoxelData{};
-                    atomic_ref_uint32_t(pruned_ptr[0]).fetch_add(1U);
                     return;
                 }
 
@@ -1179,12 +1176,6 @@ private:
         event.wait_and_throw();
 
         this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
-
-        const size_t pruned = static_cast<size_t>(pruned_counter.at(0));
-        const bool should_compact = pruned > 0 && pruned * 4 >= this->capacity_;
-        if (should_compact) {
-            this->rehash(this->capacity_);
-        }
     }
 
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
