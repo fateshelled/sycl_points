@@ -1,6 +1,8 @@
 #pragma once
 
 #include <sycl_points/utils/sycl_utils.hpp>
+#include <tuple>
+#include <type_traits>
 
 namespace sycl_points {
 namespace algorithms {
@@ -14,6 +16,15 @@ enum class RobustLossType {
     CAUCHY,        // Cauchy loss
     GEMAN_MCCLURE  // Geman-McClure loss
 };
+
+/// @brief Robust loss Type tags
+using RobustLossTypeTags = std::tuple<                                     //
+    std::integral_constant<RobustLossType, RobustLossType::NONE>,          //
+    std::integral_constant<RobustLossType, RobustLossType::HUBER>,         //
+    std::integral_constant<RobustLossType, RobustLossType::TUKEY>,         //
+    std::integral_constant<RobustLossType, RobustLossType::CAUCHY>,        //
+    std::integral_constant<RobustLossType, RobustLossType::GEMAN_MCCLURE>  //
+    >;
 
 RobustLossType RobustLossType_from_string(const std::string& str) {
     std::string upper = str;
@@ -29,9 +40,9 @@ RobustLossType RobustLossType_from_string(const std::string& str) {
     } else if (upper == "GEMAN_MCCLURE") {
         return RobustLossType::GEMAN_MCCLURE;
     }
-    std::string error_str = "Invalid RobustLossType str [";
+    std::string error_str = "[RobustLossType_from_string] Invalid RobustLossType str '";
     error_str += str;
-    error_str += "]";
+    error_str += "'";
     throw std::runtime_error(error_str);
 }
 

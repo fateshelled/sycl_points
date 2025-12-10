@@ -5,6 +5,8 @@
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/types.hpp>
 #include <sycl_points/utils/eigen_utils.hpp>
+#include <tuple>
+#include <type_traits>
 
 namespace sycl_points {
 
@@ -12,12 +14,43 @@ namespace algorithms {
 
 namespace registration {
 
-enum class ICPType {
+enum class RegType {
     POINT_TO_POINT = 0,  //
     POINT_TO_PLANE,
+    /// @brief Generalized-ICP
+    /// @authors Aleksandr V. Segal, Dirk Haehnel, Sebastian Thrun
     GICP,
+    /// @brief GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)
+    /// @authors Daehan Lee, Hyungtae Lim, Soohee Han
+    /// @cite https://arxiv.org/abs/2411.06766
     GENZ
 };
+
+/// @brief Registration Type tags
+using RegTypeTags = std::tuple<                                //
+    std::integral_constant<RegType, RegType::POINT_TO_POINT>,  //
+    std::integral_constant<RegType, RegType::POINT_TO_PLANE>,  //
+    std::integral_constant<RegType, RegType::GICP>,            //
+    std::integral_constant<RegType, RegType::GENZ>             //
+    >;
+
+RegType RegType_from_string(const std::string& str) {
+    std::string upper = str;
+    std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
+    if (upper == "POINT_TO_POINT") {
+        return RegType::POINT_TO_POINT;
+    } else if (upper == "POINT_TO_PLANE") {
+        return RegType::POINT_TO_PLANE;
+    } else if (upper == "GICP") {
+        return RegType::GICP;
+    } else if (upper == "GENZ") {
+        return RegType::GENZ;
+    }
+    std::string error_str = "[RegType_from_string] Invalid RegType str '";
+    error_str += str;
+    error_str += "'";
+    throw std::runtime_error(error_str);
+}
 
 /// @brief Registration Linearlized Result
 struct LinearlizedResult {
@@ -297,7 +330,7 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
 }
 
 /// @brief Linearlization
-/// @tparam icp icp type
+/// @tparam reg registration type
 /// @param T transform matrix
 /// @param source_pt Source Point
 /// @param source_cov Source covariance
@@ -305,23 +338,24 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
 /// @param target_cov Target covariance
 /// @param residual_norm L2 norm of residual vector
 /// @return linearlized result
-template <ICPType icp = ICPType::GICP>
+template <RegType reg = RegType::GICP>
 SYCL_EXTERNAL inline LinearlizedResult linearlize_geometry(const std::array<sycl::float4, 4>& T,  //
                                                            const PointType& source_pt, const Covariance& source_cov,
                                                            const PointType& target_pt, const Covariance& target_cov,
                                                            const Normal& target_normal, float& residual_norm,
                                                            float genz_alpha) {
-    if constexpr (icp == ICPType::POINT_TO_POINT) {
+    if constexpr (reg == RegType::POINT_TO_POINT) {
         return linearlize_point_to_point(T, source_pt, target_pt, residual_norm);
-    } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
+    } else if constexpr (reg == RegType::POINT_TO_PLANE) {
         return linearlize_point_to_plane(T, source_pt, target_pt, target_normal, residual_norm);
-    } else if constexpr (icp == ICPType::GICP) {
+    } else if constexpr (reg == RegType::GICP) {
         return linearlize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
-    } else if constexpr (icp == ICPType::GENZ) {
+    } else if constexpr (reg == RegType::GENZ) {
         float pt2pt_residual_norm = 0.0f;
         float pt2pl_residual_norm = 0.0f;
         const auto pt2pt_result = linearlize_point_to_point(T, source_pt, target_pt, pt2pt_residual_norm);
-        const auto pt2pl_result = linearlize_point_to_plane(T, source_pt, target_pt, target_normal, pt2pl_residual_norm);
+        const auto pt2pl_result =
+            linearlize_point_to_plane(T, source_pt, target_pt, target_normal, pt2pl_residual_norm);
 
         residual_norm = pt2pt_residual_norm * (1.0f - genz_alpha) + pt2pl_residual_norm * genz_alpha;
 
@@ -339,25 +373,25 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize_geometry(const std::array<sycl
 }
 
 /// @brief Compute Error
-/// @tparam icp icp type
+/// @tparam reg registration type
 /// @param T transform matrix
 /// @param source_pt Source Point
 /// @param source_cov Source covariance
 /// @param target_pt Target point
 /// @param target_cov Target covariance
 /// @return error
-template <ICPType icp = ICPType::GICP>
+template <RegType reg = RegType::GICP>
 SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float4, 4>& T,                      //
                                                     const PointType& source_pt, const Covariance& source_cov,  //
                                                     const PointType& target_pt, const Covariance& target_cov,  //
                                                     const Normal& target_normal, const float genz_alpha = 1.0f) {
-    if constexpr (icp == ICPType::POINT_TO_POINT) {
+    if constexpr (reg == RegType::POINT_TO_POINT) {
         return calculate_point_to_point_error(T, source_pt, target_pt);
-    } else if constexpr (icp == ICPType::POINT_TO_PLANE) {
+    } else if constexpr (reg == RegType::POINT_TO_PLANE) {
         return calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
-    } else if constexpr (icp == ICPType::GICP) {
+    } else if constexpr (reg == RegType::GICP) {
         return calculate_gicp_error(T, source_pt, source_cov, target_pt, target_cov);
-    } else if constexpr (icp == ICPType::GENZ) {
+    } else if constexpr (reg == RegType::GENZ) {
         const float pt2pt_err = calculate_point_to_point_error(T, source_pt, target_pt);
         const float pt2pl_err = calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
         return pt2pt_err * (1.0f - genz_alpha) + pt2pl_err * genz_alpha;
@@ -520,7 +554,7 @@ SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::floa
 }
 
 /// @brief Robust Linearlization
-/// @tparam icp icp type
+/// @tparam reg registration type
 /// @param T transform matrix
 /// @param source_pt Source Point
 /// @param source_cov Source covariance
@@ -532,7 +566,7 @@ SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::floa
 /// @param target_rgb_grad Target RGB gradient
 /// @param photometric_weight Photometric term weight (0.0 ~ 1.0). 0.0 is geometric term only
 /// @return linearlized result
-template <ICPType icp = ICPType::GICP>
+template <RegType reg = RegType::GICP>
 SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                   const Covariance& source_cov, const PointType& target_pt,
                                                   const Covariance& target_cov, const Normal& target_normal,
@@ -542,7 +576,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
                                                   const IntensityGradient& target_intensity_grad, bool use_intensity,
                                                   float photometric_weight, float genz_alpha) {
     float geo_residual_norm = 0.0f;
-    LinearlizedResult result = linearlize_geometry<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal,
+    LinearlizedResult result = linearlize_geometry<reg>(T, source_pt, source_cov, target_pt, target_cov, target_normal,
                                                         geo_residual_norm, genz_alpha);
 
     float total_error = result.error;
@@ -588,7 +622,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
 }
 
 /// @brief Compute Error
-/// @tparam icp icp type
+/// @tparam reg registration type
 /// @param T transform matrix
 /// @param source_pt Source Point
 /// @param source_cov Source covariance
@@ -600,7 +634,7 @@ SYCL_EXTERNAL inline LinearlizedResult linearlize(const std::array<sycl::float4,
 /// @param target_rgb_grad Target RGB gradient
 /// @param photometric_weight Photometric term weight (0.0 ~ 1.0). 0.0 is geometric term only
 /// @return error
-template <ICPType icp = ICPType::GICP>
+template <RegType reg = RegType::GICP>
 SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                            const Covariance& source_cov, const PointType& target_pt,
                                            const Covariance& target_cov, const Normal& target_normal,
@@ -609,7 +643,7 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
                                            float target_intensity, const IntensityGradient& target_intensity_grad,
                                            bool use_intensity, float photometric_weight, float genz_alpha) {
     const float geo_error =
-        calculate_geometry_error<icp>(T, source_pt, source_cov, target_pt, target_cov, target_normal, genz_alpha);
+        calculate_geometry_error<reg>(T, source_pt, source_cov, target_pt, target_cov, target_normal, genz_alpha);
 
     float total_error = geo_error;
     const PhotometricWeights weights = compute_photometric_weights(photometric_weight, use_color, use_intensity);

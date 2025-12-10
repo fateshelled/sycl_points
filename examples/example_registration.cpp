@@ -37,8 +37,9 @@ int main() {
     param.robust.auto_scale = true;
     param.robust.min_scale = 2.5f;
     param.robust.scaling_iter = 3;
+    param.reg_type = sycl_points::algorithms::registration::RegType::GICP;
 
-    const auto registration = std::make_shared<sycl_points::algorithms::registration::RegistrationGICP>(queue, param);
+    const auto registration = std::make_shared<sycl_points::algorithms::registration::Registration>(queue, param);
     const auto voxel_grid = std::make_shared<sycl_points::algorithms::filter::VoxelGrid>(queue, voxel_size);
     const auto preprocess_filter = std::make_shared<sycl_points::algorithms::filter::PreprocessFilter>(queue);
 

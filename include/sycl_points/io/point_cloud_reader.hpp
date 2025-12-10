@@ -68,7 +68,7 @@ private:
 
         // When vertex data is not found
         if (vertex_count <= 0 || x_index == -1 || y_index == -1 || z_index == -1) {
-            throw std::runtime_error("Invalid PLY format: missing vertex data");
+            throw std::runtime_error("[PointCloudReader::readPLY] Invalid PLY format: missing vertex data");
         }
 
         points.points->clear();
@@ -124,7 +124,7 @@ private:
                 file.read(buffer.data(), total_row_size);
 
                 if (file.fail()) {
-                    throw std::runtime_error("Error reading binary PLY data");
+                    throw std::runtime_error("[PointCloudReader::readPLY] Error reading binary PLY data");
                 }
 
                 // Extract x, y, z coordinates
@@ -333,7 +333,7 @@ private:
 
         // When point cloud data is not found
         if (point_count <= 0 || fields_count <= 0 || x_index == -1 || y_index == -1 || z_index == -1) {
-            throw std::runtime_error("Invalid PCD format: missing point data");
+            throw std::runtime_error("[PointCloudReader::readPCD] Invalid PCD format: missing point data");
         }
 
         points.points->clear();
@@ -394,7 +394,7 @@ private:
                 file.read(buffer.data(), total_row_size);
 
                 if (file.fail()) {
-                    throw std::runtime_error("Error reading binary PCD data");
+                    throw std::runtime_error("[PointCloudReader::readPCD] Error reading binary PCD data");
                 }
 
                 // Extract x, y, z coordinates
@@ -478,7 +478,7 @@ private:
                     points.rgb->emplace_back(r, g, b, static_cast<T>(1.0));
                 }
                 if (has_intensity) {
-                    const T intensity  = static_cast<T>(values[intensity_index]);
+                    const T intensity = static_cast<T>(values[intensity_index]);
                     points.intensities->emplace_back(intensity);
                 }
             }
@@ -492,7 +492,7 @@ public:
     static PointCloudCPU readFile(const std::string& filename, bool read_rgb = true, bool read_intensity = true) {
         std::ifstream file(filename, std::ios::binary);
         if (!file.is_open()) {
-            throw std::runtime_error("Failed to open file: " + filename);
+            throw std::runtime_error("[PointCloudReader::readFile] Failed to open file: " + filename);
         }
 
         // Extract file extension from filename
@@ -510,14 +510,14 @@ public:
             std::string first_line;
             std::getline(file, first_line);
             if (first_line != "ply") {
-                throw std::runtime_error("Invalid PLY file format: " + filename);
+                throw std::runtime_error("[PointCloudReader::readFile] Invalid PLY file format: " + filename);
             }
             readPLY(file, cloud, read_rgb, read_intensity);
         } else if (extension == "pcd") {
             readPCD(file, cloud, read_rgb, read_intensity);
         } else {
             std::cerr << "not supported format [" << extension << "]" << std::endl;
-            throw std::runtime_error("Unsupported file format: " + extension);
+            throw std::runtime_error("[PointCloudReader::readFile] Unsupported file format: " + extension);
         }
         file.close();
         return cloud;
