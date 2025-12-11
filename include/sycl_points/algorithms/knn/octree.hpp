@@ -99,7 +99,7 @@ public:
     static Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points, float resolution,
                      size_t max_points_per_node = 32);
 
-    /// @brief Execute a k-nearest neighbour query for the supplied queries.
+    /// @brief Execute a k-nearest neighbor query for the supplied queries.
     /// @param queries Query point cloud.
     /// @param k Number of neighbours to gather.
     /// @tparam MAX_DEPTH Maximum number of nodes kept on the traversal stack.

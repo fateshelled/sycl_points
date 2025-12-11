@@ -333,7 +333,7 @@ public:
     /// @tparam MAX_DEPTH maximum of search depth
     /// @param queries query points
     /// @param query_size query num
-    /// @param k number of search nearrest neightbor
+    /// @param k number of nearest neighbors to search
     /// @param result Search result
     /// @param depends depends sycl events
     /// @return knn search event
@@ -463,7 +463,7 @@ public:
 
     /// @brief async kNN search
     /// @param queries query points
-    /// @param k number of search nearrest neightbor
+    /// @param k number of nearest neighbors to search
     /// @param result Search result
     /// @param depends depends sycl events
     /// @return knn search event
