@@ -26,7 +26,7 @@ namespace algorithms {
 
 namespace knn {
 
-/// @brief Octree data structure that will support parallel construction and neighbour search on SYCL devices.
+/// @brief Octree data structure that will support parallel construction and neighbor search on SYCL devices.
 class Octree : public KNNBase {
 public:
     using Ptr = std::shared_ptr<Octree>;
@@ -101,10 +101,10 @@ public:
 
     /// @brief Execute a k-nearest neighbor query for the supplied queries.
     /// @param queries Query point cloud.
-    /// @param k Number of neighbours to gather.
+    /// @param k Number of neighbors to gather.
     /// @tparam MAX_DEPTH Maximum number of nodes kept on the traversal stack.
-    /// @tparam MAX_K Maximum number of neighbours that can be requested.
-    /// @return Result container that stores neighbour indices and squared distances.
+    /// @tparam MAX_K Maximum number of neighbors that can be requested.
+    /// @return Result container that stores neighbor indices and squared distances.
     sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
                                         const TransformMatrix& transT = TransformMatrix::Identity()) const override;
@@ -128,7 +128,7 @@ private:
         int32_t id;
     };
 
-    /// @brief Work item stored in traversal stacks during neighbour searches.
+    /// @brief Work item stored in traversal stacks during neighbor searches.
     /// @details Encodes the node index and the squared distance used to prioritise traversal.
     struct NodeEntry {
         int32_t nodeIdx;  // node index
