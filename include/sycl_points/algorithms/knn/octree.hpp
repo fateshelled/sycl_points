@@ -627,7 +627,7 @@ inline sycl_utils::events Octree::knn_search_async(const PointCloudShared& queri
         return knn_search_async_impl<100, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     }
 
-    throw std::runtime_error("[Octree::knn_search_async] Requested neighbour count exceeds the supported maximum");
+    throw std::runtime_error("[Octree::knn_search_async] Requested neighbor count exceeds the supported maximum");
 }
 
 template <size_t MAX_K, size_t MAX_DEPTH>
@@ -646,7 +646,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
     }
     if (k > MAX_K) {
         throw std::runtime_error(
-            "[Octree::knn_search_async_impl] Requested neighbour count exceeds the compile-time limit");
+            "[Octree::knn_search_async_impl] Requested neighbor count exceeds the compile-time limit");
     }
 
     this->sync_device_buffers();
@@ -701,7 +701,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
 
             NodeEntry stack[MAX_DEPTH];
             size_t stack_size = 0;
-            size_t neighbour_count = 0;
+            size_t neighbor_count = 0;
 
             auto heap_swap = [&](size_t a, size_t b) { std::swap(bestK[a], bestK[b]); };
 
@@ -735,16 +735,16 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
             };
 
             auto current_worst_dist_sq = [&]() {
-                return neighbour_count < k ? std::numeric_limits<float>::infinity() : bestK[0].dist_sq;
+                return neighbor_count < k ? std::numeric_limits<float>::infinity() : bestK[0].dist_sq;
             };
 
             auto push_candidate = [&](float distance_sq, int32_t index) {
-                if (neighbour_count < k) {
-                    bestK[neighbour_count++] = {index, distance_sq};
-                    sift_up(neighbour_count - 1);
+                if (neighbor_count < k) {
+                    bestK[neighbor_count++] = {index, distance_sq};
+                    sift_up(neighbor_count - 1);
                 } else if (distance_sq < bestK[0].dist_sq) {
                     bestK[0] = {index, distance_sq};  // overwrite worst result
-                    sift_down(0, neighbour_count);
+                    sift_down(0, neighbor_count);
                 }
             };
 
@@ -830,7 +830,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 }
             }
 
-            size_t heap_size = neighbour_count;
+            size_t heap_size = neighbor_count;
             while (heap_size > 1) {
                 const size_t last = heap_size - 1;
                 heap_swap(0, last);

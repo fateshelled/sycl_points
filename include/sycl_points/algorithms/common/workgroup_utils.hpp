@@ -150,7 +150,7 @@ SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const s
 /// @param equal Equality predicate that identifies entries belonging to the same group.
 ///
 /// The algorithm performs a parallel tree reduction by iteratively accumulating contributions from
-/// neighbours located at exponentially increasing offsets. After @p log2(size) steps the first
+/// neighbors located at exponentially increasing offsets. After @p log2(size) steps the first
 /// element of each segment holds the aggregated value, while all other entries belonging to that
 /// segment are reset.
 template <typename LocalData, typename KeyType, typename KeyFunc, typename EqualFunc, typename CombineFunc,
@@ -270,4 +270,3 @@ SYCL_EXTERNAL void local_reduction(LocalData* local_data, const size_t point_num
 }  // namespace common
 }  // namespace algorithms
 }  // namespace sycl_points
-
