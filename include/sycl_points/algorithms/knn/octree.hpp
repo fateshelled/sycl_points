@@ -26,7 +26,7 @@ namespace algorithms {
 
 namespace knn {
 
-/// @brief Octree data structure that will support parallel construction and neighbour search on SYCL devices.
+/// @brief Octree data structure that will support parallel construction and neighbor search on SYCL devices.
 class Octree : public KNNBase {
 public:
     using Ptr = std::shared_ptr<Octree>;
@@ -99,12 +99,12 @@ public:
     static Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& points, float resolution,
                      size_t max_points_per_node = 32);
 
-    /// @brief Execute a k-nearest neighbour query for the supplied queries.
+    /// @brief Execute a k-nearest neighbor query for the supplied queries.
     /// @param queries Query point cloud.
-    /// @param k Number of neighbours to gather.
+    /// @param k Number of neighbors to gather.
     /// @tparam MAX_DEPTH Maximum number of nodes kept on the traversal stack.
-    /// @tparam MAX_K Maximum number of neighbours that can be requested.
-    /// @return Result container that stores neighbour indices and squared distances.
+    /// @tparam MAX_K Maximum number of neighbors that can be requested.
+    /// @return Result container that stores neighbor indices and squared distances.
     sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
                                         const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
                                         const TransformMatrix& transT = TransformMatrix::Identity()) const override;
@@ -128,7 +128,7 @@ private:
         int32_t id;
     };
 
-    /// @brief Work item stored in traversal stacks during neighbour searches.
+    /// @brief Work item stored in traversal stacks during neighbor searches.
     /// @details Encodes the node index and the squared distance used to prioritise traversal.
     struct NodeEntry {
         int32_t nodeIdx;  // node index
@@ -627,7 +627,7 @@ inline sycl_utils::events Octree::knn_search_async(const PointCloudShared& queri
         return knn_search_async_impl<100, MAX_STACK_DEPTH>(queries, k, result, depends, transT);
     }
 
-    throw std::runtime_error("[Octree::knn_search_async] Requested neighbour count exceeds the supported maximum");
+    throw std::runtime_error("[Octree::knn_search_async] Requested neighbor count exceeds the supported maximum");
 }
 
 template <size_t MAX_K, size_t MAX_DEPTH>
@@ -646,7 +646,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
     }
     if (k > MAX_K) {
         throw std::runtime_error(
-            "[Octree::knn_search_async_impl] Requested neighbour count exceeds the compile-time limit");
+            "[Octree::knn_search_async_impl] Requested neighbor count exceeds the compile-time limit");
     }
 
     this->sync_device_buffers();
@@ -701,7 +701,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
 
             NodeEntry stack[MAX_DEPTH];
             size_t stack_size = 0;
-            size_t neighbour_count = 0;
+            size_t neighbor_count = 0;
 
             auto heap_swap = [&](size_t a, size_t b) { std::swap(bestK[a], bestK[b]); };
 
@@ -735,16 +735,16 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
             };
 
             auto current_worst_dist_sq = [&]() {
-                return neighbour_count < k ? std::numeric_limits<float>::infinity() : bestK[0].dist_sq;
+                return neighbor_count < k ? std::numeric_limits<float>::infinity() : bestK[0].dist_sq;
             };
 
             auto push_candidate = [&](float distance_sq, int32_t index) {
-                if (neighbour_count < k) {
-                    bestK[neighbour_count++] = {index, distance_sq};
-                    sift_up(neighbour_count - 1);
+                if (neighbor_count < k) {
+                    bestK[neighbor_count++] = {index, distance_sq};
+                    sift_up(neighbor_count - 1);
                 } else if (distance_sq < bestK[0].dist_sq) {
                     bestK[0] = {index, distance_sq};  // overwrite worst result
-                    sift_down(0, neighbour_count);
+                    sift_down(0, neighbor_count);
                 }
             };
 
@@ -830,7 +830,7 @@ inline sycl_utils::events Octree::knn_search_async_impl(const PointCloudShared& 
                 }
             }
 
-            size_t heap_size = neighbour_count;
+            size_t heap_size = neighbor_count;
             while (heap_size > 1) {
                 const size_t last = heap_size - 1;
                 heap_swap(0, last);

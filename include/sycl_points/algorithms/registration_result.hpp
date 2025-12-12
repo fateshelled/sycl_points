@@ -12,7 +12,7 @@ namespace registration {
 struct RegistrationResult {
     Eigen::Isometry3f T = Eigen::Isometry3f::Identity();                // Estimated transformation
     bool converged = false;                                             // Optimization converged or not
-    size_t iterations = 0;                                              // Number of opmitization iterations
+    size_t iterations = 0;                                              // Number of optimization iterations
     Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();  // Final hessian
     Eigen::Vector<float, 6> b = Eigen::Vector<float, 6>::Zero();        // Final gradient
     float error = std::numeric_limits<float>::max();                    // Final error

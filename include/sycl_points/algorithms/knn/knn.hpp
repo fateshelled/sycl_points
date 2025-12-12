@@ -23,7 +23,7 @@ class KNNBase {
 public:
     /// @brief async kNN search
     /// @param queries query points
-    /// @param k number of search nearrest neightbor
+    /// @param k number of nearest neighbors to search
     /// @param result Search result
     /// @param depends depends sycl events
     /// @return knn search event
@@ -33,7 +33,7 @@ public:
 
     /// @brief kNN search
     /// @param queries query points
-    /// @param k number of search nearrest neightbor
+    /// @param k number of nearest neighbors to search
     /// @param depends depends sycl events
     /// @return knn search result
     KNNResult knn_search(const PointCloudShared& queries, const size_t k,

@@ -36,9 +36,9 @@ void compareKNNResults(const sycl_points::algorithms::knn::KNNResult& lhs,
         for (size_t j = 0; j < k; ++j) {
             const size_t offset = i * k + j;
             ASSERT_NEAR((*lhs.distances)[offset], (*rhs.distances)[offset], epsilon)
-                << "Distance mismatch at query " << i << ", neighbour " << j;
+                << "Distance mismatch at query " << i << ", neighbor " << j;
             ASSERT_EQ((*lhs.indices)[offset], (*rhs.indices)[offset])
-                << "Index mismatch at query " << i << ", neighbour " << j;
+                << "Index mismatch at query " << i << ", neighbor " << j;
         }
     }
 }

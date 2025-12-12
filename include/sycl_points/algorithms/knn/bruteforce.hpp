@@ -18,7 +18,7 @@ namespace knn {
 /// @param queue SYCL queue
 /// @param queries query points
 /// @param targets target points
-/// @param k number of search nearrest neightbor
+/// @param k number of nearest neighbors to search
 /// @return knn search result
 inline KNNResult knn_search_bruteforce(const sycl_utils::DeviceQueue& queue, const PointCloudShared& queries,
                                        const PointCloudShared& targets, const size_t k) {

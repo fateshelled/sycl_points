@@ -80,7 +80,7 @@ struct RegistrationParams {
     float lambda = 1e-6f;                      // damping factor
     float max_correspondence_distance = 2.0f;  // max correspondence distance
 
-    Criteria crireria;
+    Criteria criteria;
     Robust robust;
     PhotometricTerm photometric;
     GenZ genz;
@@ -93,8 +93,8 @@ struct RegistrationParams {
 
 namespace {
 
-/// @brief Device copyable linealized result
-struct LinearlizedDevice {
+/// @brief Device copyable linearized result
+struct LinearizedDevice {
     // H is 6x6 -> 16 + 16 + 4
     sycl::float16* H0 = nullptr;  // H(0, 0) ~ H(2, 3)
     sycl::float16* H1 = nullptr;  // H(2, 4) ~ H(5, 1)
@@ -110,7 +110,7 @@ struct LinearlizedDevice {
 
     sycl_utils::DeviceQueue queue;
 
-    LinearlizedDevice(const sycl_utils::DeviceQueue& q, size_t N = 1) : queue(q), size(N) {
+    LinearizedDevice(const sycl_utils::DeviceQueue& q, size_t N = 1) : queue(q), size(N) {
         H0 = sycl::malloc_shared<sycl::float16>(size, *this->queue.ptr);
         H1 = sycl::malloc_shared<sycl::float16>(size, *this->queue.ptr);
         H2 = sycl::malloc_shared<sycl::float4>(size, *this->queue.ptr);
@@ -119,7 +119,7 @@ struct LinearlizedDevice {
         error = sycl::malloc_shared<float>(size, *this->queue.ptr);
         inlier = sycl::malloc_shared<uint32_t>(size, *this->queue.ptr);
     }
-    ~LinearlizedDevice() {
+    ~LinearizedDevice() {
         sycl_utils::free(H0, *this->queue.ptr);
         sycl_utils::free(H1, *this->queue.ptr);
         sycl_utils::free(H2, *this->queue.ptr);
@@ -145,8 +145,8 @@ struct LinearlizedDevice {
             inlier[n] = 0;
         }
     }
-    LinearlizedResult toCPU(size_t i = 0) {
-        const LinearlizedResult result = {.H = eigen_utils::from_sycl_vec({this->H0[i], this->H1[i], this->H2[i]}),
+    LinearizedResult toCPU(size_t i = 0) {
+        const LinearizedResult result = {.H = eigen_utils::from_sycl_vec({this->H0[i], this->H1[i], this->H2[i]}),
                                           .b = eigen_utils::from_sycl_vec({this->b0[i], this->b1[i]}),
                                           .error = this->error[i],
                                           .inlier = this->inlier[i]};
@@ -168,9 +168,9 @@ public:
         this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(1, knn::KNNResult(), *this->queue_.ptr);
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
 
-        this->linearlized_on_device_ = std::make_shared<LinearlizedDevice>(this->queue_);
-        this->linearlized_on_host_ =
-            std::make_shared<shared_vector<LinearlizedResult>>(1, LinearlizedResult(), *this->queue_.ptr);
+        this->linearized_on_device_ = std::make_shared<LinearizedDevice>(this->queue_);
+        this->linearized_on_host_ =
+            std::make_shared<shared_vector<LinearizedResult>>(1, LinearizedResult(), *this->queue_.ptr);
         this->error_on_host_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->inlier_on_host_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
     }
@@ -292,7 +292,7 @@ public:
                 this->params_.robust.type != RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
                 enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
-            const float rosbust_scaling_factor =
+            const float robust_scaling_factor =
                 robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
                                              1.0f / static_cast<float>(robust_levels - 1))
                                   : 1.0f;
@@ -308,21 +308,21 @@ public:
                         target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, result.T.matrix());
 
                     // Linearize on device for the current robust scale level
-                    const LinearlizedResult linearlized_result =
-                        this->linearlize(source, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
+                    const LinearizedResult linearized_result =
+                        this->linearize(source, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
 
                     // Optimize on Host
                     switch (this->params_.optimization_method) {
                         case OptimizationMethod::LEVENBERG_MARQUARDT:
                             this->optimize_levenberg_marquardt(source, target, max_corr_dist, result,
-                                                               linearlized_result, lambda, iter, robust_scale);
+                                                               linearized_result, lambda, iter, robust_scale);
                             break;
                         case OptimizationMethod::POWELL_DOGLEG:
-                            this->optimize_powell_dogleg(source, target, max_corr_dist, result, linearlized_result,
+                            this->optimize_powell_dogleg(source, target, max_corr_dist, result, linearized_result,
                                                          trust_region_radius, iter, robust_scale);
                             break;
                         case OptimizationMethod::GAUSS_NEWTON:
-                            this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
+                            this->optimize_gauss_newton(result, linearized_result, lambda, iter);
                             break;
                     }
                     if (result.converged) {
@@ -330,7 +330,7 @@ public:
                     }
                 }
 
-                robust_scale *= rosbust_scaling_factor;
+                robust_scale *= robust_scaling_factor;
             }
         }
 
@@ -373,7 +373,7 @@ public:
                 this->params_.robust.type != RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
                 enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
-            const float rosbust_scaling_factor =
+            const float robust_scaling_factor =
                 robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
                                              1.0f / static_cast<float>(robust_levels - 1))
                                   : 1.0f;
@@ -406,22 +406,22 @@ public:
                                                                                   result.T.matrix());
 
                         // Linearize on device for the current robust scale level
-                        const LinearlizedResult linearlized_result = this->linearlize(
+                        const LinearizedResult linearized_result = this->linearize(
                             deskewed, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
 
                         // Optimize on Host
                         switch (this->params_.optimization_method) {
                             case OptimizationMethod::LEVENBERG_MARQUARDT:
                                 this->optimize_levenberg_marquardt(deskewed, target, max_corr_dist, result,
-                                                                   linearlized_result, lambda, iter, robust_scale);
+                                                                   linearized_result, lambda, iter, robust_scale);
                                 break;
                             case OptimizationMethod::POWELL_DOGLEG:
                                 this->optimize_powell_dogleg(deskewed, target, max_corr_dist, result,
-                                                             linearlized_result, trust_region_radius, iter,
+                                                             linearized_result, trust_region_radius, iter,
                                                              robust_scale);
                                 break;
                             case OptimizationMethod::GAUSS_NEWTON:
-                                this->optimize_gauss_newton(result, linearlized_result, lambda, iter);
+                                this->optimize_gauss_newton(result, linearized_result, lambda, iter);
                                 break;
                         }
                         if (result.converged) {
@@ -430,7 +430,7 @@ public:
                     }
                 }
 
-                robust_scale *= rosbust_scaling_factor;
+                robust_scale *= robust_scaling_factor;
             }
         }
 
@@ -442,8 +442,8 @@ private:
     sycl_utils::DeviceQueue queue_;
 
     shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
-    std::shared_ptr<LinearlizedDevice> linearlized_on_device_ = nullptr;
-    shared_vector_ptr<LinearlizedResult> linearlized_on_host_ = nullptr;
+    std::shared_ptr<LinearizedDevice> linearized_on_device_ = nullptr;
+    shared_vector_ptr<LinearizedResult> linearized_on_host_ = nullptr;
     shared_vector_ptr<float> error_on_host_ = nullptr;
     shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
@@ -485,8 +485,8 @@ private:
     }
 
     bool is_converged(const Eigen::Vector<float, 6>& delta) const {
-        return delta.template head<3>().norm() < this->params_.crireria.rotation &&
-               delta.template tail<3>().norm() < this->params_.crireria.translation;
+        return delta.template head<3>().norm() < this->params_.criteria.rotation &&
+               delta.template tail<3>().norm() < this->params_.criteria.translation;
     }
 
     float compute_genz_alpha(const PointCloudShared& source,  //
@@ -548,7 +548,7 @@ private:
     }
 
     template <RegType reg, RobustLossType loss>
-    sycl_utils::events linearlize_parallel_reduction_async(const PointCloudShared& source,
+    sycl_utils::events linearize_parallel_reduction_async(const PointCloudShared& source,
                                                            const PointCloudShared& target, const Eigen::Matrix4f transT,
                                                            float max_correspondence_distance, float robust_scale,
                                                            const std::vector<sycl::event>& depends) {
@@ -595,14 +595,14 @@ private:
             const float genz_alpha = this->genz_alpha_;
 
             // reduction
-            this->linearlized_on_device_->setZero();
-            auto sum_H0 = sycl::reduction(this->linearlized_on_device_->H0, sycl::plus<sycl::float16>());
-            auto sum_H1 = sycl::reduction(this->linearlized_on_device_->H1, sycl::plus<sycl::float16>());
-            auto sum_H2 = sycl::reduction(this->linearlized_on_device_->H2, sycl::plus<sycl::float4>());
-            auto sum_b0 = sycl::reduction(this->linearlized_on_device_->b0, sycl::plus<sycl::float3>());
-            auto sum_b1 = sycl::reduction(this->linearlized_on_device_->b1, sycl::plus<sycl::float3>());
-            auto sum_error = sycl::reduction(this->linearlized_on_device_->error, sycl::plus<float>());
-            auto sum_inlier = sycl::reduction(this->linearlized_on_device_->inlier, sycl::plus<uint32_t>());
+            this->linearized_on_device_->setZero();
+            auto sum_H0 = sycl::reduction(this->linearized_on_device_->H0, sycl::plus<sycl::float16>());
+            auto sum_H1 = sycl::reduction(this->linearized_on_device_->H1, sycl::plus<sycl::float16>());
+            auto sum_H2 = sycl::reduction(this->linearized_on_device_->H2, sycl::plus<sycl::float4>());
+            auto sum_b0 = sycl::reduction(this->linearized_on_device_->b0, sycl::plus<sycl::float3>());
+            auto sum_b1 = sycl::reduction(this->linearized_on_device_->b1, sycl::plus<sycl::float3>());
+            auto sum_error = sycl::reduction(this->linearized_on_device_->error, sycl::plus<float>());
+            auto sum_inlier = sycl::reduction(this->linearized_on_device_->inlier, sycl::plus<uint32_t>());
 
             // wait for knn search
             h.depends_on(depends);
@@ -638,39 +638,39 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const LinearlizedResult linearlized =
-                        kernel::linearlize<reg>(cur_T, source_ptr[index], source_cov,               //
+                    const LinearizedResult linearized =
+                        kernel::linearize<reg>(cur_T, source_ptr[index], source_cov,               //
                                                 target_ptr[target_idx], target_cov, target_normal,  //
                                                 source_rgb, target_rgb, target_grad, use_color,     //
                                                 source_intensity, target_intensity,                 //
                                                 target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
-                    const float robust_weight = kernel::compute_robust_weight<loss>(linearlized.error, robust_scale);
+                    const float robust_weight = kernel::compute_robust_weight<loss>(linearized.error, robust_scale);
 
                     // reduction on device
-                    const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearlized.H);
-                    const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearlized.b);
+                    const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
+                    const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
                     sum_H0_arg += H0 * robust_weight;
                     sum_H1_arg += H1 * robust_weight;
                     sum_H2_arg += H2 * robust_weight;
                     sum_b0_arg += b0 * robust_weight;
                     sum_b1_arg += b1 * robust_weight;
-                    sum_error_arg += kernel::compute_robust_error<loss>(linearlized.error, robust_scale);
+                    sum_error_arg += kernel::compute_robust_error<loss>(linearized.error, robust_scale);
                     ++sum_inlier_arg;
                 });
         });
         return events;
     }
 
-    LinearlizedResult linearlize(const PointCloudShared& source, const PointCloudShared& target,
+    LinearizedResult linearize(const PointCloudShared& source, const PointCloudShared& target,
                                  const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale,
                                  const std::vector<sycl::event>& depends) {
         auto events = this->dispatch([&]<RegType reg, RobustLossType loss>() {
-            return this->linearlize_parallel_reduction_async<reg, loss>(
+            return this->linearize_parallel_reduction_async<reg, loss>(
                 source, target, transT, max_correspondence_distance, robust_scale, depends);
         });
 
         events.wait_and_throw();
-        return this->linearlized_on_device_->toCPU(0);
+        return this->linearized_on_device_->toCPU(0);
     }
 
     template <RegType reg, RobustLossType loss>
@@ -770,18 +770,18 @@ private:
         return result;
     }
 
-    void optimize_gauss_newton(RegistrationResult& result, const LinearlizedResult& linearlized_result, float lambda,
+    void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result, float lambda,
                                size_t iter) {
-        const Eigen::Vector<float, 6> delta = (linearlized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
+        const Eigen::Vector<float, 6> delta = (linearized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
                                                   .ldlt()
-                                                  .solve(-linearlized_result.b);
+                                                  .solve(-linearized_result.b);
         result.converged = this->is_converged(delta);
         result.T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
         result.iterations = iter;
-        result.H = linearlized_result.H;
-        result.b = linearlized_result.b;
-        result.error = linearlized_result.error;
-        result.inlier = linearlized_result.inlier;
+        result.H = linearized_result.H;
+        result.b = linearized_result.b;
+        result.error = linearized_result.error;
+        result.inlier = linearized_result.inlier;
 
         if (this->params_.verbose) {
             std::cout << "iter [" << iter << "] ";
@@ -794,11 +794,11 @@ private:
 
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
                                       float max_correspondence_distance, RegistrationResult& result,
-                                      const LinearlizedResult& linearlized_result, float& lambda, size_t iter,
+                                      const LinearizedResult& linearized_result, float& lambda, size_t iter,
                                       float robust_scale) {
-        const auto& H = linearlized_result.H;
-        const auto& g = linearlized_result.b;
-        const float current_error = linearlized_result.error;
+        const auto& H = linearized_result.H;
+        const auto& g = linearized_result.b;
+        const float current_error = linearized_result.error;
 
         bool updated = false;
         float last_error = std::numeric_limits<float>::max();
@@ -820,7 +820,7 @@ private:
                 std::cout << "dt: " << delta.tail<3>().norm() << ", ";
                 std::cout << "dr: " << delta.head<3>().norm() << std::endl;
             }
-            if (new_error <= linearlized_result.error) {
+            if (new_error <= linearized_result.error) {
                 result.converged = this->is_converged(delta);
                 result.T = new_T;
                 result.error = new_error;
@@ -854,17 +854,17 @@ private:
 
     bool optimize_powell_dogleg(const PointCloudShared& source, const PointCloudShared& target,
                                 float max_correspondence_distance, RegistrationResult& result,
-                                const LinearlizedResult& linearlized_result, float& trust_region_radius, size_t iter,
+                                const LinearizedResult& linearized_result, float& trust_region_radius, size_t iter,
                                 float robust_scale) {
         bool updated = false;
-        const auto& H = linearlized_result.H;
-        const auto& g = linearlized_result.b;
-        const float current_error = linearlized_result.error;
+        const auto& H = linearized_result.H;
+        const auto& g = linearized_result.b;
+        const float current_error = linearized_result.error;
 
         result.H = H;
         result.b = g;
         result.error = current_error;
-        result.inlier = linearlized_result.inlier;
+        result.inlier = linearized_result.inlier;
         result.iterations = iter;
 
         const auto clamp_radius = [&](float radius) {
