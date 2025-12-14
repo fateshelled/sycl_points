@@ -36,7 +36,6 @@ public:
         this->params_ = params;
         this->initialize();
     }
-    ~LiDAROdometry() {}
 
     auto get_device_queue() const { return this->queue_ptr_; }
 
@@ -444,6 +443,9 @@ private:
         }
 
         // check inlier ratio for registration success or not.
+        if (this->registration_input_pc_->size() == 0) {
+            return false;
+        }
         const float inlier_ratio = static_cast<float>(reg_result.inlier) / this->registration_input_pc_->size();
         if (inlier_ratio <= this->params_.keyframe_inlier_ratio_threshold) {
             return false;
