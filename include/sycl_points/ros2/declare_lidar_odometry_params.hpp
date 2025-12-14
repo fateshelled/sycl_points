@@ -36,10 +36,10 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         params.scan_downsampling_random_enable =
             node->declare_parameter<bool>("scan/downsampling/random/enable", params.scan_downsampling_random_enable);
         params.scan_downsampling_random_num =
-            node->declare_parameter<int>("scan/downsampling/random/num", params.scan_downsampling_random_num);
+            node->declare_parameter<int64_t>("scan/downsampling/random/num", params.scan_downsampling_random_num);
 
         params.scan_covariance_neighbor_num =
-            node->declare_parameter<int>("scan/covariance/neighbor_num", params.scan_covariance_neighbor_num);
+            node->declare_parameter<int64_t>("scan/covariance/neighbor_num", params.scan_covariance_neighbor_num);
         params.scan_preprocess_box_filter_enable = node->declare_parameter<bool>(
             "scan/preprocess/box_filter/enable", params.scan_preprocess_box_filter_enable);
         params.scan_preprocess_box_filter_min =
@@ -52,13 +52,13 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
     {
         params.submap_voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap_voxel_size);
         params.submap_covariance_neighbor_num =
-            node->declare_parameter<int>("submap/covariance/neighbor_num", params.submap_covariance_neighbor_num);
-        params.submap_color_gradient_neighbor_num = node->declare_parameter<int>(
+            node->declare_parameter<int64_t>("submap/covariance/neighbor_num", params.submap_covariance_neighbor_num);
+        params.submap_color_gradient_neighbor_num = node->declare_parameter<int64_t>(
             "submap/color_gradient/neighbor_num", params.submap_color_gradient_neighbor_num);
         params.submap_max_distance_range =
             node->declare_parameter<double>("submap/max_distance_range", params.submap_max_distance_range);
-        params.submap_point_random_sampling_num =
-            node->declare_parameter<int>("submap/point_random_sampling_num", params.submap_point_random_sampling_num);
+        params.submap_point_random_sampling_num = node->declare_parameter<int64_t>(
+            "submap/point_random_sampling_num", params.submap_point_random_sampling_num);
 
         params.keyframe_inlier_ratio_threshold = node->declare_parameter<double>(
             "submap/keyframe/inlier_ratio_threshold", params.keyframe_inlier_ratio_threshold);
@@ -83,7 +83,7 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "submap/occupancy_grid_map/occupied_threshold", params.occupancy_grid_map_occupied_threshold);
         params.occupancy_grid_map_enable_pruning = node->declare_parameter<bool>(
             "submap/occupancy_grid_map/enable_pruning", params.occupancy_grid_map_enable_pruning);
-        params.occupancy_grid_map_stale_frame_threshold = node->declare_parameter<int>(
+        params.occupancy_grid_map_stale_frame_threshold = node->declare_parameter<int64_t>(
             "submap/occupancy_grid_map/stale_frame_threshold", params.occupancy_grid_map_stale_frame_threshold);
     }
 
@@ -94,16 +94,16 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.registration_motion_prediction_factor = node->declare_parameter<double>(
                 "registration/motion_prediction_factor", params.registration_motion_prediction_factor);
             params.registration_min_num_points =
-                node->declare_parameter<int>("registration/min_num_points", params.registration_min_num_points);
+                node->declare_parameter<int64_t>("registration/min_num_points", params.registration_min_num_points);
             params.registration_random_sampling_enable = node->declare_parameter<bool>(
                 "registration/random_sampling/enable", params.registration_random_sampling_enable);
-            params.registration_random_sampling_num = node->declare_parameter<int>(
+            params.registration_random_sampling_num = node->declare_parameter<int64_t>(
                 "registration/random_sampling/num", params.registration_random_sampling_num);
 
             const std::string reg_type = node->declare_parameter<std::string>("registration/type", "gicp");
             params.reg_params.reg_type = algorithms::registration::RegType_from_string(reg_type);
             params.reg_params.max_iterations =
-                node->declare_parameter<int>("registration/max_iterations", params.reg_params.max_iterations);
+                node->declare_parameter<int64_t>("registration/max_iterations", params.reg_params.max_iterations);
             params.reg_params.lambda = node->declare_parameter<double>("registration/lambda", params.reg_params.lambda);
             params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
                 "registration/max_correspondence_distance", params.reg_params.max_correspondence_distance);
@@ -126,14 +126,14 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
                 node->declare_parameter<double>("registration/robust/init_scale", params.reg_params.robust.init_scale);
             params.reg_params.robust.min_scale =
                 node->declare_parameter<double>("registration/robust/min_scale", params.reg_params.robust.min_scale);
-            params.reg_params.robust.scaling_iter =
-                node->declare_parameter<int>("registration/robust/scaling_iter", params.reg_params.robust.scaling_iter);
+            params.reg_params.robust.scaling_iter = node->declare_parameter<int64_t>(
+                "registration/robust/scaling_iter", params.reg_params.robust.scaling_iter);
         }
         // deskew
         {
             params.registration_velocity_update_enable = node->declare_parameter<bool>(
                 "registration/velocity_update/enable", params.registration_velocity_update_enable);
-            params.registration_velocity_update_iter = node->declare_parameter<int>(
+            params.registration_velocity_update_iter = node->declare_parameter<int64_t>(
                 "registration/velocity_update/iter", params.registration_velocity_update_iter);
         }
         // photometric
@@ -156,7 +156,7 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.reg_params.optimization_method =
                 algorithms::registration::OptimizationMethod_from_string(optimization_method);
 
-            params.reg_params.lm.max_inner_iterations = node->declare_parameter<int>(
+            params.reg_params.lm.max_inner_iterations = node->declare_parameter<int64_t>(
                 "registration/lm/max_inner_iterations", params.reg_params.lm.max_inner_iterations);
             params.reg_params.lm.lambda_factor =
                 node->declare_parameter<double>("registration/lm/lambda_factor", params.reg_params.lm.lambda_factor);
