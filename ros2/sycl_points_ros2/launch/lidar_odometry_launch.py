@@ -77,8 +77,14 @@ def generate_launch_description():
                 default_value='',
                 description='rosbag path',
             ),
+            DeclareLaunchArgument(
+                'use_sim_time',
+                default_value='false',
+                description='use sim time or not',
+            )
         ]
     )
+    use_sim_time = LaunchConfiguration('use_sim_time')
 
     nodes = [
         Node(
@@ -114,6 +120,7 @@ def generate_launch_description():
                                     'rotation.w': LaunchConfiguration('T_base_link_to_lidar/qw'),
                                     'frame_id': LaunchConfiguration('base_link_id'),
                                     'child_frame_id': LaunchConfiguration('lidar_frame_id'),
+                                    'use_sim_time': use_sim_time,
                                 },
                             ]
                         ),
@@ -128,6 +135,7 @@ def generate_launch_description():
                                         'odom_frame_id'
                                     ),
                                     'base_link_id': LaunchConfiguration('base_link_id'),
+                                    'use_sim_time': use_sim_time,
                                 },
                             ],
                             remappings=[
@@ -148,6 +156,7 @@ def generate_launch_description():
                                     'play.start_paused': False,
                                     'storage.uri': LaunchConfiguration('rosbag/uri'),
                                     'storage.storage_config_uri': '',
+                                    'use_sim_time': use_sim_time,
                                 }
                             ],
                             condition=IfCondition(LaunchConfiguration('rosbag/play')),

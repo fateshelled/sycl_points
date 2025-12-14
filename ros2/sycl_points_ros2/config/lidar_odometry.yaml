@@ -15,15 +15,15 @@ lidar_odometry_node:
 
     scan/covariance/neighbor_num: 30
     scan/preprocess/box_filter/enable: true
-    scan/preprocess/box_filter/max: 50.0
-    scan/preprocess/box_filter/min: 2.0
+    scan/preprocess/box_filter/max: 100.0
+    scan/preprocess/box_filter/min: 1.0
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
     scan/downsampling/polar/enable: true
     scan/downsampling/polar/distance_size: 0.5  # meters
-    scan/downsampling/polar/elevation_size: 0.05235987755982989 # 3 degrees
+    scan/downsampling/polar/elevation_size: 0.017453292519943295 # 1 degrees
     scan/downsampling/polar/azimuth_size: 0.05235987755982989   # 3 degrees
-    scan/downsampling/polar/coord_system: CAMERA # CAMERA or LIDAR
+    scan/downsampling/polar/coord_system: LIDAR # CAMERA or LIDAR
     scan/downsampling/random/enable: false
     scan/downsampling/random/num: 5000
 
