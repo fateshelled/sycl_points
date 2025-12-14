@@ -13,31 +13,35 @@ This project was developed with reference to small_gicp and gtsam_points
 
 ### Key features
 - Efficient point cloud data structures for CPU and accelerator memory
-    - Data structures accessible from CPU and device kernel
+  - Data structures accessible from CPU and device kernel
 - K-nearest neighbor search
-    - KD-trees
-    - Octree
-    - Brute force
+  - KD-trees
+  - Octree
+  - Brute force
 - Point cloud registration
-    - Iterative Closest Point (ICP)
-      - Point to Point
-      - Point to Plane
-      - Generalized ICP (GICP)
-      - Genz-ICP
-    - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
-    - Colored ICP
-        - Set `0.0 < photometric_weight <= 1.0` in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB fields, and the target cloud requires pre-computed color gradients and geometric normal vector.
-    - Velocity updating ICP (VICP)
+  - Iterative Closest Point (ICP)
+    - Point to Point
+    - Point to Plane
+    - Generalized ICP (GICP)
+    - Genz-ICP
+  - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
+  - Colored ICP
+    - Set `0.0 < photometric_weight <= 1.0` in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB fields, and the target cloud requires pre-computed color gradients and geometric normal vector.
+  - Velocity updating ICP (VICP)
+    - Estimates sensor velocity to compensate for motion distortion in the source point cloud. The source cloud must have a `time` field for each point.
+- Submapping
+  - Voxel hashmap
+  - Occupancy grid map
 - Preprocessing filter
-    - L∞ distance (chebyshev distance) filter
-    - Random sampling
-    - Farthest point sampling (FPS)
-    - Voxel grid downsampling
-    - Polar grid downsampling
+  - L∞ distance (chebyshev distance) filter
+  - Random sampling
+  - Farthest point sampling (FPS)
+  - Voxel grid downsampling
+  - Polar grid downsampling
 - Point cloud file I/O
-    - PLY and PCD format support
-    - ASCII and binary format reading/writing
-    - CPU and shared memory interface compatibility
+  - PLY and PCD format support
+  - ASCII and binary format reading/writing
+  - CPU and shared memory interface compatibility
 
 ### Future optimization work will include
 - Algorithm refinements for better parallelization
@@ -49,7 +53,7 @@ This project was developed with reference to small_gicp and gtsam_points
 
 note:
 - `level_zero` backend is not supported.
-- AMD CPU is worked fine but not optimized.
+- AMD CPU will work fine.
 - I do not own an AMD GPU, so it is not supported.
 
 ## Requirements
@@ -138,6 +142,7 @@ newgrp render
 source /opt/intel/oneapi/setvars.sh
 
 # build example
+cd cpp
 mkdir build && cd build
 cmake ..
 make
