@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.15)
 set(CMAKE_C_COMPILER "icx" CACHE PATH "C compiler" FORCE)
 set(CMAKE_CXX_COMPILER "icpx" CACHE PATH "C++ compiler" FORCE)
 
-project(sycl_points LANGUAGES CXX)
+project(sycl_points_example LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,7 +18,6 @@ option(BUILD_TESTS   "Build tests"     ON)
 
 find_package(IntelSYCL REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(ament_cmake QUIET)
 
 set(SYCL_TARGET_FLAGS "spir64")
 
@@ -43,36 +42,6 @@ if(${ENABLE_CUDA_BACKEND})
   set(SYCL_TARGET_FLAGS "${SYCL_TARGET_FLAGS},nvptx64-nvidia-cuda")
 else()
   message(STATUS "Intel oneAPI for NVIDIA GPU support not available")
-endif()
-
-# Install ROS 2
-if (ament_cmake_FOUND)
-  set(BUILD_EXAMPLES OFF)
-  set(BUILD_TESTS    OFF)
-
-  add_library(${PROJECT_NAME} INTERFACE)
-  target_include_directories(${PROJECT_NAME} INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-  )
-
-  ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-  ament_package()
-
-  install(
-      DIRECTORY "include/"
-      DESTINATION include
-    )
-
-  install(
-    TARGETS ${PROJECT_NAME}
-    EXPORT export_${PROJECT_NAME}
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
-    INCLUDES DESTINATION include
-  )
-
 endif()
 
 # Build example
