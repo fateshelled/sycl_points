@@ -1,0 +1,67 @@
+cmake_minimum_required(VERSION 3.15)
+
+set(CMAKE_C_COMPILER "icx" CACHE PATH "C compiler" FORCE)
+set(CMAKE_CXX_COMPILER "icpx" CACHE PATH "C++ compiler" FORCE)
+
+project(sycl_points LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
+endif()
+
+find_package(IntelSYCL REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(ament_cmake REQUIRED)
+
+set(SYCL_TARGET_FLAGS "spir64")
+
+# Check for Intel oneAPI NVIDIA GPU support
+function(check_oneapi_nvidia_support RESULT_VAR)
+  execute_process(
+    COMMAND bash -c "sycl-ls | grep -q NVIDIA"
+    RESULT_VARIABLE EXIT_CODE
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+  if(EXIT_CODE EQUAL 0)
+    set(${RESULT_VAR} TRUE PARENT_SCOPE)
+  else()
+    set(${RESULT_VAR} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
+check_oneapi_nvidia_support(ENABLE_CUDA_BACKEND)
+if(${ENABLE_CUDA_BACKEND})
+  message(STATUS "Intel oneAPI for NVIDIA GPU support available")
+  set(SYCL_TARGET_FLAGS "${SYCL_TARGET_FLAGS},nvptx64-nvidia-cuda")
+else()
+  message(STATUS "Intel oneAPI for NVIDIA GPU support not available")
+endif()
+
+# Install ROS 2
+add_library(${PROJECT_NAME} INTERFACE)
+target_include_directories(${PROJECT_NAME} INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../cpp/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_package()
+
+install(
+    DIRECTORY "../../cpp/include/"
+    DESTINATION include
+  )
+
+install(
+  TARGETS ${PROJECT_NAME}
+  EXPORT export_${PROJECT_NAME}
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+  RUNTIME DESTINATION bin
+  INCLUDES DESTINATION include
+)
