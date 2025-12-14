@@ -115,6 +115,7 @@ public:
         {
             this->prev_odom_ = this->odom_;
             this->odom_ = this->reg_result_.T;
+            this->last_frame_time_ = timestamp;
         }
         return ResultType::success;
     }
@@ -149,7 +150,7 @@ private:
     std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> keyframe_poses_;
     double last_keyframe_time_;
 
-    double last_frame_time_;
+    double last_frame_time_ = -1.0;
     float dt_ = -1.0f;
 
     Parameters params_;
