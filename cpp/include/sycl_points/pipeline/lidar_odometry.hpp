@@ -317,29 +317,45 @@ private:
         }
     }
 
-    algorithms::registration::RegistrationResult registration() {
-        // Predict initial pose by applying the previous motion model
-        Eigen::Isometry3f init_T = Eigen::Isometry3f::Identity();
-        if (this->params_.registration_motion_prediction_factor > 0.0f &&
-            this->params_.registration_motion_prediction_factor <= 1.0f) {
-            const float rot_factor = this->params_.registration_motion_prediction_factor;
-            const float trans_factor = this->params_.registration_motion_prediction_factor;
+    /// Predict initial pose by applying the previous motion model
+    Eigen::Isometry3f adaptive_motion_prediction() {
+        const float rot_factor = this->params_.motion_prediction_static_factor;
+        float trans_factor = this->params_.motion_prediction_static_factor;
 
-            const auto delta_pose = this->prev_odom_.inverse() * this->odom_;
-            const Eigen::Vector3f delta_trans = delta_pose.translation();
-            const Eigen::AngleAxisf delta_angle_axis(delta_pose.rotation());
+        if (this->params_.motion_prediction_adaptive_enable) {
+            if (this->registrated_ && this->reg_result_->inlier > 0) {
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(this->reg_result_->H.block<3, 3>(3, 3));
+                if (solver_trans.info() == Eigen::Success) {
+                    const float low = this->params_.motion_prediction_adaptive_eigen_low;
+                    const float high = this->params_.motion_prediction_adaptive_eigen_high;
+                    const float max_factor = this->params_.motion_prediction_adaptive_trans_factor_max;
+                    const float min_factor = this->params_.motion_prediction_adaptive_trans_factor_min;
 
-            const Eigen::Vector3f predicted_trans =
-                this->odom_.translation() + this->odom_.rotation() * (delta_trans * trans_factor);
-            const Eigen::Quaternionf predicted_rot =
-                Eigen::AngleAxisf(delta_angle_axis.angle() * rot_factor, delta_angle_axis.axis()) *
-                Eigen::Quaternionf(this->odom_.rotation());
-
-            init_T.translation() = predicted_trans;
-            init_T.rotate(predicted_rot.normalized());
-        } else {
-            init_T = this->odom_;
+                    const float min_eig_ratio = solver_trans.eigenvalues().minCoeff() / this->reg_result_->inlier;
+                    const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
+                    trans_factor = max_factor * (1.0f - score) + min_factor * score;
+                }
+            }
         }
+
+        const auto delta_pose = this->prev_odom_.inverse() * this->odom_;
+        const Eigen::Vector3f delta_trans = delta_pose.translation();
+        const Eigen::AngleAxisf delta_angle_axis(delta_pose.rotation());
+
+        const Eigen::Vector3f predicted_trans =
+            this->odom_.translation() + this->odom_.rotation() * (delta_trans * trans_factor);
+        const Eigen::Quaternionf predicted_rot =
+            Eigen::AngleAxisf(delta_angle_axis.angle() * rot_factor, delta_angle_axis.axis()) *
+            Eigen::Quaternionf(this->odom_.rotation());
+
+        Eigen::Isometry3f init_T = Eigen::Isometry3f::Identity();
+        init_T.translation() = predicted_trans;
+        init_T.rotate(predicted_rot.normalized());
+        return init_T;
+    }
+
+    algorithms::registration::RegistrationResult registration() {
+        const Eigen::Isometry3f init_T = this->adaptive_motion_prediction();
 
         if (this->params_.registration_random_sampling_enable) {
             this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_,

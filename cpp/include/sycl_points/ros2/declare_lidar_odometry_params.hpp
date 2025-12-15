@@ -87,12 +87,26 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "submap/occupancy_grid_map/stale_frame_threshold", params.occupancy_grid_map_stale_frame_threshold);
     }
 
+    // motion predictor
+    {
+        params.motion_prediction_static_factor =
+            node->declare_parameter<double>("motion_prediction/static_factor", params.motion_prediction_static_factor);
+        params.motion_prediction_adaptive_enable = node->declare_parameter<bool>(
+            "motion_prediction/adaptive/enable", params.motion_prediction_adaptive_enable);
+        params.motion_prediction_adaptive_trans_factor_min = node->declare_parameter<double>(
+            "motion_prediction/adaptive/trans_factor/min", params.motion_prediction_adaptive_trans_factor_min);
+        params.motion_prediction_adaptive_trans_factor_max = node->declare_parameter<double>(
+            "motion_prediction/adaptive/trans_factor/max", params.motion_prediction_adaptive_trans_factor_max);
+        params.motion_prediction_adaptive_eigen_low = node->declare_parameter<double>(
+            "motion_prediction/adaptive/eigen/low", params.motion_prediction_adaptive_eigen_low);
+        params.motion_prediction_adaptive_eigen_high = node->declare_parameter<double>(
+            "motion_prediction/adaptive/eigen/high", params.motion_prediction_adaptive_eigen_high);
+    }
+
     // Registration
     {
         // common
         {
-            params.registration_motion_prediction_factor = node->declare_parameter<double>(
-                "registration/motion_prediction_factor", params.registration_motion_prediction_factor);
             params.registration_min_num_points =
                 node->declare_parameter<int64_t>("registration/min_num_points", params.registration_min_num_points);
             params.registration_random_sampling_enable = node->declare_parameter<bool>(

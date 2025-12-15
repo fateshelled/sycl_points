@@ -46,7 +46,12 @@ lidar_odometry_node:
     submap/occupancy_grid_map/stale_frame_threshold: 200
 
     registration/type: gicp # point_to_point, point_to_plane, gicp, genz
-    registration/motion_prediction/factor: 0.2
+    registration/motion_prediction/static_factor: 0.2
+    registration/motion_prediction/adaptive/enable: true
+    registration/motion_prediction/adaptive/trans_factor/min: 0.2
+    registration/motion_prediction/adaptive/trans_factor/max: 1.0
+    registration/motion_prediction/adaptive/eigen/low: 1.0
+    registration/motion_prediction/adaptive/eigen/high: 10.0
     registration/min_num_points: 300
     registration/velocity_update/enable: true
     registration/velocity_update/iter: 1

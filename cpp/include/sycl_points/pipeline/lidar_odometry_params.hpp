@@ -46,7 +46,13 @@ struct Parameters {
     bool occupancy_grid_map_enable_pruning = true;
     size_t occupancy_grid_map_stale_frame_threshold = 100U;
 
-    float registration_motion_prediction_factor = 0.5f;
+    float motion_prediction_static_factor = 0.5f;
+    bool motion_prediction_adaptive_enable = true;
+    float motion_prediction_adaptive_trans_factor_min = 1.0f;
+    float motion_prediction_adaptive_trans_factor_max = 1.0f;
+    float motion_prediction_adaptive_eigen_low = 1.0f;
+    float motion_prediction_adaptive_eigen_high = 10.0f;
+
     size_t registration_min_num_points = 100;
     bool registration_velocity_update_enable = true;
     size_t registration_velocity_update_iter = 1;
