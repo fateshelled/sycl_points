@@ -52,14 +52,17 @@ public:
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
 
-    const auto& get_registration_result() const { return this->reg_result_; }
+    const auto& get_registration_result() const { return *this->reg_result_; }
 
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
+        this->error_message_.clear();
+
         if (this->last_frame_time_ > 0.0) {
             const float dt = static_cast<float>(timestamp - this->last_frame_time_);
             if (dt > 0.0f) {
                 this->dt_ = dt;
             } else {
+                this->error_message_ = "old timestamp";
                 return ResultType::old_timestamp;
             }
         }
@@ -99,21 +102,21 @@ public:
         // Registration
         {
             double dt_registration = 0.0;
-            this->reg_result_ = time_utils::measure_execution([&]() { return registration(); }, dt_registration);
+            *this->reg_result_ = time_utils::measure_execution([&]() { return registration(); }, dt_registration);
             this->add_delta_time(ProcessName::registration, dt_registration);
         }
 
         // Submapping
         {
             double dt_build_submap = 0.0;
-            time_utils::measure_execution([&]() { return submapping(this->reg_result_, timestamp); }, dt_build_submap);
+            time_utils::measure_execution([&]() { return submapping(*this->reg_result_, timestamp); }, dt_build_submap);
             this->add_delta_time(ProcessName::build_submap, dt_build_submap);
         }
 
         // update Odometry
         {
             this->prev_odom_ = this->odom_;
-            this->odom_ = this->reg_result_.T;
+            this->odom_ = this->reg_result_->T;
             this->last_frame_time_ = timestamp;
         }
         return ResultType::success;
@@ -141,8 +144,11 @@ private:
     algorithms::filter::PolarGrid::Ptr polar_filter_ = nullptr;
     algorithms::registration::Registration::Ptr registration_ = nullptr;
 
-    algorithms::registration::RegistrationResult reg_result_;
+    bool registrated_ = false;
+    algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
+    Eigen::Vector3f linear_velocity_;
+    Eigen::AngleAxisf angular_velocity_;
     Eigen::Isometry3f prev_odom_;
     Eigen::Isometry3f odom_;
     Eigen::Isometry3f last_keyframe_pose_;
@@ -262,6 +268,8 @@ private:
         {
             this->registration_ =
                 std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, this->params_.reg_params);
+            this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
+            this->registrated_ = false;
         }
         // utilities
         {
@@ -314,16 +322,17 @@ private:
         Eigen::Isometry3f init_T = Eigen::Isometry3f::Identity();
         if (this->params_.registration_motion_prediction_factor > 0.0f &&
             this->params_.registration_motion_prediction_factor <= 1.0f) {
+            const float rot_factor = this->params_.registration_motion_prediction_factor;
+            const float trans_factor = this->params_.registration_motion_prediction_factor;
+
             const auto delta_pose = this->prev_odom_.inverse() * this->odom_;
             const Eigen::Vector3f delta_trans = delta_pose.translation();
             const Eigen::AngleAxisf delta_angle_axis(delta_pose.rotation());
 
             const Eigen::Vector3f predicted_trans =
-                this->odom_.translation() +
-                this->odom_.rotation() * (delta_trans * this->params_.registration_motion_prediction_factor);
+                this->odom_.translation() + this->odom_.rotation() * (delta_trans * trans_factor);
             const Eigen::Quaternionf predicted_rot =
-                Eigen::AngleAxisf(delta_angle_axis.angle() * this->params_.registration_motion_prediction_factor,
-                                  delta_angle_axis.axis()) *
+                Eigen::AngleAxisf(delta_angle_axis.angle() * rot_factor, delta_angle_axis.axis()) *
                 Eigen::Quaternionf(this->odom_.rotation());
 
             init_T.translation() = predicted_trans;
@@ -338,8 +347,8 @@ private:
         } else {
             *this->registration_input_pc_ = *this->preprocessed_pc_;
         }
-        algorithms::registration::RegistrationResult result;
 
+        algorithms::registration::RegistrationResult result;
         if (this->params_.registration_velocity_update_enable) {
             result = this->registration_->align_velocity_update(
                 *this->registration_input_pc_, *this->submap_pc_ptr_, *this->submap_tree_, init_T.matrix(), this->dt_,
@@ -348,7 +357,7 @@ private:
             result = this->registration_->align(*this->registration_input_pc_, *this->submap_pc_ptr_,
                                                 *this->submap_tree_, init_T.matrix());
         }
-
+        this->registrated_ = true;
         return result;
     }
 

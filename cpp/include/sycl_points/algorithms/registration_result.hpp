@@ -10,6 +10,8 @@ namespace registration {
 
 /// @brief Registration Result
 struct RegistrationResult {
+    using Ptr = std::shared_ptr<RegistrationResult>;
+
     Eigen::Isometry3f T = Eigen::Isometry3f::Identity();                // Estimated transformation
     bool converged = false;                                             // Optimization converged or not
     size_t iterations = 0;                                              // Number of optimization iterations
