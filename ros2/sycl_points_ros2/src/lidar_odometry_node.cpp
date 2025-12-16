@@ -1,4 +1,4 @@
-#include "sycl_points_ros2/lidar_odometry.hpp"
+#include "sycl_points_ros2/lidar_odometry_node.hpp"
 
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sycl_points/ros2/convert.hpp>

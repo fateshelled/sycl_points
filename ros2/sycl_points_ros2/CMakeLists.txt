@@ -47,7 +47,7 @@ endif()
 ament_auto_find_build_dependencies()
 
 ament_auto_add_library(lidar_odometry SHARED
-  src/lidar_odometry.cpp
+  src/lidar_odometry_node.cpp
 )
 
 target_include_directories(lidar_odometry  PUBLIC
