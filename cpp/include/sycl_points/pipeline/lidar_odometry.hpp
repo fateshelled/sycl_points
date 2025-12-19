@@ -9,7 +9,7 @@
 #include <sycl_points/algorithms/mapping/voxel_hash_map.hpp>
 #include <sycl_points/algorithms/polar_downsampling.hpp>
 #include <sycl_points/algorithms/preprocess_filter.hpp>
-#include <sycl_points/algorithms/registration.hpp>
+#include <sycl_points/algorithms/registration/registration.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/pipeline/lidar_odometry_params.hpp>
 #include <sycl_points/utils/time_utils.hpp>

@@ -7,7 +7,7 @@
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
-#include <sycl_points/algorithms/registration_factor.hpp>
+#include <sycl_points/algorithms/registration/factor.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 

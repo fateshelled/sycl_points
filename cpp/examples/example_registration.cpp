@@ -5,7 +5,7 @@
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/algorithms/preprocess_filter.hpp>
-#include <sycl_points/algorithms/registration.hpp>
+#include <sycl_points/algorithms/registration/registration.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/io/point_cloud_reader.hpp>
 
