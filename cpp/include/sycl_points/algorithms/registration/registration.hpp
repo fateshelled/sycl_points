@@ -7,7 +7,9 @@
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
+#include <sycl_points/algorithms/registration/degenerate_regularization.hpp>
 #include <sycl_points/algorithms/registration/factor.hpp>
+#include <sycl_points/algorithms/registration/linearized_result.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 
@@ -87,6 +89,8 @@ struct RegistrationParams {
     LevenbergMarquardt lm;
     Dogleg dogleg;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
+
+    DegenerateRegularizationParams degenerate_reg;  // Degenerate Regularization
 
     bool verbose = false;  // If true, print debug messages
 };
@@ -173,6 +177,8 @@ public:
             std::make_shared<shared_vector<LinearizedResult>>(1, LinearizedResult(), *this->queue_.ptr);
         this->error_on_host_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->inlier_on_host_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
+
+        this->degenerate_reg_.set_params(this->params_.degenerate_reg);
     }
 
     /// @brief validate parameters
@@ -308,8 +314,11 @@ public:
                         target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, result.T.matrix());
 
                     // Linearize on device for the current robust scale level
-                    const LinearizedResult linearized_result =
+                    LinearizedResult linearized_result =
                         this->linearize(source, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
+
+                    // Regularization
+                    this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
 
                     // Optimize on Host
                     switch (this->params_.optimization_method) {
@@ -406,8 +415,11 @@ public:
                                                                                   result.T.matrix());
 
                         // Linearize on device for the current robust scale level
-                        const LinearizedResult linearized_result = this->linearize(
+                        LinearizedResult linearized_result = this->linearize(
                             deskewed, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
+
+                        // Regularization
+                        this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
 
                         // Optimize on Host
                         switch (this->params_.optimization_method) {
@@ -446,6 +458,7 @@ private:
     shared_vector_ptr<float> error_on_host_ = nullptr;
     shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
+    DegenerateRegularizaion degenerate_reg_;
     float genz_alpha_ = 1.0f;
 
     template <typename Func>
