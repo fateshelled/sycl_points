@@ -7,7 +7,9 @@
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
-#include <sycl_points/algorithms/registration_factor.hpp>
+#include <sycl_points/algorithms/registration/degenerate_regularization.hpp>
+#include <sycl_points/algorithms/registration/factor.hpp>
+#include <sycl_points/algorithms/registration/linearized_result.hpp>
 #include <sycl_points/algorithms/transform.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 
@@ -25,7 +27,7 @@ enum class OptimizationMethod {
 
 OptimizationMethod OptimizationMethod_from_string(const std::string& str) {
     std::string upper = str;
-    std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
+    std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
 
     if (upper.compare("GN") == 0 || upper.compare("GAUSS_NEWTON") == 0) {
         return OptimizationMethod::GAUSS_NEWTON;
@@ -88,6 +90,8 @@ struct RegistrationParams {
     Dogleg dogleg;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
 
+    DegenerateRegularizationParams degenerate_reg;  // Degenerate Regularization
+
     bool verbose = false;  // If true, print debug messages
 };
 
@@ -147,9 +151,9 @@ struct LinearizedDevice {
     }
     LinearizedResult toCPU(size_t i = 0) {
         const LinearizedResult result = {.H = eigen_utils::from_sycl_vec({this->H0[i], this->H1[i], this->H2[i]}),
-                                          .b = eigen_utils::from_sycl_vec({this->b0[i], this->b1[i]}),
-                                          .error = this->error[i],
-                                          .inlier = this->inlier[i]};
+                                         .b = eigen_utils::from_sycl_vec({this->b0[i], this->b1[i]}),
+                                         .error = this->error[i],
+                                         .inlier = this->inlier[i]};
         return result;
     }
 };
@@ -173,6 +177,8 @@ public:
             std::make_shared<shared_vector<LinearizedResult>>(1, LinearizedResult(), *this->queue_.ptr);
         this->error_on_host_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->inlier_on_host_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
+
+        this->degenerate_reg_.set_params(this->params_.degenerate_reg);
     }
 
     /// @brief validate parameters
@@ -308,14 +314,17 @@ public:
                         target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, result.T.matrix());
 
                     // Linearize on device for the current robust scale level
-                    const LinearizedResult linearized_result =
+                    LinearizedResult linearized_result =
                         this->linearize(source, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
+
+                    // Regularization
+                    this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
 
                     // Optimize on Host
                     switch (this->params_.optimization_method) {
                         case OptimizationMethod::LEVENBERG_MARQUARDT:
-                            this->optimize_levenberg_marquardt(source, target, max_corr_dist, result,
-                                                               linearized_result, lambda, iter, robust_scale);
+                            this->optimize_levenberg_marquardt(source, target, max_corr_dist, result, linearized_result,
+                                                               lambda, iter, robust_scale);
                             break;
                         case OptimizationMethod::POWELL_DOGLEG:
                             this->optimize_powell_dogleg(source, target, max_corr_dist, result, linearized_result,
@@ -406,8 +415,11 @@ public:
                                                                                   result.T.matrix());
 
                         // Linearize on device for the current robust scale level
-                        const LinearizedResult linearized_result = this->linearize(
+                        LinearizedResult linearized_result = this->linearize(
                             deskewed, target, result.T.matrix(), max_corr_dist, robust_scale, knn_event.evs);
+
+                        // Regularization
+                        this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
 
                         // Optimize on Host
                         switch (this->params_.optimization_method) {
@@ -416,9 +428,8 @@ public:
                                                                    linearized_result, lambda, iter, robust_scale);
                                 break;
                             case OptimizationMethod::POWELL_DOGLEG:
-                                this->optimize_powell_dogleg(deskewed, target, max_corr_dist, result,
-                                                             linearized_result, trust_region_radius, iter,
-                                                             robust_scale);
+                                this->optimize_powell_dogleg(deskewed, target, max_corr_dist, result, linearized_result,
+                                                             trust_region_radius, iter, robust_scale);
                                 break;
                             case OptimizationMethod::GAUSS_NEWTON:
                                 this->optimize_gauss_newton(result, linearized_result, lambda, iter);
@@ -447,6 +458,7 @@ private:
     shared_vector_ptr<float> error_on_host_ = nullptr;
     shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
+    DegenerateRegularization degenerate_reg_;
     float genz_alpha_ = 1.0f;
 
     template <typename Func>
@@ -549,9 +561,9 @@ private:
 
     template <RegType reg, RobustLossType loss>
     sycl_utils::events linearize_parallel_reduction_async(const PointCloudShared& source,
-                                                           const PointCloudShared& target, const Eigen::Matrix4f transT,
-                                                           float max_correspondence_distance, float robust_scale,
-                                                           const std::vector<sycl::event>& depends) {
+                                                          const PointCloudShared& target, const Eigen::Matrix4f transT,
+                                                          float max_correspondence_distance, float robust_scale,
+                                                          const std::vector<sycl::event>& depends) {
         if constexpr (reg == RegType::GENZ) {
             this->genz_alpha_ = compute_genz_alpha(source, target, max_correspondence_distance, depends);
         }
@@ -640,10 +652,10 @@ private:
 
                     const LinearizedResult linearized =
                         kernel::linearize<reg>(cur_T, source_ptr[index], source_cov,               //
-                                                target_ptr[target_idx], target_cov, target_normal,  //
-                                                source_rgb, target_rgb, target_grad, use_color,     //
-                                                source_intensity, target_intensity,                 //
-                                                target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
+                                               target_ptr[target_idx], target_cov, target_normal,  //
+                                               source_rgb, target_rgb, target_grad, use_color,     //
+                                               source_intensity, target_intensity,                 //
+                                               target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
                     const float robust_weight = kernel::compute_robust_weight<loss>(linearized.error, robust_scale);
 
                     // reduction on device
@@ -662,8 +674,8 @@ private:
     }
 
     LinearizedResult linearize(const PointCloudShared& source, const PointCloudShared& target,
-                                 const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale,
-                                 const std::vector<sycl::event>& depends) {
+                               const Eigen::Matrix4f transT, float max_correspondence_distance, float robust_scale,
+                               const std::vector<sycl::event>& depends) {
         auto events = this->dispatch([&]<RegType reg, RobustLossType loss>() {
             return this->linearize_parallel_reduction_async<reg, loss>(
                 source, target, transT, max_correspondence_distance, robust_scale, depends);
@@ -770,12 +782,28 @@ private:
         return result;
     }
 
+    bool solve_linear_system(const Eigen::Matrix<float, 6, 6>& H, const Eigen::Vector<float, 6>& b,
+                             Eigen::Vector<float, 6>& solution) {
+        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt;
+        ldlt.compute(H);
+        if (ldlt.info() == Eigen::Success) {
+            solution = ldlt.solve(-b);
+            return true;
+        }
+        solution.setZero();
+        return false;
+    }
+
     void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result, float lambda,
                                size_t iter) {
-        const Eigen::Vector<float, 6> delta = (linearized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity())
-                                                  .ldlt()
-                                                  .solve(-linearized_result.b);
-        result.converged = this->is_converged(delta);
+        Eigen::Vector<float, 6> delta;
+        const bool success = this->solve_linear_system(
+            linearized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), linearized_result.b, delta);
+        if (success) {
+            result.converged = this->is_converged(delta);
+        } else {
+            result.converged = false;
+        }
         result.T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
         result.iterations = iter;
         result.H = linearized_result.H;
@@ -803,9 +831,15 @@ private:
         bool updated = false;
         float last_error = std::numeric_limits<float>::max();
 
+        Eigen::Vector<float, 6> delta;
         for (size_t i = 0; i < this->params_.lm.max_inner_iterations; ++i) {
-            const Eigen::Vector<float, 6> delta =
-                (H + lambda * Eigen::Matrix<float, 6, 6>::Identity()).ldlt().solve(-g);
+            const bool success =
+                this->solve_linear_system(H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), g, delta);
+            if (success) {
+                result.converged = this->is_converged(delta);
+            } else {
+                result.converged = false;
+            }
             const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
 
             const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
@@ -877,14 +911,10 @@ private:
         Eigen::Vector<float, 6> p_gn = Eigen::Vector<float, 6>::Zero();
         float norm_p_gn = 0.0f;
         bool has_valid_gn = false;
-        {
-            Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt;
-            ldlt.compute(H);
-            if (ldlt.info() == Eigen::Success) {
-                p_gn = ldlt.solve(-g);
-                norm_p_gn = p_gn.norm();
-                has_valid_gn = std::isfinite(norm_p_gn);
-            }
+        const bool success = this->solve_linear_system(H, g, p_gn);
+        if (success) {
+            norm_p_gn = p_gn.norm();
+            has_valid_gn = std::isfinite(norm_p_gn);
         }
 
         const float g_norm_sq = g.squaredNorm();

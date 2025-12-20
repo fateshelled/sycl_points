@@ -41,12 +41,18 @@ lidar_odometry_node:
     submap/occupancy_grid_map/log_odds_miss: -0.01
     submap/occupancy_grid_map/log_odds_limits/min: -4.0
     submap/occupancy_grid_map/log_odds_limits/max: 4.0
-    submap/occupancy_grid_map/occupied_threshold: 0.8
+    submap/occupancy_grid_map/occupied_threshold: 0.5
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 200
 
+    motion_prediction/static_factor: 0.2
+    motion_prediction/adaptive/enable: true
+    motion_prediction/adaptive/trans_factor/min: 0.2
+    motion_prediction/adaptive/trans_factor/max: 1.0
+    motion_prediction/adaptive/eigen/low: 1.0
+    motion_prediction/adaptive/eigen/high: 10.0
+
     registration/type: gicp # point_to_point, point_to_plane, gicp, genz
-    registration/motion_prediction/factor: 0.2
     registration/min_num_points: 300
     registration/velocity_update/enable: true
     registration/velocity_update/iter: 1
@@ -70,11 +76,15 @@ lidar_odometry_node:
     registration/lm/lambda_factor: 10.0
     registration/lm/max_lambda: 1.0e+6
     registration/lm/min_lambda: 1.0e-6
-    registration/dogleg/initial_trust_region_radius: 1.0
-    registration/dogleg/max_trust_region_radius: 5.0
+    registration/dogleg/initial_trust_region_radius: 2.0
+    registration/dogleg/max_trust_region_radius: 10.0
     registration/dogleg/min_trust_region_radius: 1.0e-3
     registration/dogleg/eta1: 0.25
     registration/dogleg/eta2: 0.75
-    registration/dogleg/gamma_decrease: 0.25
+    registration/dogleg/gamma_decrease: 0.5
     registration/dogleg/gamma_increase: 2.0
+    registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
+    registration/degenerate_regularization/nl_reg/trans_eig_threshold: 1.0
+    registration/degenerate_regularization/nl_reg/rot_eig_threshold: 10.0
+    registration/degenerate_regularization/nl_reg/base_factor: 0.1
     registration/verbose: false

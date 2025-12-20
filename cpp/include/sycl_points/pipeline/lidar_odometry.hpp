@@ -9,7 +9,7 @@
 #include <sycl_points/algorithms/mapping/voxel_hash_map.hpp>
 #include <sycl_points/algorithms/polar_downsampling.hpp>
 #include <sycl_points/algorithms/preprocess_filter.hpp>
-#include <sycl_points/algorithms/registration.hpp>
+#include <sycl_points/algorithms/registration/registration.hpp>
 #include <sycl_points/algorithms/voxel_downsampling.hpp>
 #include <sycl_points/pipeline/lidar_odometry_params.hpp>
 #include <sycl_points/utils/time_utils.hpp>
@@ -52,14 +52,17 @@ public:
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
 
-    const auto& get_registration_result() const { return this->reg_result_; }
+    const auto& get_registration_result() const { return *this->reg_result_; }
 
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
+        this->error_message_.clear();
+
         if (this->last_frame_time_ > 0.0) {
             const float dt = static_cast<float>(timestamp - this->last_frame_time_);
             if (dt > 0.0f) {
                 this->dt_ = dt;
             } else {
+                this->error_message_ = "old timestamp";
                 return ResultType::old_timestamp;
             }
         }
@@ -99,22 +102,30 @@ public:
         // Registration
         {
             double dt_registration = 0.0;
-            this->reg_result_ = time_utils::measure_execution([&]() { return registration(); }, dt_registration);
+            *this->reg_result_ = time_utils::measure_execution([&]() { return registration(); }, dt_registration);
             this->add_delta_time(ProcessName::registration, dt_registration);
         }
 
         // Submapping
         {
             double dt_build_submap = 0.0;
-            time_utils::measure_execution([&]() { return submapping(this->reg_result_, timestamp); }, dt_build_submap);
+            time_utils::measure_execution([&]() { return submapping(*this->reg_result_, timestamp); }, dt_build_submap);
             this->add_delta_time(ProcessName::build_submap, dt_build_submap);
         }
 
-        // update Odometry
+        // update Velocity and Odometry
         {
             this->prev_odom_ = this->odom_;
-            this->odom_ = this->reg_result_.T;
+            this->odom_ = this->reg_result_->T;
             this->last_frame_time_ = timestamp;
+
+            const auto delta_pose = this->prev_odom_.inverse() * this->odom_;
+            const Eigen::AngleAxisf delta_angle_axis(delta_pose.rotation());
+
+            this->linear_velocity_ = delta_pose.translation() / this->dt_;
+            this->angular_velocity_ = Eigen::AngleAxisf(delta_angle_axis.angle() / this->dt_, delta_angle_axis.axis());
+
+            this->registrated_ = true;
         }
         return ResultType::success;
     }
@@ -141,16 +152,19 @@ private:
     algorithms::filter::PolarGrid::Ptr polar_filter_ = nullptr;
     algorithms::registration::Registration::Ptr registration_ = nullptr;
 
-    algorithms::registration::RegistrationResult reg_result_;
+    bool registrated_ = false;
+    algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
+    Eigen::Vector3f linear_velocity_;     // [m/s]
+    Eigen::AngleAxisf angular_velocity_;  // [rad/s]
     Eigen::Isometry3f prev_odom_;
     Eigen::Isometry3f odom_;
     Eigen::Isometry3f last_keyframe_pose_;
     std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> keyframe_poses_;
-    double last_keyframe_time_;
 
-    double last_frame_time_ = -1.0;
-    float dt_ = -1.0f;
+    double last_keyframe_time_;      // [s]
+    double last_frame_time_ = -1.0;  // [s]
+    float dt_ = -1.0f;               // [s]
 
     Parameters params_;
 
@@ -212,6 +226,9 @@ private:
         {
             this->odom_ = this->params_.initial_pose;
             this->prev_odom_ = this->params_.initial_pose;
+
+            this->linear_velocity_ = Eigen::Vector3f::Zero();
+            this->angular_velocity_ = Eigen::AngleAxisf::Identity();
         }
 
         // initialize keyframe
@@ -262,6 +279,8 @@ private:
         {
             this->registration_ =
                 std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, this->params_.reg_params);
+            this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
+            this->registrated_ = false;
         }
         // utilities
         {
@@ -309,28 +328,45 @@ private:
         }
     }
 
-    algorithms::registration::RegistrationResult registration() {
-        // Predict initial pose by applying the previous motion model
-        Eigen::Isometry3f init_T = Eigen::Isometry3f::Identity();
-        if (this->params_.registration_motion_prediction_factor > 0.0f &&
-            this->params_.registration_motion_prediction_factor <= 1.0f) {
-            const auto delta_pose = this->prev_odom_.inverse() * this->odom_;
-            const Eigen::Vector3f delta_trans = delta_pose.translation();
-            const Eigen::AngleAxisf delta_angle_axis(delta_pose.rotation());
+    /// Predict initial pose by applying the previous motion model
+    Eigen::Isometry3f adaptive_motion_prediction() {
+        const float rot_factor = this->params_.motion_prediction_static_factor;
+        float trans_factor = this->params_.motion_prediction_static_factor;
 
-            const Eigen::Vector3f predicted_trans =
-                this->odom_.translation() +
-                this->odom_.rotation() * (delta_trans * this->params_.registration_motion_prediction_factor);
-            const Eigen::Quaternionf predicted_rot =
-                Eigen::AngleAxisf(delta_angle_axis.angle() * this->params_.registration_motion_prediction_factor,
-                                  delta_angle_axis.axis()) *
-                Eigen::Quaternionf(this->odom_.rotation());
+        if (this->params_.motion_prediction_adaptive_enable) {
+            if (this->registrated_ && this->reg_result_->inlier > 0) {
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(this->reg_result_->H.block<3, 3>(3, 3));
+                if (solver_trans.info() == Eigen::Success) {
+                    const float low = this->params_.motion_prediction_adaptive_eigen_low;
+                    const float high = this->params_.motion_prediction_adaptive_eigen_high;
+                    const float max_factor = this->params_.motion_prediction_adaptive_trans_factor_max;
+                    const float min_factor = this->params_.motion_prediction_adaptive_trans_factor_min;
 
-            init_T.translation() = predicted_trans;
-            init_T.rotate(predicted_rot.normalized());
-        } else {
-            init_T = this->odom_;
+                    const float min_eig_ratio = solver_trans.eigenvalues().minCoeff() / this->reg_result_->inlier;
+                    const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
+                    trans_factor = max_factor * (1.0f - score) + min_factor * score;
+                }
+            }
         }
+
+        const Eigen::Vector3f delta_trans = this->linear_velocity_ * this->dt_;
+        const Eigen::AngleAxisf delta_angle_axis(this->angular_velocity_.angle() * this->dt_,
+                                                 this->angular_velocity_.axis());
+
+        const Eigen::Vector3f predicted_trans =
+            this->odom_.translation() + this->odom_.rotation() * (delta_trans * trans_factor);
+        const Eigen::Quaternionf predicted_rot =
+            Eigen::AngleAxisf(delta_angle_axis.angle() * rot_factor, delta_angle_axis.axis()) *
+            Eigen::Quaternionf(this->odom_.rotation());
+
+        Eigen::Isometry3f init_T = Eigen::Isometry3f::Identity();
+        init_T.translation() = predicted_trans;
+        init_T.rotate(predicted_rot.normalized());
+        return init_T;
+    }
+
+    algorithms::registration::RegistrationResult registration() {
+        const Eigen::Isometry3f init_T = this->adaptive_motion_prediction();
 
         if (this->params_.registration_random_sampling_enable) {
             this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_,
@@ -338,8 +374,8 @@ private:
         } else {
             *this->registration_input_pc_ = *this->preprocessed_pc_;
         }
-        algorithms::registration::RegistrationResult result;
 
+        algorithms::registration::RegistrationResult result;
         if (this->params_.registration_velocity_update_enable) {
             result = this->registration_->align_velocity_update(
                 *this->registration_input_pc_, *this->submap_pc_ptr_, *this->submap_tree_, init_T.matrix(), this->dt_,
@@ -348,7 +384,6 @@ private:
             result = this->registration_->align(*this->registration_input_pc_, *this->submap_pc_ptr_,
                                                 *this->submap_tree_, init_T.matrix());
         }
-
         return result;
     }
 
