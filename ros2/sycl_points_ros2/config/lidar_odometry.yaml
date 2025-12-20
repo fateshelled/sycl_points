@@ -43,7 +43,7 @@ lidar_odometry_node:
     submap/occupancy_grid_map/log_odds_limits/max: 4.0
     submap/occupancy_grid_map/occupied_threshold: 0.5
     submap/occupancy_grid_map/enable_pruning: true
-    submap/occupancy_grid_map/stale_frame_threshold: 200
+    submap/occupancy_grid_map/stale_frame_threshold: 600
 
     motion_prediction/static_factor: 0.2
     motion_prediction/adaptive/enable: true
@@ -71,8 +71,8 @@ lidar_odometry_node:
     registration/photometric/enable: false
     registration/photometric/photometric_weight: 0.2
     registration/genz/planarity_threshold: 0.2
-    registration/optimization_method: DOGLEG  # GN, LM, DOGLEG
-    registration/lm/max_inner_iterations: 10
+    registration/optimization_method: LM  # GN, LM, DOGLEG
+    registration/lm/max_inner_iterations: 5
     registration/lm/lambda_factor: 10.0
     registration/lm/max_lambda: 1.0e+6
     registration/lm/min_lambda: 1.0e-6

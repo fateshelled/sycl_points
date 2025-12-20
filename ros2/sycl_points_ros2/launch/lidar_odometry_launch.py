@@ -78,6 +78,11 @@ def generate_launch_description():
                 description='rosbag path',
             ),
             DeclareLaunchArgument(
+                'rosbag/start_offset/sec',
+                default_value='0',
+                description='rosbag path',
+            ),
+            DeclareLaunchArgument(
                 'use_sim_time',
                 default_value='false',
                 description='use sim time or not',
@@ -154,6 +159,7 @@ def generate_launch_description():
                                     'play.rate': 1.0,
                                     'play.loop': False,
                                     'play.start_paused': False,
+                                    'play.start_offset.sec': LaunchConfiguration('rosbag/start_offset/sec'),
                                     'storage.uri': LaunchConfiguration('rosbag/uri'),
                                     'storage.storage_config_uri': '',
                                     'use_sim_time': use_sim_time,

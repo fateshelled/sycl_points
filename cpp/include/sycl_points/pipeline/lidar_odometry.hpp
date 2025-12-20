@@ -497,7 +497,7 @@ private:
         if (this->registration_input_pc_->size() == 0) {
             return false;
         }
-        const float inlier_ratio = static_cast<float>(reg_result.inlier) / this->registration_input_pc_->size();
+        const float inlier_ratio = static_cast<float>(reg_result.inlier) / static_cast<float>(this->registration_input_pc_->size());
         if (inlier_ratio <= this->params_.keyframe_inlier_ratio_threshold) {
             return false;
         }

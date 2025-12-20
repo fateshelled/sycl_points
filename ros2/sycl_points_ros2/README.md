@@ -17,6 +17,9 @@ To build the ROS 2 wrapper, follow these steps. First, source the Intel oneAPI e
 # Source oneAPI environment
 source /opt/intel/oneapi/setvars.sh
 
+# ROS 2 setup script
+source /opt/ros/jazzy/setup.bash
+
 # Make workspace
 mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws/src
@@ -51,8 +54,8 @@ ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
     sycl/device_vendor:=intel \
     rviz2:=true \
     rosbag/play:=true \
-    use_sim_time:=true \
-    rosbag/uri:=${ROSBAG}
+    rosbag/uri:=${ROSBAG} \
+    use_sim_time:=true
 ```
 
 ## Node Details
