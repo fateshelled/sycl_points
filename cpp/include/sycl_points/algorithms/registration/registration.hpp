@@ -27,7 +27,7 @@ enum class OptimizationMethod {
 
 OptimizationMethod OptimizationMethod_from_string(const std::string& str) {
     std::string upper = str;
-    std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
+    std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
 
     if (upper.compare("GN") == 0 || upper.compare("GAUSS_NEWTON") == 0) {
         return OptimizationMethod::GAUSS_NEWTON;

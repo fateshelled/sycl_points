@@ -341,26 +341,26 @@ inline int nvidia_gpu_selector_v(const sycl::device& dev) {
 }
 
 inline sycl::device select_device(const std::string& device_vendor, const std::string& device_type) {
-    std::string device_vendor_lower = device_vendor;
-    std::transform(device_vendor_lower.begin(), device_vendor_lower.end(), device_vendor_lower.begin(),
-                   [](char c) { return std::tolower(c); });
-    std::string device_type_lower = device_type;
-    std::transform(device_type_lower.begin(), device_type_lower.end(), device_type_lower.begin(),
-                   [](char c) { return std::tolower(c); });
+    std::string device_vendor_upper = device_vendor;
+    std::transform(device_vendor_upper.begin(), device_vendor_upper.end(), device_vendor_upper.begin(),
+                   [](u_char c) { return std::toupper(c); });
+    std::string device_type_upper = device_type;
+    std::transform(device_type_upper.begin(), device_type_upper.end(), device_type_upper.begin(),
+                   [](u_char c) { return std::toupper(c); });
 
     uint32_t vendor_id = 0;
-    if (device_vendor_lower == "intel") {
+    if (device_vendor_upper == "INTEL") {
         vendor_id = VENDOR_ID::INTEL;
-    } else if (device_vendor_lower == "nvidia") {
+    } else if (device_vendor_upper == "NVIDIA") {
         vendor_id = VENDOR_ID::NVIDIA;
-    } else if (device_vendor_lower == "amd") {
+    } else if (device_vendor_upper == "AMD") {
         vendor_id = VENDOR_ID::AMD;
     } else {
         throw std::runtime_error("[device_selector::select_device] invalid device vendor: " + device_vendor);
     }
 
-    const bool select_cpu = device_type_lower == "cpu" ? true : false;
-    const bool select_gpu = device_type_lower == "gpu" ? true : false;
+    const bool select_cpu = device_type_upper == "CPU" ? true : false;
+    const bool select_gpu = device_type_upper == "GPU" ? true : false;
     if (!select_cpu && !select_gpu) {
         throw std::runtime_error("[device_selector::select_device] not support device type: " + device_type);
     }

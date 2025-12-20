@@ -37,7 +37,7 @@ using RegTypeTags = std::tuple<                                //
 
 RegType RegType_from_string(const std::string& str) {
     std::string upper = str;
-    std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
+    std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
     if (upper == "POINT_TO_POINT") {
         return RegType::POINT_TO_POINT;
     } else if (upper == "POINT_TO_PLANE") {

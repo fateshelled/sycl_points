@@ -17,7 +17,7 @@ enum class DegenerateRegularizationType {
 
 DegenerateRegularizationType DegenerateRegularizationType_from_string(const std::string& str) {
     std::string upper = str;
-    std::transform(str.begin(), str.end(), upper.begin(), [](char c) { return std::toupper(c); });
+    std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
 
     if (upper.compare("NONE") == 0) {
         return DegenerateRegularizationType::none;
