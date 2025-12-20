@@ -195,6 +195,23 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.reg_params.dogleg.gamma_increase = node->declare_parameter<double>(
                 "registration/dogleg/gamma_increase", params.reg_params.dogleg.gamma_increase);
         }
+        // Degenerate Regularization
+        {
+            const std::string degenerate_reg_type =
+                node->declare_parameter<std::string>("registration/degenerate_regularization/type", "NONE");
+            params.reg_params.degenerate_reg.type =
+                algorithms::registration::DegenerateRegularizationType_from_string(degenerate_reg_type);
+
+            params.reg_params.degenerate_reg.base_factor =
+                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/base_factor",
+                                                params.reg_params.degenerate_reg.base_factor);
+            params.reg_params.degenerate_reg.trans_eig_threshold =
+                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/trans_eig_threshold",
+                                                params.reg_params.degenerate_reg.trans_eig_threshold);
+            params.reg_params.degenerate_reg.rot_eig_threshold =
+                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/rot_eig_threshold",
+                                                params.reg_params.degenerate_reg.rot_eig_threshold);
+        }
     }
 
     // tf and pose
