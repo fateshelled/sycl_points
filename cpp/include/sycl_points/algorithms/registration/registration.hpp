@@ -458,7 +458,7 @@ private:
     shared_vector_ptr<float> error_on_host_ = nullptr;
     shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
-    DegenerateRegularizaion degenerate_reg_;
+    DegenerateRegularization degenerate_reg_;
     float genz_alpha_ = 1.0f;
 
     template <typename Func>

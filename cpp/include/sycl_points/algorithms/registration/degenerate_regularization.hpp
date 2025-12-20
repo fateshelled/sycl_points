@@ -37,7 +37,7 @@ struct DegenerateRegularizationParams {
     float base_factor = 1.0f;
 };
 
-class DegenerateRegularizaion {
+class DegenerateRegularization {
 public:
     void set_params(const DegenerateRegularizationParams& params) { this->params_ = params; }
 
