@@ -446,24 +446,40 @@ private:
 
         // compute covariances and normals
         sycl_utils::events cov_events;
-        if (this->params_.reg_params.reg_type != algorithms::registration::RegType::POINT_TO_POINT) {
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
-                cov_events += algorithms::covariance::compute_normals_async(this->knn_result_, *this->submap_pc_ptr_,
-                                                                            knn_events.evs);
-            } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-                       this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
-                cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
+        {
+            bool compute_normal = false;
+            bool compute_cov = false;
+            if (this->params_.reg_params.reg_type != algorithms::registration::RegType::POINT_TO_POINT) {
+                if (this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
+                    compute_normal = true;
+                    cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
-            }
+                } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+                           this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
+                    compute_cov = true;
+                    cov_events += algorithms::covariance::compute_covariances_async(
+                        this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
+                }
 
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP) {
-                cov_events +=
-                    algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_, cov_events.evs);
-                // cov_events += algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_,
-                // cov_events.evs);
-            } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
-                cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                             cov_events.evs);
+                if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP) {
+                    cov_events +=
+                        algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_, cov_events.evs);
+                    // cov_events += algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_,
+                    // cov_events.evs);
+                } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
+                    compute_normal = true;
+                    cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
+                                                                                                 cov_events.evs);
+                }
+            }
+            if (this->params_.reg_params.photometric.enable && !compute_normal) {
+                if (compute_cov) {
+                    cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
+                                                                                                 cov_events.evs);
+                } else {
+                    cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
+                                                                                *this->submap_pc_ptr_, knn_events.evs);
+                }
             }
         }
         knn_events.wait_and_throw();
