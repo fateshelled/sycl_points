@@ -797,9 +797,13 @@ private:
     void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result, float lambda,
                                size_t iter) {
         Eigen::Vector<float, 6> delta;
-        this->solve_linear_system(linearized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(),
-                                  linearized_result.b, delta);
-        result.converged = this->is_converged(delta);
+        const bool success = this->solve_linear_system(
+            linearized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), linearized_result.b, delta);
+        if (success) {
+            result.converged = this->is_converged(delta);
+        } else {
+            result.converged = false;
+        }
         result.T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
         result.iterations = iter;
         result.H = linearized_result.H;
@@ -829,7 +833,13 @@ private:
 
         Eigen::Vector<float, 6> delta;
         for (size_t i = 0; i < this->params_.lm.max_inner_iterations; ++i) {
-            this->solve_linear_system(H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), g, delta);
+            const bool success =
+                this->solve_linear_system(H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), g, delta);
+            if (success) {
+                result.converged = this->is_converged(delta);
+            } else {
+                result.converged = false;
+            }
             const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
 
             const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
