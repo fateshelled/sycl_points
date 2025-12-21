@@ -42,9 +42,13 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f) {
             }
 
             const auto& point = point_ptr[i];
-            const float distance = sycl::sqrt(point.x() * point.x() + point.y() * point.y() + point.z() * point.z());
-            const float corrected_intensity = intensity_ptr[i] * sycl::pow(distance, exponent);
-            intensity_ptr[i] = corrected_intensity;
+            const float dist_sq =
+                point.x() * point.x() + point.y() * point.y() + point.z() * point.z();
+            if (dist_sq > 0.0f) {
+                const float corrected_intensity =
+                    intensity_ptr[i] * sycl::pow(dist_sq, exponent / 2.0f);
+                intensity_ptr[i] = corrected_intensity;
+            }
         });
     });
 
