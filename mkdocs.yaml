@@ -9,6 +9,12 @@ extra:
     social:
         - icon: fontawesome/brands/github
           link: https://github.com/fateshelled/sycl_points
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 nav:
   - Home: index.md
   - 設計思想: design_philosophy.md
