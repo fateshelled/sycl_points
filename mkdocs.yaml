@@ -1,0 +1,14 @@
+site_name: sycl_points
+site_author: fateshelled
+repo_url: https://github.com/fateshelled/sycl_points
+site_url: https://fateshelled.github.io/sycl_points/
+site_description: "A C++ header-only point cloud processing library accelerated with SYCL."
+theme:
+  name: material
+extra:
+    social:
+        - icon: fontawesome/brands/github
+          link: https://github.com/fateshelled/sycl_points
+nav:
+  - Home: index.md
+  - 設計思想: design_philosophy.md
