@@ -43,7 +43,7 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
             const auto& point = point_ptr[i];
             const float dist_sq = point.x() * point.x() + point.y() * point.y() + point.z() * point.z();
             if (dist_sq > 0.0f) {
-                const float corrected_intensity = intensity_ptr[i] * sycl::pow(dist_sq, exponent / 2.0f);
+                const float corrected_intensity = intensity_ptr[i] * sycl::pow(dist_sq, exponent);
                 intensity_ptr[i] = sycl::clamp(corrected_intensity * s, 0.0f, 1.0f);
             }
         });
