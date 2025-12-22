@@ -312,9 +312,10 @@ private:
             preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->preprocessed_pc_,
                                                 this->params_.scan_downsampling_random_num);
         }
-        if (this->params_.scan_intensity_correction_enable) {
+        if (this->params_.scan_intensity_correction_enable && this->preprocessed_pc_->has_intensity()) {
             algorithms::intensity_correction::correct_intensity(*this->preprocessed_pc_,
-                                                                this->params_.scan_intensity_correction_exp);
+                                                                this->params_.scan_intensity_correction_exp,
+                                                                this->params_.scan_intensity_correction_scale);
         }
     }
 
