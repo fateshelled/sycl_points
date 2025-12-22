@@ -12,6 +12,8 @@ struct Parameters {
 
     std::string sycl_device_vendor = "intel";
     std::string sycl_device_type = "gpu";
+    bool scan_intensity_correction_enable = true;
+    float scan_intensity_correction_exp = 2.0f;
     bool scan_downsampling_voxel_enable = false;
     float scan_downsampling_voxel_size = 1.0f;
     bool scan_downsampling_polar_enable = true;

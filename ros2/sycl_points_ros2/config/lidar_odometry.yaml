@@ -17,6 +17,8 @@ lidar_odometry_node:
     scan/preprocess/box_filter/enable: true
     scan/preprocess/box_filter/max: 100.0
     scan/preprocess/box_filter/min: 1.0
+    scan/intensity_correction/enable: true
+    scan/intensity_correction/exp: 2.0
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
     scan/downsampling/polar/enable: true

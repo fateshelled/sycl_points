@@ -4,6 +4,7 @@
 #include <sycl_points/algorithms/color_gradient.hpp>
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
+#include <sycl_points/algorithms/intensity_correction.hpp>
 #include <sycl_points/algorithms/knn/kdtree.hpp>
 #include <sycl_points/algorithms/mapping/occupancy_grid_map.hpp>
 #include <sycl_points/algorithms/mapping/voxel_hash_map.hpp>
@@ -311,6 +312,10 @@ private:
             preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->preprocessed_pc_,
                                                 this->params_.scan_downsampling_random_num);
         }
+        if (this->params_.scan_intensity_correction_enable) {
+            algorithms::intensity_correction::correct_intensity(*this->preprocessed_pc_,
+                                                                this->params_.scan_intensity_correction_exp);
+        }
     }
 
     void compute_covariances() {
@@ -497,7 +502,8 @@ private:
         if (this->registration_input_pc_->size() == 0) {
             return false;
         }
-        const float inlier_ratio = static_cast<float>(reg_result.inlier) / static_cast<float>(this->registration_input_pc_->size());
+        const float inlier_ratio =
+            static_cast<float>(reg_result.inlier) / static_cast<float>(this->registration_input_pc_->size());
         if (inlier_ratio <= this->params_.keyframe_inlier_ratio_threshold) {
             return false;
         }

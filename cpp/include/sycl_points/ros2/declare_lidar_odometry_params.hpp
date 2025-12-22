@@ -18,6 +18,10 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
     // scan
     {
+        params.scan_intensity_correction_enable =
+            node->declare_parameter<bool>("scan/intensity_correction/enable", params.scan_intensity_correction_enable);
+        params.scan_intensity_correction_exp =
+            node->declare_parameter<double>("scan/intensity_correction/exp", params.scan_intensity_correction_exp);
         params.scan_downsampling_voxel_enable =
             node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan_downsampling_voxel_enable);
         params.scan_downsampling_voxel_size =
