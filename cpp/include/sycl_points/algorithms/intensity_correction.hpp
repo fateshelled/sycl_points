@@ -30,9 +30,6 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
     if (!cloud.has_intensity()) {
         throw std::runtime_error("[correct_intensity] Intensity field not found");
     }
-    if (!cloud.points || cloud.points->size() != N) {
-        throw std::runtime_error("[correct_intensity] Point field is not initialized correctly");
-    }
 
     auto event = cloud.queue.ptr->submit([&](sycl::handler& h) {
         const size_t work_group_size = cloud.queue.get_work_group_size();
