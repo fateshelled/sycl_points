@@ -313,9 +313,10 @@ private:
                                                 this->params_.scan_downsampling_random_num);
         }
         if (this->params_.scan_intensity_correction_enable && this->preprocessed_pc_->has_intensity()) {
-            algorithms::intensity_correction::correct_intensity(*this->preprocessed_pc_,
-                                                                this->params_.scan_intensity_correction_exp,
-                                                                this->params_.scan_intensity_correction_scale);
+            algorithms::intensity_correction::correct_intensity(
+                *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
+                this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
+                this->params_.scan_intensity_correction_max_intensity);
         }
     }
 
