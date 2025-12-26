@@ -25,7 +25,7 @@ private:
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_ = nullptr;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
 
-    std::unique_ptr<sycl_points::pipeline::lidar_odometry::LiDAROdometry> lidar_odometry_ = nullptr;
+    std::unique_ptr<sycl_points::pipeline::lidar_odometry::LiDAROdometryPipeline> lidar_odometry_ = nullptr;
 
     sycl_points::shared_vector_ptr<uint8_t> msg_data_buffer_ = nullptr;
     PointCloudShared::Ptr scan_pc_ = nullptr;

@@ -20,10 +20,10 @@ namespace pipeline {
 namespace lidar_odometry {
 using LidarOdometryParams = lidar_odometry::Parameters;
 
-class LiDAROdometry {
+class LiDAROdometryPipeline {
 public:
-    using Ptr = std::shared_ptr<LiDAROdometry>;
-    using ConstPtr = std::shared_ptr<const LiDAROdometry>;
+    using Ptr = std::shared_ptr<LiDAROdometryPipeline>;
+    using ConstPtr = std::shared_ptr<const LiDAROdometryPipeline>;
 
     enum class ResultType : std::int8_t {
         success = 0,  //
@@ -33,7 +33,7 @@ public:
         small_number_of_points
     };
 
-    LiDAROdometry(const LidarOdometryParams& params) {
+    LiDAROdometryPipeline(const LidarOdometryParams& params) {
         this->params_ = params;
         this->initialize();
     }

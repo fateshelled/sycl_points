@@ -14,7 +14,7 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
     // get parameters
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
 
-    this->lidar_odometry_ = std::make_unique<pipeline::lidar_odometry::LiDAROdometry>(this->params_);
+    this->lidar_odometry_ = std::make_unique<pipeline::lidar_odometry::LiDAROdometryPipeline>(this->params_);
     this->lidar_odometry_->get_device_queue()->print_device_info();
 
     // initialize buffer
@@ -103,7 +103,7 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
     }
 
     const auto ret = this->lidar_odometry_->process(this->scan_pc_, timestamp);
-    using ResultType = pipeline::lidar_odometry::LiDAROdometry::ResultType;
+    using ResultType = pipeline::lidar_odometry::LiDAROdometryPipeline::ResultType;
     if (ret >= ResultType::error) {
         RCLCPP_WARN(this->get_logger(), "lidar odometry failed: %s",
                     this->lidar_odometry_->get_error_message().c_str());
