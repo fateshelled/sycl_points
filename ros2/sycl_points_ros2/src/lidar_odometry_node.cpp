@@ -14,13 +14,13 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
     // get parameters
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
 
-    this->lidar_odometry_ = std::make_unique<pipeline::lidar_odometry::LiDAROdometryPipeline>(this->params_);
-    this->lidar_odometry_->get_device_queue()->print_device_info();
+    this->pipeline_ = std::make_unique<pipeline::lidar_odometry::LiDAROdometryPipeline>(this->params_);
+    this->pipeline_->get_device_queue()->print_device_info();
 
     // initialize buffer
     {
-        this->msg_data_buffer_.reset(new shared_vector<uint8_t>(*this->lidar_odometry_->get_device_queue()->ptr));
-        this->scan_pc_.reset(new PointCloudShared(*this->lidar_odometry_->get_device_queue()));
+        this->msg_data_buffer_.reset(new shared_vector<uint8_t>(*this->pipeline_->get_device_queue()->ptr));
+        this->scan_pc_.reset(new PointCloudShared(*this->pipeline_->get_device_queue()));
     }
 
     // Subscription
@@ -60,8 +60,8 @@ LiDAROdometryNode::~LiDAROdometryNode() {
     RCLCPP_INFO(this->get_logger(), "");
     RCLCPP_INFO(this->get_logger(), "MAX processing time");
 
-    this->processing_times_.insert(this->lidar_odometry_->get_total_processing_times().begin(),
-                                   this->lidar_odometry_->get_total_processing_times().end());
+    this->processing_times_.insert(this->pipeline_->get_total_processing_times().begin(),
+                                   this->pipeline_->get_total_processing_times().end());
 
     for (auto& item : this->processing_times_) {
         const double max = *std::max_element(item.second.begin(), item.second.end());
@@ -92,7 +92,7 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
     double dt_from_ros2_msg = 0.0;
     time_utils::measure_execution(
         [&]() {
-            return fromROS2msg(*this->lidar_odometry_->get_device_queue(), *msg, this->scan_pc_,
+            return fromROS2msg(*this->pipeline_->get_device_queue(), *msg, this->scan_pc_,
                                this->msg_data_buffer_);
         },
         dt_from_ros2_msg);
@@ -102,11 +102,11 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
         return;
     }
 
-    const auto ret = this->lidar_odometry_->process(this->scan_pc_, timestamp);
+    const auto ret = this->pipeline_->process(this->scan_pc_, timestamp);
     using ResultType = pipeline::lidar_odometry::LiDAROdometryPipeline::ResultType;
     if (ret >= ResultType::error) {
         RCLCPP_WARN(this->get_logger(), "lidar odometry failed: %s",
-                    this->lidar_odometry_->get_error_message().c_str());
+                    this->pipeline_->get_error_message().c_str());
         return;
     }
 
@@ -114,22 +114,22 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
     double dt_ros2_msg = 0.0;
     time_utils::measure_execution(
         [&]() {
-            const auto& reg_result = this->lidar_odometry_->get_registration_result();
-            const auto& last_keyframe_pose = this->lidar_odometry_->get_last_keyframe_pose();
+            const auto& reg_result = this->pipeline_->get_registration_result();
+            const auto& last_keyframe_pose = this->pipeline_->get_last_keyframe_pose();
 
             this->publish_odom(msg->header, reg_result);
             this->publish_keyframe_pose(msg->header, last_keyframe_pose);
 
             if (this->pub_preprocessed_->get_subscription_count() > 0) {
                 const auto preprocessed_msg =
-                    toROS2msg(this->lidar_odometry_->get_preprocessed_point_cloud(), msg->header);
+                    toROS2msg(this->pipeline_->get_preprocessed_point_cloud(), msg->header);
                 if (preprocessed_msg != nullptr) {
                     this->pub_preprocessed_->publish(*preprocessed_msg);
                 }
             }
 
             if (this->pub_submap_->get_subscription_count() > 0) {
-                auto submap_msg = toROS2msg(this->lidar_odometry_->get_submap_point_cloud(), msg->header);
+                auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), msg->header);
                 if (submap_msg != nullptr) {
                     submap_msg->header.frame_id = this->params_.odom_frame_id;
                     this->pub_submap_->publish(*submap_msg);
@@ -140,7 +140,7 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
 
     // processing time log
     {
-        const auto& current_processing_time = this->lidar_odometry_->get_current_processing_time();
+        const auto& current_processing_time = this->pipeline_->get_current_processing_time();
         double total_time = 0.0;
         total_time += dt_from_ros2_msg;
         total_time += dt_ros2_msg;
