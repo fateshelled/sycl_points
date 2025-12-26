@@ -152,7 +152,15 @@ TEST(OccupancyGridMapTest, ComputesOverlapRatioFromPointCloud) {
         Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
         sensor_pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
 
-        const float overlap_ratio = map.compute_overlap_ratio(query_cloud, sensor_pose);
+        float overlap_ratio = map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 2.0f / 3.0f, 1e-5f);
+
+        map.set_occupancy_threshold(0.8f);
+        overlap_ratio = map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 0.0f, 1e-5f);
+
+        map.add_point_cloud(map_cloud, Eigen::Isometry3f::Identity());
+        overlap_ratio = map.compute_overlap_ratio(query_cloud, sensor_pose);
         EXPECT_NEAR(overlap_ratio, 2.0f / 3.0f, 1e-5f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
