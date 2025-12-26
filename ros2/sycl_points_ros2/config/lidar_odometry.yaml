@@ -17,6 +17,11 @@ lidar_odometry_node:
     scan/preprocess/box_filter/enable: true
     scan/preprocess/box_filter/max: 100.0
     scan/preprocess/box_filter/min: 1.0
+    scan/intensity_correction/enable: false
+    scan/intensity_correction/exp: 2.0
+    scan/intensity_correction/scale: 1.0e-3
+    scan/intensity_correction/min_intensity: 0.0
+    scan/intensity_correction/max_intensity: 1.0
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
     scan/downsampling/polar/enable: true
@@ -69,7 +74,7 @@ lidar_odometry_node:
     registration/robust/min_scale: 1.25
     registration/robust/scaling_iter: 4
     registration/photometric/enable: false
-    registration/photometric/photometric_weight: 0.2
+    registration/photometric/weight: 0.2
     registration/genz/planarity_threshold: 0.2
     registration/optimization_method: LM  # GN, LM, DOGLEG
     registration/lm/max_inner_iterations: 5
