@@ -218,6 +218,14 @@ public:
                 }
             }
         }
+        if (this->params_.reg_type == RegType::POINT_TO_DISTRIBUTION) {
+            if (!target.has_cov()) {
+                throw std::runtime_error(
+                    "[Registration::validate_params] "
+                    "Covariance matrices of target must be pre-computed before performing Point-to-Distribution ICP "
+                    "matching.");
+            }
+        }
         if (this->params_.photometric.enable) {
             if (!target.has_normal()) {
                 throw std::runtime_error(
