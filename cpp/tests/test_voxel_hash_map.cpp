@@ -266,6 +266,47 @@ TEST(VoxelHashMapTest, DownsamplingRespectsAxisAlignedBoundingBox) {
     }
 }
 
+TEST(VoxelHashMapTest, ComputesOverlapRatioFromPointCloud) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.5f);
+
+        const std::vector<Eigen::Vector3f> map_positions = {
+            {0.1f, 0.1f, 0.0f},
+            {1.1f, 0.0f, 0.0f},
+        };
+
+        auto map_cloud = MakePointCloud(queue, map_positions);
+        voxel_map.add_point_cloud(map_cloud, Eigen::Isometry3f::Identity());
+
+        const std::vector<Eigen::Vector3f> query_positions = {
+            {-0.9f, 0.1f, 0.0f},
+            {0.1f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+        };
+
+        auto query_cloud = MakePointCloud(queue, query_positions);
+
+        Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
+        sensor_pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+
+        float overlap_ratio = voxel_map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 2.0f / 3.0f, 1e-5f);
+
+        voxel_map.set_min_num_point(2);
+        overlap_ratio = voxel_map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 0.0f, 1e-5f);
+
+        voxel_map.add_point_cloud(map_cloud, Eigen::Isometry3f::Identity());
+        overlap_ratio = voxel_map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 2.0f / 3.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
 TEST(VoxelHashMapTest, RemovesStaleVoxelsAfterConfiguredCycles) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);

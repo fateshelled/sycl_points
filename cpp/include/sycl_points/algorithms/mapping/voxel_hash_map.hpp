@@ -155,6 +155,66 @@ public:
         result.resize_intensities(this->has_intensity_data_ ? final_voxel_num : 0);
     }
 
+    /// @brief Compute the overlap ratio between the map and an input point cloud.
+    /// @param cloud Point cloud in the sensor frame.
+    /// @param sensor_pose Sensor pose expressed in the map frame.
+    /// @return Ratio of points that overlap with existing voxels in the map.
+    float compute_overlap_ratio(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) const {
+        if (!cloud.points || cloud.points->empty() || this->voxel_num_ == 0) {
+            return 0.0f;
+        }
+
+        const size_t N = cloud.size();
+        shared_vector<uint32_t> overlap_counter(1, 0U, *this->queue_.ptr);
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            auto overlap_reduction = sycl::reduction(overlap_counter.data(), sycl::plus<uint32_t>());
+            const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
+
+            const auto point_ptr = cloud.points_ptr();
+            const auto key_ptr = this->key_ptr_.get();
+            const auto sum_ptr = this->sum_ptr_.get();
+            const float voxel_size_inv = this->voxel_size_inv_;
+            const size_t max_probe = this->max_probe_length_;
+            const size_t capacity = this->capacity_;
+            const uint32_t min_num_point = this->min_num_point_;
+
+            h.parallel_for(sycl::range<1>(N), overlap_reduction,
+                           [=](sycl::id<1> idx, auto& overlap_sum) {
+                               const size_t i = idx[0];
+                               const PointType local_point = point_ptr[i];
+                               PointType world_point;
+                               // Transform the input point into the map frame before voxel hashing.
+                               transform::kernel::transform_point(local_point, world_point, trans);
+                               const uint64_t voxel_hash =
+                                   filter::kernel::compute_voxel_bit(world_point, voxel_size_inv);
+                               if (voxel_hash == VoxelConstants::invalid_coord) {
+                                   return;
+                               }
+
+                               for (size_t probe = 0; probe < max_probe; ++probe) {
+                                   const size_t slot = compute_slot_id(voxel_hash, probe, capacity);
+                                   const uint64_t stored_key = key_ptr[slot];
+                                   if (stored_key == voxel_hash) {
+                                       // Count as overlap only when enough samples were accumulated in the voxel.
+                                       const VoxelPoint& voxel = sum_ptr[slot];
+                                       if (voxel.count >= min_num_point) {
+                                           overlap_sum += 1U;
+                                       }
+                                       return;
+                                   }
+                                   if (stored_key == VoxelConstants::invalid_coord) {
+                                       return;
+                                   }
+                               }
+                           });
+        });
+
+        event.wait_and_throw();
+
+        return static_cast<float>(overlap_counter.at(0)) / static_cast<float>(N);
+    }
+
     void remove_old_data() { this->remove_old_data_impl(); }
 
 private:
