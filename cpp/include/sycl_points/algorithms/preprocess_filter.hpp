@@ -20,8 +20,15 @@ SYCL_EXTERNAL inline bool is_finite(const PointType& pt) {
     return std::isfinite(pt[0]) && std::isfinite(pt[1]) && std::isfinite(pt[2]) && std::isfinite(pt[3]);
 }
 
-SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float min_distance, float max_distance) {
-    const float linf_dist = sycl::max(sycl::fabs(pt.x()), sycl::max(sycl::fabs(pt.y()), sycl::fabs(pt.z())));
+SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float min_distance, float max_distance,
+                                      const sycl::float4& transform_row0, const sycl::float4& transform_row1,
+                                      const sycl::float4& transform_row2) {
+    // Transform point to sensor coordinate system
+    const float x = transform_row0[0] * pt[0] + transform_row0[1] * pt[1] + transform_row0[2] * pt[2] + transform_row0[3];
+    const float y = transform_row1[0] * pt[0] + transform_row1[1] * pt[1] + transform_row1[2] * pt[2] + transform_row1[3];
+    const float z = transform_row2[0] * pt[0] + transform_row2[1] * pt[1] + transform_row2[2] * pt[2] + transform_row2[3];
+
+    const float linf_dist = sycl::max(sycl::fabs(x), sycl::max(sycl::fabs(y), sycl::fabs(z)));
 
     if (linf_dist < min_distance || linf_dist > max_distance) {
         flag = REMOVE_FLAG;
@@ -54,12 +61,23 @@ public:
     /// @param output Output point cloud
     /// @param min_distance Minimum distance threshold (points closer than this are removed)
     /// @param max_distance Maximum distance threshold (points farther than this are removed)
+    /// @param sensor_pose Sensor pose (transformation from world to sensor frame)
     void box_filter(const PointCloudShared& source, PointCloudShared& output, float min_distance = 1.0f,
-                    float max_distance = std::numeric_limits<float>::max()) {
+                    float max_distance = std::numeric_limits<float>::max(),
+                    const Eigen::Isometry3f& sensor_pose = Eigen::Isometry3f::Identity()) {
         const size_t N = source.size();
         if (N == 0) return;
 
         this->initialize_flags(N).wait_and_throw();
+
+        // Compute inverse transformation (world to sensor frame)
+        const Eigen::Matrix4f inv_transform = sensor_pose.inverse().matrix();
+        const sycl::float4 transform_row0(inv_transform(0, 0), inv_transform(0, 1), inv_transform(0, 2),
+                                          inv_transform(0, 3));
+        const sycl::float4 transform_row1(inv_transform(1, 0), inv_transform(1, 1), inv_transform(1, 2),
+                                          inv_transform(1, 3));
+        const sycl::float4 transform_row2(inv_transform(2, 0), inv_transform(2, 1), inv_transform(2, 2),
+                                          inv_transform(2, 3));
 
         // mem_advise set to device
         {
@@ -80,7 +98,8 @@ public:
                     flag_ptr[i] = REMOVE_FLAG;
                     return;
                 }
-                kernel::box_filter(point_ptr[i], flag_ptr[i], min_distance, max_distance);
+                kernel::box_filter(point_ptr[i], flag_ptr[i], min_distance, max_distance, transform_row0,
+                                   transform_row1, transform_row2);
             });
         });
         event.wait_and_throw();
@@ -217,9 +236,11 @@ public:
     /// @param data Point cloud to be filtered (modified in-place)
     /// @param min_distance Minimum distance threshold (points closer than this are removed)
     /// @param max_distance Maximum distance threshold (points farther than this are removed)
+    /// @param sensor_pose Sensor pose (transformation from world to sensor frame)
     void box_filter(PointCloudShared& data, float min_distance = 1.0f,
-                    float max_distance = std::numeric_limits<float>::max()) {
-        this->box_filter(data,data, min_distance, max_distance);
+                    float max_distance = std::numeric_limits<float>::max(),
+                    const Eigen::Isometry3f& sensor_pose = Eigen::Isometry3f::Identity()) {
+        this->box_filter(data, data, min_distance, max_distance, sensor_pose);
     }
 
     /// @brief Randomly samples a specified number of points from the point cloud
