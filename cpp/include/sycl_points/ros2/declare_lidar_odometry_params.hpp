@@ -172,6 +172,11 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.reg_params.genz.planarity_threshold = node->declare_parameter<double>(
                 "registration/genz/planarity_threshold", params.reg_params.genz.planarity_threshold);
         }
+        // GICP
+        {
+            params.reg_params.gicp.bhattacharyya_coeff = node->declare_parameter<double>(
+                "registration/gicp/bhattacharyya_coeff", params.reg_params.gicp.bhattacharyya_coeff);
+        }
 
         // optimization
         {

@@ -61,6 +61,9 @@ struct RegistrationParams {
     struct GenZ {
         float planarity_threshold = 0.2f;
     };
+    struct GICP {
+        float bhattacharyya_coeff = 4.0f;  // coefficient for Bhattacharyya log-det term
+    };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)
         float lambda_factor = 2.0f;        // lambda increase factor (for LM method)
@@ -86,6 +89,7 @@ struct RegistrationParams {
     Robust robust;
     PhotometricTerm photometric;
     GenZ genz;
+    GICP gicp;
     LevenbergMarquardt lm;
     Dogleg dogleg;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
@@ -599,6 +603,7 @@ private:
                 target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
             const float photometric_weight =
                 this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
+            const float gicp_bhattacharyya_coeff = this->params_.gicp.bhattacharyya_coeff;
 
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
@@ -655,7 +660,8 @@ private:
                                                target_ptr[target_idx], target_cov, target_normal,  //
                                                source_rgb, target_rgb, target_grad, use_color,     //
                                                source_intensity, target_intensity,                 //
-                                               target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
+                                               target_intensity_grad, use_intensity, photometric_weight, genz_alpha,
+                                               gicp_bhattacharyya_coeff);
                     const float robust_weight = kernel::compute_robust_weight<loss>(linearized.error, robust_scale);
 
                     // reduction on device
@@ -719,6 +725,7 @@ private:
                 target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
             const float photometric_weight =
                 this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
+            const float gicp_bhattacharyya_coeff = this->params_.gicp.bhattacharyya_coeff;
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
@@ -760,7 +767,8 @@ private:
                                                      target_ptr[target_idx], target_cov, target_normal,  // target
                                                      source_rgb, target_rgb, target_grad, use_color,     //
                                                      source_intensity, target_intensity, target_intensity_grad,
-                                                     use_intensity, photometric_weight, genz_alpha);
+                                                     use_intensity, photometric_weight, genz_alpha,
+                                                     gicp_bhattacharyya_coeff);
 
                     sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
                     ++sum_inlier_arg;
