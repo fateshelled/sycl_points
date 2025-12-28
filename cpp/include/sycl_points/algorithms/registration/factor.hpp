@@ -24,16 +24,19 @@ enum class RegType {
     /// @brief GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)
     /// @authors Daehan Lee, Hyungtae Lim, Soohee Han
     /// @cite https://arxiv.org/abs/2411.06766
-    GENZ
+    GENZ,
+    /// @brief Point-to-Distribution ICP
+    /// @note Uses Mahalanobis distance with target covariance only (source points have no covariance)
+    POINT_TO_DISTRIBUTION
 };
 
 /// @brief Registration Type tags
-using RegTypeTags = std::tuple<                                //
-    std::integral_constant<RegType, RegType::POINT_TO_POINT>,  //
-    std::integral_constant<RegType, RegType::POINT_TO_PLANE>,  //
-    std::integral_constant<RegType, RegType::GICP>,            //
-    std::integral_constant<RegType, RegType::GENZ>             //
-    >;
+using RegTypeTags = std::tuple<                                        //
+    std::integral_constant<RegType, RegType::POINT_TO_POINT>,          //
+    std::integral_constant<RegType, RegType::POINT_TO_PLANE>,          //
+    std::integral_constant<RegType, RegType::GICP>,                    //
+    std::integral_constant<RegType, RegType::GENZ>,                    //
+    std::integral_constant<RegType, RegType::POINT_TO_DISTRIBUTION>>;  //
 
 RegType RegType_from_string(const std::string& str) {
     std::string upper = str;
@@ -46,6 +49,8 @@ RegType RegType_from_string(const std::string& str) {
         return RegType::GICP;
     } else if (upper == "GENZ") {
         return RegType::GENZ;
+    } else if (upper == "POINT_TO_DISTRIBUTION" || upper == "P2D") {
+        return RegType::POINT_TO_DISTRIBUTION;
     }
     std::string error_str = "[RegType_from_string] Invalid RegType str '";
     error_str += str;
@@ -316,6 +321,75 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
     return 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
 }
 
+/// @brief Compute inverse covariance matrix for Point-to-Distribution ICP
+/// @param target_cov Target covariance matrix (4x4)
+/// @return Inverse covariance matrix (4x4) for Mahalanobis distance
+SYCL_EXTERNAL inline Covariance compute_target_mahalanobis(const Covariance& target_cov) {
+    Covariance mahalanobis = Covariance::Zero();
+    const Eigen::Matrix3f cov_inv = eigen_utils::inverse(target_cov.block<3, 3>(0, 0));
+    mahalanobis.block<3, 3>(0, 0) = cov_inv;
+    return mahalanobis;
+}
+
+/// @brief Point-to-Distribution ICP
+/// @note Uses Mahalanobis distance with target covariance only.
+///       Source points are treated as having no uncertainty (delta distribution).
+/// @param T transform matrix
+/// @param source_pt Source Point (coordinate only, no covariance)
+/// @param target_pt Target point
+/// @param target_cov Target covariance
+/// @return linearized result
+SYCL_EXTERNAL inline LinearizedResult linearize_point_to_distribution(const std::array<sycl::float4, 4>& T,
+                                                                       const PointType& source_pt,
+                                                                       const PointType& target_pt,
+                                                                       const Covariance& target_cov,
+                                                                       float& residual_norm) {
+    PointType transform_source_pt;
+    transform::kernel::transform_point(source_pt, transform_source_pt, T);
+
+    const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
+                             target_pt.z() - transform_source_pt.z(), 0.0f);
+    const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, Eigen::Matrix4f::Identity());
+    const Covariance mahalanobis = compute_target_mahalanobis(target_cov);
+
+    const Eigen::Matrix<float, 6, 4> J_T_mah =
+        eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
+
+    LinearizedResult ret;
+    // J.transpose() * mahalanobis * J;
+    ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T_mah, J));
+    // J.transpose() * mahalanobis * residual;
+    ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
+
+    const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual));
+    residual_norm = sycl::sqrt(squared_norm);
+
+    // 0.5 * residual.transpose() * mahalanobis * residual;
+    ret.error = 0.5f * squared_norm;
+    ret.inlier = 1;
+    return ret;
+}
+
+/// @brief Error for Point-to-Distribution ICP
+/// @param T transform matrix
+/// @param source_pt Source Point (coordinate only, no covariance)
+/// @param target_pt Target point
+/// @param target_cov Target covariance
+/// @return error
+SYCL_EXTERNAL inline float calculate_point_to_distribution_error(const std::array<sycl::float4, 4>& T,
+                                                                  const PointType& source_pt,
+                                                                  const PointType& target_pt,
+                                                                  const Covariance& target_cov) {
+    PointType transform_source_pt;
+    transform::kernel::transform_point(source_pt, transform_source_pt, T);
+
+    const Covariance mahalanobis = compute_target_mahalanobis(target_cov);
+
+    const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
+                             target_pt.z() - transform_source_pt.z(), 0.0f);
+    return 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
+}
+
 /// @brief Linearization
 /// @tparam reg registration type
 /// @param T transform matrix
@@ -353,6 +427,8 @@ SYCL_EXTERNAL inline LinearizedResult linearize_geometry(const std::array<sycl::
         result.error = pt2pt_result.error * (1.0f - genz_alpha) + pt2pl_result.error * genz_alpha;
         result.inlier = 1;
         return result;
+    } else if constexpr (reg == RegType::POINT_TO_DISTRIBUTION) {
+        return linearize_point_to_distribution(T, source_pt, target_pt, target_cov, residual_norm);
     } else {
         static_assert("not support type");
     }
@@ -381,6 +457,8 @@ SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float
         const float pt2pt_err = calculate_point_to_point_error(T, source_pt, target_pt);
         const float pt2pl_err = calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
         return pt2pt_err * (1.0f - genz_alpha) + pt2pl_err * genz_alpha;
+    } else if constexpr (reg == RegType::POINT_TO_DISTRIBUTION) {
+        return calculate_point_to_distribution_error(T, source_pt, target_pt, target_cov);
     } else {
         static_assert("not support type");
     }
