@@ -7,6 +7,7 @@
 #include <sycl_points/algorithms/covariance.hpp>
 #include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
 #include <sycl_points/algorithms/knn/knn.hpp>
+#include <sycl_points/algorithms/registration/bhattacharyya.hpp>
 #include <sycl_points/algorithms/registration/degenerate_regularization.hpp>
 #include <sycl_points/algorithms/registration/factor.hpp>
 #include <sycl_points/algorithms/registration/linearized_result.hpp>
@@ -655,25 +656,35 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const LinearizedResult linearized =
+                    LinearizedResult linearized =
                         kernel::linearize<reg>(cur_T, source_ptr[index], source_cov,               //
                                                target_ptr[target_idx], target_cov, target_normal,  //
                                                source_rgb, target_rgb, target_grad, use_color,     //
                                                source_intensity, target_intensity,                 //
-                                               target_intensity_grad, use_intensity, photometric_weight, genz_alpha,
-                                               gicp_bhattacharyya_coeff);
+                                               target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
                     const float robust_weight = kernel::compute_robust_weight<loss>(linearized.error, robust_scale);
 
+                    float bhattacharyya_logdet = 0.0f;
+                    if constexpr (reg == RegType::GICP) {
+                        if (gicp_bhattacharyya_coeff > 0.0f) {
+                            bhattacharyya_logdet = kernel::accumulate_bhattacharyya_rotation_terms(
+                                source_cov, target_cov, cur_T, gicp_bhattacharyya_coeff, linearized.H, linearized.b);
+                        }
+                    }
+
                     // reduction on device
-                    const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
-                    const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
-                    sum_H0_arg += H0 * robust_weight;
-                    sum_H1_arg += H1 * robust_weight;
-                    sum_H2_arg += H2 * robust_weight;
-                    sum_b0_arg += b0 * robust_weight;
-                    sum_b1_arg += b1 * robust_weight;
-                    sum_error_arg += kernel::compute_robust_error<loss>(linearized.error, robust_scale);
-                    ++sum_inlier_arg;
+                    {
+                        const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
+                        const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
+                        sum_H0_arg += H0 * robust_weight;
+                        sum_H1_arg += H1 * robust_weight;
+                        sum_H2_arg += H2 * robust_weight;
+                        sum_b0_arg += b0 * robust_weight;
+                        sum_b1_arg += b1 * robust_weight;
+                        sum_error_arg +=
+                            kernel::compute_robust_error<loss>(linearized.error, robust_scale) + bhattacharyya_logdet;
+                        ++sum_inlier_arg;
+                    }
                 });
         });
         return events;
@@ -767,10 +778,16 @@ private:
                                                      target_ptr[target_idx], target_cov, target_normal,  // target
                                                      source_rgb, target_rgb, target_grad, use_color,     //
                                                      source_intensity, target_intensity, target_intensity_grad,
-                                                     use_intensity, photometric_weight, genz_alpha,
-                                                     gicp_bhattacharyya_coeff);
+                                                     use_intensity, photometric_weight, genz_alpha);
 
-                    sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
+                    float bhattacharyya_logdet = 0.0f;
+                    if constexpr (reg == RegType::GICP) {
+                        if (gicp_bhattacharyya_coeff > 0.0f) {
+                            bhattacharyya_logdet = gicp_bhattacharyya_coeff *
+                                                   kernel::compute_bhattacharyya_logdet(source_cov, target_cov, cur_T);
+                        }
+                    }
+                    sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale) + bhattacharyya_logdet;
                     ++sum_inlier_arg;
                 });
         });

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <sycl_points/algorithms/registration/bhattacharyya.hpp>
 #include <sycl_points/algorithms/registration/linearized_result.hpp>
 #include <sycl_points/algorithms/registration/result.hpp>
 #include <sycl_points/algorithms/registration/robust.hpp>
@@ -261,8 +260,7 @@ SYCL_EXTERNAL inline float calculate_point_to_plane_error(const std::array<sycl:
 /// @return linearized result
 SYCL_EXTERNAL inline LinearizedResult linearize_gicp(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                      const Covariance& source_cov, const PointType& target_pt,
-                                                     const Covariance& target_cov, float& residual_norm,
-                                                     float bhattacharyya_coeff) {
+                                                     const Covariance& target_cov, float& residual_norm) {
     PointType transform_source_pt;
     transform::kernel::transform_point(source_pt, transform_source_pt, T);
 
@@ -285,10 +283,6 @@ SYCL_EXTERNAL inline LinearizedResult linearize_gicp(const std::array<sycl::floa
 
     // 0.5 * residual.transpose() * mahalanobis * residual;
     ret.error = 0.5f * squared_norm;
-    if (bhattacharyya_coeff > 0.0f) {
-        accumulate_bhattacharyya_rotation_terms(source_cov, target_cov, T, bhattacharyya_coeff, ret.H, ret.b,
-                                                 ret.error);
-    }
     ret.inlier = 1;
     return ret;
 }
@@ -302,7 +296,7 @@ SYCL_EXTERNAL inline LinearizedResult linearize_gicp(const std::array<sycl::floa
 /// @return error
 SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                 const Covariance& source_cov, const PointType& target_pt,
-                                                const Covariance& target_cov, float bhattacharyya_coeff) {
+                                                const Covariance& target_cov) {
     PointType transform_source_pt;
     Covariance transform_source_cov;
     transform::kernel::transform_point(source_pt, transform_source_pt, T);
@@ -319,11 +313,7 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
 
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
-    float error = 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
-    if (bhattacharyya_coeff > 0.0f) {
-        error += bhattacharyya_coeff * compute_bhattacharyya_logdet(source_cov, target_cov, T);
-    }
-    return error;
+    return 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
 }
 
 /// @brief Linearization
@@ -340,13 +330,13 @@ SYCL_EXTERNAL inline LinearizedResult linearize_geometry(const std::array<sycl::
                                                          const PointType& source_pt, const Covariance& source_cov,
                                                          const PointType& target_pt, const Covariance& target_cov,
                                                          const Normal& target_normal, float& residual_norm,
-                                                         float genz_alpha, float bhattacharyya_coeff) {
+                                                         float genz_alpha) {
     if constexpr (reg == RegType::POINT_TO_POINT) {
         return linearize_point_to_point(T, source_pt, target_pt, residual_norm);
     } else if constexpr (reg == RegType::POINT_TO_PLANE) {
         return linearize_point_to_plane(T, source_pt, target_pt, target_normal, residual_norm);
     } else if constexpr (reg == RegType::GICP) {
-        return linearize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm, bhattacharyya_coeff);
+        return linearize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
     } else if constexpr (reg == RegType::GENZ) {
         float pt2pt_residual_norm = 0.0f;
         float pt2pl_residual_norm = 0.0f;
@@ -380,14 +370,13 @@ template <RegType reg = RegType::GICP>
 SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float4, 4>& T,                      //
                                                     const PointType& source_pt, const Covariance& source_cov,  //
                                                     const PointType& target_pt, const Covariance& target_cov,  //
-                                                    const Normal& target_normal, const float genz_alpha = 1.0f,
-                                                    float bhattacharyya_coeff = 0.0f) {
+                                                    const Normal& target_normal, const float genz_alpha = 1.0f) {
     if constexpr (reg == RegType::POINT_TO_POINT) {
         return calculate_point_to_point_error(T, source_pt, target_pt);
     } else if constexpr (reg == RegType::POINT_TO_PLANE) {
         return calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
     } else if constexpr (reg == RegType::GICP) {
-        return calculate_gicp_error(T, source_pt, source_cov, target_pt, target_cov, bhattacharyya_coeff);
+        return calculate_gicp_error(T, source_pt, source_cov, target_pt, target_cov);
     } else if constexpr (reg == RegType::GENZ) {
         const float pt2pt_err = calculate_point_to_point_error(T, source_pt, target_pt);
         const float pt2pl_err = calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
@@ -570,11 +559,10 @@ SYCL_EXTERNAL inline LinearizedResult linearize(const std::array<sycl::float4, 4
                                                 const ColorGradient& target_grad, bool use_color,
                                                 float source_intensity, float target_intensity,
                                                 const IntensityGradient& target_intensity_grad, bool use_intensity,
-                                                float photometric_weight, float genz_alpha,
-                                                float bhattacharyya_coeff) {
+                                                float photometric_weight, float genz_alpha) {
     float geo_residual_norm = 0.0f;
     LinearizedResult result = linearize_geometry<reg>(T, source_pt, source_cov, target_pt, target_cov, target_normal,
-                                                      geo_residual_norm, genz_alpha, bhattacharyya_coeff);
+                                                      geo_residual_norm, genz_alpha);
 
     float total_error = result.error;
     const PhotometricWeights weights = compute_photometric_weights(photometric_weight, use_color, use_intensity);
@@ -613,7 +601,7 @@ SYCL_EXTERNAL inline LinearizedResult linearize(const std::array<sycl::float4, 4
         }
     }
 
-    result.error = sycl::sqrt(2.0f * sycl::fmax(total_error, 0.0f));
+    result.error = sycl::sqrt(2.0f * total_error);
 
     return result;
 }
@@ -638,11 +626,9 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
                                            const RGBType& source_rgb, const RGBType& target_rgb,
                                            const ColorGradient& target_rgb_grad, bool use_color, float source_intensity,
                                            float target_intensity, const IntensityGradient& target_intensity_grad,
-                                           bool use_intensity, float photometric_weight, float genz_alpha,
-                                           float bhattacharyya_coeff) {
+                                           bool use_intensity, float photometric_weight, float genz_alpha) {
     const float geo_error =
-        calculate_geometry_error<reg>(T, source_pt, source_cov, target_pt, target_cov, target_normal, genz_alpha,
-                                       bhattacharyya_coeff);
+        calculate_geometry_error<reg>(T, source_pt, source_cov, target_pt, target_cov, target_normal, genz_alpha);
 
     float total_error = geo_error;
     const PhotometricWeights weights = compute_photometric_weights(photometric_weight, use_color, use_intensity);
@@ -663,7 +649,7 @@ SYCL_EXTERNAL inline float calculate_error(const std::array<sycl::float4, 4>& T,
             total_error = sycl::fma(weights.intensity, intensity_error, total_error);
         }
     }
-    return sycl::sqrt(2.0f * sycl::fmax(total_error, 0.0f));
+    return sycl::sqrt(2.0f * total_error);
 }
 
 }  // namespace kernel

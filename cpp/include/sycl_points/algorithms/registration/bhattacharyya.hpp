@@ -35,11 +35,13 @@ SYCL_EXTERNAL inline float compute_bhattacharyya_logdet(const Covariance& source
 /// @param coeff Weight for log-det term
 /// @param H Hessian matrix to update (rotation block only)
 /// @param b Gradient vector to update (rotation block only)
-/// @param error Error value to update with the log-det term
-SYCL_EXTERNAL inline void accumulate_bhattacharyya_rotation_terms(
-    const Covariance& source_cov, const Covariance& target_cov, const std::array<sycl::float4, 4>& T, float coeff,
-    Eigen::Matrix<float, 6, 6>& H, Eigen::Vector<float, 6>& b, float& error) {
-    constexpr float kRotationStep = 1e-3f;
+/// @return Weighted Bhattacharyya log-det cost
+SYCL_EXTERNAL inline float accumulate_bhattacharyya_rotation_terms(const Covariance& source_cov,
+                                                                   const Covariance& target_cov,
+                                                                   const std::array<sycl::float4, 4>& T, float coeff,
+                                                                   Eigen::Matrix<float, 6, 6>& H,
+                                                                   Eigen::Vector<float, 6>& b) {
+    constexpr float kRotationStep = 1e-3f;  // 0.0573 degrees
     const Eigen::Matrix4f T_mat = eigen_utils::from_sycl_vec(T);
 
     auto logdet_with_delta = [&](const Eigen::Vector3f& rot_delta) -> float {
@@ -54,7 +56,6 @@ SYCL_EXTERNAL inline void accumulate_bhattacharyya_rotation_terms(
     };
 
     const float base = logdet_with_delta(Eigen::Vector3f::Zero());
-    error += coeff * base;
 
     Eigen::Vector3f grad = Eigen::Vector3f::Zero();
     Eigen::Matrix3f hess = Eigen::Matrix3f::Zero();
@@ -66,15 +67,23 @@ SYCL_EXTERNAL inline void accumulate_bhattacharyya_rotation_terms(
         const float f_minus = logdet_with_delta(-delta);
         grad[i] = (f_plus - f_minus) / (2.0f * kRotationStep);
 
+        Eigen::Vector3f delta_i = Eigen::Vector3f::Zero();
+        delta_i[i] = kRotationStep;
+
         for (int j = i; j < 3; ++j) {
-            Eigen::Vector3f delta_i = Eigen::Vector3f::Zero();
             Eigen::Vector3f delta_j = Eigen::Vector3f::Zero();
-            delta_i[i] = kRotationStep;
             delta_j[j] = kRotationStep;
 
+            float f_pm, f_mp;
+            if (i == j) {
+                f_pm = base;
+                f_mp = base;
+            } else {
+                f_pm = logdet_with_delta(delta_i - delta_j);
+                f_mp = logdet_with_delta(-delta_i + delta_j);
+            }
+
             const float f_pp = logdet_with_delta(delta_i + delta_j);
-            const float f_pm = logdet_with_delta(delta_i - delta_j);
-            const float f_mp = logdet_with_delta(-delta_i + delta_j);
             const float f_mm = logdet_with_delta(-delta_i - delta_j);
 
             const float value = (f_pp - f_pm - f_mp + f_mm) / (4.0f * kRotationStep * kRotationStep);
@@ -90,6 +99,7 @@ SYCL_EXTERNAL inline void accumulate_bhattacharyya_rotation_terms(
             H(i, j) += coeff * hess(i, j);
         }
     }
+    return coeff * base;
 }
 
 }  // namespace kernel
