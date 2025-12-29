@@ -52,7 +52,7 @@ lidar_odometry_node:
     motion_prediction/adaptive/eigen/low: 1.0
     motion_prediction/adaptive/eigen/high: 10.0
 
-    registration/type: gicp # point_to_point, point_to_plane, gicp, genz
+    registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
     registration/velocity_update/enable: true
     registration/velocity_update/iter: 1

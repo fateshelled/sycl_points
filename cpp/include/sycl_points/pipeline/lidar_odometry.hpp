@@ -455,13 +455,16 @@ private:
                     cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
                 } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+                           this->params_.reg_params.reg_type ==
+                               algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
                            this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
                     compute_cov = true;
                     cov_events += algorithms::covariance::compute_covariances_async(
                         this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
                 }
 
-                if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP) {
+                if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+                    this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION) {
                     cov_events +=
                         algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_, cov_events.evs);
                     // cov_events += algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_,
@@ -497,7 +500,8 @@ private:
         if (this->registration_input_pc_->size() == 0) {
             return false;
         }
-        const float inlier_ratio = static_cast<float>(reg_result.inlier) / static_cast<float>(this->registration_input_pc_->size());
+        const float inlier_ratio =
+            static_cast<float>(reg_result.inlier) / static_cast<float>(this->registration_input_pc_->size());
         if (inlier_ratio <= this->params_.keyframe_inlier_ratio_threshold) {
             return false;
         }
