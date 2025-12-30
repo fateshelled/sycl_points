@@ -437,10 +437,8 @@ SYCL_EXTERNAL Eigen::Matrix<float, M, M> as_diagonal(const Eigen::Vector<float, 
 /// @brief Symmetric Eigen Decomposition for 3×3 Matrix
 /// @param A Symmetric 3×3 matrix
 /// @param eigenvalues eigen values (sorted in ascending order)
-/// @param eigenvectors eigen vectors
-SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3f& A, Eigen::Vector3f& eigenvalues,
-                                                            Eigen::Matrix3f& eigenvectors) {
-    constexpr float EPSILON = 1e-7f;
+SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3f& A, Eigen::Vector3f& eigenvalues) {
+    constexpr float EPSILON = 1e-6f;
 
     // Characteristic polynomial
     // det(A - λI) = -λ^3 + c2*λ^2 + c1*λ + c0
@@ -481,6 +479,16 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
     if (eigenvalues(0) > eigenvalues(1)) {
         std::swap(eigenvalues(1), eigenvalues(0));
     }
+}
+
+/// @brief Symmetric Eigen Decomposition for 3×3 Matrix
+/// @param A Symmetric 3×3 matrix
+/// @param eigenvalues eigen values (sorted in ascending order)
+/// @param eigenvectors eigen vectors
+SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3f& A, Eigen::Vector3f& eigenvalues,
+                                                            Eigen::Matrix3f& eigenvectors) {
+    // compute eigenvalues
+    symmetric_eigen_decomposition_3x3(A, eigenvalues);
 
     // compute eigenvectors
     eigenvectors = Eigen::Matrix3f::Zero();

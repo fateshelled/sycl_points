@@ -156,6 +156,48 @@ SYCL_EXTERNAL inline float accumulate_bhattacharyya_rotation_terms(const Covaria
     return coeff * base;
 }
 
+/// @brief Rotation constraint term based on covariance determinant alignment
+/// Minimizes (log(det(R*Cs*R^T + Ct)) - log(det(Cs + Ct)))^2
+/// @param source_cov Source covariance matrix
+/// @param target_cov Target covariance matrix
+/// @param T transform matrix
+/// @param coeff Weight coefficient
+/// @param H Hessian matrix to update (rotation block only)
+/// @param b Gradient vector to update (rotation block only)
+/// @return Weighted cost value
+SYCL_EXTERNAL inline float accumulate_rotation_constraint(const Covariance& source_cov, const Covariance& target_cov,
+                                                          const std::array<sycl::float4, 4>& T, float coeff,
+                                                          Eigen::Matrix<float, 6, 6>& H, Eigen::Vector<float, 6>& b) {
+    // 1. J = ∂log(det(M))/∂ω
+    Eigen::Vector3f J;
+    const float logdet = compute_bhattacharyya_gradient_analytical(source_cov, target_cov, T, J);
+
+    // 2. Reference:
+    float logdet_ref = 0.0f;
+    {
+        Eigen::Vector3f ev_s;
+        Eigen::Vector3f ev_t;
+        eigen_utils::symmetric_eigen_decomposition_3x3(source_cov.block<3, 3>(0, 0), ev_s);
+        eigen_utils::symmetric_eigen_decomposition_3x3(target_cov.block<3, 3>(0, 0), ev_t);
+        const float det_ref = (ev_s[0] + ev_t[0]) * (ev_s[1] + ev_t[1]) * (ev_s[2] + ev_t[2]);
+        logdet_ref = sycl::log(sycl::max(det_ref, 1e-6f));
+    }
+
+    // 3. Residual
+    const float r = logdet - logdet_ref;
+
+    // 4. Accumulate: b += coeff * r * J,  H += coeff * J * J^T
+    for (size_t i = 0; i < 3; ++i) {
+        b[i] += coeff * r * J[i];
+        for (size_t j = 0; j < 3; ++j) {
+            H(i, j) += coeff * J[i] * J[j];
+        }
+    }
+
+    // 5. Cost: (1/2) * r^2
+    return coeff * 0.5f * r * r;
+}
+
 }  // namespace kernel
 
 }  // namespace registration

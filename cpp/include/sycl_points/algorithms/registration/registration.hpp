@@ -664,10 +664,12 @@ private:
                                                target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
                     const float robust_weight = kernel::compute_robust_weight<loss>(linearized.error, robust_scale);
 
-                    float bhattacharyya_logdet = 0.0f;
+                    float rotation_constraint_error = 0.0f;
                     if constexpr (reg == RegType::GICP) {
                         if (gicp_bhattacharyya_coeff > 0.0f) {
-                            bhattacharyya_logdet = kernel::accumulate_bhattacharyya_rotation_terms(
+                            // rotation_constraint_error = kernel::accumulate_bhattacharyya_rotation_terms(
+                            //     source_cov, target_cov, cur_T, gicp_bhattacharyya_coeff, linearized.H, linearized.b);
+                            rotation_constraint_error = kernel::accumulate_rotation_constraint(
                                 source_cov, target_cov, cur_T, gicp_bhattacharyya_coeff, linearized.H, linearized.b);
                         }
                     }
@@ -682,7 +684,7 @@ private:
                         sum_b0_arg += b0 * robust_weight;
                         sum_b1_arg += b1 * robust_weight;
                         sum_error_arg +=
-                            kernel::compute_robust_error<loss>(linearized.error, robust_scale) + bhattacharyya_logdet;
+                            kernel::compute_robust_error<loss>(linearized.error, robust_scale) + rotation_constraint_error;
                         ++sum_inlier_arg;
                     }
                 });
