@@ -131,6 +131,20 @@ SYCL_EXTERNAL inline float accumulate_bhattacharyya_rotation_terms(const Covaria
     // Ensure symmetry (numerical errors may break it slightly)
     hess = eigen_utils::ensure_symmetric<3>(hess);
 
+    // Ensure positive semi-definiteness matrix
+    {
+        Eigen::Vector3f eigenvalues;
+        Eigen::Matrix3f eigenvectors;
+        eigen_utils::symmetric_eigen_decomposition_3x3(hess, eigenvalues, eigenvectors);
+        eigenvalues(0) = std::max(eigenvalues(0), 0.0f);
+        eigenvalues(1) = std::max(eigenvalues(1), 0.0f);
+        eigenvalues(2) = std::max(eigenvalues(2), 0.0f);
+
+        const auto diag = eigen_utils::as_diagonal<3>(eigenvalues);
+        hess = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
+                                              eigen_utils::transpose<3, 3>(eigenvectors));
+    }
+
     // Accumulate to output
     for (size_t i = 0; i < 3; ++i) {
         b[i] += coeff * grad[i];
