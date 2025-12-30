@@ -3,8 +3,9 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 #include <cstdint>
-#include <sycl_points/utils/sycl_utils.hpp>
 #include <vector>
+
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 

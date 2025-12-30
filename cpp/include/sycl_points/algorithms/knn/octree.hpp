@@ -9,16 +9,16 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
-#include <sycl/sycl.hpp>
-#include <sycl_points/algorithms/common/filter_by_flags.hpp>
-#include <sycl_points/algorithms/knn/knn.hpp>
-#include <sycl_points/algorithms/knn/result.hpp>
-#include <sycl_points/algorithms/transform.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#include "sycl_points/algorithms/common/filter_by_flags.hpp"
+#include "sycl_points/algorithms/knn/knn.hpp"
+#include "sycl_points/algorithms/knn/result.hpp"
+#include "sycl_points/algorithms/transform.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 

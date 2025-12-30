@@ -10,7 +10,8 @@
 #pragma once
 
 #include <Eigen/Dense>
-#include <sycl_points/utils/sycl_utils.hpp>
+
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 

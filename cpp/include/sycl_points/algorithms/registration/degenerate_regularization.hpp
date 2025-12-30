@@ -1,8 +1,9 @@
 #pragma once
 
 #include <Eigen/Dense>
-#include <sycl_points/algorithms/registration/linearized_result.hpp>
-#include <sycl_points/utils/eigen_utils.hpp>
+
+#include "sycl_points/algorithms/registration/linearized_result.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
 

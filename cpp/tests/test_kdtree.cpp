@@ -1,11 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <random>
-#include <sycl_points/algorithms/common/filter_by_flags.hpp>
-#include <sycl_points/algorithms/knn/kdtree.hpp>
-#include <sycl_points/algorithms/knn/bruteforce.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
+
+#include "sycl_points/algorithms/common/filter_by_flags.hpp"
+#include "sycl_points/algorithms/knn/bruteforce.hpp"
+#include "sycl_points/algorithms/knn/kdtree.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 class KDTreeTest : public ::testing::Test {
 protected:

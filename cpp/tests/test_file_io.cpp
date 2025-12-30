@@ -5,9 +5,10 @@
 #include <cstdint>
 #include <fstream>
 #include <random>
-#include <sycl_points/io/point_cloud_reader.hpp>
-#include <sycl_points/io/point_cloud_writer.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
+
+#include "sycl_points/io/point_cloud_reader.hpp"
+#include "sycl_points/io/point_cloud_writer.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 class PointCloudIOTest : public ::testing::Test {
 protected:
@@ -231,9 +232,7 @@ TEST_F(PointCloudIOTest, PLY_ASCII_CrossFormat) { testCrossFormat("test_ply_asci
 // Test PLY format - Binary mode
 TEST_F(PointCloudIOTest, PLY_Binary_CPU_RoundTrip) { testRoundTripCPU("test_ply_binary.ply", true); }
 
-TEST_F(PointCloudIOTest, PLY_Binary_Shared_RoundTrip) {
-    testRoundTripShared("test_ply_binary_shared.ply", true);
-}
+TEST_F(PointCloudIOTest, PLY_Binary_Shared_RoundTrip) { testRoundTripShared("test_ply_binary_shared.ply", true); }
 
 TEST_F(PointCloudIOTest, PLY_Binary_CrossFormat) { testCrossFormat("test_ply_binary_cross.ply", true); }
 
@@ -247,9 +246,7 @@ TEST_F(PointCloudIOTest, PCD_ASCII_CrossFormat) { testCrossFormat("test_pcd_asci
 // Test PCD format - Binary mode
 TEST_F(PointCloudIOTest, PCD_Binary_CPU_RoundTrip) { testRoundTripCPU("test_pcd_binary.pcd", true); }
 
-TEST_F(PointCloudIOTest, PCD_Binary_Shared_RoundTrip) {
-    testRoundTripShared("test_pcd_binary_shared.pcd", true);
-}
+TEST_F(PointCloudIOTest, PCD_Binary_Shared_RoundTrip) { testRoundTripShared("test_pcd_binary_shared.pcd", true); }
 
 TEST_F(PointCloudIOTest, PCD_Binary_CrossFormat) { testCrossFormat("test_pcd_binary_cross.pcd", true); }
 

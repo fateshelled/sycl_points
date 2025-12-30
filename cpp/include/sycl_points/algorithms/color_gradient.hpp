@@ -1,11 +1,12 @@
 #pragma once
 
 #include <memory>
-#include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/knn/knn.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/eigen_utils.hpp>
 #include <vector>
+
+#include "sycl_points/algorithms/covariance.hpp"
+#include "sycl_points/algorithms/knn/knn.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
 

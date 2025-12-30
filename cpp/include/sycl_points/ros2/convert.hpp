@@ -4,9 +4,9 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
-
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <sycl_points/points/point_cloud.hpp>
+
+#include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
 namespace ros2 {
@@ -98,8 +98,8 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             return;
         }
 
-        const double start_time_ms = static_cast<double>(msg.header.stamp.sec) * 1000.0 +
-                               static_cast<double>(msg.header.stamp.nanosec) * 1e-6;
+        const double start_time_ms =
+            static_cast<double>(msg.header.stamp.sec) * 1000.0 + static_cast<double>(msg.header.stamp.nanosec) * 1e-6;
         cloud->start_time_ms = start_time_ms;
 
         auto* offsets = cloud->timestamp_offsets->data();

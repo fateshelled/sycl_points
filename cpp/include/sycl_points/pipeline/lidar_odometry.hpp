@@ -1,28 +1,30 @@
 #pragma once
 
 #include <map>
-#include <sycl_points/algorithms/color_gradient.hpp>
-#include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
-#include <sycl_points/algorithms/knn/kdtree.hpp>
-#include <sycl_points/algorithms/mapping/occupancy_grid_map.hpp>
-#include <sycl_points/algorithms/mapping/voxel_hash_map.hpp>
-#include <sycl_points/algorithms/polar_downsampling.hpp>
-#include <sycl_points/algorithms/preprocess_filter.hpp>
-#include <sycl_points/algorithms/registration/registration.hpp>
-#include <sycl_points/algorithms/voxel_downsampling.hpp>
-#include <sycl_points/pipeline/lidar_odometry_params.hpp>
-#include <sycl_points/utils/time_utils.hpp>
+
+#include "sycl_points/algorithms/color_gradient.hpp"
+#include "sycl_points/algorithms/covariance.hpp"
+#include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/intensity_correction.hpp"
+#include "sycl_points/algorithms/knn/kdtree.hpp"
+#include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
+#include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
+#include "sycl_points/algorithms/polar_downsampling.hpp"
+#include "sycl_points/algorithms/preprocess_filter.hpp"
+#include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/voxel_downsampling.hpp"
+#include "sycl_points/pipeline/lidar_odometry_params.hpp"
+#include "sycl_points/utils/time_utils.hpp"
 
 namespace sycl_points {
 namespace pipeline {
 namespace lidar_odometry {
 using LidarOdometryParams = lidar_odometry::Parameters;
 
-class LiDAROdometry {
+class LiDAROdometryPipeline {
 public:
-    using Ptr = std::shared_ptr<LiDAROdometry>;
-    using ConstPtr = std::shared_ptr<const LiDAROdometry>;
+    using Ptr = std::shared_ptr<LiDAROdometryPipeline>;
+    using ConstPtr = std::shared_ptr<const LiDAROdometryPipeline>;
 
     enum class ResultType : std::int8_t {
         success = 0,  //
@@ -32,7 +34,7 @@ public:
         small_number_of_points
     };
 
-    LiDAROdometry(const LidarOdometryParams& params) {
+    LiDAROdometryPipeline(const LidarOdometryParams& params) {
         this->params_ = params;
         this->initialize();
     }
@@ -311,6 +313,12 @@ private:
             preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->preprocessed_pc_,
                                                 this->params_.scan_downsampling_random_num);
         }
+        if (this->params_.scan_intensity_correction_enable && this->preprocessed_pc_->has_intensity()) {
+            algorithms::intensity_correction::correct_intensity(
+                *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
+                this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
+                this->params_.scan_intensity_correction_max_intensity);
+        }
     }
 
     void compute_covariances() {
@@ -465,10 +473,13 @@ private:
 
                 if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
                     this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION) {
-                    cov_events +=
-                        algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_, cov_events.evs);
-                    // cov_events += algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_,
-                    // cov_events.evs);
+                    if (this->params_.submap_covariance_update_to_plane) {
+                        cov_events += algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_,
+                                                                                            cov_events.evs);
+                    } else {
+                        cov_events +=
+                            algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_, cov_events.evs);
+                    }
                 } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
                     compute_normal = true;
                     cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,

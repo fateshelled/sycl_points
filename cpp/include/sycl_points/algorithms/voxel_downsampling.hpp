@@ -1,7 +1,7 @@
 #pragma once
 
-#include <sycl_points/algorithms/common/voxel_constants.hpp>
-#include <sycl_points/points/point_cloud.hpp>
+#include "sycl_points/algorithms/common/voxel_constants.hpp"
+#include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
 namespace algorithms {

@@ -1,8 +1,9 @@
 #pragma once
 
-#include <sycl_points/utils/sycl_utils.hpp>
 #include <tuple>
 #include <type_traits>
+
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 namespace algorithms {

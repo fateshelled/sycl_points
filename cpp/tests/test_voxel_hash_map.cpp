@@ -3,18 +3,17 @@
 #include <algorithm>
 #include <vector>
 
-#include <sycl_points/algorithms/mapping/voxel_hash_map.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/points/types.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
+#include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/points/types.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace {
 
-sycl_points::PointCloudShared MakePointCloud(
-    const sycl_points::sycl_utils::DeviceQueue& queue,
-    const std::vector<Eigen::Vector3f>& positions,
-    const std::vector<sycl_points::RGBType>* colors = nullptr,
-    const std::vector<float>* intensities = nullptr) {
+sycl_points::PointCloudShared MakePointCloud(const sycl_points::sycl_utils::DeviceQueue& queue,
+                                             const std::vector<Eigen::Vector3f>& positions,
+                                             const std::vector<sycl_points::RGBType>* colors = nullptr,
+                                             const std::vector<float>* intensities = nullptr) {
     // Prepare a CPU point cloud to populate deterministic test data.
     sycl_points::PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(positions.size());
@@ -82,15 +81,16 @@ TEST(VoxelHashMapTest, AggregatesPointsWithinSameVoxel) {
         ASSERT_EQ(result.size(), 2U);
 
         auto averaged_positions = ExtractPositions(*result.points);
-        std::sort(averaged_positions.begin(), averaged_positions.end(), [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
-            if (lhs.x() != rhs.x()) {
-                return lhs.x() < rhs.x();
-            }
-            if (lhs.y() != rhs.y()) {
-                return lhs.y() < rhs.y();
-            }
-            return lhs.z() < rhs.z();
-        });
+        std::sort(averaged_positions.begin(), averaged_positions.end(),
+                  [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
+                      if (lhs.x() != rhs.x()) {
+                          return lhs.x() < rhs.x();
+                      }
+                      if (lhs.y() != rhs.y()) {
+                          return lhs.y() < rhs.y();
+                      }
+                      return lhs.z() < rhs.z();
+                  });
 
         const std::vector<Eigen::Vector3f> expected_positions = {
             {0.025f, 0.03f, 0.0f},
@@ -261,6 +261,47 @@ TEST(VoxelHashMapTest, DownsamplingRespectsAxisAlignedBoundingBox) {
         EXPECT_NEAR(filtered_positions[0].x(), 1.085f, 1e-5f);
         EXPECT_NEAR(filtered_positions[0].y(), 0.0f, 1e-5f);
         EXPECT_NEAR(filtered_positions[0].z(), 0.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(VoxelHashMapTest, ComputesOverlapRatioFromPointCloud) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.5f);
+
+        const std::vector<Eigen::Vector3f> map_positions = {
+            {0.1f, 0.1f, 0.0f},
+            {1.1f, 0.0f, 0.0f},
+        };
+
+        auto map_cloud = MakePointCloud(queue, map_positions);
+        voxel_map.add_point_cloud(map_cloud, Eigen::Isometry3f::Identity());
+
+        const std::vector<Eigen::Vector3f> query_positions = {
+            {-0.9f, 0.1f, 0.0f},
+            {0.1f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+        };
+
+        auto query_cloud = MakePointCloud(queue, query_positions);
+
+        Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
+        sensor_pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+
+        float overlap_ratio = voxel_map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 2.0f / 3.0f, 1e-5f);
+
+        voxel_map.set_min_num_point(2);
+        overlap_ratio = voxel_map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 0.0f, 1e-5f);
+
+        voxel_map.add_point_cloud(map_cloud, Eigen::Isometry3f::Identity());
+        overlap_ratio = voxel_map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 2.0f / 3.0f, 1e-5f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }

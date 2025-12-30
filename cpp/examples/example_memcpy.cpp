@@ -1,7 +1,8 @@
 #include <chrono>
 #include <iostream>
-#include <sycl_points/io/point_cloud_reader.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
+
+#include "sycl_points/io/point_cloud_reader.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 int main() {
     std::string source_filename = "../data/source.ply";
@@ -51,7 +52,8 @@ int main() {
 
         // copy from device ptr to shared container
         s = std::chrono::high_resolution_clock::now();
-        queue.memcpy(shared_points.data(), device_ptr, shared_points.size() * sizeof(sycl_points::PointType)).wait_and_throw();
+        queue.memcpy(shared_points.data(), device_ptr, shared_points.size() * sizeof(sycl_points::PointType))
+            .wait_and_throw();
         const auto dt_memcpy_from_device_to_shared =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();

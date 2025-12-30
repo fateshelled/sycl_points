@@ -1,13 +1,14 @@
 #pragma once
 
-#include <sycl_points/algorithms/registration/linearized_result.hpp>
-#include <sycl_points/algorithms/registration/result.hpp>
-#include <sycl_points/algorithms/registration/robust.hpp>
-#include <sycl_points/algorithms/transform.hpp>
-#include <sycl_points/points/types.hpp>
-#include <sycl_points/utils/eigen_utils.hpp>
 #include <tuple>
 #include <type_traits>
+
+#include "sycl_points/algorithms/registration/linearized_result.hpp"
+#include "sycl_points/algorithms/registration/result.hpp"
+#include "sycl_points/algorithms/registration/robust.hpp"
+#include "sycl_points/algorithms/transform.hpp"
+#include "sycl_points/points/types.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
 

@@ -18,6 +18,16 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
     // scan
     {
+        params.scan_intensity_correction_enable =
+            node->declare_parameter<bool>("scan/intensity_correction/enable", params.scan_intensity_correction_enable);
+        params.scan_intensity_correction_exp =
+            node->declare_parameter<double>("scan/intensity_correction/exp", params.scan_intensity_correction_exp);
+        params.scan_intensity_correction_scale =
+            node->declare_parameter<double>("scan/intensity_correction/scale", params.scan_intensity_correction_scale);
+        params.scan_intensity_correction_min_intensity = node->declare_parameter<double>(
+            "scan/intensity_correction/min_intensity", params.scan_intensity_correction_min_intensity);
+        params.scan_intensity_correction_max_intensity = node->declare_parameter<double>(
+            "scan/intensity_correction/max_intensity", params.scan_intensity_correction_max_intensity);
         params.scan_downsampling_voxel_enable =
             node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan_downsampling_voxel_enable);
         params.scan_downsampling_voxel_size =
@@ -53,6 +63,8 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         params.submap_voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap_voxel_size);
         params.submap_covariance_neighbor_num =
             node->declare_parameter<int64_t>("submap/covariance/neighbor_num", params.submap_covariance_neighbor_num);
+        params.submap_covariance_update_to_plane = node->declare_parameter<bool>(
+            "submap/covariance/update_to_plane", params.submap_covariance_update_to_plane);
         params.submap_color_gradient_neighbor_num = node->declare_parameter<int64_t>(
             "submap/color_gradient/neighbor_num", params.submap_color_gradient_neighbor_num);
         params.submap_max_distance_range =

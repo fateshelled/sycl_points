@@ -1,7 +1,9 @@
 #pragma once
+
 #include <numeric>
 #include <random>
-#include <sycl_points/utils/sycl_utils.hpp>
+
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 

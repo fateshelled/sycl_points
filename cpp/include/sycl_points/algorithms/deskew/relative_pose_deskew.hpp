@@ -3,9 +3,10 @@
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <array>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/eigen_utils.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
+
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 

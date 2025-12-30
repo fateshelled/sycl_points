@@ -2,11 +2,12 @@
 
 #include <numeric>
 #include <random>
-#include <sycl_points/algorithms/common/filter_by_flags.hpp>
-#include <sycl_points/algorithms/common/prefix_sum.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/eigen_utils.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
+
+#include "sycl_points/algorithms/common/filter_by_flags.hpp"
+#include "sycl_points/algorithms/common/prefix_sum.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 
@@ -219,7 +220,7 @@ public:
     /// @param max_distance Maximum distance threshold (points farther than this are removed)
     void box_filter(PointCloudShared& data, float min_distance = 1.0f,
                     float max_distance = std::numeric_limits<float>::max()) {
-        this->box_filter(data,data, min_distance, max_distance);
+        this->box_filter(data, data, min_distance, max_distance);
     }
 
     /// @brief Randomly samples a specified number of points from the point cloud

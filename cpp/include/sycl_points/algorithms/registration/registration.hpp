@@ -4,14 +4,15 @@
 #include <cmath>
 #include <limits>
 #include <random>
-#include <sycl_points/algorithms/covariance.hpp>
-#include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
-#include <sycl_points/algorithms/knn/knn.hpp>
-#include <sycl_points/algorithms/registration/degenerate_regularization.hpp>
-#include <sycl_points/algorithms/registration/factor.hpp>
-#include <sycl_points/algorithms/registration/linearized_result.hpp>
-#include <sycl_points/algorithms/transform.hpp>
-#include <sycl_points/points/point_cloud.hpp>
+
+#include "sycl_points/algorithms/covariance.hpp"
+#include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/knn/knn.hpp"
+#include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
+#include "sycl_points/algorithms/registration/factor.hpp"
+#include "sycl_points/algorithms/registration/linearized_result.hpp"
+#include "sycl_points/algorithms/transform.hpp"
+#include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
 

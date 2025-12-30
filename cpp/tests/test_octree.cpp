@@ -5,17 +5,18 @@
 #include <numeric>
 #include <random>
 #include <stdexcept>
-#include <sycl_points/algorithms/common/filter_by_flags.hpp>
-#include <sycl_points/algorithms/knn/bruteforce.hpp>
-#include <sycl_points/algorithms/knn/kdtree.hpp>
-#include <sycl_points/algorithms/knn/octree.hpp>
-#include <sycl_points/algorithms/knn/result.hpp>
-#include <sycl_points/algorithms/voxel_downsampling.hpp>
-#include <sycl_points/io/point_cloud_reader.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
 #include <tuple>
 #include <vector>
+
+#include "sycl_points/algorithms/common/filter_by_flags.hpp"
+#include "sycl_points/algorithms/knn/bruteforce.hpp"
+#include "sycl_points/algorithms/knn/kdtree.hpp"
+#include "sycl_points/algorithms/knn/octree.hpp"
+#include "sycl_points/algorithms/knn/result.hpp"
+#include "sycl_points/algorithms/voxel_downsampling.hpp"
+#include "sycl_points/io/point_cloud_reader.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace {
 
@@ -117,7 +118,8 @@ TEST(OctreeTest, RemoveByFlags) {
             EXPECT_EQ(static_cast<int32_t>(i), (*initial_result.indices)[i * k]);
         }
 
-        sycl_points::shared_vector<uint8_t> flags(target_size, sycl_points::algorithms::filter::INCLUDE_FLAG, *queue.ptr);
+        sycl_points::shared_vector<uint8_t> flags(target_size, sycl_points::algorithms::filter::INCLUDE_FLAG,
+                                                  *queue.ptr);
         sycl_points::shared_vector<int32_t> indices(target_size, *queue.ptr);
 
         constexpr size_t removal_frequency = 7;
