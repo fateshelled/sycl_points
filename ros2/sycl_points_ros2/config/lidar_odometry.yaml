@@ -33,6 +33,7 @@ lidar_odometry_node:
     scan/downsampling/random/num: 5000
 
     submap/covariance/neighbor_num: 30
+    submap/covariance/update_to_plane: false
     submap/color_gradient/neighbor_num: 30
     submap/voxel_size: 0.5
     submap/max_distance_range: 50.0
