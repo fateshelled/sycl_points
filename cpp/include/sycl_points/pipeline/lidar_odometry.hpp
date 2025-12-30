@@ -469,10 +469,13 @@ private:
                 }
 
                 if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP) {
-                    cov_events +=
-                        algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_, cov_events.evs);
-                    // cov_events += algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_,
-                    // cov_events.evs);
+                    if (this->params_.submap_covariance_update_to_plane) {
+                        cov_events += algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_,
+                                                                                            cov_events.evs);
+                    } else {
+                        cov_events +=
+                            algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_, cov_events.evs);
+                    }
                 } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
                     compute_normal = true;
                     cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
