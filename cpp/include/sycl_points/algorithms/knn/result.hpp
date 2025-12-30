@@ -1,6 +1,6 @@
 #pragma once
 
-#include <sycl_points/utils/sycl_utils.hpp>
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 
@@ -33,7 +33,7 @@ struct KNNResult {
     }
 };
 
-}  // namespace knn_search
+}  // namespace knn
 
 }  // namespace algorithms
 

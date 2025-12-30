@@ -4,13 +4,14 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
-#include <sycl_points/algorithms/common/prefix_sum.hpp>
-#include <sycl_points/algorithms/common/voxel_constants.hpp>
-#include <sycl_points/algorithms/common/workgroup_utils.hpp>
-#include <sycl_points/algorithms/transform.hpp>
-#include <sycl_points/algorithms/voxel_downsampling.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/eigen_utils.hpp>
+
+#include "sycl_points/algorithms/common/prefix_sum.hpp"
+#include "sycl_points/algorithms/common/voxel_constants.hpp"
+#include "sycl_points/algorithms/common/workgroup_utils.hpp"
+#include "sycl_points/algorithms/transform.hpp"
+#include "sycl_points/algorithms/voxel_downsampling.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
 namespace algorithms {
@@ -179,35 +180,33 @@ public:
             const size_t capacity = this->capacity_;
             const uint32_t min_num_point = this->min_num_point_;
 
-            h.parallel_for(sycl::range<1>(N), overlap_reduction,
-                           [=](sycl::id<1> idx, auto& overlap_sum) {
-                               const size_t i = idx[0];
-                               const PointType local_point = point_ptr[i];
-                               PointType world_point;
-                               // Transform the input point into the map frame before voxel hashing.
-                               transform::kernel::transform_point(local_point, world_point, trans);
-                               const uint64_t voxel_hash =
-                                   filter::kernel::compute_voxel_bit(world_point, voxel_size_inv);
-                               if (voxel_hash == VoxelConstants::invalid_coord) {
-                                   return;
-                               }
+            h.parallel_for(sycl::range<1>(N), overlap_reduction, [=](sycl::id<1> idx, auto& overlap_sum) {
+                const size_t i = idx[0];
+                const PointType local_point = point_ptr[i];
+                PointType world_point;
+                // Transform the input point into the map frame before voxel hashing.
+                transform::kernel::transform_point(local_point, world_point, trans);
+                const uint64_t voxel_hash = filter::kernel::compute_voxel_bit(world_point, voxel_size_inv);
+                if (voxel_hash == VoxelConstants::invalid_coord) {
+                    return;
+                }
 
-                               for (size_t probe = 0; probe < max_probe; ++probe) {
-                                   const size_t slot = compute_slot_id(voxel_hash, probe, capacity);
-                                   const uint64_t stored_key = key_ptr[slot];
-                                   if (stored_key == voxel_hash) {
-                                       // Count as overlap only when enough samples were accumulated in the voxel.
-                                       const VoxelPoint& voxel = sum_ptr[slot];
-                                       if (voxel.count >= min_num_point) {
-                                           overlap_sum += 1U;
-                                       }
-                                       return;
-                                   }
-                                   if (stored_key == VoxelConstants::invalid_coord) {
-                                       return;
-                                   }
-                               }
-                           });
+                for (size_t probe = 0; probe < max_probe; ++probe) {
+                    const size_t slot = compute_slot_id(voxel_hash, probe, capacity);
+                    const uint64_t stored_key = key_ptr[slot];
+                    if (stored_key == voxel_hash) {
+                        // Count as overlap only when enough samples were accumulated in the voxel.
+                        const VoxelPoint& voxel = sum_ptr[slot];
+                        if (voxel.count >= min_num_point) {
+                            overlap_sum += 1U;
+                        }
+                        return;
+                    }
+                    if (stored_key == VoxelConstants::invalid_coord) {
+                        return;
+                    }
+                }
+            });
         });
 
         event.wait_and_throw();

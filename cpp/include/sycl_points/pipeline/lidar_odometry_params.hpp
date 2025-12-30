@@ -1,7 +1,8 @@
 #pragma once
 
 #include <Eigen/Geometry>
-#include <sycl_points/algorithms/registration/registration.hpp>
+
+#include "sycl_points/algorithms/registration/registration.hpp"
 
 namespace sycl_points {
 namespace pipeline {

@@ -1,4 +1,5 @@
 #pragma once
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -6,8 +7,9 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <sycl_points/points/point_cloud.hpp>
 #include <vector>
+
+#include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
 

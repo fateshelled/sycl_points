@@ -2,7 +2,8 @@
 
 #include <cmath>
 #include <cstdlib>
-#include <sycl_points/utils/eigen_utils.hpp>
+
+#include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
 namespace eigen_utils {

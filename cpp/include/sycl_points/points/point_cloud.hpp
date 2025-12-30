@@ -3,7 +3,8 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
-#include <sycl_points/points/types.hpp>
+
+#include "sycl_points/points/types.hpp"
 
 namespace sycl_points {
 

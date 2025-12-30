@@ -1,7 +1,7 @@
 #pragma once
 
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/utils/eigen_utils.hpp>
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
 
@@ -16,7 +16,8 @@ SYCL_EXTERNAL inline void transform_covs(const Covariance& cov, Covariance& resu
     // trans * cov * trans.T
     const Eigen::Matrix4f trans_mat = eigen_utils::from_sycl_vec(trans);
     const Eigen::Matrix4f trans_mat_T = eigen_utils::transpose<4, 4>(trans_mat);
-    const Eigen::Matrix4f ret = eigen_utils::multiply<4, 4, 4>(trans_mat, eigen_utils::multiply<4, 4, 4>(cov, trans_mat_T));
+    const Eigen::Matrix4f ret =
+        eigen_utils::multiply<4, 4, 4>(trans_mat, eigen_utils::multiply<4, 4, 4>(cov, trans_mat_T));
     eigen_utils::copy<4, 4>(ret, result);
 }
 
@@ -95,7 +96,9 @@ inline sycl_utils::events transform_async(PointCloudShared& cloud, const Transfo
 /// @brief Transform point cloud
 /// @param cloud Point Cloud
 /// @param trans transform matrix
-inline void transform(PointCloudShared& cloud, const TransformMatrix& trans) { transform_async(cloud, trans).wait_and_throw(); }
+inline void transform(PointCloudShared& cloud, const TransformMatrix& trans) {
+    transform_async(cloud, trans).wait_and_throw();
+}
 
 /// @brief Transform point cloud
 /// @param cloud Point Cloud

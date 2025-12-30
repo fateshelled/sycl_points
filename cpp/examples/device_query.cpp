@@ -1,4 +1,4 @@
-#include <sycl_points/utils/sycl_utils.hpp>
+#include "sycl_points/utils/sycl_utils.hpp"
 
 int main(int argc, char** argv) {
     for (auto platform : sycl::platform::get_platforms()) {

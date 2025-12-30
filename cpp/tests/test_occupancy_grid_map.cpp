@@ -2,11 +2,12 @@
 
 #include <Eigen/Geometry>
 #include <algorithm>
-#include <sycl_points/algorithms/mapping/occupancy_grid_map.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/points/types.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
 #include <vector>
+
+#include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/points/types.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace {
 

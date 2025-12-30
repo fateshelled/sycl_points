@@ -2,8 +2,9 @@
 
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sycl_points/ros2/convert.hpp>
-#include <sycl_points/ros2/declare_lidar_odometry_params.hpp>
 #include <sycl_points/utils/time_utils.hpp>
+
+#include "sycl_points_ros2/declare_lidar_odometry_params.hpp"
 
 namespace sycl_points {
 namespace ros2 {
@@ -92,8 +93,7 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
     double dt_from_ros2_msg = 0.0;
     time_utils::measure_execution(
         [&]() {
-            return fromROS2msg(*this->pipeline_->get_device_queue(), *msg, this->scan_pc_,
-                               this->msg_data_buffer_);
+            return fromROS2msg(*this->pipeline_->get_device_queue(), *msg, this->scan_pc_, this->msg_data_buffer_);
         },
         dt_from_ros2_msg);
 
@@ -105,8 +105,7 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
     const auto ret = this->pipeline_->process(this->scan_pc_, timestamp);
     using ResultType = pipeline::lidar_odometry::LiDAROdometryPipeline::ResultType;
     if (ret >= ResultType::error) {
-        RCLCPP_WARN(this->get_logger(), "lidar odometry failed: %s",
-                    this->pipeline_->get_error_message().c_str());
+        RCLCPP_WARN(this->get_logger(), "lidar odometry failed: %s", this->pipeline_->get_error_message().c_str());
         return;
     }
 
@@ -121,8 +120,7 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
             this->publish_keyframe_pose(msg->header, last_keyframe_pose);
 
             if (this->pub_preprocessed_->get_subscription_count() > 0) {
-                const auto preprocessed_msg =
-                    toROS2msg(this->pipeline_->get_preprocessed_point_cloud(), msg->header);
+                const auto preprocessed_msg = toROS2msg(this->pipeline_->get_preprocessed_point_cloud(), msg->header);
                 if (preprocessed_msg != nullptr) {
                     this->pub_preprocessed_->publish(*preprocessed_msg);
                 }

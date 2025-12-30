@@ -3,18 +3,17 @@
 #include <algorithm>
 #include <vector>
 
-#include <sycl_points/algorithms/mapping/voxel_hash_map.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <sycl_points/points/types.hpp>
-#include <sycl_points/utils/sycl_utils.hpp>
+#include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/points/types.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace {
 
-sycl_points::PointCloudShared MakePointCloud(
-    const sycl_points::sycl_utils::DeviceQueue& queue,
-    const std::vector<Eigen::Vector3f>& positions,
-    const std::vector<sycl_points::RGBType>* colors = nullptr,
-    const std::vector<float>* intensities = nullptr) {
+sycl_points::PointCloudShared MakePointCloud(const sycl_points::sycl_utils::DeviceQueue& queue,
+                                             const std::vector<Eigen::Vector3f>& positions,
+                                             const std::vector<sycl_points::RGBType>* colors = nullptr,
+                                             const std::vector<float>* intensities = nullptr) {
     // Prepare a CPU point cloud to populate deterministic test data.
     sycl_points::PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(positions.size());
@@ -82,15 +81,16 @@ TEST(VoxelHashMapTest, AggregatesPointsWithinSameVoxel) {
         ASSERT_EQ(result.size(), 2U);
 
         auto averaged_positions = ExtractPositions(*result.points);
-        std::sort(averaged_positions.begin(), averaged_positions.end(), [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
-            if (lhs.x() != rhs.x()) {
-                return lhs.x() < rhs.x();
-            }
-            if (lhs.y() != rhs.y()) {
-                return lhs.y() < rhs.y();
-            }
-            return lhs.z() < rhs.z();
-        });
+        std::sort(averaged_positions.begin(), averaged_positions.end(),
+                  [](const Eigen::Vector3f& lhs, const Eigen::Vector3f& rhs) {
+                      if (lhs.x() != rhs.x()) {
+                          return lhs.x() < rhs.x();
+                      }
+                      if (lhs.y() != rhs.y()) {
+                          return lhs.y() < rhs.y();
+                      }
+                      return lhs.z() < rhs.z();
+                  });
 
         const std::vector<Eigen::Vector3f> expected_positions = {
             {0.025f, 0.03f, 0.0f},
