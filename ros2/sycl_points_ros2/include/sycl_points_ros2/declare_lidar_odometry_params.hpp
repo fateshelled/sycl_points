@@ -103,16 +103,30 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
     {
         params.motion_prediction_static_factor =
             node->declare_parameter<double>("motion_prediction/static_factor", params.motion_prediction_static_factor);
-        params.motion_prediction_adaptive_enable = node->declare_parameter<bool>(
-            "motion_prediction/adaptive/enable", params.motion_prediction_adaptive_enable);
+        params.motion_prediction_verbose =
+            node->declare_parameter<bool>("motion_prediction/verbose", params.motion_prediction_verbose);
+
+        params.motion_prediction_adaptive_rot_enable = node->declare_parameter<bool>(
+            "motion_prediction/adaptive/rotation/enable", params.motion_prediction_adaptive_rot_enable);
+        params.motion_prediction_adaptive_rot_factor_min = node->declare_parameter<double>(
+            "motion_prediction/adaptive/rotation/factor/min", params.motion_prediction_adaptive_rot_factor_min);
+        params.motion_prediction_adaptive_rot_factor_max = node->declare_parameter<double>(
+            "motion_prediction/adaptive/rotation/factor/max", params.motion_prediction_adaptive_rot_factor_max);
+        params.motion_prediction_adaptive_rot_eigen_low = node->declare_parameter<double>(
+            "motion_prediction/adaptive/rotation/eigen/low", params.motion_prediction_adaptive_rot_eigen_low);
+        params.motion_prediction_adaptive_rot_eigen_high = node->declare_parameter<double>(
+            "motion_prediction/adaptive/rotation/eigen/high", params.motion_prediction_adaptive_rot_eigen_high);
+
+        params.motion_prediction_adaptive_trans_enable = node->declare_parameter<bool>(
+            "motion_prediction/adaptive/translation/enable", params.motion_prediction_adaptive_trans_enable);
         params.motion_prediction_adaptive_trans_factor_min = node->declare_parameter<double>(
-            "motion_prediction/adaptive/trans_factor/min", params.motion_prediction_adaptive_trans_factor_min);
+            "motion_prediction/adaptive/translation/factor/min", params.motion_prediction_adaptive_trans_factor_min);
         params.motion_prediction_adaptive_trans_factor_max = node->declare_parameter<double>(
-            "motion_prediction/adaptive/trans_factor/max", params.motion_prediction_adaptive_trans_factor_max);
-        params.motion_prediction_adaptive_eigen_low = node->declare_parameter<double>(
-            "motion_prediction/adaptive/eigen/low", params.motion_prediction_adaptive_eigen_low);
-        params.motion_prediction_adaptive_eigen_high = node->declare_parameter<double>(
-            "motion_prediction/adaptive/eigen/high", params.motion_prediction_adaptive_eigen_high);
+            "motion_prediction/adaptive/translation/factor/max", params.motion_prediction_adaptive_trans_factor_max);
+        params.motion_prediction_adaptive_trans_eigen_low = node->declare_parameter<double>(
+            "motion_prediction/adaptive/translation/eigen/low", params.motion_prediction_adaptive_trans_eigen_low);
+        params.motion_prediction_adaptive_trans_eigen_high = node->declare_parameter<double>(
+            "motion_prediction/adaptive/translation/eigen/high", params.motion_prediction_adaptive_trans_eigen_high);
     }
 
     // Registration
