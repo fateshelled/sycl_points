@@ -131,8 +131,6 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.reg_params.max_iterations =
                 node->declare_parameter<int64_t>("registration/max_iterations", params.reg_params.max_iterations);
             params.reg_params.lambda = node->declare_parameter<double>("registration/lambda", params.reg_params.lambda);
-            params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
-                "registration/max_correspondence_distance", params.reg_params.max_correspondence_distance);
             params.reg_params.criteria.translation = node->declare_parameter<double>(
                 "registration/criteria/translation", params.reg_params.criteria.translation);
             params.reg_params.criteria.rotation =
@@ -140,6 +138,13 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
             params.reg_params.verbose =
                 node->declare_parameter<bool>("registration/verbose", params.reg_params.verbose);
+        }
+        // Outlier removal
+        {
+            params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
+                "registration/max_correspondence_distance", params.reg_params.max_correspondence_distance);
+            params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
+                "registration/mahalanobis_distance_threshold", params.reg_params.mahalanobis_distance_threshold);
         }
 
         // robust
