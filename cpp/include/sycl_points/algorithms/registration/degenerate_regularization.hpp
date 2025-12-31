@@ -13,7 +13,12 @@ namespace registration {
 
 enum class DegenerateRegularizationType {
     none = 0,
-    nl_reg  // Non linear optimization with Tikhonov regularization
+    /// @brief Informed, Constrained, Aligned: A Field Analysis on Degeneracy-aware Point Cloud Registration in the Wild
+    /// @authors Turcan Tuna, Julian Nubert, Patrick Pfreundschuh, Cesar Cadena, Shehryar Khattak, Marco Hutter
+    /// @cite https://arxiv.org/abs/2408.11809
+    /// @date 2024
+    /// @note Non linear optimization with Tikhonov regularization
+    nl_reg
 };
 
 DegenerateRegularizationType DegenerateRegularizationType_from_string(const std::string& str) {

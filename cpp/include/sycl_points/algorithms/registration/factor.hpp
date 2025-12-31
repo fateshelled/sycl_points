@@ -17,18 +17,19 @@ namespace algorithms {
 namespace registration {
 
 enum class RegType {
-    POINT_TO_POINT = 0,  //
+    POINT_TO_POINT = 0,
     POINT_TO_PLANE,
+    /// @brief Point-to-Distribution ICP
+    /// @note Uses Mahalanobis distance with target covariance only (source points have no covariance)
+    POINT_TO_DISTRIBUTION,
     /// @brief Generalized-ICP
     /// @authors Aleksandr V. Segal, Dirk Haehnel, Sebastian Thrun
     GICP,
-    /// @brief GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)
+    /// @brief GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting
     /// @authors Daehan Lee, Hyungtae Lim, Soohee Han
+    /// @date 2024
     /// @cite https://arxiv.org/abs/2411.06766
-    GENZ,
-    /// @brief Point-to-Distribution ICP
-    /// @note Uses Mahalanobis distance with target covariance only (source points have no covariance)
-    POINT_TO_DISTRIBUTION
+    GENZ
 };
 
 /// @brief Registration Type tags
@@ -341,10 +342,10 @@ SYCL_EXTERNAL inline Covariance compute_target_mahalanobis(const Covariance& tar
 /// @param target_cov Target covariance
 /// @return linearized result
 SYCL_EXTERNAL inline LinearizedResult linearize_point_to_distribution(const std::array<sycl::float4, 4>& T,
-                                                                       const PointType& source_pt,
-                                                                       const PointType& target_pt,
-                                                                       const Covariance& target_cov,
-                                                                       float& residual_norm) {
+                                                                      const PointType& source_pt,
+                                                                      const PointType& target_pt,
+                                                                      const Covariance& target_cov,
+                                                                      float& residual_norm) {
     PointType transform_source_pt;
     transform::kernel::transform_point(source_pt, transform_source_pt, T);
 
@@ -378,9 +379,8 @@ SYCL_EXTERNAL inline LinearizedResult linearize_point_to_distribution(const std:
 /// @param target_cov Target covariance
 /// @return error
 SYCL_EXTERNAL inline float calculate_point_to_distribution_error(const std::array<sycl::float4, 4>& T,
-                                                                  const PointType& source_pt,
-                                                                  const PointType& target_pt,
-                                                                  const Covariance& target_cov) {
+                                                                 const PointType& source_pt, const PointType& target_pt,
+                                                                 const Covariance& target_cov) {
     PointType transform_source_pt;
     transform::kernel::transform_point(source_pt, transform_source_pt, T);
 

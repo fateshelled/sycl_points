@@ -22,11 +22,12 @@ This project was developed with reference to small_gicp and gtsam_points
   - Iterative Closest Point (ICP)
     - Point to Point
     - Point to Plane
+    - Point to Distribution
     - Generalized ICP (GICP)
     - Genz-ICP
   - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
-  - Colored ICP
-    - Set `0.0 < photometric_weight <= 1.0` in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB fields, and the target cloud requires pre-computed color gradients and geometric normal vector.
+  - Colored ICP / Intensity ICP
+    - Set `0.0 < photometric_weight <= 1.0` in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB or Intensity fields, and the target cloud requires pre-computed color or intensity gradients and geometric normal vector.
   - Velocity updating ICP (VICP)
     - Estimates sensor velocity to compensate for motion distortion in the source point cloud. The source cloud must have a `time` field for each point.
 - Submapping
@@ -320,6 +321,14 @@ Platform: Intel(R) OpenCL Graphics
         USM atomic shared allocations: false
         Available: true
 ```
+
+## References
+- https://github.com/koide3/small_gicp
+- https://github.com/koide3/gtsam_points
+- **GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)**
+  - https://arxiv.org/abs/2411.06766
+- **Informed, Constrained, Aligned: A Field Analysis on Degeneracy-aware Point Cloud Registration in the Wild (2024)**
+  - https://arxiv.org/abs/2408.11809
 
 ## License
 This library is released under Apache License 2.0

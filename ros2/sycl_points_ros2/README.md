@@ -93,7 +93,7 @@ This is a composable node that performs LiDAR odometry estimation.
 | registration/velocity_update/enable    |            true | enable deskew ※                                                                                |
 | scan/downsampling/polar/coord_system   |           LIDAR | coordinate system                                                                              |
 | scan/downsampling/polar/elevation_size |         0.01745 | elevation grid size (1 degrees)                                                                |
-| scan/downsampling/polar/azimuth_size   |         0.05236 | azimuth grid size (3 degrees)                                                                  |
+| scan/downsampling/polar/azimuth_size   |         0.05236 | azimuth grid size  (recommend 0.01745 ~ 0.05236 radians, 1 ~ 3 degrees )                       |
 | submap/voxel_size                      |             0.5 | Larger values reduce processing time but result in a coarser map. (recommend 0.2 ~ 1.0　meter) |
 
 ```bash
