@@ -49,12 +49,102 @@ public:
     void set_random_seed(uint_fast32_t seed) { this->mt_.seed(seed); }
 
     /// @brief L∞ distance (chebyshev distance) to the point cloud
+    /// @param data Point cloud to be filtered (modified in-place)
+    /// @param min_distance Minimum distance threshold (points closer than this are removed)
+    /// @param max_distance Maximum distance threshold (points farther than this are removed)
+    void box_filter(PointCloudShared& data, float min_distance = 1.0f,
+                    float max_distance = std::numeric_limits<float>::max()) {
+        this->box_filter_impl(data, data, min_distance, max_distance);
+    }
+
+    /// @brief L∞ distance (chebyshev distance) to the point cloud
     /// @param source Source point cloud to be filtered
     /// @param output Output point cloud
     /// @param min_distance Minimum distance threshold (points closer than this are removed)
     /// @param max_distance Maximum distance threshold (points farther than this are removed)
     void box_filter(const PointCloudShared& source, PointCloudShared& output, float min_distance = 1.0f,
                     float max_distance = std::numeric_limits<float>::max()) {
+        this->box_filter_impl(source, output, min_distance, max_distance);
+    }
+
+    /// @brief Randomly samples a specified number of points from the point cloud
+    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param sampling_num Number of points to retain after sampling
+    void random_sampling(PointCloudShared& data, size_t sampling_num) {
+        this->random_sampling_impl(data, data, sampling_num);
+    }
+
+    /// @brief Randomly samples a specified number of points from the point cloud
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param sampling_num Number of points to retain after sampling
+    void random_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+        this->random_sampling_impl(source, output, sampling_num);
+    }
+
+    /// @brief Farthest Point Sampling (FPS)
+    /// @param source Source point cloud to be sampled (modified in-place)
+    /// @param sampling_num Number of points to retain after sampling
+    void farthest_point_sampling(PointCloudShared& data, size_t sampling_num) {
+        this->farthest_point_sampling_impl(data, data, sampling_num);
+    }
+
+    /// @brief Farthest Point Sampling (FPS)
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param sampling_num Number of points to retain after sampling
+    void farthest_point_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+        this->farthest_point_sampling_impl(source, output, sampling_num);
+    }
+
+private:
+    sycl_utils::DeviceQueue queue_;
+    FilterByFlags::Ptr filter_;
+    shared_vector_ptr<uint8_t> flags_;
+    shared_vector_ptr<float> dist_sq_ = nullptr;  // for FPS
+
+    std::mt19937 mt_;
+
+    /// @brief Initializes the flags vector with a specified value
+    /// @param data_size Size needed for the flags vector
+    /// @param initial_flag Initial value to fill the flags with (INCLUDE_FLAG or REMOVE_FLAG)
+    sycl_utils::events initialize_flags(size_t data_size, uint8_t initial_flag = INCLUDE_FLAG) {
+        if (this->flags_->size() < data_size) {
+            this->flags_->resize(data_size);
+        }
+        sycl_utils::events events;
+        events += this->queue_.ptr->fill(this->flags_->data(), initial_flag, data_size);
+        return events;
+    }
+
+    /// @brief Applies filtering based on the current flags
+    /// @param data Point cloud to be filtered (modified in-place)
+    void filter_by_flags(const PointCloudShared& source, PointCloudShared& output) {
+        if (source.has_cov()) {
+            this->filter_->filter_by_flags(*source.covs, *output.covs, *this->flags_);
+        }
+        if (source.has_normal()) {
+            this->filter_->filter_by_flags(*source.normals, *output.normals, *this->flags_);
+        }
+        if (source.has_rgb()) {
+            this->filter_->filter_by_flags(*source.rgb, *output.rgb, *this->flags_);
+        }
+        if (source.has_intensity()) {
+            this->filter_->filter_by_flags(*source.intensities, *output.intensities, *this->flags_);
+        }
+        if (source.has_timestamps()) {
+            this->filter_->filter_by_flags(*source.timestamp_offsets, *output.timestamp_offsets, *this->flags_);
+        }
+        this->filter_->filter_by_flags(*source.points, *output.points, *this->flags_);
+    }
+
+    /// @brief L∞ distance (chebyshev distance) to the point cloud
+    /// @param source Source point cloud to be filtered
+    /// @param output Output point cloud
+    /// @param min_distance Minimum distance threshold (points closer than this are removed)
+    /// @param max_distance Maximum distance threshold (points farther than this are removed)
+    void box_filter_impl(const PointCloudShared& source, PointCloudShared& output, float min_distance = 1.0f,
+                         float max_distance = std::numeric_limits<float>::max()) {
         const size_t N = source.size();
         if (N == 0) return;
 
@@ -97,7 +187,7 @@ public:
     /// @param source Source point cloud to be sampled
     /// @param output Output point cloud
     /// @param sampling_num Number of points to retain after sampling
-    void random_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+    void random_sampling_impl(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
         const size_t N = source.size();
         if (N == 0) return;
         if (N <= sampling_num) return;
@@ -133,7 +223,7 @@ public:
     /// @param source Source point cloud to be sampled
     /// @param output Output point cloud
     /// @param sampling_num Number of points to retain after sampling
-    void farthest_point_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+    void farthest_point_sampling_impl(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
         const size_t N = source.size();
         if (N == 0) return;
         if (N <= sampling_num) return;
@@ -210,70 +300,6 @@ public:
         }
 
         this->filter_by_flags(source, output);
-    }
-
-    /// @brief L∞ distance (chebyshev distance) to the point cloud
-    /// @param data Point cloud to be filtered (modified in-place)
-    /// @param min_distance Minimum distance threshold (points closer than this are removed)
-    /// @param max_distance Maximum distance threshold (points farther than this are removed)
-    void box_filter(PointCloudShared& data, float min_distance = 1.0f,
-                    float max_distance = std::numeric_limits<float>::max()) {
-        this->box_filter(data, data, min_distance, max_distance);
-    }
-
-    /// @brief Randomly samples a specified number of points from the point cloud
-    /// @param data Point cloud to be sampled (modified in-place)
-    /// @param sampling_num Number of points to retain after sampling
-    void random_sampling(PointCloudShared& data, size_t sampling_num) {
-        this->random_sampling(data, data, sampling_num);
-    }
-
-    /// @brief Farthest Point Sampling (FPS)
-    /// @param source Source point cloud to be sampled (modified in-place)
-    /// @param sampling_num Number of points to retain after sampling
-    void farthest_point_sampling(PointCloudShared& data, size_t sampling_num) {
-        this->farthest_point_sampling(data, data, sampling_num);
-    }
-
-private:
-    sycl_utils::DeviceQueue queue_;
-    FilterByFlags::Ptr filter_;
-    shared_vector_ptr<uint8_t> flags_;
-    shared_vector_ptr<float> dist_sq_ = nullptr;  // for FPS
-
-    std::mt19937 mt_;
-
-    /// @brief Initializes the flags vector with a specified value
-    /// @param data_size Size needed for the flags vector
-    /// @param initial_flag Initial value to fill the flags with (INCLUDE_FLAG or REMOVE_FLAG)
-    sycl_utils::events initialize_flags(size_t data_size, uint8_t initial_flag = INCLUDE_FLAG) {
-        if (this->flags_->size() < data_size) {
-            this->flags_->resize(data_size);
-        }
-        sycl_utils::events events;
-        events += this->queue_.ptr->fill(this->flags_->data(), initial_flag, data_size);
-        return events;
-    }
-
-    /// @brief Applies filtering based on the current flags
-    /// @param data Point cloud to be filtered (modified in-place)
-    void filter_by_flags(const PointCloudShared& source, PointCloudShared& output) {
-        if (source.has_cov()) {
-            this->filter_->filter_by_flags(*source.covs, *output.covs, *this->flags_);
-        }
-        if (source.has_normal()) {
-            this->filter_->filter_by_flags(*source.normals, *output.normals, *this->flags_);
-        }
-        if (source.has_rgb()) {
-            this->filter_->filter_by_flags(*source.rgb, *output.rgb, *this->flags_);
-        }
-        if (source.has_intensity()) {
-            this->filter_->filter_by_flags(*source.intensities, *output.intensities, *this->flags_);
-        }
-        if (source.has_timestamps()) {
-            this->filter_->filter_by_flags(*source.timestamp_offsets, *output.timestamp_offsets, *this->flags_);
-        }
-        this->filter_->filter_by_flags(*source.points, *output.points, *this->flags_);
     }
 };
 

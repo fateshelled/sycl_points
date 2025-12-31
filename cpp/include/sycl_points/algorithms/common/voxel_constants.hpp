@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <limits>
 
+#include "sycl_points/points/types.hpp"
+
 namespace sycl_points {
 namespace algorithms {
 
