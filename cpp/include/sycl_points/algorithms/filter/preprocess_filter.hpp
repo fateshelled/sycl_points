@@ -10,9 +10,7 @@
 #include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
-
 namespace algorithms {
-
 namespace filter {
 
 namespace kernel {

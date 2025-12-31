@@ -2,9 +2,9 @@
 #include <iostream>
 
 #include "sycl_points/algorithms/covariance.hpp"
+#include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/transform.hpp"
-#include "sycl_points/algorithms/voxel_downsampling.hpp"
 #include "sycl_points/io/point_cloud_reader.hpp"
 
 int main() {

@@ -6,9 +6,7 @@
 #include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
-
 namespace algorithms {
-
 namespace filter {
 
 /// @brief Class for removing outliers from a point cloud.
