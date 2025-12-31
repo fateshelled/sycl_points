@@ -28,7 +28,7 @@ lidar_odometry_node:
     scan/downsampling/polar/distance_size: 0.5  # meters
     scan/downsampling/polar/elevation_size: 0.017453292519943295 # 1 degrees
     scan/downsampling/polar/azimuth_size: 0.05235987755982989   # 3 degrees
-    scan/downsampling/polar/coord_system: LIDAR # CAMERA or LIDAR
+    scan/downsampling/polar/coord_system: LIDAR  # CAMERA or LIDAR
     scan/downsampling/random/enable: false
     scan/downsampling/random/num: 5000
 
@@ -44,21 +44,27 @@ lidar_odometry_node:
     submap/keyframe/time_threshold_seconds: 1.0
     submap/occupancy_grid_map/enable: true
     submap/occupancy_grid_map/log_odds_hit: 0.5
-    submap/occupancy_grid_map/log_odds_miss: -0.01
-    submap/occupancy_grid_map/log_odds_limits/min: -4.0
-    submap/occupancy_grid_map/log_odds_limits/max: 4.0
+    submap/occupancy_grid_map/log_odds_miss: -0.03
+    submap/occupancy_grid_map/log_odds_limits/min: -10.0
+    submap/occupancy_grid_map/log_odds_limits/max: 10.0
     submap/occupancy_grid_map/occupied_threshold: 0.5
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
     motion_prediction/static_factor: 0.2
-    motion_prediction/adaptive/enable: true
-    motion_prediction/adaptive/trans_factor/min: 0.2
-    motion_prediction/adaptive/trans_factor/max: 1.0
-    motion_prediction/adaptive/eigen/low: 1.0
-    motion_prediction/adaptive/eigen/high: 10.0
+    motion_prediction/verbose: false
+    motion_prediction/adaptive/rotation/enable: true
+    motion_prediction/adaptive/rotation/factor/min: 0.2
+    motion_prediction/adaptive/rotation/factor/max: 1.0
+    motion_prediction/adaptive/rotation/eigen/low: 5.0
+    motion_prediction/adaptive/rotation/eigen/high: 10.0
+    motion_prediction/adaptive/translation/enable: true
+    motion_prediction/adaptive/translation/factor/min: 0.2
+    motion_prediction/adaptive/translation/factor/max: 1.0
+    motion_prediction/adaptive/translation/eigen/low: 1.0
+    motion_prediction/adaptive/translation/eigen/high: 10.0
 
-    registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
+    registration/type: gicp  # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
     registration/velocity_update/enable: true
     registration/velocity_update/iter: 1
@@ -67,6 +73,7 @@ lidar_odometry_node:
     registration/max_iterations: 4
     registration/lambda: 1.0e-4
     registration/max_correspondence_distance: 2.0
+    registration/mahalanobis_distance_threshold: 2.5  # (p = 0.90)
     registration/criteria/translation: 1.0e-3
     registration/criteria/rotation: 1.0e-6
     registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
@@ -91,6 +98,6 @@ lidar_odometry_node:
     registration/dogleg/gamma_increase: 2.0
     registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
     registration/degenerate_regularization/nl_reg/trans_eig_threshold: 1.0
-    registration/degenerate_regularization/nl_reg/rot_eig_threshold: 10.0
-    registration/degenerate_regularization/nl_reg/base_factor: 0.1
+    registration/degenerate_regularization/nl_reg/rot_eig_threshold: 5.0
+    registration/degenerate_regularization/nl_reg/base_factor: 0.2
     registration/verbose: false

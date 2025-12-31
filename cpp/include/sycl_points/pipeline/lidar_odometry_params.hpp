@@ -55,16 +55,16 @@ struct Parameters {
 
     float motion_prediction_static_factor = 0.5f;
     bool motion_prediction_verbose = false;
+    bool motion_prediction_adaptive_rot_enable = true;
+    float motion_prediction_adaptive_rot_factor_min = 0.2f;
+    float motion_prediction_adaptive_rot_factor_max = 1.0f;
+    float motion_prediction_adaptive_rot_eigen_low = 5.0f;
+    float motion_prediction_adaptive_rot_eigen_high = 10.0f;
     bool motion_prediction_adaptive_trans_enable = true;
     float motion_prediction_adaptive_trans_factor_min = 0.2f;
     float motion_prediction_adaptive_trans_factor_max = 1.0f;
     float motion_prediction_adaptive_trans_eigen_low = 1.0f;
     float motion_prediction_adaptive_trans_eigen_high = 10.0f;
-    bool motion_prediction_adaptive_rot_enable = true;
-    float motion_prediction_adaptive_rot_factor_min = 0.2f;
-    float motion_prediction_adaptive_rot_factor_max = 1.0f;
-    float motion_prediction_adaptive_rot_eigen_low = 10.0f;
-    float motion_prediction_adaptive_rot_eigen_high = 30.0f;
 
     size_t registration_min_num_points = 100;
     bool registration_velocity_update_enable = true;
