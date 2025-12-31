@@ -1001,16 +1001,53 @@ private:
             return;
         }
 
+        const float sensor_x = sensor_pose.translation().x();
+        const float sensor_y = sensor_pose.translation().y();
+        const float sensor_z = sensor_pose.translation().z();
+        const float scaled_origin_x = sensor_x * this->inv_voxel_size_;
+        const float scaled_origin_y = sensor_y * this->inv_voxel_size_;
+        const float scaled_origin_z = sensor_z * this->inv_voxel_size_;
+
+        const int64_t origin_ix_host = static_cast<int64_t>(std::floor(scaled_origin_x));
+        const int64_t origin_iy_host = static_cast<int64_t>(std::floor(scaled_origin_y));
+        const int64_t origin_iz_host = static_cast<int64_t>(std::floor(scaled_origin_z));
+
+        uint64_t origin_key = VoxelConstants::invalid_coord;
+        const bool has_origin_key = this->grid_to_key(origin_ix_host, origin_iy_host, origin_iz_host, origin_key);
+
+        bool origin_has_hit = false;
+        if (has_origin_key) {
+            shared_vector<uint32_t> origin_hit_flag(1, 0U, *this->queue_.ptr);
+            // Detect if any points fall into the sensor-origin voxel to avoid clearing true hits.
+            auto hit_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+                const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
+                auto hit_ptr = origin_hit_flag.data();
+                auto local_points_ptr = cloud.points_ptr();
+                const float inv_voxel_size = this->inv_voxel_size_;
+                const uint64_t origin_key_device = origin_key;
+
+                h.parallel_for(sycl::range<1>(point_count), [=](sycl::id<1> idx) {
+                    const size_t i = idx[0];
+                    if (i >= point_count) {
+                        return;
+                    }
+
+                    const PointType local_point = local_points_ptr[i];
+                    PointType world_point{};
+                    transform::kernel::transform_point(local_point, world_point, trans);
+                    const uint64_t voxel_hash = filter::kernel::compute_voxel_bit(world_point, inv_voxel_size);
+                    if (voxel_hash == origin_key_device) {
+                        atomic_ref_uint32_t(hit_ptr[0]).store(1U);
+                    }
+                });
+            });
+            hit_event.wait_and_throw();
+            origin_has_hit = origin_hit_flag.at(0) != 0U;
+        }
+
         shared_vector<uint32_t> expected_visit_counter(1, 0U, *this->queue_.ptr);
         auto estimate_event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
-
-            const float sensor_x = sensor_pose.translation().x();
-            const float sensor_y = sensor_pose.translation().y();
-            const float sensor_z = sensor_pose.translation().z();
-            const float scaled_origin_x = sensor_x * this->inv_voxel_size_;
-            const float scaled_origin_y = sensor_y * this->inv_voxel_size_;
-            const float scaled_origin_z = sensor_z * this->inv_voxel_size_;
 
             auto counter_ptr = expected_visit_counter.data();
             auto local_points_ptr = cloud.points_ptr();
@@ -1087,13 +1124,6 @@ private:
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
-            const float sensor_x = sensor_pose.translation().x();
-            const float sensor_y = sensor_pose.translation().y();
-            const float sensor_z = sensor_pose.translation().z();
-
-            const float scaled_origin_x = sensor_x * this->inv_voxel_size_;
-            const float scaled_origin_y = sensor_y * this->inv_voxel_size_;
-            const float scaled_origin_z = sensor_z * this->inv_voxel_size_;
             const float inv_voxel_size = this->inv_voxel_size_;
 
             auto key_ptr = this->key_ptr_.get();
@@ -1106,6 +1136,7 @@ private:
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
             const uint32_t current_frame = this->frame_index_;
+            const bool skip_origin_miss = origin_has_hit;
 
             h.parallel_for(sycl::range<1>(point_count), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1150,7 +1181,7 @@ private:
                                      [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); });
                 };
 
-                if (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz) {
+                if (!skip_origin_miss && (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz)) {
                     uint64_t origin_key = VoxelConstants::invalid_coord;
                     if (grid_to_key_device(origin_ix, origin_iy, origin_iz, origin_key)) {
                         accumulate_miss(origin_key);
