@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <random>
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
@@ -70,6 +71,98 @@ protected:
         for (size_t i = 0; i < num_points; ++i) {
             (*points)[i] = sycl_points::PointType(dist(gen), dist(gen), dist(gen), 1.0f);
         }
+    }
+
+    // Helper function to compare radius search results
+    void compareRadiusResults(const sycl_points::algorithms::knn::KNNResult& kdtree_result,
+                              const sycl_points::algorithms::knn::KNNResult& bruteforce_result, size_t max_k,
+                              float epsilon = 1e-4f) {
+        ASSERT_EQ(kdtree_result.query_size, bruteforce_result.query_size);
+        ASSERT_EQ(kdtree_result.k, bruteforce_result.k);
+
+        for (size_t i = 0; i < kdtree_result.query_size; ++i) {
+            std::vector<std::pair<float, int32_t>> sorted_kdtree;
+            std::vector<std::pair<float, int32_t>> sorted_bruteforce;
+
+            // Create pairs of indices and distances
+            for (size_t j = 0; j < max_k; ++j) {
+                sorted_kdtree.push_back({(*kdtree_result.distances)[i * max_k + j],
+                                         (*kdtree_result.indices)[i * max_k + j]});
+                sorted_bruteforce.push_back({(*bruteforce_result.distances)[i * max_k + j],
+                                             (*bruteforce_result.indices)[i * max_k + j]});
+            }
+
+            // Sort by distance (and by index in case of equal distances)
+            auto comparator = [](const std::pair<float, int32_t>& a, const std::pair<float, int32_t>& b) {
+                if (a.first - b.first) {
+                    return a.second < b.second;
+                }
+                return a.first < b.first;
+            };
+
+            std::sort(sorted_kdtree.begin(), sorted_kdtree.end(), comparator);
+            std::sort(sorted_bruteforce.begin(), sorted_bruteforce.end(), comparator);
+
+            // Compare results
+            for (size_t j = 0; j < max_k; ++j) {
+                if (sorted_bruteforce[j].second < 0) {
+                    EXPECT_EQ(sorted_kdtree[j].second, -1) << "Missing invalid index at query " << i << ", slot " << j;
+                    EXPECT_EQ(sorted_kdtree[j].first, std::numeric_limits<float>::max())
+                        << "Missing invalid distance at query " << i << ", slot " << j;
+                } else {
+                    EXPECT_NEAR(sorted_kdtree[j].first, sorted_bruteforce[j].first, epsilon)
+                        << "Distance mismatch at query " << i << ", neighbor " << j;
+
+                    bool valid_index = (sorted_kdtree[j].second == sorted_bruteforce[j].second) ||
+                                       (std::abs(sorted_kdtree[j].first - sorted_bruteforce[j].first) < epsilon);
+
+                    EXPECT_TRUE(valid_index) << "Index mismatch at query " << i << ", neighbor " << j << ": "
+                                             << sorted_kdtree[j].second << " vs " << sorted_bruteforce[j].second
+                                             << " (distances: " << sorted_kdtree[j].first << " vs "
+                                             << sorted_bruteforce[j].second << ")";
+                }
+            }
+        }
+    }
+
+    // Helper function to compute radius search results on host
+    sycl_points::algorithms::knn::KNNResult bruteForceRadiusSearch(const sycl_points::PointCloudShared& queries,
+                                                                   const sycl_points::PointCloudShared& targets,
+                                                                   size_t max_k, float radius) {
+        sycl_points::algorithms::knn::KNNResult result;
+        result.allocate(*queue, queries.size(), max_k);
+
+        const float radius_sq = radius * radius;
+        const auto& query_points = *queries.points;
+        const auto& target_points = *targets.points;
+
+        for (size_t i = 0; i < queries.size(); ++i) {
+            std::vector<std::pair<float, int32_t>> neighbors;
+            neighbors.reserve(targets.size());
+            for (size_t j = 0; j < targets.size(); ++j) {
+                const auto diff = query_points[i] - target_points[j];
+                const float dist_sq = diff.squaredNorm();
+                if (dist_sq <= radius_sq) {
+                    neighbors.emplace_back(dist_sq, static_cast<int32_t>(j));
+                }
+            }
+
+            std::sort(neighbors.begin(), neighbors.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+
+            for (size_t k = 0; k < max_k; ++k) {
+                const size_t out_idx = i * max_k + k;
+                if (k < neighbors.size()) {
+                    (*result.distances)[out_idx] = neighbors[k].first;
+                    (*result.indices)[out_idx] = neighbors[k].second;
+                } else {
+                    (*result.distances)[out_idx] = std::numeric_limits<float>::max();
+                    (*result.indices)[out_idx] = -1;
+                }
+            }
+        }
+
+        return result;
     }
 
     // Helper function to compare KNN search results
@@ -353,6 +446,44 @@ TEST_F(KDTreeTest, RemoveByFlags) {
                 << "Mismatch in distances at query " << i << ", neighbor " << j;
         }
     }
+}
+
+TEST_F(KDTreeTest, RadiusSearchMatchesBruteForce) {
+    const size_t max_k = 10;
+    const float radius = 5.0f;
+
+    sycl_points::algorithms::knn::KNNResult kdtree_result;
+    kdtree->radius_search_async(*query_cloud, max_k, radius, kdtree_result).wait_and_throw();
+
+    const auto bruteforce_result = bruteForceRadiusSearch(*query_cloud, *target_cloud, max_k, radius);
+
+    compareRadiusResults(kdtree_result, bruteforce_result, max_k);
+}
+
+TEST_F(KDTreeTest, RadiusSearchFillsInvalidEntries) {
+    const size_t max_k = 5;
+    const float radius = 0.05f;
+
+    sycl_points::PointCloudCPU target_cpu;
+    target_cpu.points->resize(3);
+    (*target_cpu.points)[0] = sycl_points::PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    (*target_cpu.points)[1] = sycl_points::PointType(10.0f, 0.0f, 0.0f, 1.0f);
+    (*target_cpu.points)[2] = sycl_points::PointType(0.0f, 10.0f, 0.0f, 1.0f);
+
+    sycl_points::PointCloudCPU query_cpu;
+    query_cpu.points->resize(2);
+    (*query_cpu.points)[0] = sycl_points::PointType(0.01f, 0.0f, 0.0f, 1.0f);
+    (*query_cpu.points)[1] = sycl_points::PointType(20.0f, 20.0f, 0.0f, 1.0f);
+
+    auto small_target = sycl_points::PointCloudShared(*queue, target_cpu);
+    auto small_query = sycl_points::PointCloudShared(*queue, query_cpu);
+    auto small_kdtree = sycl_points::algorithms::knn::KDTree::build(*queue, small_target);
+
+    sycl_points::algorithms::knn::KNNResult kdtree_result;
+    small_kdtree->radius_search_async(small_query, max_k, radius, kdtree_result).wait_and_throw();
+
+    const auto bruteforce_result = bruteForceRadiusSearch(small_query, small_target, max_k, radius);
+    compareRadiusResults(kdtree_result, bruteforce_result, max_k);
 }
 
 int main(int argc, char** argv) {
