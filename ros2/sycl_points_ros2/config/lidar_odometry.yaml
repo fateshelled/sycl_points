@@ -17,6 +17,11 @@ lidar_odometry_node:
     scan/preprocess/box_filter/enable: true
     scan/preprocess/box_filter/max: 100.0
     scan/preprocess/box_filter/min: 1.0
+    scan/preprocess/angle_incidence_filter/enable: false
+    scan/preprocess/angle_incidence_filter/min_angle: 0.0   # 0 degrees (lower limit)
+    scan/preprocess/angle_incidence_filter/max_angle: 1.396 # 80 degrees
+    # scan/preprocess/angle_incidence_filter/max_angle: 1.570796 # 90 degrees (upper limit)
+
     scan/intensity_correction/enable: false
     scan/intensity_correction/exp: 2.0
     scan/intensity_correction/scale: 1.0e-3

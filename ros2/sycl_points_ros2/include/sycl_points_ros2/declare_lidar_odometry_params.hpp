@@ -50,12 +50,22 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
         params.scan_covariance_neighbor_num =
             node->declare_parameter<int64_t>("scan/covariance/neighbor_num", params.scan_covariance_neighbor_num);
+
         params.scan_preprocess_box_filter_enable = node->declare_parameter<bool>(
             "scan/preprocess/box_filter/enable", params.scan_preprocess_box_filter_enable);
         params.scan_preprocess_box_filter_min =
             node->declare_parameter<double>("scan/preprocess/box_filter/min", params.scan_preprocess_box_filter_min);
         params.scan_preprocess_box_filter_max =
             node->declare_parameter<double>("scan/preprocess/box_filter/max", params.scan_preprocess_box_filter_max);
+
+        params.scan_preprocess_angle_incidence_filter_enable = node->declare_parameter<bool>(
+            "scan/preprocess/angle_incidence_filter/enable", params.scan_preprocess_angle_incidence_filter_enable);
+        params.scan_preprocess_angle_incidence_filter_min_angle =
+            node->declare_parameter<double>("scan/preprocess/angle_incidence_filter/min_angle",
+                                            params.scan_preprocess_angle_incidence_filter_min_angle);
+        params.scan_preprocess_angle_incidence_filter_max_angle =
+            node->declare_parameter<double>("scan/preprocess/angle_incidence_filter/max_angle",
+                                            params.scan_preprocess_angle_incidence_filter_max_angle);
     }
 
     // submapping

@@ -5,14 +5,14 @@
 #include "sycl_points/algorithms/color_gradient.hpp"
 #include "sycl_points/algorithms/covariance.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/filter/polar_downsampling.hpp"
+#include "sycl_points/algorithms/filter/preprocess_filter.hpp"
+#include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/intensity_correction.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
-#include "sycl_points/algorithms/polar_downsampling.hpp"
-#include "sycl_points/algorithms/preprocess_filter.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
-#include "sycl_points/algorithms/voxel_downsampling.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
@@ -71,16 +71,9 @@ public:
         this->clear_current_processing_time();
 
         // preprocess
+        double dt_preprocessing = 0.0;
         {
-            double dt_preprocessing = 0.0;
             time_utils::measure_execution([&]() { this->preprocess(scan); }, dt_preprocessing);
-            this->add_delta_time(ProcessName::preprocessing, dt_preprocessing);
-        }
-
-        // check point cloud size
-        if (this->preprocessed_pc_->size() <= this->params_.registration_min_num_points) {
-            this->error_message_ = "point cloud size is too small";
-            return ResultType::small_number_of_points;
         }
 
         // compute covariances
@@ -88,6 +81,21 @@ public:
             double dt_covariance = 0.0;
             time_utils::measure_execution([&]() { compute_covariances(); }, dt_covariance);
             this->add_delta_time(ProcessName::compute_covariances, dt_covariance);
+        }
+
+        // angle incidence filter
+        {
+            double dt_angle_incidence_filter = 0.0;
+            time_utils::measure_execution([&]() { this->angle_incidence_filter(this->preprocessed_pc_); },
+                                          dt_angle_incidence_filter);
+            dt_preprocessing += dt_angle_incidence_filter;
+            this->add_delta_time(ProcessName::preprocessing, dt_preprocessing);
+        }
+
+        // check point cloud size
+        if (this->preprocessed_pc_->size() <= this->params_.registration_min_num_points) {
+            this->error_message_ = "point cloud size is too small";
+            return ResultType::small_number_of_points;
         }
 
         // first frame processing
@@ -136,11 +144,11 @@ public:
 private:
     sycl_utils::DeviceQueue::Ptr queue_ptr_ = nullptr;
 
-    PointCloudShared::Ptr preprocessed_pc_ = nullptr;
-    PointCloudShared::Ptr registration_input_pc_ = nullptr;
-    PointCloudShared::Ptr keyframe_pc_ = nullptr;
-    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;
-    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;
+    PointCloudShared::Ptr preprocessed_pc_ = nullptr;        // Sensor coordinate
+    PointCloudShared::Ptr registration_input_pc_ = nullptr;  // Sensor coordinate
+    PointCloudShared::Ptr keyframe_pc_ = nullptr;            // Sensor coordinate
+    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;          // World coordinate
+    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;          // World coordinate
     bool is_first_frame_ = true;
 
     algorithms::mapping::VoxelHashMap::Ptr submap_voxel_ = nullptr;
@@ -296,23 +304,33 @@ private:
             this->preprocess_filter_->box_filter(*scan, this->params_.scan_preprocess_box_filter_min,
                                                  this->params_.scan_preprocess_box_filter_max);
         }
-        if (this->params_.scan_downsampling_polar_enable) {
-            this->polar_filter_->downsampling(*scan, *this->preprocessed_pc_);
-            if (this->params_.scan_downsampling_voxel_enable) {
-                this->voxel_filter_->downsampling(*this->preprocessed_pc_, *this->preprocessed_pc_);
+
+        {
+            auto input_ptr = scan;
+            auto output_ptr = this->preprocessed_pc_;
+            bool grid_downsampling = false;
+            if (this->params_.scan_downsampling_polar_enable) {
+                grid_downsampling = true;
+                this->polar_filter_->downsampling(*input_ptr, *output_ptr);
+                input_ptr = this->preprocessed_pc_;
+                output_ptr = this->preprocessed_pc_;
             }
-        } else {
             if (this->params_.scan_downsampling_voxel_enable) {
-                this->voxel_filter_->downsampling(*scan, *this->preprocessed_pc_);
-            } else {
+                grid_downsampling = true;
+                this->voxel_filter_->downsampling(*input_ptr, *output_ptr);
+                input_ptr = this->preprocessed_pc_;
+                output_ptr = this->preprocessed_pc_;
+            }
+            if (!grid_downsampling) {
                 *this->preprocessed_pc_ = *scan;  // copy
             }
         }
 
         if (this->params_.scan_downsampling_random_enable) {
-            preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->preprocessed_pc_,
-                                                this->params_.scan_downsampling_random_num);
+            this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->preprocessed_pc_,
+                                                      this->params_.scan_downsampling_random_num);
         }
+
         if (this->params_.scan_intensity_correction_enable && this->preprocessed_pc_->has_intensity()) {
             algorithms::intensity_correction::correct_intensity(
                 *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
@@ -321,17 +339,28 @@ private:
         }
     }
 
+    void angle_incidence_filter(const PointCloudShared::Ptr scan) {
+        if (this->params_.scan_preprocess_angle_incidence_filter_enable) {
+            this->preprocess_filter_->angle_incidence_filter(
+                *scan, this->params_.scan_preprocess_angle_incidence_filter_min_angle,
+                this->params_.scan_preprocess_angle_incidence_filter_max_angle);
+        }
+    }
+
     void compute_covariances() {
-        if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP) {
+        if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+            this->params_.scan_preprocess_angle_incidence_filter_enable) {
             // build KDTree
             const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
             auto events = src_tree->knn_search_async(*this->preprocessed_pc_,
                                                      this->params_.scan_covariance_neighbor_num, this->knn_result_);
             events += algorithms::covariance::compute_covariances_async(this->knn_result_, *this->preprocessed_pc_,
                                                                         events.evs);
-            // events += algorithms::covariance::covariance_update_plane_async(*this->preprocessed_pc_,
-            // events.evs);
-            events += algorithms::covariance::covariance_normalize_async(*this->preprocessed_pc_, events.evs);
+            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP) {
+                // events += algorithms::covariance::covariance_update_plane_async(*this->preprocessed_pc_,
+                // events.evs);
+                events += algorithms::covariance::covariance_normalize_async(*this->preprocessed_pc_, events.evs);
+            }
             events.wait_and_throw();
         }
     }
@@ -488,35 +517,33 @@ private:
         {
             bool compute_normal = false;
             bool compute_cov = false;
-            if (this->params_.reg_params.reg_type != algorithms::registration::RegType::POINT_TO_POINT) {
-                if (this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
-                    compute_normal = true;
-                    cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
+            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
+                compute_normal = true;
+                cov_events += algorithms::covariance::compute_normals_async(this->knn_result_, *this->submap_pc_ptr_,
+                                                                            knn_events.evs);
+            } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+                       this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
+                       this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
+                compute_cov = true;
+                cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
-                } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-                           this->params_.reg_params.reg_type ==
-                               algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
-                           this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
-                    compute_cov = true;
-                    cov_events += algorithms::covariance::compute_covariances_async(
-                        this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
-                }
-
-                if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-                    this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION) {
-                    if (this->params_.submap_covariance_update_to_plane) {
-                        cov_events += algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_,
-                                                                                            cov_events.evs);
-                    } else {
-                        cov_events +=
-                            algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_, cov_events.evs);
-                    }
-                } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
-                    compute_normal = true;
-                    cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                                 cov_events.evs);
-                }
             }
+
+            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+                this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION) {
+                if (this->params_.submap_covariance_update_to_plane) {
+                    cov_events +=
+                        algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_, cov_events.evs);
+                } else {
+                    cov_events +=
+                        algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_, cov_events.evs);
+                }
+            } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
+                compute_normal = true;
+                cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
+                                                                                             cov_events.evs);
+            }
+
             if (this->params_.reg_params.photometric.enable && !compute_normal) {
                 if (compute_cov) {
                     cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,

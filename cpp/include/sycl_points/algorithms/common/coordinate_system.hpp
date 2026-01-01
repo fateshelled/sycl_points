@@ -1,6 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 namespace sycl_points {
 namespace algorithms {
@@ -9,7 +12,7 @@ namespace algorithms {
 /// @see https://ros.org/reps/rep-0103.html
 enum class CoordinateSystem : std::uint8_t { LIDAR = 0, CAMERA = 1 };
 
-inline CoordinateSystem coordinate_system_from_string(const std::string &str) {
+inline CoordinateSystem coordinate_system_from_string(const std::string& str) {
     std::string upper = str;
     std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
     if (upper == "LIDAR") {

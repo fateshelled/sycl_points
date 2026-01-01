@@ -9,11 +9,11 @@
 #include <vector>
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
+#include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/knn/bruteforce.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/knn/octree.hpp"
 #include "sycl_points/algorithms/knn/result.hpp"
-#include "sycl_points/algorithms/voxel_downsampling.hpp"
 #include "sycl_points/io/point_cloud_reader.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
