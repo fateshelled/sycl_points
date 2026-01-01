@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <limits>
 #include <random>
 
@@ -107,20 +108,54 @@ protected:
             std::sort(sorted_bruteforce.begin(), sorted_bruteforce.end(), comparator);
 
             // Compare results
-            for (size_t j = 0; j < max_k; ++j) {
+            size_t j = 0;
+            while (j < max_k) {
                 if (sorted_bruteforce[j].second < 0) {
                     EXPECT_EQ(sorted_kdtree[j].second, -1) << "Missing invalid index at query " << i << ", slot " << j;
                     EXPECT_EQ(sorted_kdtree[j].first, std::numeric_limits<float>::max())
                         << "Missing invalid distance at query " << i << ", slot " << j;
-                } else {
-                    EXPECT_NEAR(sorted_kdtree[j].first, sorted_bruteforce[j].first, epsilon)
-                        << "Distance mismatch at query " << i << ", neighbor " << j;
-
-                    EXPECT_EQ(sorted_kdtree[j].second, sorted_bruteforce[j].second)
-                        << "Index mismatch at query " << i << ", neighbor " << j << ": "
-                        << sorted_kdtree[j].second << " vs " << sorted_bruteforce[j].second << " (distances: "
-                        << sorted_kdtree[j].first << " vs " << sorted_bruteforce[j].first << ")";
+                    ++j;
+                    continue;
                 }
+
+                const float group_distance = sorted_bruteforce[j].first;
+                size_t group_end = j;
+                while (group_end < max_k &&
+                       sorted_bruteforce[group_end].second >= 0 &&
+                       std::abs(sorted_bruteforce[group_end].first - group_distance) <= epsilon) {
+                    ++group_end;
+                }
+
+                size_t kdtree_group_end = j;
+                while (kdtree_group_end < max_k && sorted_kdtree[kdtree_group_end].second >= 0 &&
+                       std::abs(sorted_kdtree[kdtree_group_end].first - group_distance) <= epsilon) {
+                    ++kdtree_group_end;
+                }
+
+                EXPECT_EQ(kdtree_group_end - j, group_end - j)
+                    << "Group size mismatch at query " << i << ", distance " << group_distance;
+
+                std::vector<int32_t> bruteforce_indices;
+                bruteforce_indices.reserve(group_end - j);
+                for (size_t idx = j; idx < group_end; ++idx) {
+                    bruteforce_indices.push_back(sorted_bruteforce[idx].second);
+                }
+
+                for (size_t idx = j; idx < kdtree_group_end; ++idx) {
+                    EXPECT_NEAR(sorted_kdtree[idx].first, group_distance, epsilon)
+                        << "Distance mismatch at query " << i << ", neighbor " << idx;
+
+                    auto it = std::find(bruteforce_indices.begin(), bruteforce_indices.end(),
+                                        sorted_kdtree[idx].second);
+                    EXPECT_TRUE(it != bruteforce_indices.end())
+                        << "Index mismatch at query " << i << ", neighbor " << idx << ": " << sorted_kdtree[idx].second
+                        << " not in brute-force tie group (distance " << group_distance << ")";
+                    if (it != bruteforce_indices.end()) {
+                        bruteforce_indices.erase(it);
+                    }
+                }
+
+                j = group_end;
             }
         }
     }
@@ -198,14 +233,44 @@ protected:
             std::sort(sorted_bruteforce.begin(), sorted_bruteforce.end(), comparator);
 
             // Compare results
-            for (size_t j = 0; j < k; ++j) {
-                EXPECT_NEAR(sorted_kdtree[j].first, sorted_bruteforce[j].first, epsilon)
-                    << "Distance mismatch at query " << i << ", neighbor " << j;
+            size_t j = 0;
+            while (j < k) {
+                const float group_distance = sorted_bruteforce[j].first;
+                size_t group_end = j;
+                while (group_end < k && std::abs(sorted_bruteforce[group_end].first - group_distance) <= epsilon) {
+                    ++group_end;
+                }
 
-                EXPECT_EQ(sorted_kdtree[j].second, sorted_bruteforce[j].second)
-                    << "Index mismatch at query " << i << ", neighbor " << j << ": " << sorted_kdtree[j].second
-                    << " vs " << sorted_bruteforce[j].second << " (distances: " << sorted_kdtree[j].first << " vs "
-                    << sorted_bruteforce[j].first << ")";
+                size_t kdtree_group_end = j;
+                while (kdtree_group_end < k &&
+                       std::abs(sorted_kdtree[kdtree_group_end].first - group_distance) <= epsilon) {
+                    ++kdtree_group_end;
+                }
+
+                EXPECT_EQ(kdtree_group_end - j, group_end - j)
+                    << "Group size mismatch at query " << i << ", distance " << group_distance;
+
+                std::vector<int32_t> bruteforce_indices;
+                bruteforce_indices.reserve(group_end - j);
+                for (size_t idx = j; idx < group_end; ++idx) {
+                    bruteforce_indices.push_back(sorted_bruteforce[idx].second);
+                }
+
+                for (size_t idx = j; idx < kdtree_group_end; ++idx) {
+                    EXPECT_NEAR(sorted_kdtree[idx].first, group_distance, epsilon)
+                        << "Distance mismatch at query " << i << ", neighbor " << idx;
+
+                    auto it = std::find(bruteforce_indices.begin(), bruteforce_indices.end(),
+                                        sorted_kdtree[idx].second);
+                    EXPECT_TRUE(it != bruteforce_indices.end())
+                        << "Index mismatch at query " << i << ", neighbor " << idx << ": " << sorted_kdtree[idx].second
+                        << " not in brute-force tie group (distance " << group_distance << ")";
+                    if (it != bruteforce_indices.end()) {
+                        bruteforce_indices.erase(it);
+                    }
+                }
+
+                j = group_end;
             }
         }
     }
