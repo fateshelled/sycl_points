@@ -5,6 +5,7 @@
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
 #include "sycl_points/algorithms/common/prefix_sum.hpp"
+#include "sycl_points/algorithms/covariance.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
@@ -95,6 +96,28 @@ public:
     /// @param sampling_num Number of points to retain after sampling
     void farthest_point_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
         this->farthest_point_sampling_impl(source, output, sampling_num);
+    }
+
+    /// @brief Filters points by incidence angle between point position and surface normal.
+    /// @param data Point cloud to be filtered (modified in-place).
+    /// @param min_angle Minimum allowable incidence angle in radians.
+    /// @param max_angle Maximum allowable incidence angle in radians.
+    /// @note Requires per-point normals or covariance matrices to compute normals; uses absolute incidence angle (normal
+    /// direction ignored).
+    void angle_incidence_filter(PointCloudShared& data, float min_angle, float max_angle) {
+        this->angle_incidence_filter_impl(data, data, min_angle, max_angle);
+    }
+
+    /// @brief Filters points by incidence angle between point position and surface normal.
+    /// @param source Source point cloud to be filtered.
+    /// @param output Output point cloud.
+    /// @param min_angle Minimum allowable incidence angle in radians.
+    /// @param max_angle Maximum allowable incidence angle in radians.
+    /// @note Requires per-point normals or covariance matrices to compute normals; uses absolute incidence angle (normal
+    /// direction ignored).
+    void angle_incidence_filter(const PointCloudShared& source, PointCloudShared& output, float min_angle,
+                                float max_angle) {
+        this->angle_incidence_filter_impl(source, output, min_angle, max_angle);
     }
 
 private:
@@ -297,6 +320,104 @@ private:
         {
             this->queue_.clear_accessed_by_device(source.points_ptr(), N);
             this->queue_.clear_accessed_by_device(this->dist_sq_->data(), N);
+        }
+
+        this->filter_by_flags(source, output);
+    }
+
+    /// @brief Removes points whose (absolute) incidence angle with the surface normal is outside [min_angle, max_angle].
+    /// @param source Source point cloud to be sampled.
+    /// @param output Output point cloud.
+    /// @param min_angle Minimum allowable incidence angle in radians.
+    /// @param max_angle Maximum allowable incidence angle in radians.
+    void angle_incidence_filter_impl(const PointCloudShared& source, PointCloudShared& output, float min_angle,
+                                     float max_angle) {
+        const size_t N = source.size();
+        if (N == 0) return;
+
+        if (!source.has_normal() && !source.has_cov()) {
+            throw std::runtime_error(
+                "[PreprocessFilter::angle_incidence_filter] Normal vector or covariance matrices must be "
+                "pre-computed.");
+        }
+
+        this->initialize_flags(N).wait_and_throw();
+
+        // mem_advise set to device
+        {
+            this->queue_.set_accessed_by_device(this->flags_->data(), N);
+            this->queue_.set_accessed_by_device(source.points_ptr(), N);
+            if (source.has_normal()) {
+                this->queue_.set_accessed_by_device(source.normals_ptr(), N);
+            } else {
+                this->queue_.set_accessed_by_device(source.covs_ptr(), N);
+            }
+        }
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+            // memory ptr
+            const auto point_ptr = source.points_ptr();
+            const auto cov_ptr = source.covs_ptr();
+            const auto normal_ptr = source.normals_ptr();
+            const auto flag_ptr = this->flags_->data();
+            const auto max_cos = std::cos(min_angle);
+            const auto min_cos = std::cos(max_angle);
+
+            auto compute_cos = [](const PointType& pt, const Normal& normal) {
+                const float dot = eigen_utils::dot<3>(pt.head<3>(), normal.head<3>());
+                const float cos = dot / (eigen_utils::frobenius_norm<3>(pt.head<3>()) *
+                                         eigen_utils::frobenius_norm<3>(normal.head<3>()));
+                return cos;
+            };
+
+            if (source.has_normal()) {
+                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                    const size_t i = item.get_global_id(0);
+                    if (i >= N) return;
+                    if (!kernel::is_finite(point_ptr[i])) {
+                        flag_ptr[i] = REMOVE_FLAG;
+                        return;
+                    }
+                    const auto pt = point_ptr[i];
+                    const auto normal = normal_ptr[i];
+                    const float abs_cos = sycl::fabs(compute_cos(pt, normal));
+                    if (abs_cos < min_cos || abs_cos > max_cos) {
+                        flag_ptr[i] = REMOVE_FLAG;
+                    }
+                });
+            } else {
+                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                    const size_t i = item.get_global_id(0);
+                    if (i >= N) return;
+                    if (!kernel::is_finite(point_ptr[i])) {
+                        flag_ptr[i] = REMOVE_FLAG;
+                        return;
+                    }
+                    const auto pt = point_ptr[i];
+                    const auto cov = cov_ptr[i];
+                    Normal normal;
+                    algorithms::covariance::kernel::compute_normal_from_covariance(pt, cov, normal);
+
+                    const float abs_cos = sycl::fabs(compute_cos(pt, normal));
+                    if (abs_cos < min_cos || abs_cos > max_cos) {
+                        flag_ptr[i] = REMOVE_FLAG;
+                    }
+                });
+            }
+        });
+        event.wait_and_throw();
+
+        // mem_advise clear
+        {
+            this->queue_.clear_accessed_by_device(this->flags_->data(), N);
+            this->queue_.clear_accessed_by_device(source.points_ptr(), N);
+            if (source.has_normal()) {
+                this->queue_.clear_accessed_by_device(source.normals_ptr(), N);
+            } else {
+                this->queue_.clear_accessed_by_device(source.covs_ptr(), N);
+            }
         }
 
         this->filter_by_flags(source, output);
