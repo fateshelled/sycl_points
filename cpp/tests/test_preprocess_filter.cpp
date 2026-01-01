@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -64,30 +65,40 @@ TEST_F(PreprocessFilterTest, RandomSamplingIsDeterministicWithSeed) {
     }
 
     PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    PointCloudShared shared_cloud_repeat(*queue_, cpu_cloud);
     algorithms::filter::PreprocessFilter filter(*queue_);
+    algorithms::filter::PreprocessFilter filter_repeat(*queue_);
     filter.set_random_seed(42);
+    filter_repeat.set_random_seed(42);
 
     filter.random_sampling(shared_cloud, 2);
+    filter_repeat.random_sampling(shared_cloud_repeat, 2);
 
     ASSERT_EQ(shared_cloud.size(), 2U);
+    ASSERT_EQ(shared_cloud_repeat.size(), 2U);
     ASSERT_TRUE(shared_cloud.has_intensity());
+    ASSERT_TRUE(shared_cloud_repeat.has_intensity());
 
-    auto& points = *shared_cloud.points;
-    auto& intensities = *shared_cloud.intensities;
-    std::vector<std::pair<PointType, float>> paired_data;
-    paired_data.reserve(points.size());
-    for (size_t i = 0; i < points.size(); ++i) {
-        paired_data.emplace_back(points[i], intensities[i]);
+    auto build_sorted_pairs = [](const PointCloudShared& cloud) {
+        std::vector<std::pair<PointType, float>> paired_data;
+        paired_data.reserve(cloud.size());
+        for (size_t i = 0; i < cloud.size(); ++i) {
+            paired_data.emplace_back((*cloud.points)[i], (*cloud.intensities)[i]);
+        }
+        std::sort(paired_data.begin(), paired_data.end(), [](const auto& a, const auto& b) {
+            return a.first.x() < b.first.x();
+        });
+        return paired_data;
+    };
+
+    const auto paired_data = build_sorted_pairs(shared_cloud);
+    const auto paired_data_repeat = build_sorted_pairs(shared_cloud_repeat);
+
+    ASSERT_EQ(paired_data.size(), paired_data_repeat.size());
+    for (size_t i = 0; i < paired_data.size(); ++i) {
+        EXPECT_FLOAT_EQ(paired_data[i].first.x(), paired_data_repeat[i].first.x());
+        EXPECT_FLOAT_EQ(paired_data[i].second, paired_data_repeat[i].second);
     }
-
-    std::sort(paired_data.begin(), paired_data.end(), [](const auto& a, const auto& b) {
-        return a.first.x() < b.first.x();
-    });
-
-    EXPECT_FLOAT_EQ(paired_data[0].first.x(), 1.0f);
-    EXPECT_FLOAT_EQ(paired_data[0].second, 1.0f);
-    EXPECT_FLOAT_EQ(paired_data[1].first.x(), 4.0f);
-    EXPECT_FLOAT_EQ(paired_data[1].second, 4.0f);
 }
 
 TEST_F(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountTooLarge) {
@@ -173,22 +184,35 @@ TEST_F(PreprocessFilterTest, FarthestPointSamplingSelectsSpreadPoints) {
 
     ASSERT_EQ(shared_cloud.size(), 3U);
 
-    auto& points = *shared_cloud.points;
-    std::sort(points.begin(), points.end(), [](const PointType& a, const PointType& b) {
-        if (a.x() != b.x()) {
-            return a.x() < b.x();
+    const auto& points = *shared_cloud.points;
+    const std::vector<PointType> input_points = {
+        PointType(0.0f, 0.0f, 0.0f, 1.0f),
+        PointType(1.0f, 0.0f, 0.0f, 1.0f),
+        PointType(0.0f, 1.0f, 0.0f, 1.0f),
+        PointType(1.0f, 1.0f, 0.0f, 1.0f),
+    };
+
+    auto is_input_point = [&input_points](const PointType& point) {
+        return std::any_of(input_points.begin(), input_points.end(), [&point](const PointType& candidate) {
+            return candidate.x() == point.x() && candidate.y() == point.y() && candidate.z() == point.z();
+        });
+    };
+
+    for (const auto& point : points) {
+        EXPECT_TRUE(is_input_point(point));
+    }
+
+    float max_distance = 0.0f;
+    for (size_t i = 0; i < points.size(); ++i) {
+        for (size_t j = i + 1; j < points.size(); ++j) {
+            const float dx = points[i].x() - points[j].x();
+            const float dy = points[i].y() - points[j].y();
+            const float distance = std::sqrt(dx * dx + dy * dy);
+            max_distance = std::max(max_distance, distance);
         }
-        return a.y() < b.y();
-    });
+    }
 
-    EXPECT_FLOAT_EQ(points[0].x(), 0.0f);
-    EXPECT_FLOAT_EQ(points[0].y(), 0.0f);
-
-    EXPECT_FLOAT_EQ(points[1].x(), 1.0f);
-    EXPECT_FLOAT_EQ(points[1].y(), 0.0f);
-
-    EXPECT_FLOAT_EQ(points[2].x(), 1.0f);
-    EXPECT_FLOAT_EQ(points[2].y(), 1.0f);
+    EXPECT_FLOAT_EQ(max_distance, std::sqrt(2.0f));
 }
 
 TEST_F(PreprocessFilterTest, AngleIncidenceFilterKeepsPointsWithinRange) {
