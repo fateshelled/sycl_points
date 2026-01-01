@@ -458,7 +458,10 @@ public:
         };
 
         sycl_utils::events events;
-        events += this->queue.ptr->submit([&](sycl::handler& h) { search_task(h); });
+        events += this->queue.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(depends);
+            search_task(h);
+        });
         return events;
     }
 
@@ -568,8 +571,7 @@ public:
                 // Explore until stack is empty
                 while (nearStackPtr > 0 || farStackPtr > 0) {
                     // Pop a node from stack
-                    const NodeEntry current =
-                        nearStackPtr > 0 ? nearStack[--nearStackPtr] : farStack[--farStackPtr];
+                    const NodeEntry current = nearStackPtr > 0 ? nearStack[--nearStackPtr] : farStack[--farStackPtr];
                     const auto nodeIdx = current.nodeIdx;
 
                     // Skip condition: nodes farther than radius or current kth distance
@@ -627,7 +629,10 @@ public:
         };
 
         sycl_utils::events events;
-        events += this->queue.ptr->submit([&](sycl::handler& h) { search_task(h); });
+        events += this->queue.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(depends);
+            search_task(h);
+        });
         return events;
     }
 
