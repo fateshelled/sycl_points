@@ -85,8 +85,10 @@ public:
 
         // angle incidence filter
         {
+            double dt_angle_incidence_filter = 0.0;
             time_utils::measure_execution([&]() { this->angle_incidence_filter(this->preprocessed_pc_); },
-                                          dt_preprocessing);
+                                          dt_angle_incidence_filter);
+            dt_preprocessing += dt_angle_incidence_filter;
             this->add_delta_time(ProcessName::preprocessing, dt_preprocessing);
         }
 
