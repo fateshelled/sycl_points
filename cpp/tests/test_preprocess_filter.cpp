@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <limits>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -10,9 +14,18 @@
 namespace sycl_points {
 namespace {
 
-TEST(PreprocessFilterTest, BoxFilterRemovesOutOfRangeAndKeepsAttributes) {
-    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
-    sycl_points::sycl_utils::DeviceQueue queue(device);
+class PreprocessFilterTest : public ::testing::Test {
+  protected:
+    void SetUp() override {
+        device_ = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        queue_ = std::make_unique<sycl_points::sycl_utils::DeviceQueue>(device_);
+    }
+
+    sycl::device device_;
+    std::unique_ptr<sycl_points::sycl_utils::DeviceQueue> queue_;
+};
+
+TEST_F(PreprocessFilterTest, BoxFilterRemovesOutOfRangeAndKeepsAttributes) {
 
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(4);
@@ -28,8 +41,8 @@ TEST(PreprocessFilterTest, BoxFilterRemovesOutOfRangeAndKeepsAttributes) {
     (*cpu_cloud.intensities)[2] = 3.0f;
     (*cpu_cloud.intensities)[3] = 4.0f;
 
-    PointCloudShared shared_cloud(queue, cpu_cloud);
-    algorithms::filter::PreprocessFilter filter(queue);
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
 
     filter.box_filter(shared_cloud, 1.0f, 3.0f);
 
@@ -39,9 +52,7 @@ TEST(PreprocessFilterTest, BoxFilterRemovesOutOfRangeAndKeepsAttributes) {
     EXPECT_FLOAT_EQ((*shared_cloud.intensities)[0], 2.0f);
 }
 
-TEST(PreprocessFilterTest, RandomSamplingIsDeterministicWithSeed) {
-    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
-    sycl_points::sycl_utils::DeviceQueue queue(device);
+TEST_F(PreprocessFilterTest, RandomSamplingIsDeterministicWithSeed) {
 
     PointCloudCPU cpu_cloud;
     const size_t num_points = 5;
@@ -52,8 +63,8 @@ TEST(PreprocessFilterTest, RandomSamplingIsDeterministicWithSeed) {
         (*cpu_cloud.intensities)[i] = static_cast<float>(i);
     }
 
-    PointCloudShared shared_cloud(queue, cpu_cloud);
-    algorithms::filter::PreprocessFilter filter(queue);
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
     filter.set_random_seed(42);
 
     filter.random_sampling(shared_cloud, 2);
@@ -61,15 +72,25 @@ TEST(PreprocessFilterTest, RandomSamplingIsDeterministicWithSeed) {
     ASSERT_EQ(shared_cloud.size(), 2U);
     ASSERT_TRUE(shared_cloud.has_intensity());
 
-    EXPECT_FLOAT_EQ((*shared_cloud.points)[0].x(), 1.0f);
-    EXPECT_FLOAT_EQ((*shared_cloud.points)[1].x(), 4.0f);
-    EXPECT_FLOAT_EQ((*shared_cloud.intensities)[0], 1.0f);
-    EXPECT_FLOAT_EQ((*shared_cloud.intensities)[1], 4.0f);
+    auto& points = *shared_cloud.points;
+    auto& intensities = *shared_cloud.intensities;
+    std::vector<std::pair<PointType, float>> paired_data;
+    paired_data.reserve(points.size());
+    for (size_t i = 0; i < points.size(); ++i) {
+        paired_data.emplace_back(points[i], intensities[i]);
+    }
+
+    std::sort(paired_data.begin(), paired_data.end(), [](const auto& a, const auto& b) {
+        return a.first.x() < b.first.x();
+    });
+
+    EXPECT_FLOAT_EQ(paired_data[0].first.x(), 1.0f);
+    EXPECT_FLOAT_EQ(paired_data[0].second, 1.0f);
+    EXPECT_FLOAT_EQ(paired_data[1].first.x(), 4.0f);
+    EXPECT_FLOAT_EQ(paired_data[1].second, 4.0f);
 }
 
-TEST(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountTooLarge) {
-    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
-    sycl_points::sycl_utils::DeviceQueue queue(device);
+TEST_F(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountTooLarge) {
 
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(3);
@@ -77,8 +98,8 @@ TEST(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountTooLarge) {
     (*cpu_cloud.points)[1] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
     (*cpu_cloud.points)[2] = PointType(2.0f, 0.0f, 0.0f, 1.0f);
 
-    PointCloudShared shared_cloud(queue, cpu_cloud);
-    algorithms::filter::PreprocessFilter filter(queue);
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
 
     filter.random_sampling(shared_cloud, 10);
 
@@ -88,9 +109,7 @@ TEST(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountTooLarge) {
     EXPECT_FLOAT_EQ((*shared_cloud.points)[2].x(), 2.0f);
 }
 
-TEST(PreprocessFilterTest, FarthestPointSamplingSelectsSpreadPoints) {
-    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
-    sycl_points::sycl_utils::DeviceQueue queue(device);
+TEST_F(PreprocessFilterTest, FarthestPointSamplingSelectsSpreadPoints) {
 
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(4);
@@ -99,27 +118,33 @@ TEST(PreprocessFilterTest, FarthestPointSamplingSelectsSpreadPoints) {
     (*cpu_cloud.points)[2] = PointType(0.0f, 1.0f, 0.0f, 1.0f);
     (*cpu_cloud.points)[3] = PointType(1.0f, 1.0f, 0.0f, 1.0f);
 
-    PointCloudShared shared_cloud(queue, cpu_cloud);
-    algorithms::filter::PreprocessFilter filter(queue);
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
     filter.set_random_seed(1234);
 
     filter.farthest_point_sampling(shared_cloud, 3);
 
     ASSERT_EQ(shared_cloud.size(), 3U);
 
-    EXPECT_FLOAT_EQ((*shared_cloud.points)[0].x(), 0.0f);
-    EXPECT_FLOAT_EQ((*shared_cloud.points)[0].y(), 0.0f);
+    auto& points = *shared_cloud.points;
+    std::sort(points.begin(), points.end(), [](const PointType& a, const PointType& b) {
+        if (a.x() != b.x()) {
+            return a.x() < b.x();
+        }
+        return a.y() < b.y();
+    });
 
-    EXPECT_FLOAT_EQ((*shared_cloud.points)[1].x(), 1.0f);
-    EXPECT_FLOAT_EQ((*shared_cloud.points)[1].y(), 0.0f);
+    EXPECT_FLOAT_EQ(points[0].x(), 0.0f);
+    EXPECT_FLOAT_EQ(points[0].y(), 0.0f);
 
-    EXPECT_FLOAT_EQ((*shared_cloud.points)[2].x(), 1.0f);
-    EXPECT_FLOAT_EQ((*shared_cloud.points)[2].y(), 1.0f);
+    EXPECT_FLOAT_EQ(points[1].x(), 1.0f);
+    EXPECT_FLOAT_EQ(points[1].y(), 0.0f);
+
+    EXPECT_FLOAT_EQ(points[2].x(), 1.0f);
+    EXPECT_FLOAT_EQ(points[2].y(), 1.0f);
 }
 
-TEST(PreprocessFilterTest, AngleIncidenceFilterKeepsPointsWithinRange) {
-    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
-    sycl_points::sycl_utils::DeviceQueue queue(device);
+TEST_F(PreprocessFilterTest, AngleIncidenceFilterKeepsPointsWithinRange) {
 
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(3);
@@ -133,8 +158,8 @@ TEST(PreprocessFilterTest, AngleIncidenceFilterKeepsPointsWithinRange) {
     (*cpu_cloud.normals)[1] = Normal(0.0f, 1.0f, 0.0f, 0.0f);
     (*cpu_cloud.normals)[2] = Normal(0.0f, 1.0f, 0.0f, 0.0f);
 
-    PointCloudShared shared_cloud(queue, cpu_cloud);
-    algorithms::filter::PreprocessFilter filter(queue);
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
 
     filter.angle_incidence_filter(shared_cloud, 0.2f, 1.2f);
 
@@ -147,23 +172,19 @@ TEST(PreprocessFilterTest, AngleIncidenceFilterKeepsPointsWithinRange) {
     EXPECT_FLOAT_EQ((*shared_cloud.normals)[0].y(), 1.0f);
 }
 
-TEST(PreprocessFilterTest, AngleIncidenceFilterThrowsWithoutNormalsOrCovs) {
-    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
-    sycl_points::sycl_utils::DeviceQueue queue(device);
+TEST_F(PreprocessFilterTest, AngleIncidenceFilterThrowsWithoutNormalsOrCovs) {
 
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(1);
     (*cpu_cloud.points)[0] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
 
-    PointCloudShared shared_cloud(queue, cpu_cloud);
-    algorithms::filter::PreprocessFilter filter(queue);
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
 
     EXPECT_THROW(filter.angle_incidence_filter(shared_cloud, 0.1f, 1.0f), std::runtime_error);
 }
 
-TEST(PreprocessFilterTest, AngleIncidenceFilterValidatesAngles) {
-    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
-    sycl_points::sycl_utils::DeviceQueue queue(device);
+TEST_F(PreprocessFilterTest, AngleIncidenceFilterValidatesAngles) {
 
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(1);
@@ -171,8 +192,8 @@ TEST(PreprocessFilterTest, AngleIncidenceFilterValidatesAngles) {
     (*cpu_cloud.points)[0] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
     (*cpu_cloud.normals)[0] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
 
-    PointCloudShared shared_cloud(queue, cpu_cloud);
-    algorithms::filter::PreprocessFilter filter(queue);
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
 
     EXPECT_THROW(filter.angle_incidence_filter(shared_cloud, -0.1f, 0.5f), std::invalid_argument);
     EXPECT_THROW(filter.angle_incidence_filter(shared_cloud, 0.5f, 0.4f), std::invalid_argument);
