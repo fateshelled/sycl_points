@@ -1015,11 +1015,12 @@ private:
         uint64_t origin_key = VoxelConstants::invalid_coord;
         const bool has_origin_key = this->grid_to_key(origin_ix_host, origin_iy_host, origin_iz_host, origin_key);
 
-        bool origin_has_hit = false;
+        sycl::event hit_event;
+        shared_vector<uint32_t> origin_hit_flag(1, 0U, *this->queue_.ptr);
+
         if (has_origin_key) {
-            shared_vector<uint32_t> origin_hit_flag(1, 0U, *this->queue_.ptr);
             // Detect if any points fall into the sensor-origin voxel to avoid clearing true hits.
-            auto hit_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            hit_event = this->queue_.ptr->submit([&](sycl::handler& h) {
                 const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
                 auto hit_ptr = origin_hit_flag.data();
                 auto local_points_ptr = cloud.points_ptr();
@@ -1041,8 +1042,6 @@ private:
                     }
                 });
             });
-            hit_event.wait_and_throw();
-            origin_has_hit = origin_hit_flag.at(0) != 0U;
         }
 
         shared_vector<uint32_t> expected_visit_counter(1, 0U, *this->queue_.ptr);
@@ -1107,6 +1106,7 @@ private:
         const size_t expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0));
 
         if (expected_voxel_visits == 0U) {
+            hit_event.wait_and_throw();
             return;
         }
 
@@ -1122,6 +1122,8 @@ private:
         shared_vector<uint32_t> voxel_counter(1, static_cast<uint32_t>(this->voxel_num_), *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(hit_event);
+
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             const float inv_voxel_size = this->inv_voxel_size_;
@@ -1129,6 +1131,7 @@ private:
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             auto counter_ptr = voxel_counter.data();
+            auto origin_hit_ptr = origin_hit_flag.data();
 
             const auto local_points_ptr = cloud.points_ptr();
             const float log_miss = this->log_odds_miss_;
@@ -1136,7 +1139,6 @@ private:
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
             const uint32_t current_frame = this->frame_index_;
-            const bool skip_origin_miss = origin_has_hit;
 
             h.parallel_for(sycl::range<1>(point_count), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1181,6 +1183,7 @@ private:
                                      [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); });
                 };
 
+                const bool skip_origin_miss = has_origin_key ? origin_hit_ptr[0] != 0U : false;
                 if (!skip_origin_miss && (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz)) {
                     uint64_t origin_key = VoxelConstants::invalid_coord;
                     if (grid_to_key_device(origin_ix, origin_iy, origin_iz, origin_key)) {
