@@ -1030,9 +1030,6 @@ private:
 
                 h.parallel_for(sycl::range<1>(point_count), hit_reduction, [=](sycl::id<1> idx, auto& max_hit) {
                     const size_t i = idx[0];
-                    if (i >= point_count) {
-                        return;
-                    }
 
                     const PointType local_point = local_points_ptr[i];
                     PointType world_point{};
@@ -1056,9 +1053,6 @@ private:
             auto reduction = sycl::reduction(counter_ptr, sycl::plus<uint32_t>());
             h.parallel_for(sycl::range<1>(point_count), reduction, [=](sycl::id<1> idx, auto& visit_acc) {
                 const size_t i = idx[0];
-                if (i >= point_count) {
-                    return;
-                }
 
                 const PointType local_point = local_points_ptr[i];
                 PointType world_point{};
@@ -1143,9 +1137,6 @@ private:
 
             h.parallel_for(sycl::range<1>(point_count), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (i >= point_count) {
-                    return;
-                }
 
                 const PointType local_point = local_points_ptr[i];
                 PointType world_point;
