@@ -94,10 +94,13 @@ protected:
 
             // Sort by distance (and by index in case of equal distances)
             auto comparator = [](const std::pair<float, int32_t>& a, const std::pair<float, int32_t>& b) {
-                if (a.first - b.first) {
-                    return a.second < b.second;
+                if (a.first < b.first) {
+                    return true;
                 }
-                return a.first < b.first;
+                if (a.first > b.first) {
+                    return false;
+                }
+                return a.second < b.second;
             };
 
             std::sort(sorted_kdtree.begin(), sorted_kdtree.end(), comparator);
@@ -113,13 +116,10 @@ protected:
                     EXPECT_NEAR(sorted_kdtree[j].first, sorted_bruteforce[j].first, epsilon)
                         << "Distance mismatch at query " << i << ", neighbor " << j;
 
-                    bool valid_index = (sorted_kdtree[j].second == sorted_bruteforce[j].second) ||
-                                       (std::abs(sorted_kdtree[j].first - sorted_bruteforce[j].first) < epsilon);
-
-                    EXPECT_TRUE(valid_index) << "Index mismatch at query " << i << ", neighbor " << j << ": "
-                                             << sorted_kdtree[j].second << " vs " << sorted_bruteforce[j].second
-                                             << " (distances: " << sorted_kdtree[j].first << " vs "
-                                             << sorted_bruteforce[j].second << ")";
+                    EXPECT_EQ(sorted_kdtree[j].second, sorted_bruteforce[j].second)
+                        << "Index mismatch at query " << i << ", neighbor " << j << ": "
+                        << sorted_kdtree[j].second << " vs " << sorted_bruteforce[j].second << " (distances: "
+                        << sorted_kdtree[j].first << " vs " << sorted_bruteforce[j].first << ")";
                 }
             }
         }
@@ -185,10 +185,13 @@ protected:
 
             // Sort by distance (and by index in case of equal distances)
             auto comparator = [](const std::pair<float, int32_t>& a, const std::pair<float, int32_t>& b) {
-                if (a.first - b.first) {
-                    return a.second < b.second;
+                if (a.first < b.first) {
+                    return true;
                 }
-                return a.first < b.first;
+                if (a.first > b.first) {
+                    return false;
+                }
+                return a.second < b.second;
             };
 
             std::sort(sorted_kdtree.begin(), sorted_kdtree.end(), comparator);
@@ -199,14 +202,10 @@ protected:
                 EXPECT_NEAR(sorted_kdtree[j].first, sorted_bruteforce[j].first, epsilon)
                     << "Distance mismatch at query " << i << ", neighbor " << j;
 
-                // Check if indices match, or if the points have the same distance
-                bool valid_index = (sorted_kdtree[j].second == sorted_bruteforce[j].second) ||
-                                   (std::abs(sorted_kdtree[j].first - sorted_bruteforce[j].first) < epsilon);
-
-                EXPECT_TRUE(valid_index) << "Index mismatch at query " << i << ", neighbor " << j << ": "
-                                         << sorted_kdtree[j].second << " vs " << sorted_bruteforce[j].second
-                                         << " (distances: " << sorted_kdtree[j].first << " vs "
-                                         << sorted_bruteforce[j].second << ")";
+                EXPECT_EQ(sorted_kdtree[j].second, sorted_bruteforce[j].second)
+                    << "Index mismatch at query " << i << ", neighbor " << j << ": " << sorted_kdtree[j].second
+                    << " vs " << sorted_bruteforce[j].second << " (distances: " << sorted_kdtree[j].first << " vs "
+                    << sorted_bruteforce[j].first << ")";
             }
         }
     }
