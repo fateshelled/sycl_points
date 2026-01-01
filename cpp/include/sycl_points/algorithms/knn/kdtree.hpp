@@ -681,14 +681,14 @@ private:
 
     void remove_nodes_by_flags_impl(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
         const size_t N = this->tree_->size();
-        if (N != flags.size() || N != indices.size()) {
-            throw std::runtime_error("[KDTree::build] flags size must be equal to tree size.");
+        if (flags.size() != indices.size()) {
+            throw std::runtime_error("[KDTree::remove_nodes_by_flags_impl] flags and indices must have the same size.");
         }
         // mem_advise to device
         {
             this->queue.set_accessed_by_device(this->tree_->data(), N);
-            this->queue.set_accessed_by_device(flags.data(), N);
-            this->queue.set_accessed_by_device(indices.data(), N);
+            this->queue.set_accessed_by_device(flags.data(), flags.size());
+            this->queue.set_accessed_by_device(indices.data(), indices.size());
         }
 
         const size_t work_group_size = this->queue.get_work_group_size();
@@ -699,6 +699,7 @@ private:
             const auto tree_ptr = this->tree_->data();
             const auto flags_ptr = flags.data();
             const auto indices_ptr = indices.data();
+            const size_t flags_size = flags.size();
 
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t idx = item.get_global_id(0);
@@ -706,7 +707,7 @@ private:
                 if (idx >= N) return;
 
                 const auto point_idx = tree_ptr[idx].idx;
-                if (point_idx < 0 || N < point_idx) return;
+                if (point_idx < 0 || static_cast<size_t>(point_idx) >= flags_size) return;
 
                 // Direct assignment: REMOVE_FLAG(0) -> invalid(0), INCLUDE_FLAG(1) -> valid(1)
                 tree_ptr[idx].valid = flags_ptr[point_idx];
@@ -719,8 +720,8 @@ private:
         // mem_advise clear
         {
             this->queue.clear_accessed_by_device(this->tree_->data(), N);
-            this->queue.clear_accessed_by_device(flags.data(), N);
-            this->queue.clear_accessed_by_device(indices.data(), N);
+            this->queue.clear_accessed_by_device(flags.data(), flags.size());
+            this->queue.clear_accessed_by_device(indices.data(), indices.size());
         }
     }
 };
