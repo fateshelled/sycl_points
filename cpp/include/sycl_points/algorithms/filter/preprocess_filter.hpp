@@ -102,8 +102,8 @@ public:
     /// @param data Point cloud to be filtered (modified in-place).
     /// @param min_angle Minimum allowable incidence angle in radians.
     /// @param max_angle Maximum allowable incidence angle in radians.
-    /// @note Requires per-point normals or covariance matrices to compute normals; uses absolute incidence angle (normal
-    /// direction ignored).
+    /// @note Requires per-point normals or covariance matrices to compute normals; uses absolute incidence angle
+    /// (normal direction ignored).
     void angle_incidence_filter(PointCloudShared& data, float min_angle, float max_angle) {
         this->angle_incidence_filter_impl(data, data, min_angle, max_angle);
     }
@@ -113,8 +113,8 @@ public:
     /// @param output Output point cloud.
     /// @param min_angle Minimum allowable incidence angle in radians.
     /// @param max_angle Maximum allowable incidence angle in radians.
-    /// @note Requires per-point normals or covariance matrices to compute normals; uses absolute incidence angle (normal
-    /// direction ignored).
+    /// @note Requires per-point normals or covariance matrices to compute normals; uses absolute incidence angle
+    /// (normal direction ignored).
     void angle_incidence_filter(const PointCloudShared& source, PointCloudShared& output, float min_angle,
                                 float max_angle) {
         this->angle_incidence_filter_impl(source, output, min_angle, max_angle);
@@ -325,7 +325,8 @@ private:
         this->filter_by_flags(source, output);
     }
 
-    /// @brief Removes points whose (absolute) incidence angle with the surface normal is outside [min_angle, max_angle].
+    /// @brief Removes points whose (absolute) incidence angle with the surface normal is outside [min_angle,
+    /// max_angle].
     /// @param source Source point cloud to be sampled.
     /// @param output Output point cloud.
     /// @param min_angle Minimum allowable incidence angle in radians.
@@ -339,6 +340,9 @@ private:
             throw std::runtime_error(
                 "[PreprocessFilter::angle_incidence_filter] Normal vector or covariance matrices must be "
                 "pre-computed.");
+        }
+        if (min_angle < 0.0f || max_angle > M_PIf || min_angle >= max_angle) {
+            throw std::invalid_argument("[PreprocessFilter::angle_incidence_filter] Invalid angle range");
         }
 
         this->initialize_flags(N).wait_and_throw();
@@ -365,11 +369,19 @@ private:
             const auto max_cos = std::cos(min_angle);
             const auto min_cos = std::cos(max_angle);
 
-            auto compute_cos = [](const PointType& pt, const Normal& normal) {
+            auto compute_flag = [=](const PointType& pt, const Normal& normal, uint8_t& flag) {
                 const float dot = eigen_utils::dot<3>(pt.head<3>(), normal.head<3>());
-                const float cos = dot / (eigen_utils::frobenius_norm<3>(pt.head<3>()) *
-                                         eigen_utils::frobenius_norm<3>(normal.head<3>()));
-                return cos;
+                const float denom =
+                    eigen_utils::frobenius_norm<3>(pt.head<3>()) * eigen_utils::frobenius_norm<3>(normal.head<3>());
+
+                if (denom <= 1e-6f) {
+                    flag = REMOVE_FLAG;
+                    return;
+                }
+                const float abs_cos = sycl::fabs(dot / denom);
+                if (abs_cos < min_cos || abs_cos > max_cos) {
+                    flag = REMOVE_FLAG;
+                }
             };
 
             if (source.has_normal()) {
@@ -382,10 +394,7 @@ private:
                     }
                     const auto pt = point_ptr[i];
                     const auto normal = normal_ptr[i];
-                    const float abs_cos = sycl::fabs(compute_cos(pt, normal));
-                    if (abs_cos < min_cos || abs_cos > max_cos) {
-                        flag_ptr[i] = REMOVE_FLAG;
-                    }
+                    compute_flag(pt, normal, flag_ptr[i]);
                 });
             } else {
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
@@ -400,10 +409,7 @@ private:
                     Normal normal;
                     algorithms::covariance::kernel::compute_normal_from_covariance(pt, cov, normal);
 
-                    const float abs_cos = sycl::fabs(compute_cos(pt, normal));
-                    if (abs_cos < min_cos || abs_cos > max_cos) {
-                        flag_ptr[i] = REMOVE_FLAG;
-                    }
+                    compute_flag(pt, normal, flag_ptr[i]);
                 });
             }
         });
