@@ -1023,11 +1023,12 @@ private:
             hit_event = this->queue_.ptr->submit([&](sycl::handler& h) {
                 const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
                 auto hit_ptr = origin_hit_flag.data();
+                auto hit_reduction = sycl::reduction(hit_ptr, sycl::maximum<uint32_t>());
                 auto local_points_ptr = cloud.points_ptr();
                 const float inv_voxel_size = this->inv_voxel_size_;
                 const uint64_t origin_key_device = origin_key;
 
-                h.parallel_for(sycl::range<1>(point_count), [=](sycl::id<1> idx) {
+                h.parallel_for(sycl::range<1>(point_count), hit_reduction, [=](sycl::id<1> idx, auto& max_hit) {
                     const size_t i = idx[0];
                     if (i >= point_count) {
                         return;
@@ -1038,7 +1039,7 @@ private:
                     transform::kernel::transform_point(local_point, world_point, trans);
                     const uint64_t voxel_hash = filter::kernel::compute_voxel_bit(world_point, inv_voxel_size);
                     if (voxel_hash == origin_key_device) {
-                        atomic_ref_uint32_t(hit_ptr[0]).store(1U);
+                        max_hit.combine(1U);
                     }
                 });
             });
