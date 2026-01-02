@@ -525,7 +525,7 @@ private:
             auto sum_plane = sycl::reduction(counter_plane.data(), sycl::plus<uint32_t>());
 
             const float planarity_threshold = this->params_.genz.planarity_threshold;
-            const float max_corr_dist_sqared = max_correspondence_distance * max_correspondence_distance;
+            const float max_corr_dist_squared = max_correspondence_distance * max_correspondence_distance;
 
             h.depends_on(depends);
             h.parallel_for(                                       //
@@ -535,7 +535,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_corr_dist_sqared) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist_squared) {
                         return;
                     }
 
@@ -606,7 +606,7 @@ private:
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
-            const float max_corr_dist_sqared =
+            const float max_corr_dist_squared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float mahalanobis_dist_squared =
                 this->params_.mahalanobis_distance_threshold * this->params_.mahalanobis_distance_threshold;
@@ -633,7 +633,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_corr_dist_sqared) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist_squared) {
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
@@ -743,7 +743,7 @@ private:
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
-            const float max_corr_dist_sqared =
+            const float max_corr_dist_squared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float mahalanobis_dist_squared =
                 this->params_.mahalanobis_distance_threshold * this->params_.mahalanobis_distance_threshold;
@@ -760,7 +760,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_corr_dist_sqared) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist_squared) {
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
