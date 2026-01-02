@@ -78,11 +78,12 @@ struct RegistrationParams {
         float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
     };
 
-    RegType reg_type = RegType::GICP;               // Registration Type
-    size_t max_iterations = 20;                     // max iteration
-    float lambda = 1e-6f;                           // damping factor
-    float max_correspondence_distance = 2.0f;       // max correspondence distance
-    float mahalanobis_distance_threshold = 100.0f;  // Mahalanobis distance threshold (for GICP and Point to Distribution)
+    RegType reg_type = RegType::GICP;          // Registration Type
+    size_t max_iterations = 20;                // max iteration
+    float lambda = 1e-6f;                      // damping factor
+    float max_correspondence_distance = 2.0f;  // max correspondence distance
+    float mahalanobis_distance_threshold =
+        100.0f;  // Mahalanobis distance threshold (for GICP and Point to Distribution)
 
     Criteria criteria;
     Robust robust;
@@ -175,10 +176,6 @@ public:
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
 
         this->linearized_on_device_ = std::make_shared<LinearizedDevice>(this->queue_);
-        this->linearized_on_host_ =
-            std::make_shared<shared_vector<LinearizedResult>>(1, LinearizedResult(), *this->queue_.ptr);
-        this->error_on_host_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
-        this->inlier_on_host_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
 
         this->degenerate_reg_.set_params(this->params_.degenerate_reg);
     }
@@ -464,9 +461,6 @@ private:
 
     shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<LinearizedDevice> linearized_on_device_ = nullptr;
-    shared_vector_ptr<LinearizedResult> linearized_on_host_ = nullptr;
-    shared_vector_ptr<float> error_on_host_ = nullptr;
-    shared_vector_ptr<uint32_t> inlier_on_host_ = nullptr;
 
     DegenerateRegularization degenerate_reg_;
     float genz_alpha_ = 1.0f;
@@ -531,7 +525,7 @@ private:
             auto sum_plane = sycl::reduction(counter_plane.data(), sycl::plus<uint32_t>());
 
             const float planarity_threshold = this->params_.genz.planarity_threshold;
-            const float max_corr_dist2 = max_correspondence_distance * max_correspondence_distance;
+            const float max_corr_dist_sqared = max_correspondence_distance * max_correspondence_distance;
 
             h.depends_on(depends);
             h.parallel_for(                                       //
@@ -541,7 +535,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist_sqared) {
                         return;
                     }
 
@@ -612,9 +606,10 @@ private:
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
-            const float max_corr_dist2 =
+            const float max_corr_dist_sqared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
-            const float mahalanobis_distance_threshold = this->params_.mahalanobis_distance_threshold;
+            const float mahalanobis_dist_squared =
+                this->params_.mahalanobis_distance_threshold * this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
 
             // reduction
@@ -638,7 +633,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist_sqared) {
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
@@ -661,7 +656,7 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const LinearizedResult linearized =
+                    const LinearizedKernelResult linearized =
                         kernel::linearize<reg>(cur_T, source_ptr[index], source_cov,               //
                                                target_ptr[target_idx], target_cov, target_normal,  //
                                                source_rgb, target_rgb, target_grad, use_color,     //
@@ -669,21 +664,31 @@ private:
                                                target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
 
                     if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
-                        if (linearized.error > mahalanobis_distance_threshold) return;
+                        if (2.0f * linearized.squared_error > mahalanobis_dist_squared) return;
                     }
 
-                    const float robust_weight = kernel::compute_robust_weight<loss>(linearized.error, robust_scale);
+                    // Apply robust kernel (ICP term)
+                    const float residual_norm = sycl::sqrt(2.0f * linearized.squared_error);
+                    const float robust_weight = kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                    auto [total_H0, total_H1, total_H2] = eigen_utils::to_sycl_vec(linearized.H);
+                    auto [total_b0, total_b1] = eigen_utils::to_sycl_vec(linearized.b);
+                    total_H0 *= robust_weight;
+                    total_H1 *= robust_weight;
+                    total_H2 *= robust_weight;
+                    total_b0 *= robust_weight;
+                    total_b1 *= robust_weight;
+                    float total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
 
-                    // reduction on device
-                    const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
-                    const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
-                    sum_H0_arg += H0 * robust_weight;
-                    sum_H1_arg += H1 * robust_weight;
-                    sum_H2_arg += H2 * robust_weight;
-                    sum_b0_arg += b0 * robust_weight;
-                    sum_b1_arg += b1 * robust_weight;
-                    sum_error_arg += kernel::compute_robust_error<loss>(linearized.error, robust_scale);
-                    ++sum_inlier_arg;
+                    // Reduction on device
+                    {
+                        sum_H0_arg += total_H0;
+                        sum_H1_arg += total_H1;
+                        sum_H2_arg += total_H2;
+                        sum_b0_arg += total_b0;
+                        sum_b1_arg += total_b1;
+                        sum_error_arg += total_error;
+                        ++sum_inlier_arg;
+                    }
                 });
         });
         return events;
@@ -738,9 +743,10 @@ private:
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
-            const float max_corr_dist2 =
+            const float max_corr_dist_sqared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
-            const float mahalanobis_distance_threshold = this->params_.mahalanobis_distance_threshold;
+            const float mahalanobis_dist_squared =
+                this->params_.mahalanobis_distance_threshold * this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
 
             // output
@@ -754,7 +760,7 @@ private:
                     const size_t index = item.get_global_id(0);
                     if (index >= N) return;
 
-                    if (neighbors_distances_ptr[index] > max_corr_dist2) {
+                    if (neighbors_distances_ptr[index] > max_corr_dist_sqared) {
                         return;
                     }
                     const auto target_idx = neighbors_index_ptr[index];
@@ -772,7 +778,7 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const float err =
+                    const float squared_error =
                         kernel::calculate_error<reg>(cur_T,                                              //
                                                      source_ptr[index], source_cov,                      // source
                                                      target_ptr[target_idx], target_cov, target_normal,  // target
@@ -781,11 +787,18 @@ private:
                                                      use_intensity, photometric_weight, genz_alpha);
 
                     if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
-                        if (err > mahalanobis_distance_threshold) return;
+                        if (2.0f * squared_error > mahalanobis_dist_squared) return;
                     }
 
-                    sum_error_arg += kernel::compute_robust_error<loss>(err, robust_scale);
-                    ++sum_inlier_arg;
+                    // Apply robust kernel (ICP term)
+                    const float residual_norm = sycl::sqrt(2.0f * squared_error);
+                    float total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+
+                    // Reduction
+                    {
+                        sum_error_arg += total_error;
+                        ++sum_inlier_arg;
+                    }
                 });
         });
         event.wait_and_throw();
@@ -875,7 +888,7 @@ private:
                 std::cout << "dt: " << delta.tail<3>().norm() << ", ";
                 std::cout << "dr: " << delta.head<3>().norm() << std::endl;
             }
-            if (new_error <= linearized_result.error) {
+            if (new_error <= current_error) {
                 result.converged = this->is_converged(delta);
                 result.T = new_T;
                 result.error = new_error;
