@@ -391,7 +391,6 @@ public:
         auto deskewed = source;
 
         {
-            size_t total_iter = 0;
             float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
