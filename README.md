@@ -31,7 +31,7 @@ This project was developed with reference to small_gicp and gtsam_points
   - Velocity updating ICP (VICP)
     - Estimates sensor velocity to compensate for motion distortion in the source point cloud. The source cloud must have a `time` field for each point.
   - Rotation Constraint
-    - Adding rotation constraints using `Jensen-Bregman LogDet` divergence. Source and target cloud  requre pre-computed `covariance` matrices.
+    - Adding rotation constraints using `Jensen-Bregman LogDet` divergence. Source and target cloud require pre-computed `covariance` matrices.
 - Submapping
   - Voxel hashmap
   - Occupancy grid map
