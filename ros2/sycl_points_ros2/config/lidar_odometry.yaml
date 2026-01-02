@@ -71,10 +71,10 @@ lidar_odometry_node:
 
     registration/type: gicp  # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
-    registration/velocity_update/enable: true
-    registration/velocity_update/iter: 1
     registration/random_sampling/enable: true
     registration/random_sampling/num: 1000
+    registration/velocity_update/enable: true
+    registration/velocity_update/iter: 1
     registration/max_iterations: 4
     registration/lambda: 1.0e-4
     registration/max_correspondence_distance: 2.0
@@ -87,8 +87,12 @@ lidar_odometry_node:
     registration/robust/min_scale: 1.25
     registration/robust/scaling_iter: 4
     registration/photometric/enable: false
-    registration/photometric/weight: 0.2
+    registration/photometric/weight: 0.2  # Scaling factor to balance photometric error with geometric error
     registration/genz/planarity_threshold: 0.2
+    registration/rotation_constraint/enable: true
+    registration/rotation_constraint/weight: 0.1        # Scaling factor to balance constraint error with geometric error
+    registration/rotation_constraint/robust_scale: 2.0  # Large scale is strong constraint
+    registration/rotation_constraint/start_iter: 4
     registration/optimization_method: LM  # GN, LM, DOGLEG
     registration/lm/max_inner_iterations: 5
     registration/lm/lambda_factor: 10.0

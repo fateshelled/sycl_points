@@ -11,6 +11,7 @@
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
+#include "sycl_points/algorithms/registration/rotation_constraint.hpp"
 #include "sycl_points/algorithms/transform.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 
@@ -57,10 +58,16 @@ struct RegistrationParams {
     };
     struct PhotometricTerm {
         bool enable = false;              // If true, use photometric term.
-        float photometric_weight = 0.2f;  // weight for photometric term (0.0f ~ 1.0f)
+        float photometric_weight = 0.2f;  // Scaling factor to balance photometric error with geometric error
     };
     struct GenZ {
         float planarity_threshold = 0.2f;
+    };
+    struct RotationConstraint {
+        bool enable = false;
+        float weight = 1.0f;  // Scaling factor to balance constraint error with geometric error
+        float robust_scale = 5.0f;
+        size_t start_iter = 4;
     };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)
@@ -88,6 +95,7 @@ struct RegistrationParams {
     Criteria criteria;
     Robust robust;
     PhotometricTerm photometric;
+    RotationConstraint rotation_constraint;
     GenZ genz;
     LevenbergMarquardt lm;
     Dogleg dogleg;
@@ -381,7 +389,7 @@ public:
         auto deskewed = source;
 
         {
-            const float max_corr_dist = this->params_.max_correspondence_distance;
+            size_t total_iter = 0;
             float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
@@ -395,6 +403,9 @@ public:
                                   : 1.0f;
             const bool has_timestamp = source.has_timestamps();
             const size_t deskew_levels = std::max<size_t>(1, velocity_update_iter);
+
+            const bool org_rotation_constraint_enable = this->params_.rotation_constraint.enable;
+            this->params_.rotation_constraint.enable = false;
 
             // Iterate over each configured robust loss scale and perform the standard ICP update cycle.
             for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
@@ -417,6 +428,10 @@ public:
                                                                  result.T, dt);
 
                     for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
+                        if (total_iter >= this->params_.rotation_constraint.start_iter) {
+                            this->params_.rotation_constraint.enable = org_rotation_constraint_enable;
+                        }
+
                         // Nearest neighbor search on device
                         auto knn_event = target_knn.nearest_neighbor_search_async(deskewed, (*this->neighbors_)[0], {},
                                                                                   result.T.matrix());
@@ -427,6 +442,8 @@ public:
 
                         // Regularization
                         this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
+
+                        ++total_iter;
 
                         // Optimize on Host
                         switch (this->params_.optimization_method) {
@@ -612,6 +629,10 @@ private:
                 this->params_.mahalanobis_distance_threshold * this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
 
+            const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
+            const float rotation_constraint_robust_scale = this->params_.rotation_constraint.robust_scale;
+            const float rotation_constraint_weight = this->params_.rotation_constraint.weight;
+
             // reduction
             this->linearized_on_device_->setZero();
             auto sum_H0 = sycl::reduction(this->linearized_on_device_->H0, sycl::plus<sycl::float16>());
@@ -678,6 +699,27 @@ private:
                     total_b0 *= robust_weight;
                     total_b1 *= robust_weight;
                     float total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+
+                    // Apply robust kernel (Rotation constraint term)
+                    if (rotation_constraint_enable) {
+                        const LinearizedKernelResult linearized_rot =
+                            kernel::linearize_rotation_constraint_stein(source_cov, target_cov, cur_T);
+                        const float residual_norm_rot = sycl::sqrt(2.0f * linearized_rot.squared_error);
+                        const float robust_weight_rot =
+                            kernel::compute_robust_weight<loss>(residual_norm_rot, rotation_constraint_robust_scale);
+
+                        const auto& [H0_rot, H1_rot, H2_rot] = eigen_utils::to_sycl_vec(linearized_rot.H);
+                        const auto& [b0_rot, b1_rot] = eigen_utils::to_sycl_vec(linearized_rot.b);
+
+                        total_H0 += rotation_constraint_weight * robust_weight_rot * H0_rot;
+                        total_H1 += rotation_constraint_weight * robust_weight_rot * H1_rot;
+                        total_H2 += rotation_constraint_weight * robust_weight_rot * H2_rot;
+                        total_b0 += rotation_constraint_weight * robust_weight_rot * b0_rot;
+                        total_b1 += rotation_constraint_weight * robust_weight_rot * b1_rot;
+                        total_error +=
+                            rotation_constraint_weight *
+                            kernel::compute_robust_error<loss>(residual_norm_rot, rotation_constraint_robust_scale);
+                    }
 
                     // Reduction on device
                     {
@@ -749,6 +791,10 @@ private:
                 this->params_.mahalanobis_distance_threshold * this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
 
+            const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
+            const float rotation_constraint_robust_scale = this->params_.rotation_constraint.robust_scale;
+            const float rotation_constraint_weight = this->params_.rotation_constraint.weight;
+
             // output
             auto sum_error = sycl::reduction(error.data(), sycl::plus<float>());
             auto sum_inlier = sycl::reduction(inlier.data(), sycl::plus<uint32_t>());
@@ -793,6 +839,16 @@ private:
                     // Apply robust kernel (ICP term)
                     const float residual_norm = sycl::sqrt(2.0f * squared_error);
                     float total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+
+                    // Apply robust kernel (Rotation constraint term)
+                    if (rotation_constraint_enable) {
+                        const float squared_error_rot =
+                            kernel::calculate_stein_error_squared(source_cov, target_cov, cur_T);
+                        const float residual_norm_rot = sycl::sqrt(2.0f * squared_error_rot);
+                        total_error +=
+                            rotation_constraint_weight *
+                            kernel::compute_robust_error<loss>(residual_norm_rot, rotation_constraint_robust_scale);
+                    }
 
                     // Reduction
                     {
