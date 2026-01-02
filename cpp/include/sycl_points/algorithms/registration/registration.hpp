@@ -70,7 +70,6 @@ struct RegistrationParams {
         bool enable = false;
         float weight = 1.0f;  // Scaling factor to balance constraint error with geometric error
         float robust_scale = 5.0f;
-        size_t start_iter = 4;
     };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)
@@ -407,9 +406,6 @@ public:
             const bool has_timestamp = source.has_timestamps();
             const size_t deskew_levels = std::max<size_t>(1, velocity_update_iter);
 
-            const bool org_rotation_constraint_enable = this->params_.rotation_constraint.enable;
-            this->params_.rotation_constraint.enable = false;
-
             // Iterate over each configured robust loss scale and perform the standard ICP update cycle.
             for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
                 if (enable_robust_auto_scaling && this->params_.verbose) {
@@ -431,10 +427,6 @@ public:
                                                                  result.T, dt);
 
                     for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
-                        if (total_iter >= this->params_.rotation_constraint.start_iter) {
-                            this->params_.rotation_constraint.enable = org_rotation_constraint_enable;
-                        }
-
                         // Nearest neighbor search on device
                         auto knn_event = target_knn.nearest_neighbor_search_async(deskewed, (*this->neighbors_)[0], {},
                                                                                   result.T.matrix());
@@ -445,8 +437,6 @@ public:
 
                         // Regularization
                         this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
-
-                        ++total_iter;
 
                         // Optimize on Host
                         switch (this->params_.optimization_method) {

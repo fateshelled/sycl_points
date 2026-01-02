@@ -213,8 +213,6 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
                 "registration/rotation_constraint/weight", params.reg_params.rotation_constraint.weight);
             params.reg_params.rotation_constraint.robust_scale = node->declare_parameter<double>(
                 "registration/rotation_constraint/robust_scale", params.reg_params.rotation_constraint.robust_scale);
-            params.reg_params.rotation_constraint.start_iter = node->declare_parameter<int64_t>(
-                "registration/rotation_constraint/start_iter", params.reg_params.rotation_constraint.start_iter);
         }
 
         // Optimization
