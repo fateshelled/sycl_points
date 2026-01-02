@@ -13,8 +13,9 @@ namespace registration {
 
 namespace kernel {
 
-SYCL_EXTERNAL inline float calculate_stein_error_squared(const Covariance& source_cov, const Covariance& target_cov,
-                                                         const std::array<sycl::float4, 4>& T) {
+SYCL_EXTERNAL inline float calculate_logdet_divergence_squared(const Covariance& source_cov,
+                                                               const Covariance& target_cov,
+                                                               const std::array<sycl::float4, 4>& T) {
     const Eigen::Matrix3f R = eigen_utils::from_sycl_vec(T).block<3, 3>(0, 0);
     const Eigen::Matrix3f Cs = source_cov.block<3, 3>(0, 0);
     const Eigen::Matrix3f Ct = target_cov.block<3, 3>(0, 0);
@@ -31,20 +32,20 @@ SYCL_EXTERNAL inline float calculate_stein_error_squared(const Covariance& sourc
     M(1, 1) += kEps;
     M(2, 2) += kEps;
 
-    // Divergence
+    // Jensen-Bregman LogDet Divergence: D(Cs, Ct') = log(det(0.5 * (Cs + Ct'))) - 0.5 * (log(det(Cs)) + log(det(Ct')))
     const float det_M = eigen_utils::determinant(M);
     const float det_Cs = eigen_utils::determinant(Cs);
     const float det_Ct = eigen_utils::determinant(Ct);
 
     const float log_det_M = sycl::log(sycl::fmax(det_M, 1e-10f));
     const float log_det_ref = 0.5f * (sycl::log(sycl::fmax(det_Cs, 1e-10f)) + sycl::log(sycl::fmax(det_Ct, 1e-10f)));
-    const float D_stein = log_det_M - log_det_ref;
+    const float D = log_det_M - log_det_ref;
 
-    return 0.5f * D_stein * D_stein;
+    return 0.5f * D * D;
 }
 
-SYCL_EXTERNAL inline float calculate_stein_divergence(const Covariance& source_cov, const Covariance& target_cov,
-                                                      const std::array<sycl::float4, 4>& T, Eigen::Vector3f& grad) {
+SYCL_EXTERNAL inline float calculate_logdet_divergence(const Covariance& source_cov, const Covariance& target_cov,
+                                                       const std::array<sycl::float4, 4>& T, Eigen::Vector3f& grad) {
     const Eigen::Matrix3f R = eigen_utils::from_sycl_vec(T).block<3, 3>(0, 0);
     const Eigen::Matrix3f Cs = source_cov.block<3, 3>(0, 0);
     const Eigen::Matrix3f Ct = target_cov.block<3, 3>(0, 0);
@@ -61,14 +62,14 @@ SYCL_EXTERNAL inline float calculate_stein_divergence(const Covariance& source_c
     M(1, 1) += kEps;
     M(2, 2) += kEps;
 
-    // Divergence
+    // Jensen-Bregman LogDet Divergence: D(Cs, Ct') = log(det(0.5 * (Cs + Ct'))) - 0.5 * (log(det(Cs)) + log(det(Ct')))
     const float det_M = eigen_utils::determinant(M);
     const float det_Cs = eigen_utils::determinant(Cs);
     const float det_Ct = eigen_utils::determinant(Ct);
 
     const float log_det_M = sycl::log(sycl::fmax(det_M, 1e-10f));
     const float log_det_ref = 0.5f * (sycl::log(sycl::fmax(det_Cs, 1e-10f)) + sycl::log(sycl::fmax(det_Ct, 1e-10f)));
-    const float D_stein = log_det_M - log_det_ref;
+    const float D = log_det_M - log_det_ref;
 
     // Gradient: g = -vex([M^{-1}, Ct')
     const Eigen::Matrix3f M_inv = eigen_utils::inverse(M);
@@ -81,15 +82,15 @@ SYCL_EXTERNAL inline float calculate_stein_divergence(const Covariance& source_c
     grad[1] = -0.5f * (comm(0, 2) - comm(2, 0));
     grad[2] = -0.5f * (comm(1, 0) - comm(0, 1));
 
-    return D_stein;
+    return D;
 }
 
-SYCL_EXTERNAL inline LinearizedKernelResult linearize_rotation_constraint_stein(const Covariance& source_cov,
-                                                                                const Covariance& target_cov,
-                                                                                const std::array<sycl::float4, 4>& T) {
+SYCL_EXTERNAL inline LinearizedKernelResult linearize_rotation_constraint_logdet(const Covariance& source_cov,
+                                                                                 const Covariance& target_cov,
+                                                                                 const std::array<sycl::float4, 4>& T) {
     // Compute jacobian
     Eigen::Vector3f J;
-    const float D = calculate_stein_divergence(source_cov, target_cov, T, J);
+    const float D = calculate_logdet_divergence(source_cov, target_cov, T, J);
     const float r = sycl::fmax(D, 0.0f);
 
     LinearizedKernelResult result;
@@ -108,6 +109,17 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_rotation_constraint_stein(
     return result;
 }
 
+SYCL_EXTERNAL inline float calculate_rotation_constraint_error(const Covariance& source_cov,
+                                                               const Covariance& target_cov,
+                                                               const std::array<sycl::float4, 4>& T) {
+    return calculate_logdet_divergence_squared(source_cov, target_cov, T);
+}
+
+SYCL_EXTERNAL inline LinearizedKernelResult linearize_rotation_constraint(const Covariance& source_cov,
+                                                                          const Covariance& target_cov,
+                                                                          const std::array<sycl::float4, 4>& T) {
+    return linearize_rotation_constraint_logdet(source_cov, target_cov, T);
+}
 }  // namespace kernel
 
 }  // namespace registration

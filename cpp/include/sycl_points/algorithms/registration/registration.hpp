@@ -758,7 +758,7 @@ private:
                     // Rotation constraint term
                     if (rotation_constraint_enable) {
                         const LinearizedKernelResult linearized_rot =
-                            kernel::linearize_rotation_constraint_stein(source_cov, target_cov, cur_T);
+                            kernel::linearize_rotation_constraint(source_cov, target_cov, cur_T);
                         const float residual_norm_rot = sycl::sqrt(2.0f * linearized_rot.squared_error);
                         const float robust_weight_rot =
                             kernel::compute_robust_weight<loss>(residual_norm_rot, rotation_constraint_robust_scale);
@@ -921,7 +921,7 @@ private:
                     // Rotation constraint term
                     if (rotation_constraint_enable) {
                         const float squared_error_rot =
-                            kernel::calculate_stein_error_squared(source_cov, target_cov, cur_T);
+                            kernel::calculate_rotation_constraint_error(source_cov, target_cov, cur_T);
                         const float residual_norm_rot = sycl::sqrt(2.0f * squared_error_rot);
                         total_error +=
                             rotation_constraint_weight *
