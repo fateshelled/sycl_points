@@ -195,15 +195,17 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         {
             params.reg_params.photometric.enable =
                 node->declare_parameter<bool>("registration/photometric/enable", params.reg_params.photometric.enable);
-            params.reg_params.photometric.photometric_weight = node->declare_parameter<double>(
-                "registration/photometric/weight", params.reg_params.photometric.photometric_weight);
+            params.reg_params.photometric.weight = node->declare_parameter<double>(
+                "registration/photometric/weight", params.reg_params.photometric.weight);
+            params.reg_params.photometric.robust_scale = node->declare_parameter<double>(
+                "registration/photometric/robust_scale", params.reg_params.photometric.robust_scale);
         }
         // GenZ
         {
             params.reg_params.genz.planarity_threshold = node->declare_parameter<double>(
                 "registration/genz/planarity_threshold", params.reg_params.genz.planarity_threshold);
         }
-        // GICP
+        // Rotation Constraint
         {
             params.reg_params.rotation_constraint.enable = node->declare_parameter<bool>(
                 "registration/rotation_constraint/enable", params.reg_params.rotation_constraint.enable);
@@ -215,7 +217,7 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
                 "registration/rotation_constraint/start_iter", params.reg_params.rotation_constraint.start_iter);
         }
 
-        // optimization
+        // Optimization
         {
             const std::string optimization_method =
                 node->declare_parameter<std::string>("registration/optimization_method", "GN");

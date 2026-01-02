@@ -11,6 +11,8 @@
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
+#include "sycl_points/algorithms/registration/photometric.hpp"
+#include "sycl_points/algorithms/registration/robust.hpp"
 #include "sycl_points/algorithms/registration/rotation_constraint.hpp"
 #include "sycl_points/algorithms/transform.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -57,8 +59,9 @@ struct RegistrationParams {
         size_t scaling_iter = 4;                     // scaling iteration
     };
     struct PhotometricTerm {
-        bool enable = false;              // If true, use photometric term.
-        float photometric_weight = 0.2f;  // Scaling factor to balance photometric error with geometric error
+        bool enable = false;  // If true, use photometric term.
+        float weight = 0.2f;  // Scaling factor to balance photometric error with geometric error
+        float robust_scale = 5.0f;
     };
     struct GenZ {
         float planarity_threshold = 0.2f;
@@ -250,17 +253,17 @@ public:
                     "RGB fields with gradients or intensity fields with gradients are required for photometric "
                     "matching.");
             }
-            if (this->params_.photometric.photometric_weight == 0.0f) {
-                std::cout << "[Caution] `photometric_weight` is set to zero. Disable photometric matching."
-                          << std::endl;
-                this->params_.photometric.enable = false;
+        }
+        if (this->params_.rotation_constraint.enable) {
+            if (!source.has_cov()) {
+                throw std::runtime_error(
+                    "[Registration::validate_params] "
+                    "Covariance matrices of source are required for performing rotation constraint matching.");
             }
-            if (this->params_.photometric.photometric_weight < 0.0f ||
-                this->params_.photometric.photometric_weight > 1.0f) {
-                std::cout << "[Caution] `photometric_weight` must be in range [0.0f, 1.0f]. Disable photometric "
-                             "matching."
-                          << std::endl;
-                this->params_.photometric.enable = false;
+            if (!target.has_cov()) {
+                throw std::runtime_error(
+                    "[Registration::validate_params] "
+                    "Covariance matrices of target are required for performing rotation constraint matching.");
             }
         }
         if (this->params_.robust.type != RobustLossType::NONE) {
@@ -617,16 +620,16 @@ private:
 
             const auto target_intensity_grad_ptr =
                 target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
-            const float photometric_weight =
-                this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
+            const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
+            const float photometric_robust_scale =
+                this->params_.photometric.enable ? this->params_.photometric.robust_scale : 0.0f;
 
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
 
             const float max_corr_dist_squared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
-            const float mahalanobis_dist_squared =
-                this->params_.mahalanobis_distance_threshold * this->params_.mahalanobis_distance_threshold;
+            const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
@@ -677,30 +680,82 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const LinearizedKernelResult linearized =
-                        kernel::linearize<reg>(cur_T, source_ptr[index], source_cov,               //
-                                               target_ptr[target_idx], target_cov, target_normal,  //
-                                               source_rgb, target_rgb, target_grad, use_color,     //
-                                               source_intensity, target_intensity,                 //
-                                               target_intensity_grad, use_intensity, photometric_weight, genz_alpha);
+                    sycl::float16 total_H0;
+                    sycl::float16 total_H1;
+                    sycl::float4 total_H2;
+                    sycl::float3 total_b0;
+                    sycl::float3 total_b1;
+                    float total_error = 0.0f;
 
-                    if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
-                        if (2.0f * linearized.squared_error > mahalanobis_dist_squared) return;
+                    // ICP term
+                    {
+                        float residual_norm = 0.0f;
+                        const LinearizedKernelResult linearized =
+                            kernel::linearize_geometry<reg>(cur_T,                                              //
+                                                            source_ptr[index], source_cov,                      //
+                                                            target_ptr[target_idx], target_cov, target_normal,  //
+                                                            residual_norm, genz_alpha);
+
+                        if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
+                            if (residual_norm > mahalanobis_dist_threshold) return;
+                        }
+
+                        // Apply robust kernel
+                        const float robust_weight = kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                        const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
+                        const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
+                        total_H0 = robust_weight * H0;
+                        total_H1 = robust_weight * H1;
+                        total_H2 = robust_weight * H2;
+                        total_b0 = robust_weight * b0;
+                        total_b1 = robust_weight * b1;
+                        total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
                     }
 
-                    // Apply robust kernel (ICP term)
-                    const float residual_norm = sycl::sqrt(2.0f * linearized.squared_error);
-                    const float robust_weight = kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
-                    auto [total_H0, total_H1, total_H2] = eigen_utils::to_sycl_vec(linearized.H);
-                    auto [total_b0, total_b1] = eigen_utils::to_sycl_vec(linearized.b);
-                    total_H0 *= robust_weight;
-                    total_H1 *= robust_weight;
-                    total_H2 *= robust_weight;
-                    total_b0 *= robust_weight;
-                    total_b1 *= robust_weight;
-                    float total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                    // Color term
+                    if (use_color) {
+                        const LinearizedKernelResult linearized_color =
+                            kernel::linearize_color(cur_T, source_ptr[index], target_ptr[target_idx], source_rgb,
+                                                    target_rgb, target_normal, target_grad);
+                        float residual_norm_color = sycl::sqrt(2.0f * linearized_color.squared_error);
+                        const float robust_weight_color =
+                            kernel::compute_robust_weight<loss>(residual_norm_color, photometric_robust_scale);
 
-                    // Apply robust kernel (Rotation constraint term)
+                        const auto& [H0_color, H1_color, H2_color] = eigen_utils::to_sycl_vec(linearized_color.H);
+                        const auto& [b0_color, b1_color] = eigen_utils::to_sycl_vec(linearized_color.b);
+
+                        total_H0 += photometric_weight * robust_weight_color * H0_color;
+                        total_H1 += photometric_weight * robust_weight_color * H1_color;
+                        total_H2 += photometric_weight * robust_weight_color * H2_color;
+                        total_b0 += photometric_weight * robust_weight_color * b0_color;
+                        total_b1 += photometric_weight * robust_weight_color * b1_color;
+                        total_error += photometric_weight * kernel::compute_robust_error<loss>(
+                                                                residual_norm_color, photometric_robust_scale);
+                    }
+
+                    // Intensity term
+                    if (use_intensity) {
+                        const LinearizedKernelResult linearized_intensity = kernel::linearize_intensity(
+                            cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
+                            target_normal, target_intensity_grad);
+                        float residual_norm_intensity = sycl::sqrt(2.0f * linearized_intensity.squared_error);
+                        const float robust_weight_intensity =
+                            kernel::compute_robust_weight<loss>(residual_norm_intensity, photometric_robust_scale);
+
+                        const auto& [H0_intensity, H1_intensity, H2_intensity] =
+                            eigen_utils::to_sycl_vec(linearized_intensity.H);
+                        const auto& [b0_intensity, b1_intensity] = eigen_utils::to_sycl_vec(linearized_intensity.b);
+
+                        total_H0 += photometric_weight * robust_weight_intensity * H0_intensity;
+                        total_H1 += photometric_weight * robust_weight_intensity * H1_intensity;
+                        total_H2 += photometric_weight * robust_weight_intensity * H2_intensity;
+                        total_b0 += photometric_weight * robust_weight_intensity * b0_intensity;
+                        total_b1 += photometric_weight * robust_weight_intensity * b1_intensity;
+                        total_error += photometric_weight * kernel::compute_robust_error<loss>(
+                                                                residual_norm_intensity, photometric_robust_scale);
+                    }
+
+                    // Rotation constraint term
                     if (rotation_constraint_enable) {
                         const LinearizedKernelResult linearized_rot =
                             kernel::linearize_rotation_constraint_stein(source_cov, target_cov, cur_T);
@@ -780,16 +835,19 @@ private:
             const auto target_intensity_ptr = target.has_intensity() ? target.intensities_ptr() : nullptr;
             const auto target_intensity_grad_ptr =
                 target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
-            const float photometric_weight =
-                this->params_.photometric.enable ? this->params_.photometric.photometric_weight : 0.0f;
+
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
 
             const float max_corr_dist_squared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
-            const float mahalanobis_dist_squared =
-                this->params_.mahalanobis_distance_threshold * this->params_.mahalanobis_distance_threshold;
+            const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
+
             const float genz_alpha = this->genz_alpha_;
+
+            const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
+            const float photometric_robust_scale =
+                this->params_.photometric.enable ? this->params_.photometric.robust_scale : 0.0f;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
             const float rotation_constraint_robust_scale = this->params_.rotation_constraint.robust_scale;
@@ -824,23 +882,43 @@ private:
                     const bool use_intensity =
                         source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
-                    const float squared_error =
-                        kernel::calculate_error<reg>(cur_T,                                              //
-                                                     source_ptr[index], source_cov,                      // source
-                                                     target_ptr[target_idx], target_cov, target_normal,  // target
-                                                     source_rgb, target_rgb, target_grad, use_color,     //
-                                                     source_intensity, target_intensity, target_intensity_grad,
-                                                     use_intensity, photometric_weight, genz_alpha);
+                    float total_error = 0.0f;
+                    // ICP term
+                    {
+                        const float squared_error = kernel::calculate_geometry_error<reg>(
+                            cur_T,                                              //
+                            source_ptr[index], source_cov,                      // source
+                            target_ptr[target_idx], target_cov, target_normal,  // target
+                            genz_alpha);
+                        const float residual_norm = sycl::sqrt(2.0f * squared_error);
 
-                    if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
-                        if (2.0f * squared_error > mahalanobis_dist_squared) return;
+                        if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
+                            if (residual_norm > mahalanobis_dist_threshold) return;
+                        }
+
+                        // Apply robust kernel
+                        total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
                     }
 
-                    // Apply robust kernel (ICP term)
-                    const float residual_norm = sycl::sqrt(2.0f * squared_error);
-                    float total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                    // Photometric term
+                    if (use_color) {
+                        const float squared_error_color =
+                            kernel::calculate_color_error(cur_T, source_ptr[index], target_ptr[target_idx], source_rgb,
+                                                          target_rgb, target_normal, target_grad);
+                        const float residual_norm_color = sycl::sqrt(2.0f * squared_error_color);
+                        total_error += photometric_weight * kernel::compute_robust_error<loss>(
+                                                                residual_norm_color, photometric_robust_scale);
+                    }
+                    if (use_intensity) {
+                        const float squared_error_intensity = kernel::calculate_intensity_error(
+                            cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
+                            target_normal, target_intensity_grad);
+                        const float residual_norm_intensity = sycl::sqrt(2.0f * squared_error_intensity);
+                        total_error += photometric_weight * kernel::compute_robust_error<loss>(
+                                                                residual_norm_intensity, photometric_robust_scale);
+                    }
 
-                    // Apply robust kernel (Rotation constraint term)
+                    // Rotation constraint term
                     if (rotation_constraint_enable) {
                         const float squared_error_rot =
                             kernel::calculate_stein_error_squared(source_cov, target_cov, cur_T);
