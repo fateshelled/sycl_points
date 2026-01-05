@@ -15,7 +15,7 @@ namespace kernel {
 SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* point_ptr,
                                              const size_t k_correspondences, const int32_t* index_ptr, const size_t i) {
     ret.setZero();
-    PointType sum_points = PointType::Zero();
+    Eigen::Vector3f sum_points = Eigen::Vector3f::Zero();
     Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
 
     size_t correspondences = 0;
@@ -23,18 +23,18 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
         const int32_t idx = index_ptr[i * k_correspondences + j];
         if (idx < 0) continue;
 
-        const auto pt = point_ptr[idx];
-        eigen_utils::add_inplace<4, 1>(sum_points, pt);
+        const auto pt = point_ptr[idx].head<3>();
+        eigen_utils::add_inplace<3, 1>(sum_points, pt);
 
-        const auto outer = eigen_utils::outer<4>(pt, pt).block<3, 3>(0, 0);
+        const auto outer = eigen_utils::outer<3>(pt, pt);
         eigen_utils::add_inplace<3, 3>(sum_outer, outer);
         ++correspondences;
     }
 
-    const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / correspondences);
+    const Eigen::Vector3f mean = eigen_utils::multiply<3>(sum_points, 1.0f / correspondences);
 
     ret.block<3, 3>(0, 0) = eigen_utils::ensure_symmetric<3>(
-        eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::outer<4>(mean, sum_points).block<3, 3>(0, 0)));
+        eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::outer<3>(mean, sum_points)));
 }
 
 SYCL_EXTERNAL inline void compute_normal_from_covariance(const PointType& point, const Covariance& cov,
