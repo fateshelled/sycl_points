@@ -7,7 +7,7 @@
 
 namespace sycl_points {
 namespace algorithms {
-namespace registration {
+namespace robust {
 
 /// @brief Robust loss function types for M-estimation
 enum class RobustLossType {
@@ -115,6 +115,6 @@ SYCL_EXTERNAL inline float compute_robust_error(float residual_norm, float scale
 
 }  // namespace kernel
 
-}  // namespace registration
+}  // namespace robust
 }  // namespace algorithms
 }  // namespace sycl_points

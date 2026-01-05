@@ -13,7 +13,6 @@
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/algorithms/common/workgroup_utils.hpp"
 #include "sycl_points/algorithms/transform.hpp"
-#include "sycl_points/algorithms/voxel_downsampling.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
@@ -663,7 +662,7 @@ private:
             .wait_and_throw();
 
         if (failure_flag.at(0) != 0U) {
-            std::cerr << "Cloud not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
+            std::cerr << "Could not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
             // throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
         }
 
@@ -1001,16 +1000,50 @@ private:
             return;
         }
 
+        const float sensor_x = sensor_pose.translation().x();
+        const float sensor_y = sensor_pose.translation().y();
+        const float sensor_z = sensor_pose.translation().z();
+        const float scaled_origin_x = sensor_x * this->inv_voxel_size_;
+        const float scaled_origin_y = sensor_y * this->inv_voxel_size_;
+        const float scaled_origin_z = sensor_z * this->inv_voxel_size_;
+
+        const int64_t origin_ix_host = static_cast<int64_t>(std::floor(scaled_origin_x));
+        const int64_t origin_iy_host = static_cast<int64_t>(std::floor(scaled_origin_y));
+        const int64_t origin_iz_host = static_cast<int64_t>(std::floor(scaled_origin_z));
+
+        uint64_t origin_key = VoxelConstants::invalid_coord;
+        const bool has_origin_key = this->grid_to_key(origin_ix_host, origin_iy_host, origin_iz_host, origin_key);
+
+        sycl::event hit_event;
+        shared_vector<uint32_t> origin_hit_flag(1, 0U, *this->queue_.ptr);
+
+        if (has_origin_key) {
+            // Detect if any points fall into the sensor-origin voxel to avoid clearing true hits.
+            hit_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+                const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
+                auto hit_ptr = origin_hit_flag.data();
+                auto hit_reduction = sycl::reduction(hit_ptr, sycl::maximum<uint32_t>());
+                auto local_points_ptr = cloud.points_ptr();
+                const float inv_voxel_size = this->inv_voxel_size_;
+                const uint64_t origin_key_device = origin_key;
+
+                h.parallel_for(sycl::range<1>(point_count), hit_reduction, [=](sycl::id<1> idx, auto& max_hit) {
+                    const size_t i = idx[0];
+
+                    const PointType local_point = local_points_ptr[i];
+                    PointType world_point{};
+                    transform::kernel::transform_point(local_point, world_point, trans);
+                    const uint64_t voxel_hash = filter::kernel::compute_voxel_bit(world_point, inv_voxel_size);
+                    if (voxel_hash == origin_key_device) {
+                        max_hit.combine(1U);
+                    }
+                });
+            });
+        }
+
         shared_vector<uint32_t> expected_visit_counter(1, 0U, *this->queue_.ptr);
         auto estimate_event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
-
-            const float sensor_x = sensor_pose.translation().x();
-            const float sensor_y = sensor_pose.translation().y();
-            const float sensor_z = sensor_pose.translation().z();
-            const float scaled_origin_x = sensor_x * this->inv_voxel_size_;
-            const float scaled_origin_y = sensor_y * this->inv_voxel_size_;
-            const float scaled_origin_z = sensor_z * this->inv_voxel_size_;
 
             auto counter_ptr = expected_visit_counter.data();
             auto local_points_ptr = cloud.points_ptr();
@@ -1019,9 +1052,6 @@ private:
             auto reduction = sycl::reduction(counter_ptr, sycl::plus<uint32_t>());
             h.parallel_for(sycl::range<1>(point_count), reduction, [=](sycl::id<1> idx, auto& visit_acc) {
                 const size_t i = idx[0];
-                if (i >= point_count) {
-                    return;
-                }
 
                 const PointType local_point = local_points_ptr[i];
                 PointType world_point{};
@@ -1070,6 +1100,7 @@ private:
         const size_t expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0));
 
         if (expected_voxel_visits == 0U) {
+            hit_event.wait_and_throw();
             return;
         }
 
@@ -1085,20 +1116,16 @@ private:
         shared_vector<uint32_t> voxel_counter(1, static_cast<uint32_t>(this->voxel_num_), *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(hit_event);
+
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
-            const float sensor_x = sensor_pose.translation().x();
-            const float sensor_y = sensor_pose.translation().y();
-            const float sensor_z = sensor_pose.translation().z();
-
-            const float scaled_origin_x = sensor_x * this->inv_voxel_size_;
-            const float scaled_origin_y = sensor_y * this->inv_voxel_size_;
-            const float scaled_origin_z = sensor_z * this->inv_voxel_size_;
             const float inv_voxel_size = this->inv_voxel_size_;
 
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             auto counter_ptr = voxel_counter.data();
+            auto origin_hit_ptr = origin_hit_flag.data();
 
             const auto local_points_ptr = cloud.points_ptr();
             const float log_miss = this->log_odds_miss_;
@@ -1109,9 +1136,6 @@ private:
 
             h.parallel_for(sycl::range<1>(point_count), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (i >= point_count) {
-                    return;
-                }
 
                 const PointType local_point = local_points_ptr[i];
                 PointType world_point;
@@ -1150,7 +1174,8 @@ private:
                                      [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); });
                 };
 
-                if (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz) {
+                const bool skip_origin_miss = has_origin_key ? origin_hit_ptr[0] != 0U : false;
+                if (!skip_origin_miss && (origin_ix != target_ix || origin_iy != target_iy || origin_iz != target_iz)) {
                     uint64_t origin_key = VoxelConstants::invalid_coord;
                     if (grid_to_key_device(origin_ix, origin_iy, origin_iz, origin_key)) {
                         accumulate_miss(origin_key);

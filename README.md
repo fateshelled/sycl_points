@@ -25,18 +25,21 @@ This project was developed with reference to small_gicp and gtsam_points
     - Point to Distribution
     - Generalized ICP (GICP)
     - Genz-ICP
-  - Robust ICP Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
+  - Robust Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
   - Colored ICP / Intensity ICP
-    - Set `0.0 < photometric_weight <= 1.0` in `RegistrationParams` to blend color residuals with geometric terms. Both clouds must have RGB or Intensity fields, and the target cloud requires pre-computed color or intensity gradients and geometric normal vector.
+    - Point cloud must have RGB or Intensity fields, and the target cloud requires pre-computed color or intensity gradients and geometric normal vector.
   - Velocity updating ICP (VICP)
     - Estimates sensor velocity to compensate for motion distortion in the source point cloud. The source cloud must have a `time` field for each point.
+  - Rotation Constraint
+    - Adding rotation constraints using `Jensen-Bregman LogDet` divergence. Source and target cloud require pre-computed `covariance` matrices.
 - Submapping
   - Voxel hashmap
   - Occupancy grid map
-- Preprocessing filter
+- Filtering
   - L∞ distance (chebyshev distance) filter
   - Random sampling
   - Farthest point sampling (FPS)
+  - Angle incidence filter
   - Voxel grid downsampling
   - Polar grid downsampling
 - Point cloud file I/O

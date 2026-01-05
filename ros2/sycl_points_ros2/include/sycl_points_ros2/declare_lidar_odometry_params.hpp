@@ -50,12 +50,22 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
         params.scan_covariance_neighbor_num =
             node->declare_parameter<int64_t>("scan/covariance/neighbor_num", params.scan_covariance_neighbor_num);
+
         params.scan_preprocess_box_filter_enable = node->declare_parameter<bool>(
             "scan/preprocess/box_filter/enable", params.scan_preprocess_box_filter_enable);
         params.scan_preprocess_box_filter_min =
             node->declare_parameter<double>("scan/preprocess/box_filter/min", params.scan_preprocess_box_filter_min);
         params.scan_preprocess_box_filter_max =
             node->declare_parameter<double>("scan/preprocess/box_filter/max", params.scan_preprocess_box_filter_max);
+
+        params.scan_preprocess_angle_incidence_filter_enable = node->declare_parameter<bool>(
+            "scan/preprocess/angle_incidence_filter/enable", params.scan_preprocess_angle_incidence_filter_enable);
+        params.scan_preprocess_angle_incidence_filter_min_angle =
+            node->declare_parameter<double>("scan/preprocess/angle_incidence_filter/min_angle",
+                                            params.scan_preprocess_angle_incidence_filter_min_angle);
+        params.scan_preprocess_angle_incidence_filter_max_angle =
+            node->declare_parameter<double>("scan/preprocess/angle_incidence_filter/max_angle",
+                                            params.scan_preprocess_angle_incidence_filter_max_angle);
     }
 
     // submapping
@@ -164,7 +174,7 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         // robust
         {
             const std::string robust_loss = node->declare_parameter<std::string>("registration/robust/type", "NONE");
-            params.reg_params.robust.type = algorithms::registration::RobustLossType_from_string(robust_loss);
+            params.reg_params.robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
             params.reg_params.robust.auto_scale =
                 node->declare_parameter<bool>("registration/robust/auto_scale", params.reg_params.robust.auto_scale);
             params.reg_params.robust.init_scale =
@@ -185,16 +195,27 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         {
             params.reg_params.photometric.enable =
                 node->declare_parameter<bool>("registration/photometric/enable", params.reg_params.photometric.enable);
-            params.reg_params.photometric.photometric_weight = node->declare_parameter<double>(
-                "registration/photometric/weight", params.reg_params.photometric.photometric_weight);
+            params.reg_params.photometric.weight = node->declare_parameter<double>(
+                "registration/photometric/weight", params.reg_params.photometric.weight);
+            params.reg_params.photometric.robust_scale = node->declare_parameter<double>(
+                "registration/photometric/robust_scale", params.reg_params.photometric.robust_scale);
         }
         // GenZ
         {
             params.reg_params.genz.planarity_threshold = node->declare_parameter<double>(
                 "registration/genz/planarity_threshold", params.reg_params.genz.planarity_threshold);
         }
+        // Rotation Constraint
+        {
+            params.reg_params.rotation_constraint.enable = node->declare_parameter<bool>(
+                "registration/rotation_constraint/enable", params.reg_params.rotation_constraint.enable);
+            params.reg_params.rotation_constraint.weight = node->declare_parameter<double>(
+                "registration/rotation_constraint/weight", params.reg_params.rotation_constraint.weight);
+            params.reg_params.rotation_constraint.robust_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust_scale", params.reg_params.rotation_constraint.robust_scale);
+        }
 
-        // optimization
+        // Optimization
         {
             const std::string optimization_method =
                 node->declare_parameter<std::string>("registration/optimization_method", "GN");

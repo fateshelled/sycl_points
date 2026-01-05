@@ -157,6 +157,133 @@ public:
     /// @return KDTree shared_ptr
     static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointContainerShared& points,
                              size_t leaf_threshold = 16) {
+        return KDTree::build_impl(q, points, leaf_threshold);
+    }
+
+    /// @brief Build KDTree
+    /// @param q SYCL queue
+    /// @param cloud Point Cloud
+    /// @param leaf_threshold The maximum number of points in a leaf node.
+    /// @return KDTree shared_ptr
+    static KDTree::Ptr build(const sycl_utils::DeviceQueue& q, const PointCloudShared& cloud,
+                             size_t leaf_threshold = 16) {
+        return KDTree::build_impl(q, *cloud.points, leaf_threshold);
+    }
+
+    /// @brief async kNN search
+    /// @tparam MAX_K maximum of k
+    /// @tparam MAX_DEPTH maximum of search depth
+    /// @param queries query points
+    /// @param query_size query num
+    /// @param k number of nearest neighbors to search
+    /// @param result Search result
+    /// @param depends depends sycl events
+    /// @return knn search event
+    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
+    sycl_utils::events knn_search_async(const PointType* queries, const size_t query_size, const size_t k,
+                                        KNNResult& result,
+                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                        const TransformMatrix& transT = TransformMatrix::Identity()) const {
+        return knn_search_async_impl<MAX_K, MAX_DEPTH>(queries, query_size, k, result, depends, transT);
+    }
+
+    /// @brief async kNN search
+    /// @param queries query points
+    /// @param k number of nearest neighbors to search
+    /// @param result Search result
+    /// @param depends depends sycl events
+    /// @return knn search event
+    sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
+                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                        const TransformMatrix& transT = TransformMatrix::Identity()) const {
+        constexpr size_t MAX_DEPTH = 32;
+        if (k == 1) {
+            return knn_search_async<1, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
+        } else if (k <= 10) {
+            return knn_search_async<10, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
+        } else if (k <= 20) {
+            return knn_search_async<20, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
+        } else if (k <= 30) {
+            return knn_search_async<30, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
+        } else if (k <= 40) {
+            return knn_search_async<40, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
+        } else if (k <= 50) {
+            return knn_search_async<50, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
+        } else if (k <= 100) {
+            return knn_search_async<100, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
+        } else {
+            throw std::runtime_error("[KDTree::knn_search_async] `k` is too large. not support.");
+        }
+    }
+
+    /// @brief async radius search
+    /// @tparam MAX_K maximum of k
+    /// @tparam MAX_DEPTH maximum of search depth
+    /// @param queries query points
+    /// @param query_size query num
+    /// @param max_k maximum number of neighbors to search
+    /// @param radius search radius
+    /// @param result Search result
+    /// @param depends depends sycl events
+    /// @return radius search event
+    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
+    sycl_utils::events radius_search_async(const PointType* queries, const size_t query_size, const size_t max_k,
+                                           const float radius, KNNResult& result,
+                                           const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                           const TransformMatrix& transT = TransformMatrix::Identity()) const {
+        return radius_search_async_impl<MAX_K, MAX_DEPTH>(queries, query_size, max_k, radius, result, depends, transT);
+    }
+
+    /// @brief async radius search
+    /// @param queries query points
+    /// @param max_k maximum number of neighbors to search
+    /// @param radius search radius
+    /// @param result Search result
+    /// @param depends depends sycl events
+    /// @return radius search event
+    sycl_utils::events radius_search_async(const PointCloudShared& queries, const size_t max_k, const float radius,
+                                           KNNResult& result,
+                                           const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                           const TransformMatrix& transT = TransformMatrix::Identity()) const {
+        constexpr size_t MAX_DEPTH = 32;
+        if (max_k == 1) {
+            return radius_search_async<1, MAX_DEPTH>(queries.points_ptr(), queries.size(), max_k, radius, result,
+                                                     depends, transT);
+        } else if (max_k <= 10) {
+            return radius_search_async<10, MAX_DEPTH>(queries.points_ptr(), queries.size(), max_k, radius, result,
+                                                      depends, transT);
+        } else if (max_k <= 20) {
+            return radius_search_async<20, MAX_DEPTH>(queries.points_ptr(), queries.size(), max_k, radius, result,
+                                                      depends, transT);
+        } else if (max_k <= 30) {
+            return radius_search_async<30, MAX_DEPTH>(queries.points_ptr(), queries.size(), max_k, radius, result,
+                                                      depends, transT);
+        } else if (max_k <= 40) {
+            return radius_search_async<40, MAX_DEPTH>(queries.points_ptr(), queries.size(), max_k, radius, result,
+                                                      depends, transT);
+        } else if (max_k <= 50) {
+            return radius_search_async<50, MAX_DEPTH>(queries.points_ptr(), queries.size(), max_k, radius, result,
+                                                      depends, transT);
+        } else if (max_k <= 100) {
+            return radius_search_async<100, MAX_DEPTH>(queries.points_ptr(), queries.size(), max_k, radius, result,
+                                                       depends, transT);
+        } else {
+            throw std::runtime_error("[KDTree::radius_search_async] `max_k` is too large. not support.");
+        }
+    }
+
+    void remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
+        this->remove_nodes_by_flags_impl(flags, indices);
+    }
+
+private:
+    /// @brief Build KDTree
+    /// @param q SYCL queue
+    /// @param points Point Container
+    /// @param leaf_threshold The maximum number of points in a leaf node.
+    /// @return KDTree shared_ptr
+    static KDTree::Ptr build_impl(const sycl_utils::DeviceQueue& q, const PointContainerShared& points,
+                                  size_t leaf_threshold = 16) {
         const size_t n = points.size();
 
         if (n == 0) {
@@ -274,61 +401,6 @@ public:
         return flatTree;
     }
 
-    /// @brief Build KDTree
-    /// @param queue SYCL queue
-    /// @param cloud Point Cloud
-    /// @param leaf_threshold The maximum number of points in a leaf node.
-    /// @return KDTree shared_ptr
-    static KDTree::Ptr build(const sycl_utils::DeviceQueue& queue, const PointCloudShared& cloud,
-                             size_t leaf_threshold = 16) {
-        return KDTree::build(queue, *cloud.points, leaf_threshold);
-    }
-
-    void remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
-        const size_t N = this->tree_->size();
-        if (N != flags.size() || N != indices.size()) {
-            throw std::runtime_error("[KDTree::build] flags size must be equal to tree size.");
-        }
-        // mem_advise to device
-        {
-            this->queue.set_accessed_by_device(this->tree_->data(), N);
-            this->queue.set_accessed_by_device(flags.data(), N);
-            this->queue.set_accessed_by_device(indices.data(), N);
-        }
-
-        const size_t work_group_size = this->queue.get_work_group_size();
-        const size_t global_size = this->queue.get_global_size(N);
-
-        auto remove_task = [&](sycl::handler& h) {
-            // Get pointers
-            const auto tree_ptr = this->tree_->data();
-            const auto flags_ptr = flags.data();
-            const auto indices_ptr = indices.data();
-
-            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                const size_t idx = item.get_global_id(0);
-
-                if (idx >= N) return;
-
-                const auto point_idx = tree_ptr[idx].idx;
-                if (point_idx < 0 || N < point_idx) return;
-
-                // Direct assignment: REMOVE_FLAG(0) -> invalid(0), INCLUDE_FLAG(1) -> valid(1)
-                tree_ptr[idx].valid = flags_ptr[point_idx];
-                tree_ptr[idx].idx = indices_ptr[point_idx];
-            });
-        };
-
-        this->queue.ptr->submit([&](sycl::handler& h) { remove_task(h); }).wait_and_throw();
-
-        // mem_advise clear
-        {
-            this->queue.clear_accessed_by_device(this->tree_->data(), N);
-            this->queue.clear_accessed_by_device(flags.data(), N);
-            this->queue.clear_accessed_by_device(indices.data(), N);
-        }
-    }
-
     /// @brief async kNN search
     /// @tparam MAX_K maximum of k
     /// @tparam MAX_DEPTH maximum of search depth
@@ -339,10 +411,10 @@ public:
     /// @param depends depends sycl events
     /// @return knn search event
     template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
-    sycl_utils::events knn_search_async(const PointType* queries, const size_t query_size, const size_t k,
-                                        KNNResult& result,
-                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
-                                        const TransformMatrix& transT = TransformMatrix::Identity()) const {
+    sycl_utils::events knn_search_async_impl(const PointType* queries, const size_t query_size, const size_t k,
+                                             KNNResult& result,
+                                             const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                             const TransformMatrix& transT = TransformMatrix::Identity()) const {
         if (query_size == 0) {
             if (result.indices == nullptr || result.distances == nullptr) {
                 result.allocate(this->queue, 0, 0);
@@ -458,36 +530,198 @@ public:
         };
 
         sycl_utils::events events;
-        events += this->queue.ptr->submit([&](sycl::handler& h) { search_task(h); });
+        events += this->queue.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(depends);
+            search_task(h);
+        });
         return events;
     }
 
-    /// @brief async kNN search
+    /// @brief async radius search
+    /// @tparam MAX_K maximum of k
+    /// @tparam MAX_DEPTH maximum of search depth
     /// @param queries query points
-    /// @param k number of nearest neighbors to search
+    /// @param query_size query num
+    /// @param max_k maximum number of neighbors to search
+    /// @param radius search radius
     /// @param result Search result
     /// @param depends depends sycl events
-    /// @return knn search event
-    sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, KNNResult& result,
-                                        const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
-                                        const TransformMatrix& transT = TransformMatrix::Identity()) const {
-        constexpr size_t MAX_DEPTH = 32;
-        if (k == 1) {
-            return knn_search_async<1, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
-        } else if (k <= 10) {
-            return knn_search_async<10, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
-        } else if (k <= 20) {
-            return knn_search_async<20, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
-        } else if (k <= 30) {
-            return knn_search_async<30, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
-        } else if (k <= 40) {
-            return knn_search_async<40, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
-        } else if (k <= 50) {
-            return knn_search_async<50, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
-        } else if (k <= 100) {
-            return knn_search_async<100, MAX_DEPTH>(queries.points_ptr(), queries.size(), k, result, depends, transT);
+    /// @return radius search event
+    template <size_t MAX_K = 20, size_t MAX_DEPTH = 32>
+    sycl_utils::events radius_search_async_impl(const PointType* queries, const size_t query_size, const size_t max_k,
+                                                const float radius, KNNResult& result,
+                                                const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+                                                const TransformMatrix& transT = TransformMatrix::Identity()) const {
+        if (query_size == 0 || max_k == 0) {
+            if (result.indices == nullptr || result.distances == nullptr) {
+                result.allocate(this->queue, 0, 0);
+            } else {
+                result.resize(0, 0);
+            }
+            return sycl_utils::events();
+        }
+        constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;
+        if (MAX_K < max_k) {
+            throw std::runtime_error("[KDTree::radius_search_async] template arg `MAX_K` must be larger than `max_k`.");
+        }
+
+        const size_t treeSize = this->tree_->size();
+
+        // Initialize result structure
+        if (result.indices == nullptr || result.distances == nullptr) {
+            result.allocate(this->queue, query_size, max_k);
         } else {
-            throw std::runtime_error("[KDTree::knn_search_async] `k` is too large. not support.");
+            result.resize(query_size, max_k);
+        }
+
+        const size_t work_group_size = this->queue.get_work_group_size();
+        const size_t global_size = this->queue.get_global_size(query_size);
+
+        auto search_task = [&](sycl::handler& h) {
+            // Get pointers
+            const auto query_ptr = queries;
+            const auto distance_ptr = result.distances->data();
+            const auto index_ptr = result.indices->data();
+            const auto tree_ptr = (*this->tree_).data();
+            const auto trans_vec = eigen_utils::to_sycl_vec(transT);
+            const float radius_sq = radius * radius;
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t queryIdx = item.get_global_id(0);
+
+                if (queryIdx >= query_size) return;  // Early return for extra threads
+
+                // Query point
+                PointType query;
+                transform::kernel::transform_point(query_ptr[queryIdx], query, trans_vec);
+
+                // Arrays to store radius neighbors
+                NodeEntry bestK[MAX_K];
+                // Initialize
+                std::fill(bestK, bestK + MAX_K, NodeEntry{-1, std::numeric_limits<float>::max()});
+
+                // Stack
+                NodeEntry nearStack[MAX_DEPTH_HALF];
+                NodeEntry farStack[MAX_DEPTH_HALF];
+                size_t nearStackPtr = 0;
+                size_t farStackPtr = 0;
+
+                // Start from root node
+                nearStack[nearStackPtr++] = {0, 0.0f};
+
+                size_t found_num = 0;
+
+                // Explore until stack is empty
+                while (nearStackPtr > 0 || farStackPtr > 0) {
+                    // Pop a node from stack
+                    const NodeEntry current = nearStackPtr > 0 ? nearStack[--nearStackPtr] : farStack[--farStackPtr];
+                    const auto nodeIdx = current.nodeIdx;
+
+                    // Skip condition: nodes farther than radius or current kth distance
+                    const float limit_dist_sq = sycl::fmin(bestK[max_k - 1].dist_sq, radius_sq);
+                    if (current.dist_sq > limit_dist_sq) continue;
+
+                    // Skip invalid nodes
+                    if (nodeIdx == -1 || nodeIdx >= treeSize) continue;
+
+                    const auto node = tree_ptr[nodeIdx];
+                    const bool is_valid = (node.valid == filter::INCLUDE_FLAG);
+
+                    // Calculate distance to current node
+                    const PointType diff = eigen_utils::subtract<4, 1>(query, node.pt);
+                    const float dist_sq =
+                        is_valid ? eigen_utils::dot<4>(diff, diff) : std::numeric_limits<float>::max();
+
+                    // Insert if the node is within the radius
+                    if (is_valid && dist_sq <= radius_sq) {
+                        ++found_num;
+                        insert_to_bestK<MAX_K>(bestK, dist_sq, node.idx, max_k, found_num);
+                    }
+
+                    // Calculate distance along split axis
+                    const float axisDistance = diff[node.axis];
+
+                    // Determine nearer and further subtrees
+                    const bool is_leaf = (node.is_leaf != 0);
+                    const auto nearerNode = (is_leaf || axisDistance <= 0) ? node.left : node.right;
+                    const auto furtherNode = (is_leaf || axisDistance <= 0) ? node.right : node.left;
+
+                    // Squared distance to splitting plane
+                    const float splitDistSq = axisDistance * axisDistance;
+
+                    // Check if further subtree needs to be explored
+                    const bool searchFurther = (splitDistSq <= limit_dist_sq);
+
+                    // Push further subtree to stack (conditional)
+                    if (searchFurther && furtherNode != -1 && farStackPtr < MAX_DEPTH_HALF) {
+                        farStack[farStackPtr++] = {furtherNode, splitDistSq};
+                    }
+
+                    // Push nearer subtree to stack (always explore)
+                    if (nearerNode != -1 && nearStackPtr < MAX_DEPTH_HALF) {
+                        nearStack[nearStackPtr++] = {nearerNode, 0.0f};  // Prioritize near side with distance 0
+                    }
+                }
+
+                // Write final results to global memory
+                for (size_t i = 0; i < max_k; ++i) {
+                    distance_ptr[queryIdx * max_k + i] = bestK[i].dist_sq;
+                    index_ptr[queryIdx * max_k + i] = bestK[i].nodeIdx;
+                }
+            });
+        };
+
+        sycl_utils::events events;
+        events += this->queue.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(depends);
+            search_task(h);
+        });
+        return events;
+    }
+
+    void remove_nodes_by_flags_impl(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {
+        const size_t N = this->tree_->size();
+        if (flags.size() != indices.size()) {
+            throw std::runtime_error("[KDTree::remove_nodes_by_flags_impl] flags and indices must have the same size.");
+        }
+        // mem_advise to device
+        {
+            this->queue.set_accessed_by_device(this->tree_->data(), N);
+            this->queue.set_accessed_by_device(flags.data(), flags.size());
+            this->queue.set_accessed_by_device(indices.data(), indices.size());
+        }
+
+        const size_t work_group_size = this->queue.get_work_group_size();
+        const size_t global_size = this->queue.get_global_size(N);
+
+        auto remove_task = [&](sycl::handler& h) {
+            // Get pointers
+            const auto tree_ptr = this->tree_->data();
+            const auto flags_ptr = flags.data();
+            const auto indices_ptr = indices.data();
+            const size_t flags_size = flags.size();
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t idx = item.get_global_id(0);
+
+                if (idx >= N) return;
+
+                const auto point_idx = tree_ptr[idx].idx;
+                if (point_idx < 0 || static_cast<size_t>(point_idx) >= flags_size) return;
+
+                // Direct assignment: REMOVE_FLAG(0) -> invalid(0), INCLUDE_FLAG(1) -> valid(1)
+                tree_ptr[idx].valid = flags_ptr[point_idx];
+                tree_ptr[idx].idx = indices_ptr[point_idx];
+            });
+        };
+
+        this->queue.ptr->submit([&](sycl::handler& h) { remove_task(h); }).wait_and_throw();
+
+        // mem_advise clear
+        {
+            this->queue.clear_accessed_by_device(this->tree_->data(), N);
+            this->queue.clear_accessed_by_device(flags.data(), flags.size());
+            this->queue.clear_accessed_by_device(indices.data(), indices.size());
         }
     }
 };

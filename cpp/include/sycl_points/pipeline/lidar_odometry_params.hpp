@@ -32,6 +32,9 @@ struct Parameters {
     bool scan_preprocess_box_filter_enable = true;
     float scan_preprocess_box_filter_min = 2.0f;
     float scan_preprocess_box_filter_max = 50.0f;
+    bool scan_preprocess_angle_incidence_filter_enable = true;
+    float scan_preprocess_angle_incidence_filter_min_angle = 0.0f;                    // 0.0 degrees
+    float scan_preprocess_angle_incidence_filter_max_angle = 80.0f * M_PIf / 180.0f;  // 80.0 degrees
 
     float submap_voxel_size = 1.0f;
     size_t submap_covariance_neighbor_num = 10;
