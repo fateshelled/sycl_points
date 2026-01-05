@@ -145,7 +145,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_point_to_point(const std::
     ret.b = eigen_utils::multiply<6, 4>(J_T, residual);
     const float squared_norm = eigen_utils::frobenius_norm_squared<4>(residual);
     residual_norm = sycl::sqrt(squared_norm);
-    ret.squared_error = 0.5f * squared_norm;
+    ret.squared_error = squared_norm;
     ret.inlier = 1;
     return ret;
 }
@@ -162,7 +162,7 @@ SYCL_EXTERNAL inline float calculate_point_to_point_error(const std::array<sycl:
 
     const PointType residual(target_pt.x() - transform_source.x(), target_pt.y() - transform_source.y(),
                              target_pt.z() - transform_source.z(), 0.0f);
-    return 0.5f * eigen_utils::frobenius_norm_squared<4>(residual);
+    return eigen_utils::frobenius_norm_squared<4>(residual);
 }
 
 /// @brief Iterative Closest Point (ICP Point to Plane)
@@ -206,7 +206,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_point_to_plane(const std::
     // Scalar point-to-plane error uses the squared projection length.
     const float squared_norm = projected_residual * projected_residual;
     residual_norm = sycl::fabs(projected_residual);
-    ret.squared_error = 0.5f * squared_norm;
+    ret.squared_error = squared_norm;
     ret.inlier = 1;
     return ret;
 }
@@ -216,7 +216,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_point_to_plane(const std::
 /// @param source_pt Source Point
 /// @param target_pt Target point
 /// @param target_normal Target normal
-/// @return error
+/// @return Squared error
 SYCL_EXTERNAL inline float calculate_point_to_plane_error(const std::array<sycl::float4, 4>& T,
                                                           const PointType& source_pt, const PointType& target_pt,
                                                           const Normal& target_normal) {
@@ -228,7 +228,7 @@ SYCL_EXTERNAL inline float calculate_point_to_plane_error(const std::array<sycl:
 
     // Error is the squared projection of the residual onto the target normal.
     const float projected_residual = eigen_utils::dot<3>(target_normal.head<3>(), residual.head<3>());
-    return 0.5f * projected_residual * projected_residual;
+    return projected_residual * projected_residual;
 }
 
 /// @brief Generalized Iterative Closest Point (GICP)
@@ -254,16 +254,15 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
         eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
 
     LinearizedKernelResult ret;
-    // J.transpose() * mahalanobis * J;
+    // H = J.transpose() * mahalanobis * J;
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T_mah, J));
-    // J.transpose() * mahalanobis * residual;
+    // b = J.transpose() * mahalanobis * residual;
     ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
 
     const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual));
     residual_norm = sycl::sqrt(squared_norm);
 
-    // 0.5 * residual.transpose() * mahalanobis * residual;
-    ret.squared_error = 0.5f * squared_norm;
+    ret.squared_error = squared_norm;
     ret.inlier = 1;
     return ret;
 }
@@ -274,7 +273,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
 /// @param source_cov Source covariance
 /// @param target_pt Target point
 /// @param target_cov Target covariance
-/// @return error
+/// @return Squared error
 SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                 const Covariance& source_cov, const PointType& target_pt,
                                                 const Covariance& target_cov) {
@@ -294,7 +293,7 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
 
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
-    return 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
+    return (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
 }
 
 /// @brief Compute inverse covariance matrix for Point-to-Distribution ICP
@@ -332,16 +331,15 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_point_to_distribution(cons
         eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
 
     LinearizedKernelResult ret;
-    // J.transpose() * mahalanobis * J;
+    // H = J.transpose() * mahalanobis * J;
     ret.H = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(J_T_mah, J));
-    // J.transpose() * mahalanobis * residual;
+    // b = J.transpose() * mahalanobis * residual;
     ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
 
     const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual));
     residual_norm = sycl::sqrt(squared_norm);
 
-    // 0.5 * residual.transpose() * mahalanobis * residual;
-    ret.squared_error = 0.5f * squared_norm;
+    ret.squared_error = squared_norm;
     ret.inlier = 1;
     return ret;
 }
@@ -351,7 +349,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_point_to_distribution(cons
 /// @param source_pt Source Point (coordinate only, no covariance)
 /// @param target_pt Target point
 /// @param target_cov Target covariance
-/// @return error
+/// @return Squared error
 SYCL_EXTERNAL inline float calculate_point_to_distribution_error(const std::array<sycl::float4, 4>& T,
                                                                  const PointType& source_pt, const PointType& target_pt,
                                                                  const Covariance& target_cov) {
@@ -362,7 +360,7 @@ SYCL_EXTERNAL inline float calculate_point_to_distribution_error(const std::arra
 
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
-    return 0.5f * (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
+    return (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
 }
 
 /// @brief Linearization

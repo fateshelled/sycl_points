@@ -707,7 +707,7 @@ private:
                         const LinearizedKernelResult linearized_color =
                             kernel::linearize_color(cur_T, source_ptr[index], target_ptr[target_idx], source_rgb,
                                                     target_rgb, target_normal, target_grad);
-                        float residual_norm_color = sycl::sqrt(2.0f * linearized_color.squared_error);
+                        float residual_norm_color = sycl::sqrt(linearized_color.squared_error);
                         const float robust_weight_color =
                             robust::kernel::compute_robust_weight<loss>(residual_norm_color, photometric_robust_scale);
 
@@ -728,7 +728,7 @@ private:
                         const LinearizedKernelResult linearized_intensity = kernel::linearize_intensity(
                             cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
                             target_normal, target_intensity_grad);
-                        float residual_norm_intensity = sycl::sqrt(2.0f * linearized_intensity.squared_error);
+                        float residual_norm_intensity = sycl::sqrt(linearized_intensity.squared_error);
                         const float robust_weight_intensity = robust::kernel::compute_robust_weight<loss>(
                             residual_norm_intensity, photometric_robust_scale);
 
@@ -749,7 +749,7 @@ private:
                     if (rotation_constraint_enable) {
                         const LinearizedKernelResult linearized_rot =
                             kernel::linearize_rotation_constraint(source_cov, target_cov, cur_T);
-                        const float residual_norm_rot = sycl::sqrt(2.0f * linearized_rot.squared_error);
+                        const float residual_norm_rot = sycl::sqrt(linearized_rot.squared_error);
                         const float robust_weight_rot = robust::kernel::compute_robust_weight<loss>(
                             residual_norm_rot, rotation_constraint_robust_scale);
 
@@ -880,7 +880,7 @@ private:
                             source_ptr[index], source_cov,                      // source
                             target_ptr[target_idx], target_cov, target_normal,  // target
                             genz_alpha);
-                        const float residual_norm = sycl::sqrt(2.0f * squared_error);
+                        const float residual_norm = sycl::sqrt(squared_error);
 
                         if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
                             if (residual_norm > mahalanobis_dist_threshold) return;
@@ -895,7 +895,7 @@ private:
                         const float squared_error_color =
                             kernel::calculate_color_error(cur_T, source_ptr[index], target_ptr[target_idx], source_rgb,
                                                           target_rgb, target_normal, target_grad);
-                        const float residual_norm_color = sycl::sqrt(2.0f * squared_error_color);
+                        const float residual_norm_color = sycl::sqrt(squared_error_color);
                         total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
                                                                 residual_norm_color, photometric_robust_scale);
                     }
@@ -903,7 +903,7 @@ private:
                         const float squared_error_intensity = kernel::calculate_intensity_error(
                             cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
                             target_normal, target_intensity_grad);
-                        const float residual_norm_intensity = sycl::sqrt(2.0f * squared_error_intensity);
+                        const float residual_norm_intensity = sycl::sqrt(squared_error_intensity);
                         total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
                                                                 residual_norm_intensity, photometric_robust_scale);
                     }
@@ -912,7 +912,7 @@ private:
                     if (rotation_constraint_enable) {
                         const float squared_error_rot =
                             kernel::calculate_rotation_constraint_error(source_cov, target_cov, cur_T);
-                        const float residual_norm_rot = sycl::sqrt(2.0f * squared_error_rot);
+                        const float residual_norm_rot = sycl::sqrt(squared_error_rot);
                         total_error +=
                             rotation_constraint_weight * robust::kernel::compute_robust_error<loss>(
                                                              residual_norm_rot, rotation_constraint_robust_scale);

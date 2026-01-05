@@ -71,10 +71,9 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_color(
     LinearizedKernelResult ret;
     // H = J.T * J
     // b = J.T * residual
-    // error = 0.5 * norm(residual)
     ret.H = eigen_utils::multiply<6, 3, 6>(eigen_utils::transpose<3, 6>(J_color), J_color);
     ret.b = eigen_utils::multiply<6, 3, 1>(eigen_utils::transpose<3, 6>(J_color), residual_color);
-    ret.squared_error = 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
+    ret.squared_error = eigen_utils::frobenius_norm_squared<3>(residual_color);
     ret.inlier = 1;
 
     return ret;
@@ -118,8 +117,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_intensity(
     ret.H = eigen_utils::multiply<6, 1, 6>(J_intensity_T, J_intensity);
     // b = J.T * residual
     ret.b = eigen_utils::multiply<6>(J_intensity_T, residual_intensity);
-    // error = 0.5 * residual^2
-    ret.squared_error = 0.5f * residual_intensity * residual_intensity;
+    ret.squared_error = residual_intensity * residual_intensity;
     ret.inlier = 1;
 
     return ret;
@@ -132,6 +130,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_intensity(
 /// @param source_rgb Color observed at the source point
 /// @param target_rgb Color observed at the target point
 /// @param target_rgb_grad Spatial gradient of the target color
+/// @return Squared error value
 SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 4>& T,    ///< SE(3) transform
                                                  const PointType& source_pt,              ///< Source point
                                                  const PointType& target_pt,              ///< Target point
@@ -154,6 +153,7 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
 /// @param target_intensity Intensity observed at the target point
 /// @param target_normal Target surface normal
 /// @param target_intensity_grad Spatial gradient of the target intensity
+/// @return Squared error value
 SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                      const PointType& target_pt, float source_intensity,
                                                      float target_intensity, const Normal& target_normal,
@@ -162,7 +162,7 @@ SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::floa
     const float intensity_diff = source_intensity - target_intensity;
     const float residual_intensity = intensity_diff + eigen_utils::dot<3>(target_intensity_grad, offset);
 
-    return 0.5f * residual_intensity * residual_intensity;
+    return residual_intensity * residual_intensity;
 }
 
 }  // namespace kernel
