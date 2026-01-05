@@ -662,7 +662,7 @@ private:
             .wait_and_throw();
 
         if (failure_flag.at(0) != 0U) {
-            std::cerr << "Cloud not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
+            std::cerr << "Could not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
             // throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
         }
 
