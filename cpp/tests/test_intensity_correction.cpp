@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "sycl_points/algorithms/intensity_correction.hpp"
+#include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
