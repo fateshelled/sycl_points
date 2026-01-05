@@ -10,9 +10,9 @@
 #include <stdexcept>
 #include <vector>
 
+#include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/algorithms/common/workgroup_utils.hpp"
-#include "sycl_points/algorithms/transform.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 

@@ -2,13 +2,13 @@
 
 #include <map>
 
-#include "sycl_points/algorithms/color_gradient.hpp"
-#include "sycl_points/algorithms/covariance.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/feature/color_gradient.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
+#include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
-#include "sycl_points/algorithms/intensity_correction.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
