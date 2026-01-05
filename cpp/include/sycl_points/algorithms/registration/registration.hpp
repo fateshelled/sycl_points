@@ -12,8 +12,8 @@
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/algorithms/registration/photometric.hpp"
-#include "sycl_points/algorithms/registration/robust.hpp"
 #include "sycl_points/algorithms/registration/rotation_constraint.hpp"
+#include "sycl_points/algorithms/robust/robust.hpp"
 #include "sycl_points/algorithms/transform.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 
@@ -52,11 +52,11 @@ struct RegistrationParams {
         float rotation = 1e-3f;     // rotation tolerance [rad]
     };
     struct Robust {
-        RobustLossType type = RobustLossType::NONE;  // robust loss function type
-        bool auto_scale = false;                     // enable auto robust scale
-        float init_scale = 10.0f;                    // scale for robust loss function
-        float min_scale = 0.5f;                      // minimum scale
-        size_t scaling_iter = 4;                     // scaling iteration
+        robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
+        bool auto_scale = false;                                     // enable auto robust scale
+        float init_scale = 10.0f;                                    // scale for robust loss function
+        float min_scale = 0.5f;                                      // minimum scale
+        size_t scaling_iter = 4;                                     // scaling iteration
     };
     struct PhotometricTerm {
         bool enable = false;  // If true, use photometric term.
@@ -265,11 +265,11 @@ public:
                     "Covariance matrices of target are required for performing rotation constraint matching.");
             }
         }
-        if (this->params_.robust.type != RobustLossType::NONE) {
+        if (this->params_.robust.type != robust::RobustLossType::NONE) {
             if (this->params_.robust.init_scale <= 0.0f) {
                 std::cout << "[Caution] `robust.init_scale` must be greater than zero. Disable robust loss."
                           << std::endl;
-                this->params_.robust.type = RobustLossType::NONE;
+                this->params_.robust.type = robust::RobustLossType::NONE;
             }
             if (this->params_.robust.auto_scale) {
                 if (this->params_.robust.min_scale <= 0.0f ||
@@ -312,7 +312,7 @@ public:
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
             const bool enable_robust_auto_scaling =
-                this->params_.robust.type != RobustLossType::NONE && this->params_.robust.auto_scale;
+                this->params_.robust.type != robust::RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
                 enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
             const float robust_scaling_factor =
@@ -395,7 +395,7 @@ public:
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
             const bool enable_robust_auto_scaling =
-                this->params_.robust.type != RobustLossType::NONE && this->params_.robust.auto_scale;
+                this->params_.robust.type != robust::RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
                 enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
             const float robust_scaling_factor =
@@ -477,7 +477,7 @@ private:
     template <typename Func>
     sycl_utils::events dispatch(Func&& exec) {
         sycl_utils::events events;
-        auto dispatch_inner = [&]<RegType reg, typename RobustLossTypeTags, size_t... Js>(RobustLossType loss,
+        auto dispatch_inner = [&]<RegType reg, typename RobustLossTypeTags, size_t... Js>(robust::RobustLossType loss,
                                                                                           std::index_sequence<Js...>) {
             // Search for RobustLossType candidates
             return (
@@ -488,7 +488,7 @@ private:
                 ...);
         };
         auto dispatch_outer = [&]<typename RegTypeTags, typename RobustLossTypeTags, size_t... Is>(
-                                  RegType reg, RobustLossType loss, std::index_sequence<Is...>) {
+                                  RegType reg, robust::RobustLossType loss, std::index_sequence<Is...>) {
             // Search for RegType candidates
             return (((reg == std::tuple_element_t<Is, RegTypeTags>::value)
                          ? dispatch_inner
@@ -499,7 +499,7 @@ private:
         };
 
         // Start search
-        bool found = dispatch_outer.template operator()<RegTypeTags, RobustLossTypeTags>(
+        bool found = dispatch_outer.template operator()<RegTypeTags, robust::RobustLossTypeTags>(
             this->params_.reg_type, this->params_.robust.type,
             std::make_index_sequence<std::tuple_size_v<RegTypeTags>>());
 
@@ -572,7 +572,7 @@ private:
         return static_cast<float>(counter_plane[0]) / static_cast<float>(inlier_count);
     }
 
-    template <RegType reg, RobustLossType loss>
+    template <RegType reg, robust::RobustLossType loss>
     sycl_utils::events linearize_parallel_reduction_async(const PointCloudShared& source,
                                                           const PointCloudShared& target, const Eigen::Matrix4f transT,
                                                           float robust_scale, const std::vector<sycl::event>& depends) {
@@ -690,7 +690,8 @@ private:
                         }
 
                         // Apply robust kernel
-                        const float robust_weight = kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                        const float robust_weight =
+                            robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
                         const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
                         const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
                         total_H0 = robust_weight * H0;
@@ -698,7 +699,7 @@ private:
                         total_H2 = robust_weight * H2;
                         total_b0 = robust_weight * b0;
                         total_b1 = robust_weight * b1;
-                        total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                        total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
                     }
 
                     // Color term
@@ -708,7 +709,7 @@ private:
                                                     target_rgb, target_normal, target_grad);
                         float residual_norm_color = sycl::sqrt(2.0f * linearized_color.squared_error);
                         const float robust_weight_color =
-                            kernel::compute_robust_weight<loss>(residual_norm_color, photometric_robust_scale);
+                            robust::kernel::compute_robust_weight<loss>(residual_norm_color, photometric_robust_scale);
 
                         const auto& [H0_color, H1_color, H2_color] = eigen_utils::to_sycl_vec(linearized_color.H);
                         const auto& [b0_color, b1_color] = eigen_utils::to_sycl_vec(linearized_color.b);
@@ -718,7 +719,7 @@ private:
                         total_H2 += photometric_weight * robust_weight_color * H2_color;
                         total_b0 += photometric_weight * robust_weight_color * b0_color;
                         total_b1 += photometric_weight * robust_weight_color * b1_color;
-                        total_error += photometric_weight * kernel::compute_robust_error<loss>(
+                        total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
                                                                 residual_norm_color, photometric_robust_scale);
                     }
 
@@ -728,8 +729,8 @@ private:
                             cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
                             target_normal, target_intensity_grad);
                         float residual_norm_intensity = sycl::sqrt(2.0f * linearized_intensity.squared_error);
-                        const float robust_weight_intensity =
-                            kernel::compute_robust_weight<loss>(residual_norm_intensity, photometric_robust_scale);
+                        const float robust_weight_intensity = robust::kernel::compute_robust_weight<loss>(
+                            residual_norm_intensity, photometric_robust_scale);
 
                         const auto& [H0_intensity, H1_intensity, H2_intensity] =
                             eigen_utils::to_sycl_vec(linearized_intensity.H);
@@ -740,7 +741,7 @@ private:
                         total_H2 += photometric_weight * robust_weight_intensity * H2_intensity;
                         total_b0 += photometric_weight * robust_weight_intensity * b0_intensity;
                         total_b1 += photometric_weight * robust_weight_intensity * b1_intensity;
-                        total_error += photometric_weight * kernel::compute_robust_error<loss>(
+                        total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
                                                                 residual_norm_intensity, photometric_robust_scale);
                     }
 
@@ -749,8 +750,8 @@ private:
                         const LinearizedKernelResult linearized_rot =
                             kernel::linearize_rotation_constraint(source_cov, target_cov, cur_T);
                         const float residual_norm_rot = sycl::sqrt(2.0f * linearized_rot.squared_error);
-                        const float robust_weight_rot =
-                            kernel::compute_robust_weight<loss>(residual_norm_rot, rotation_constraint_robust_scale);
+                        const float robust_weight_rot = robust::kernel::compute_robust_weight<loss>(
+                            residual_norm_rot, rotation_constraint_robust_scale);
 
                         const auto& [H0_rot, H1_rot, H2_rot] = eigen_utils::to_sycl_vec(linearized_rot.H);
                         const auto& [b0_rot, b1_rot] = eigen_utils::to_sycl_vec(linearized_rot.b);
@@ -761,8 +762,8 @@ private:
                         total_b0 += rotation_constraint_weight * robust_weight_rot * b0_rot;
                         total_b1 += rotation_constraint_weight * robust_weight_rot * b1_rot;
                         total_error +=
-                            rotation_constraint_weight *
-                            kernel::compute_robust_error<loss>(residual_norm_rot, rotation_constraint_robust_scale);
+                            rotation_constraint_weight * robust::kernel::compute_robust_error<loss>(
+                                                             residual_norm_rot, rotation_constraint_robust_scale);
                     }
 
                     // Reduction on device
@@ -783,7 +784,7 @@ private:
     LinearizedResult linearize(const PointCloudShared& source, const PointCloudShared& target,
                                const Eigen::Matrix4f transT, float robust_scale,
                                const std::vector<sycl::event>& depends) {
-        auto events = this->dispatch([&]<RegType reg, RobustLossType loss>() {
+        auto events = this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
             return this->linearize_parallel_reduction_async<reg, loss>(source, target, transT, robust_scale, depends);
         });
 
@@ -791,7 +792,7 @@ private:
         return this->linearized_on_device_->toCPU(0);
     }
 
-    template <RegType reg, RobustLossType loss>
+    template <RegType reg, robust::RobustLossType loss>
     std::tuple<float, uint32_t> compute_error_parallel_reduction(const PointCloudShared& source,
                                                                  const PointCloudShared& target,
                                                                  const knn::KNNResult& knn_results,
@@ -886,7 +887,7 @@ private:
                         }
 
                         // Apply robust kernel
-                        total_error = kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                        total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
                     }
 
                     // Photometric term
@@ -895,7 +896,7 @@ private:
                             kernel::calculate_color_error(cur_T, source_ptr[index], target_ptr[target_idx], source_rgb,
                                                           target_rgb, target_normal, target_grad);
                         const float residual_norm_color = sycl::sqrt(2.0f * squared_error_color);
-                        total_error += photometric_weight * kernel::compute_robust_error<loss>(
+                        total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
                                                                 residual_norm_color, photometric_robust_scale);
                     }
                     if (use_intensity) {
@@ -903,7 +904,7 @@ private:
                             cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
                             target_normal, target_intensity_grad);
                         const float residual_norm_intensity = sycl::sqrt(2.0f * squared_error_intensity);
-                        total_error += photometric_weight * kernel::compute_robust_error<loss>(
+                        total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
                                                                 residual_norm_intensity, photometric_robust_scale);
                     }
 
@@ -913,8 +914,8 @@ private:
                             kernel::calculate_rotation_constraint_error(source_cov, target_cov, cur_T);
                         const float residual_norm_rot = sycl::sqrt(2.0f * squared_error_rot);
                         total_error +=
-                            rotation_constraint_weight *
-                            kernel::compute_robust_error<loss>(residual_norm_rot, rotation_constraint_robust_scale);
+                            rotation_constraint_weight * robust::kernel::compute_robust_error<loss>(
+                                                             residual_norm_rot, rotation_constraint_robust_scale);
                     }
 
                     // Reduction
@@ -932,7 +933,7 @@ private:
                                               const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
                                               float robust_scale) {
         std::tuple<float, uint32_t> result = {0.0f, 0};
-        this->dispatch([&]<RegType reg, RobustLossType loss>() {
+        this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
             result =
                 this->compute_error_parallel_reduction<reg, loss>(source, target, knn_results, transT, robust_scale);
             return sycl_utils::events{};

@@ -7,7 +7,7 @@
 
 namespace sycl_points {
 namespace algorithms {
-namespace registration {
+namespace robust {
 
 /// @brief Robust loss function types for M-estimation
 enum class RobustLossType {
