@@ -703,7 +703,7 @@ inline Eigen::Vector<float, 6> from_sycl_vec(const std::array<sycl::float3, 2>& 
 
 namespace geometry {
 
-Eigen::Vector4f rotation_matrix_to_quaternion(const Eigen::Matrix3f& R) {
+inline Eigen::Vector4f rotation_matrix_to_quaternion(const Eigen::Matrix3f& R) {
     Eigen::Vector4f quat;
     const auto trace = R(0, 0) + R(1, 1) + R(2, 2);
     if (trace > 0.0f) {

@@ -104,7 +104,7 @@ inline void transform(PointCloudShared& cloud, const TransformMatrix& trans) {
 /// @param cloud Point Cloud
 /// @param trans transform matrix
 /// @return Transformed Point Cloud
-PointCloudShared transform_copy(const PointCloudShared& cloud, const TransformMatrix& trans) {
+inline PointCloudShared transform_copy(const PointCloudShared& cloud, const TransformMatrix& trans) {
     std::shared_ptr<PointCloudShared> ret = std::make_shared<PointCloudShared>(cloud.queue);
     ret->resize_points(cloud.size());
     if (cloud.size() == 0) {
@@ -149,7 +149,8 @@ inline void transform_cpu(PointCloudShared& cloud, const TransformMatrix& trans)
 /// @param cloud Point Cloud
 /// @param trans transform matrix
 /// @return Transformed Point Cloud
-sycl_points::PointCloudShared transform_cpu_copy(sycl_points::PointCloudShared& cloud, const TransformMatrix& trans) {
+inline sycl_points::PointCloudShared transform_cpu_copy(sycl_points::PointCloudShared& cloud,
+                                                        const TransformMatrix& trans) {
     sycl_points::PointCloudShared ret(cloud);  // copy
     transform_cpu(ret, trans);
     return ret;
