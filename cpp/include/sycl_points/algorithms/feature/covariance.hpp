@@ -18,15 +18,20 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
     PointType sum_points = PointType::Zero();
     Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
 
+    size_t correspondences = 0;
     for (size_t j = 0; j < k_correspondences; ++j) {
-        const auto pt = point_ptr[index_ptr[i * k_correspondences + j]];
+        const int32_t idx = index_ptr[i * k_correspondences + j];
+        if (idx < 0) continue;
+
+        const auto pt = point_ptr[idx];
         eigen_utils::add_inplace<4, 1>(sum_points, pt);
 
         const auto outer = eigen_utils::outer<4>(pt, pt).block<3, 3>(0, 0);
         eigen_utils::add_inplace<3, 3>(sum_outer, outer);
+        ++correspondences;
     }
 
-    const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / k_correspondences);
+    const PointType mean = eigen_utils::multiply<4>(sum_points, 1.0f / correspondences);
 
     ret.block<3, 3>(0, 0) = eigen_utils::ensure_symmetric<3>(
         eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::outer<4>(mean, sum_points).block<3, 3>(0, 0)));
