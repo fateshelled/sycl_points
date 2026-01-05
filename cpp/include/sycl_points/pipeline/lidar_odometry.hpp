@@ -3,8 +3,8 @@
 #include <map>
 
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
-#include "sycl_points/algorithms/feature/color_gradient.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
+#include "sycl_points/algorithms/feature/photometric_gradient.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
