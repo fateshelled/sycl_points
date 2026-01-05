@@ -174,7 +174,7 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         // robust
         {
             const std::string robust_loss = node->declare_parameter<std::string>("registration/robust/type", "NONE");
-            params.reg_params.robust.type = algorithms::registration::RobustLossType_from_string(robust_loss);
+            params.reg_params.robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
             params.reg_params.robust.auto_scale =
                 node->declare_parameter<bool>("registration/robust/auto_scale", params.reg_params.robust.auto_scale);
             params.reg_params.robust.init_scale =
