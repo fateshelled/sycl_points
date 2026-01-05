@@ -560,8 +560,3 @@ TEST_F(PointCloudIOTest, PerformanceComparison) {
     std::remove("perf_ascii.ply");
     std::remove("perf_binary.ply");
 }
-
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
