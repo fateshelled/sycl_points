@@ -68,12 +68,8 @@ SYCL_EXTERNAL inline void normalize_covariance(Covariance& cov) {
     Eigen::Matrix3f eigenvectors;
     eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
 
-    // Ensure minimum eigenvalues
-    eigenvalues(0) = std::max(eigenvalues(0), min_eigenvalue);
-    eigenvalues(1) = std::max(eigenvalues(1), min_eigenvalue);
+    // Clamp eigenvalues to ensure minimum value and condition number
     eigenvalues(2) = std::max(eigenvalues(2), min_eigenvalue);
-
-    // Clamp condition number (eigenvalue_min / eigenvalue_max >= min_condition_number)
     const float min_allowed = std::max(min_condition_number * eigenvalues(2), min_eigenvalue);
     eigenvalues(0) = std::max(eigenvalues(0), min_allowed);
     eigenvalues(1) = std::max(eigenvalues(1), min_allowed);
