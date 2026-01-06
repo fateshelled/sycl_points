@@ -73,10 +73,10 @@ SYCL_EXTERNAL inline void normalize_covariance(Covariance& cov) {
     eigenvalues(1) = std::max(eigenvalues(1), min_eigenvalue);
     eigenvalues(2) = std::max(eigenvalues(2), min_eigenvalue);
 
-    // Normalize by the largest eigenvalue and clamp condition number
-    eigenvalues(0) = std::clamp(eigenvalues(0) / eigenvalues(2), min_condition_number, 1.0f);
-    eigenvalues(1) = std::clamp(eigenvalues(1) / eigenvalues(2), min_condition_number, 1.0f);
-    eigenvalues(2) = 1.0f;
+    // Clamp condition number (eigenvalue_min / eigenvalue_max >= min_condition_number)
+    const float min_allowed = min_condition_number * eigenvalues(2);
+    eigenvalues(0) = std::max(eigenvalues(0), min_allowed);
+    eigenvalues(1) = std::max(eigenvalues(1), min_allowed);
 
     const auto diag = eigen_utils::as_diagonal<3>(eigenvalues);
     cov.block<3, 3>(0, 0) = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
