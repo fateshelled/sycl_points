@@ -61,11 +61,21 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 }
 
 SYCL_EXTERNAL inline void normalize_covariance(Covariance& cov) {
+    constexpr float min_eigenvalue = 1e-3f;
+    constexpr float min_condition_number = 1.0e-2f;
+
     Eigen::Vector3f eigenvalues;
     Eigen::Matrix3f eigenvectors;
     eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
-    eigenvalues(0) = std::clamp(eigenvalues(0) / (eigenvalues(2) + 1e-6f), 1e-3f, 1.0f);
-    eigenvalues(1) = std::clamp(eigenvalues(1) / (eigenvalues(2) + 1e-6f), 1e-3f, 1.0f);
+
+    // Ensure minimum eigenvalues
+    eigenvalues(0) = std::max(eigenvalues(0), min_eigenvalue);
+    eigenvalues(1) = std::max(eigenvalues(1), min_eigenvalue);
+    eigenvalues(2) = std::max(eigenvalues(2), min_eigenvalue);
+
+    // Normalize by the largest eigenvalue and clamp condition number
+    eigenvalues(0) = std::clamp(eigenvalues(0) / eigenvalues(2), min_condition_number, 1.0f);
+    eigenvalues(1) = std::clamp(eigenvalues(1) / eigenvalues(2), min_condition_number, 1.0f);
     eigenvalues(2) = 1.0f;
 
     const auto diag = eigen_utils::as_diagonal<3>(eigenvalues);
