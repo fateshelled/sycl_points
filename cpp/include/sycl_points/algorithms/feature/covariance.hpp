@@ -37,7 +37,7 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
         ret(1, 1) = 1.0f;
         ret(2, 2) = 1.0f;
         return;
-    };
+    }
 
     const Eigen::Vector3f mean = eigen_utils::multiply<3>(sum_points, 1.0f / correspondences);
     ret.block<3, 3>(0, 0) = eigen_utils::ensure_symmetric<3>(eigen_utils::subtract<3, 3>(
