@@ -13,7 +13,8 @@ namespace covariance {
 namespace kernel {
 
 SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* point_ptr,
-                                             const size_t k_correspondences, const int32_t* index_ptr, const size_t i) {
+                                             const size_t k_correspondences, const int32_t* index_ptr, const size_t i,
+                                             size_t min_num_correspondences = 4) {
     ret.setZero();
     Eigen::Vector3f sum_points = Eigen::Vector3f::Zero();
     Eigen::Matrix3f sum_outer = Eigen::Matrix3f::Zero();
@@ -31,10 +32,16 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
         ++correspondences;
     }
 
-    const Eigen::Vector3f mean = eigen_utils::multiply<3>(sum_points, 1.0f / correspondences);
+    if (correspondences < min_num_correspondences) {
+        ret(0, 0) = 1.0f;
+        ret(1, 1) = 1.0f;
+        ret(2, 2) = 1.0f;
+        return;
+    };
 
-    ret.block<3, 3>(0, 0) = eigen_utils::ensure_symmetric<3>(
-        eigen_utils::subtract<3, 3>(sum_outer, eigen_utils::outer<3>(mean, sum_points)));
+    const Eigen::Vector3f mean = eigen_utils::multiply<3>(sum_points, 1.0f / correspondences);
+    ret.block<3, 3>(0, 0) = eigen_utils::ensure_symmetric<3>(eigen_utils::subtract<3, 3>(
+        eigen_utils::multiply<3, 3>(sum_outer, 1.0f / correspondences), eigen_utils::outer<3>(mean, mean)));
 }
 
 SYCL_EXTERNAL inline void compute_normal_from_covariance(const PointType& point, const Covariance& cov,
@@ -68,9 +75,17 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 SYCL_EXTERNAL inline void normalize_covariance(Covariance& cov) {
     Eigen::Vector3f eigenvalues;
     Eigen::Matrix3f eigenvectors;
-    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
-    eigenvalues(0) = std::clamp(eigenvalues(0) / (eigenvalues(2) + 1e-6f), 1e-3f, 1.0f);
-    eigenvalues(1) = std::clamp(eigenvalues(1) / (eigenvalues(2) + 1e-6f), 1e-3f, 1.0f);
+
+    // Multiplied by 1e3f for numerical stability
+    eigen_utils::symmetric_eigen_decomposition_3x3(eigen_utils::multiply<3, 3>(cov.block<3, 3>(0, 0), 1e3f),
+                                                   eigenvalues, eigenvectors);
+    const float max_eigenvalue = eigenvalues(2);
+    if (max_eigenvalue < std::numeric_limits<float>::min()) {
+        cov.block<3, 3>(0, 0).setIdentity();
+        return;
+    }
+    eigenvalues(0) = std::clamp(eigenvalues(0) / max_eigenvalue, 1e-3f, 1.0f);
+    eigenvalues(1) = std::clamp(eigenvalues(1) / max_eigenvalue, 1e-3f, 1.0f);
     eigenvalues(2) = 1.0f;
 
     const auto diag = eigen_utils::as_diagonal<3>(eigenvalues);

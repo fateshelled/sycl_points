@@ -10,6 +10,7 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <limits>
 
 #include "sycl_points/utils/sycl_utils.hpp"
 
@@ -300,9 +301,9 @@ SYCL_EXTERNAL float trace(const Eigen::Matrix<float, M, M>& A) {
 /// @param A 3×3 matrix
 /// @return Determinant of A
 SYCL_EXTERNAL inline float determinant(const Eigen::Matrix3f& A) {
-    return A(0, 0) * sycl::fma(A(1, 1), A(2, 2), -A(1, 2) * A(2, 1)) -
-           A(0, 1) * sycl::fma(A(1, 0), A(2, 2), -A(1, 2) * A(2, 0)) +
-           A(0, 2) * sycl::fma(A(1, 0), A(2, 1), -A(1, 1) * A(2, 0));
+    return sycl::fma(A(0, 0), sycl::fma(A(1, 1), A(2, 2), -A(1, 2) * A(2, 1)),
+                     sycl::fma(-A(0, 1), sycl::fma(A(1, 0), A(2, 2), -A(1, 2) * A(2, 0)),
+                               A(0, 2) * sycl::fma(A(1, 0), A(2, 1), -A(1, 1) * A(2, 0))));
 }
 
 template <size_t M, size_t N>
@@ -441,14 +442,35 @@ SYCL_EXTERNAL Eigen::Matrix<float, M, M> as_diagonal(const Eigen::Vector<float, 
 /// @param eigenvectors eigen vectors
 SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3f& A, Eigen::Vector3f& eigenvalues,
                                                             Eigen::Matrix3f& eigenvectors) {
-    constexpr float EPSILON = 1e-7f;
+    constexpr float EPSILON = std::numeric_limits<float>::epsilon();
+
+    // Scale the matrix to improve numerical stability
+    float max_abs_val = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 3; ++i) {
+#pragma unroll
+        for (int j = 0; j < 3; ++j) {
+            max_abs_val = sycl::fmax(max_abs_val, sycl::fabs(A(i, j)));
+        }
+    }
+
+    if (max_abs_val < std::numeric_limits<float>::min()) {
+        eigenvalues.setZero();
+        eigenvectors.setIdentity();
+        return;
+    }
+
+    const float scale_inv = 1.0f / max_abs_val;
+    const Eigen::Matrix3f scaled_A = multiply<3, 3>(A, scale_inv);
 
     // Characteristic polynomial
     // det(A - λI) = -λ^3 + c2*λ^2 + c1*λ + c0
-    const float c2 = -trace<3>(A);
-    const float c1 = (A(0, 0) * A(1, 1) + A(0, 0) * A(2, 2) + A(1, 1) * A(2, 2)) -
-                     (A(0, 1) * A(1, 0) + A(0, 2) * A(2, 0) + A(1, 2) * A(2, 1));
-    const float c0 = -determinant(A);
+    const float c2 = -trace<3>(scaled_A);
+    const float c1 = sycl::fma(scaled_A(0, 0), scaled_A(1, 1),
+                               sycl::fma(scaled_A(0, 0), scaled_A(2, 2), scaled_A(1, 1) * scaled_A(2, 2))) -
+                     sycl::fma(scaled_A(0, 1), scaled_A(1, 0),
+                               sycl::fma(scaled_A(0, 2), scaled_A(2, 0), scaled_A(1, 2) * scaled_A(2, 1)));
+    const float c0 = -determinant(scaled_A);
 
     const float p = c1 - c2 * c2 / 3.0f;
     const float q = 2.0f * c2 * c2 * c2 / 27.0f - c2 * c1 / 3.0f + c0;
@@ -468,9 +490,9 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
         if (phi < 0.0f) phi += PI;
 
         // compute
-        eigenvalues(0) = 2.0f * sqrt_neg_p_over_3 * sycl::cos(phi / 3.0f) - c2 / 3.0f;
-        eigenvalues(2) = 2.0f * sqrt_neg_p_over_3 * sycl::cos((phi + 4.0f * PI) / 3.0f) - c2 / 3.0f;
-        eigenvalues(1) = 2.0f * sqrt_neg_p_over_3 * sycl::cos((phi + 2.0f * PI) / 3.0f) - c2 / 3.0f;
+        eigenvalues(0) = sycl::fma(2.0f * sqrt_neg_p_over_3, sycl::cos(phi / 3.0f), -c2 / 3.0f);
+        eigenvalues(2) = sycl::fma(2.0f * sqrt_neg_p_over_3, sycl::cos((phi + 4.0f * PI) / 3.0f), -c2 / 3.0f);
+        eigenvalues(1) = sycl::fma(2.0f * sqrt_neg_p_over_3, sycl::cos((phi + 2.0f * PI) / 3.0f), -c2 / 3.0f);
     }
     // sort
     if (eigenvalues(0) > eigenvalues(1)) {
@@ -484,29 +506,29 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
     }
 
     // compute eigenvectors
-    eigenvectors = Eigen::Matrix3f::Zero();
+    eigenvectors.setZero();
 
 #pragma unroll 3
     for (size_t k = 0; k < 3; ++k) {
         // solve (A - λI)x = 0
-        const Eigen::Matrix3f M = subtract<3, 3>(A, multiply<3, 3>(Eigen::Matrix3f::Identity(), eigenvalues(k)));
+        const Eigen::Matrix3f M = subtract<3, 3>(scaled_A, multiply<3, 3>(Eigen::Matrix3f::Identity(), eigenvalues(k)));
 
         // compute det
-        const float m00 = M(1, 1) * M(2, 2) - M(1, 2) * M(2, 1);
-        const float m01 = M(1, 2) * M(2, 0) - M(1, 0) * M(2, 2);
-        const float m02 = M(1, 0) * M(2, 1) - M(1, 1) * M(2, 0);
+        const float m00 = sycl::fma(M(1, 1), M(2, 2), -M(1, 2) * M(2, 1));
+        const float m01 = sycl::fma(M(1, 2), M(2, 0), -M(1, 0) * M(2, 2));
+        const float m02 = sycl::fma(M(1, 0), M(2, 1), -M(1, 1) * M(2, 0));
 
-        const float m10 = M(0, 2) * M(2, 1) - M(0, 1) * M(2, 2);
-        const float m11 = M(0, 0) * M(2, 2) - M(0, 2) * M(2, 0);
-        const float m12 = M(0, 1) * M(2, 0) - M(0, 0) * M(2, 1);
+        const float m10 = sycl::fma(M(0, 2), M(2, 1), -M(0, 1) * M(2, 2));
+        const float m11 = sycl::fma(M(0, 0), M(2, 2), -M(0, 2) * M(2, 0));
+        const float m12 = sycl::fma(M(0, 1), M(2, 0), -M(0, 0) * M(2, 1));
 
-        const float m20 = M(0, 1) * M(1, 2) - M(0, 2) * M(1, 1);
-        const float m21 = M(0, 2) * M(1, 0) - M(0, 0) * M(1, 2);
-        const float m22 = M(0, 0) * M(1, 1) - M(0, 1) * M(1, 0);
+        const float m20 = sycl::fma(M(0, 1), M(1, 2), -M(0, 2) * M(1, 1));
+        const float m21 = sycl::fma(M(0, 2), M(1, 0), -M(0, 0) * M(1, 2));
+        const float m22 = sycl::fma(M(0, 0), M(1, 1), -M(0, 1) * M(1, 0));
 
-        const float s0 = m00 * m00 + m10 * m10 + m20 * m20;
-        const float s1 = m01 * m01 + m11 * m11 + m21 * m21;
-        const float s2 = m02 * m02 + m12 * m12 + m22 * m22;
+        const float s0 = sycl::fma(m00, m00, sycl::fma(m10, m10, m20 * m20));
+        const float s1 = sycl::fma(m01, m01, sycl::fma(m11, m11, m21 * m21));
+        const float s2 = sycl::fma(m02, m02, sycl::fma(m12, m12, m22 * m22));
 
         sycl::float3 v;
         if (s0 >= s1 && s0 >= s2) {
@@ -523,11 +545,20 @@ SYCL_EXTERNAL inline void symmetric_eigen_decomposition_3x3(const Eigen::Matrix3
             v[2] = m22;
         }
         // normalize
-        const float inv_length = 1.0f / sycl::sqrt(sycl::dot(v, v));
+        float norm_sq = sycl::dot(v, v);
+        if (norm_sq < std::numeric_limits<float>::min()) {
+            v[0] = 1.0f;
+            v[1] = 0.0f;
+            v[2] = 0.0f;
+            norm_sq = 1.0f;
+        }
+        const float inv_length = 1.0f / sycl::sqrt(norm_sq);
         eigenvectors(0, k) = v[0] * inv_length;
         eigenvectors(1, k) = v[1] * inv_length;
         eigenvectors(2, k) = v[2] * inv_length;
     }
+
+    eigenvalues = multiply<3>(eigenvalues, max_abs_val);
 }
 
 /// @brief Solve 6×6 Linear System
