@@ -106,7 +106,7 @@ lidar_odometry_node:
     registration/dogleg/gamma_decrease: 0.5
     registration/dogleg/gamma_increase: 2.0
     registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
-    registration/degenerate_regularization/nl_reg/trans_eig_threshold: 1.0
-    registration/degenerate_regularization/nl_reg/rot_eig_threshold: 5.0
+    registration/degenerate_regularization/nl_reg/trans_eig_threshold: 10.0
+    registration/degenerate_regularization/nl_reg/rot_eig_threshold: 10.0
     registration/degenerate_regularization/nl_reg/base_factor: 0.2
     registration/verbose: false
