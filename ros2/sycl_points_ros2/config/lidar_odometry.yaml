@@ -75,7 +75,7 @@ lidar_odometry_node:
     registration/velocity_update/enable: true
     registration/velocity_update/iter: 2
     registration/max_iterations: 4
-    registration/lambda: 1.0e-4
+    registration/lambda: 1.0e-2
     registration/max_correspondence_distance: 2.0
     registration/mahalanobis_distance_threshold: 2.5  # (p = 0.90)
     registration/criteria/translation: 1.0e-3
@@ -92,18 +92,18 @@ lidar_odometry_node:
     registration/rotation_constraint/enable: false
     registration/rotation_constraint/weight: 5.0        # Scaling factor to balance constraint error with geometric error
     registration/rotation_constraint/robust_scale: 7.5  # Large scale is strong constraint
-    registration/optimization_method: LM  # GN, LM, DOGLEG
+    registration/optimization_method: DOGLEG  # GN, LM, DOGLEG
     registration/lm/max_inner_iterations: 5
-    registration/lm/lambda_factor: 10.0
-    registration/lm/max_lambda: 1.0e+6
-    registration/lm/min_lambda: 1.0e-6
+    registration/lm/lambda_factor: 2.0
+    registration/lm/max_lambda: 1.0e+3
+    registration/lm/min_lambda: 1.0e-3
     registration/dogleg/initial_trust_region_radius: 2.0
     registration/dogleg/max_trust_region_radius: 10.0
     registration/dogleg/min_trust_region_radius: 1.0e-3
     registration/dogleg/eta1: 0.25
     registration/dogleg/eta2: 0.75
-    registration/dogleg/gamma_decrease: 0.5
-    registration/dogleg/gamma_increase: 2.0
+    registration/dogleg/gamma_decrease: 0.80
+    registration/dogleg/gamma_increase: 1.25
     registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
     registration/degenerate_regularization/nl_reg/trans_eig_threshold: 10.0
     registration/degenerate_regularization/nl_reg/rot_eig_threshold: 10.0
