@@ -2,13 +2,13 @@
 
 #include <map>
 
-#include "sycl_points/algorithms/color_gradient.hpp"
-#include "sycl_points/algorithms/covariance.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
+#include "sycl_points/algorithms/feature/photometric_gradient.hpp"
+#include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
-#include "sycl_points/algorithms/intensity_correction.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
@@ -374,7 +374,7 @@ private:
             this->reg_result_->inlier > 0) {
             // Calculates the degeneracy score from the minimum eigenvalue of the Hessian in the registration result of
             // the previous frame.
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(this->reg_result_->H.block<3, 3>(0, 0));
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(this->reg_result_->H_raw.block<3, 3>(0, 0));
             if (solver_rot.info() == Eigen::Success) {
                 const float low = this->params_.motion_prediction_adaptive_rot_eigen_low;
                 const float high = this->params_.motion_prediction_adaptive_rot_eigen_high;
@@ -398,7 +398,7 @@ private:
 
         if (this->params_.motion_prediction_adaptive_trans_enable && this->registrated_ &&
             this->reg_result_->inlier > 0) {
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(this->reg_result_->H.block<3, 3>(3, 3));
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(this->reg_result_->H_raw.block<3, 3>(3, 3));
             if (solver_trans.info() == Eigen::Success) {
                 const float low = this->params_.motion_prediction_adaptive_trans_eigen_low;
                 const float high = this->params_.motion_prediction_adaptive_trans_eigen_high;

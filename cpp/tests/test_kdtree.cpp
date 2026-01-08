@@ -87,10 +87,10 @@ protected:
 
             // Create pairs of indices and distances
             for (size_t j = 0; j < max_k; ++j) {
-                sorted_kdtree.push_back({(*kdtree_result.distances)[i * max_k + j],
-                                         (*kdtree_result.indices)[i * max_k + j]});
-                sorted_bruteforce.push_back({(*bruteforce_result.distances)[i * max_k + j],
-                                             (*bruteforce_result.indices)[i * max_k + j]});
+                sorted_kdtree.push_back(
+                    {(*kdtree_result.distances)[i * max_k + j], (*kdtree_result.indices)[i * max_k + j]});
+                sorted_bruteforce.push_back(
+                    {(*bruteforce_result.distances)[i * max_k + j], (*bruteforce_result.indices)[i * max_k + j]});
             }
 
             // Sort by distance (and by index in case of equal distances)
@@ -120,8 +120,7 @@ protected:
 
                 const float group_distance = sorted_bruteforce[j].first;
                 size_t group_end = j;
-                while (group_end < max_k &&
-                       sorted_bruteforce[group_end].second >= 0 &&
+                while (group_end < max_k && sorted_bruteforce[group_end].second >= 0 &&
                        std::abs(sorted_bruteforce[group_end].first - group_distance) <= epsilon) {
                     ++group_end;
                 }
@@ -145,8 +144,8 @@ protected:
                     EXPECT_NEAR(sorted_kdtree[idx].first, group_distance, epsilon)
                         << "Distance mismatch at query " << i << ", neighbor " << idx;
 
-                    auto it = std::find(bruteforce_indices.begin(), bruteforce_indices.end(),
-                                        sorted_kdtree[idx].second);
+                    auto it =
+                        std::find(bruteforce_indices.begin(), bruteforce_indices.end(), sorted_kdtree[idx].second);
                     EXPECT_TRUE(it != bruteforce_indices.end())
                         << "Index mismatch at query " << i << ", neighbor " << idx << ": " << sorted_kdtree[idx].second
                         << " not in brute-force tie group (distance " << group_distance << ")";
@@ -260,8 +259,8 @@ protected:
                     EXPECT_NEAR(sorted_kdtree[idx].first, group_distance, epsilon)
                         << "Distance mismatch at query " << i << ", neighbor " << idx;
 
-                    auto it = std::find(bruteforce_indices.begin(), bruteforce_indices.end(),
-                                        sorted_kdtree[idx].second);
+                    auto it =
+                        std::find(bruteforce_indices.begin(), bruteforce_indices.end(), sorted_kdtree[idx].second);
                     EXPECT_TRUE(it != bruteforce_indices.end())
                         << "Index mismatch at query " << i << ", neighbor " << idx << ": " << sorted_kdtree[idx].second
                         << " not in brute-force tie group (distance " << group_distance << ")";
@@ -548,9 +547,4 @@ TEST_F(KDTreeTest, RadiusSearchFillsInvalidEntries) {
 
     const auto bruteforce_result = bruteForceRadiusSearch(small_query, small_target, max_k, radius);
     compareRadiusResults(kdtree_result, bruteforce_result, max_k);
-}
-
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
 }

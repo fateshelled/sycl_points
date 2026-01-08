@@ -5,16 +5,16 @@
 #include <limits>
 #include <random>
 
-#include "sycl_points/algorithms/covariance.hpp"
+#include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
-#include "sycl_points/algorithms/registration/photometric.hpp"
+#include "sycl_points/algorithms/registration/photometric_factor.hpp"
 #include "sycl_points/algorithms/registration/rotation_constraint.hpp"
 #include "sycl_points/algorithms/robust/robust.hpp"
-#include "sycl_points/algorithms/transform.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
@@ -331,24 +331,28 @@ public:
                         target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, result.T.matrix());
 
                     // Linearize on device for the current robust scale level
-                    LinearizedResult linearized_result =
+                    const LinearizedResult linearized_result =
                         this->linearize(source, target, result.T.matrix(), robust_scale, knn_event.evs);
 
+                    result.H_raw = linearized_result.H;
+                    result.b_raw = linearized_result.b;
+
                     // Regularization
-                    this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
+                    const LinearizedResult regularized_result =
+                        this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
 
                     // Optimize on Host
                     switch (this->params_.optimization_method) {
                         case OptimizationMethod::LEVENBERG_MARQUARDT:
-                            this->optimize_levenberg_marquardt(source, target, result, linearized_result, lambda, iter,
+                            this->optimize_levenberg_marquardt(source, target, result, regularized_result, lambda, iter,
                                                                robust_scale);
                             break;
                         case OptimizationMethod::POWELL_DOGLEG:
-                            this->optimize_powell_dogleg(source, target, result, linearized_result, trust_region_radius,
-                                                         iter, robust_scale);
+                            this->optimize_powell_dogleg(source, target, result, regularized_result,
+                                                         trust_region_radius, iter, robust_scale);
                             break;
                         case OptimizationMethod::GAUSS_NEWTON:
-                            this->optimize_gauss_newton(result, linearized_result, lambda, iter);
+                            this->optimize_gauss_newton(result, regularized_result, lambda, iter);
                             break;
                     }
                     if (result.converged) {
@@ -431,24 +435,28 @@ public:
                                                                                   result.T.matrix());
 
                         // Linearize on device for the current robust scale level
-                        LinearizedResult linearized_result =
+                        const LinearizedResult linearized_result =
                             this->linearize(deskewed, target, result.T.matrix(), robust_scale, knn_event.evs);
 
+                        result.H_raw = linearized_result.H;
+                        result.b_raw = linearized_result.b;
+
                         // Regularization
-                        this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
+                        const LinearizedResult regularized_result = this->degenerate_reg_.regularize(
+                            linearized_result, result.T, Eigen::Isometry3f(initial_guess));
 
                         // Optimize on Host
                         switch (this->params_.optimization_method) {
                             case OptimizationMethod::LEVENBERG_MARQUARDT:
-                                this->optimize_levenberg_marquardt(deskewed, target, result, linearized_result, lambda,
+                                this->optimize_levenberg_marquardt(deskewed, target, result, regularized_result, lambda,
                                                                    iter, robust_scale);
                                 break;
                             case OptimizationMethod::POWELL_DOGLEG:
-                                this->optimize_powell_dogleg(deskewed, target, result, linearized_result,
+                                this->optimize_powell_dogleg(deskewed, target, result, regularized_result,
                                                              trust_region_radius, iter, robust_scale);
                                 break;
                             case OptimizationMethod::GAUSS_NEWTON:
-                                this->optimize_gauss_newton(result, linearized_result, lambda, iter);
+                                this->optimize_gauss_newton(result, regularized_result, lambda, iter);
                                 break;
                         }
                         if (result.converged) {
@@ -578,6 +586,9 @@ private:
                                                           float robust_scale, const std::vector<sycl::event>& depends) {
         if constexpr (reg == RegType::GENZ) {
             this->genz_alpha_ = compute_genz_alpha(source, target, this->params_.max_correspondence_distance, depends);
+            if (this->params_.verbose) {
+                std::cout << "GenZ alpha: " << this->genz_alpha_ << std::endl;
+            }
         }
 
         // The robust_scale argument controls the influence of the robust loss inside the reduction kernel.

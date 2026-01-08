@@ -3,7 +3,7 @@
 #include <iostream>
 #include <map>
 
-#include "sycl_points/algorithms/covariance.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
@@ -33,7 +33,7 @@ int main() {
     param.max_iterations = 10;
     param.max_correspondence_distance = 1.0f;
     param.optimization_method = sycl_points::algorithms::registration::OptimizationMethod::POWELL_DOGLEG;
-    param.robust.type = sycl_points::algorithms::registration::RobustLossType::GEMAN_MCCLURE;
+    param.robust.type = sycl_points::algorithms::robust::RobustLossType::GEMAN_MCCLURE;
     param.robust.init_scale = 10.0f;
     param.robust.auto_scale = true;
     param.robust.min_scale = 2.5f;

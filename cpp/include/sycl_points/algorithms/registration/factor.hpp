@@ -3,9 +3,9 @@
 #include <tuple>
 #include <type_traits>
 
+#include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/algorithms/registration/result.hpp"
-#include "sycl_points/algorithms/transform.hpp"
 #include "sycl_points/points/types.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
@@ -247,8 +247,10 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
 
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
-    const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, Eigen::Matrix4f::Identity());
+
     const Covariance mahalanobis = compute_mahalanobis_covariance(source_cov, target_cov, T);
+
+    const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, Eigen::Matrix4f::Identity());
 
     const Eigen::Matrix<float, 6, 4> J_T_mah =
         eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
@@ -278,21 +280,13 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
                                                 const Covariance& source_cov, const PointType& target_pt,
                                                 const Covariance& target_cov) {
     PointType transform_source_pt;
-    Covariance transform_source_cov;
     transform::kernel::transform_point(source_pt, transform_source_pt, T);
-    transform::kernel::transform_covs(source_cov, transform_source_cov, T);
-
-    Covariance mahalanobis = Covariance::Zero();
-    {
-        const Eigen::Matrix3f RCR =
-            eigen_utils::add<3, 3>(transform_source_cov.block<3, 3>(0, 0), target_cov.block<3, 3>(0, 0));
-        const Eigen::Matrix3f RCR_inv = eigen_utils::inverse(RCR);
-
-        mahalanobis.block<3, 3>(0, 0) = RCR_inv;
-    }
 
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
+
+    const Covariance mahalanobis = compute_mahalanobis_covariance(source_cov, target_cov, T);
+
     return (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
 }
 

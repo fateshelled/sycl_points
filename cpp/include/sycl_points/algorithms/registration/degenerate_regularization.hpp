@@ -47,23 +47,24 @@ class DegenerateRegularization {
 public:
     void set_params(const DegenerateRegularizationParams& params) { this->params_ = params; }
 
-    bool regularize(LinearizedResult& linearized_result, const Eigen::Isometry3f& current_pose,
-                    const Eigen::Isometry3f& initial_guess) {
+    LinearizedResult regularize(const LinearizedResult& linearized_result, const Eigen::Isometry3f& current_pose,
+                                const Eigen::Isometry3f& initial_guess) const {
         return this->regularize_impl(linearized_result, current_pose, initial_guess);
     }
 
 private:
     DegenerateRegularizationParams params_;
 
-    bool regularize_impl(LinearizedResult& linearized_result, const Eigen::Isometry3f& current_pose,
-                         const Eigen::Isometry3f& initial_guess) const {
+    LinearizedResult regularize_impl(const LinearizedResult& linearized_result, const Eigen::Isometry3f& current_pose,
+                                     const Eigen::Isometry3f& initial_guess) const {
+        LinearizedResult ret = linearized_result;
         const auto inlier = linearized_result.inlier;
         if (inlier == 0) {
-            return false;
+            return ret;
         }
 
         if (this->params_.type == DegenerateRegularizationType::none) {
-            return true;
+            return ret;
         } else if (this->params_.type == DegenerateRegularizationType::nl_reg) {
             const float rot_threshold = this->params_.rot_eig_threshold;
             const float trans_threshold = this->params_.trans_eig_threshold;
@@ -71,11 +72,11 @@ private:
 
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
             if (solver_rot.info() != Eigen::Success) {
-                return false;
+                return ret;
             }
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(linearized_result.H.block<3, 3>(3, 3));
             if (solver_trans.info() != Eigen::Success) {
-                return false;
+                return ret;
             }
 
             Eigen::Matrix<float, 6, 6> H_penalty = Eigen::Matrix<float, 6, 6>::Zero();
@@ -102,11 +103,11 @@ private:
             const Eigen::Isometry3f delta_pose = initial_guess.inverse() * current_pose;
             const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(delta_pose);
 
-            linearized_result.H += H_penalty;
-            linearized_result.b += H_penalty * delta_twist;
-            return true;
+            ret.H += H_penalty;
+            ret.b += H_penalty * delta_twist;
+            return ret;
         }
-        return false;
+        return ret;
     }
 };
 

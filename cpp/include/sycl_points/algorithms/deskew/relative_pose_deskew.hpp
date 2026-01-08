@@ -148,7 +148,7 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
         });
     });
 
-    deskew_event.wait();
+    deskew_event.wait_and_throw();
 
     return true;
 }

@@ -9,9 +9,9 @@
 #include <numeric>
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
+#include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/knn/result.hpp"
-#include "sycl_points/algorithms/transform.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 

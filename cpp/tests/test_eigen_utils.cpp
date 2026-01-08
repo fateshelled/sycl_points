@@ -720,8 +720,3 @@ TEST_F(EigenUtilsTest, se3_exp_log) {
 }  // namespace test
 }  // namespace eigen_utils
 }  // namespace sycl_points
-
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
