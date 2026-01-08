@@ -73,8 +73,6 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         params.submap_voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap_voxel_size);
         params.submap_covariance_neighbor_num =
             node->declare_parameter<int64_t>("submap/covariance/neighbor_num", params.submap_covariance_neighbor_num);
-        params.submap_covariance_update_to_plane = node->declare_parameter<bool>(
-            "submap/covariance/update_to_plane", params.submap_covariance_update_to_plane);
         params.submap_color_gradient_neighbor_num = node->declare_parameter<int64_t>(
             "submap/color_gradient/neighbor_num", params.submap_color_gradient_neighbor_num);
         params.submap_max_distance_range =

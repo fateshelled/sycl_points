@@ -356,11 +356,6 @@ private:
                                                      this->params_.scan_covariance_neighbor_num, this->knn_result_);
             events += algorithms::covariance::compute_covariances_async(this->knn_result_, *this->preprocessed_pc_,
                                                                         events.evs);
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP) {
-                // events += algorithms::covariance::covariance_update_plane_async(*this->preprocessed_pc_,
-                // events.evs);
-                events += algorithms::covariance::covariance_normalize_async(*this->preprocessed_pc_, events.evs);
-            }
             events.wait_and_throw();
         }
     }
@@ -529,16 +524,7 @@ private:
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
             }
 
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-                this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION) {
-                if (this->params_.submap_covariance_update_to_plane) {
-                    cov_events +=
-                        algorithms::covariance::covariance_update_plane_async(*this->submap_pc_ptr_, cov_events.evs);
-                } else {
-                    cov_events +=
-                        algorithms::covariance::covariance_normalize_async(*this->submap_pc_ptr_, cov_events.evs);
-                }
-            } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
+            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
                 compute_normal = true;
                 cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
                                                                                              cov_events.evs);

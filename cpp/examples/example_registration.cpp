@@ -108,16 +108,6 @@ int main() {
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
 
-        /* GICP matching requires updating to planar covariance or normalized covariance */
-        t0 = std::chrono::high_resolution_clock::now();
-        // sycl_points::algorithms::covariance::covariance_update_plane(source_downsampled);
-        // sycl_points::algorithms::covariance::covariance_update_plane(target_downsampled);
-        sycl_points::algorithms::covariance::covariance_normalize(source_downsampled);
-        sycl_points::algorithms::covariance::covariance_normalize(target_downsampled);
-        const auto dt_update_covs =
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
-                .count();
-
         t0 = std::chrono::high_resolution_clock::now();
         /* NOTE:
             Random downsampling after covariance computation maintains GICP accuracy
@@ -149,11 +139,8 @@ int main() {
             if (elapsed.count("6. compute Normals") == 0) elapsed["6. compute Normals"] = 0.0;
             elapsed["6. compute Normals"] += dt_normal;
 
-            if (elapsed.count("7. update Covariances") == 0) elapsed["7. update Covariances"] = 0.0;
-            elapsed["7. update Covariances"] += dt_update_covs;
-
-            if (elapsed.count("8. Registration") == 0) elapsed["8. Registration"] = 0.0;
-            elapsed["8. Registration"] += dt_registration;
+            if (elapsed.count("7. Registration") == 0) elapsed["7. Registration"] = 0.0;
+            elapsed["7. Registration"] += dt_registration;
         }
         if (i == LOOP + WARM_UP - 1) {
             std::cout << ret.T.matrix() << std::endl;

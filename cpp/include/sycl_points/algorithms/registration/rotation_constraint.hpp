@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sycl_points/algorithms/common/transform.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/points/types.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -16,9 +17,15 @@ namespace kernel {
 SYCL_EXTERNAL inline float calculate_logdet_divergence_squared(const Covariance& source_cov,
                                                                const Covariance& target_cov,
                                                                const std::array<sycl::float4, 4>& T) {
+    Covariance normalized_source_cov = source_cov;
+    covariance::kernel::clamp_covariance_min_eigenvalue(normalized_source_cov);
+
+    Covariance normalized_target_cov = target_cov;
+    covariance::kernel::clamp_covariance_min_eigenvalue(normalized_target_cov);
+
     const Eigen::Matrix3f R = eigen_utils::from_sycl_vec(T).block<3, 3>(0, 0);
-    const Eigen::Matrix3f Cs = source_cov.block<3, 3>(0, 0);
-    const Eigen::Matrix3f Ct = target_cov.block<3, 3>(0, 0);
+    const Eigen::Matrix3f Cs = normalized_source_cov.block<3, 3>(0, 0);
+    const Eigen::Matrix3f Ct = normalized_target_cov.block<3, 3>(0, 0);
 
     // transform target covariance to source coordinate
     // Ct' = R.T * Ct * R
@@ -46,9 +53,15 @@ SYCL_EXTERNAL inline float calculate_logdet_divergence_squared(const Covariance&
 
 SYCL_EXTERNAL inline float calculate_logdet_divergence(const Covariance& source_cov, const Covariance& target_cov,
                                                        const std::array<sycl::float4, 4>& T, Eigen::Vector3f& grad) {
+    Covariance normalized_source_cov = source_cov;
+    covariance::kernel::clamp_covariance_min_eigenvalue(normalized_source_cov);
+
+    Covariance normalized_target_cov = target_cov;
+    covariance::kernel::clamp_covariance_min_eigenvalue(normalized_target_cov);
+
     const Eigen::Matrix3f R = eigen_utils::from_sycl_vec(T).block<3, 3>(0, 0);
-    const Eigen::Matrix3f Cs = source_cov.block<3, 3>(0, 0);
-    const Eigen::Matrix3f Ct = target_cov.block<3, 3>(0, 0);
+    const Eigen::Matrix3f Cs = normalized_source_cov.block<3, 3>(0, 0);
+    const Eigen::Matrix3f Ct = normalized_target_cov.block<3, 3>(0, 0);
 
     // transform target covariance to source coordinate
     // Ct' = R.T * Ct * R

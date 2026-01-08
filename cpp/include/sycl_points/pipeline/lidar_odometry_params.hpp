@@ -38,7 +38,6 @@ struct Parameters {
 
     float submap_voxel_size = 1.0f;
     size_t submap_covariance_neighbor_num = 10;
-    bool submap_covariance_update_to_plane = false;
     size_t submap_color_gradient_neighbor_num = 10;
     float submap_max_distance_range = 30.0f;
     size_t submap_point_random_sampling_num = 2000;
