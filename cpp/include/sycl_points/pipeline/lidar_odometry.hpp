@@ -365,48 +365,49 @@ private:
         float rot_factor = this->params_.motion_prediction_static_factor;
         float trans_factor = this->params_.motion_prediction_static_factor;
 
-        if (this->params_.motion_prediction_adaptive_trans_enable && this->registrated_ &&
-            this->reg_result_->inlier > 0) {
-            // Calculates the degeneracy score from the minimum eigenvalue of the Hessian in the registration result of
-            // the previous frame.
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(this->reg_result_->H_raw.block<3, 3>(0, 0));
-            if (solver_rot.info() == Eigen::Success) {
-                const float low = this->params_.motion_prediction_adaptive_rot_eigen_low;
-                const float high = this->params_.motion_prediction_adaptive_rot_eigen_high;
-                const float max_factor = this->params_.motion_prediction_adaptive_rot_factor_max;
-                const float min_factor = this->params_.motion_prediction_adaptive_rot_factor_min;
+        if (this->registrated_ && this->reg_result_->inlier > 0) {
+            if (this->params_.motion_prediction_adaptive_rot_enable) {
+                // Calculates the degeneracy score from the minimum eigenvalue of the Hessian in the registration result
+                // of the previous frame.
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(this->reg_result_->H_raw.block<3, 3>(0, 0));
+                if (solver_rot.info() == Eigen::Success) {
+                    const float low = this->params_.motion_prediction_adaptive_rot_min_eigenvalue_low;
+                    const float high = this->params_.motion_prediction_adaptive_rot_min_eigenvalue_high;
+                    const float max_factor = this->params_.motion_prediction_adaptive_rot_factor_max;
+                    const float min_factor = this->params_.motion_prediction_adaptive_rot_factor_min;
 
-                const float min_eig_ratio = solver_rot.eigenvalues().minCoeff() / this->reg_result_->inlier;
+                    const float min_eig_ratio = solver_rot.eigenvalues().minCoeff() / this->reg_result_->inlier;
 
-                // score == 1.0: Degenerate, score == 0.0: Non-degenerate
-                const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
+                    // score == 1.0: Degenerate, score == 0.0: Non-degenerate
+                    const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
 
-                // Derive the coefficient from the degeneracy score.
-                rot_factor = max_factor * (1.0f - score) + min_factor * score;
+                    // Derive the coefficient from the degeneracy score.
+                    rot_factor = max_factor * (1.0f - score) + min_factor * score;
 
-                if (this->params_.motion_prediction_verbose) {
-                    std::cout << "[motion predictor] rot: factor=" << rot_factor << ", eigen value=["
-                              << solver_rot.eigenvalues().transpose() / this->reg_result_->inlier << "]" << std::endl;
+                    if (this->params_.motion_prediction_verbose) {
+                        std::cout << "[motion predictor] rot: factor=" << rot_factor << ", eigen value=["
+                                  << solver_rot.eigenvalues().transpose() / this->reg_result_->inlier << "]"
+                                  << std::endl;
+                    }
                 }
             }
-        }
 
-        if (this->params_.motion_prediction_adaptive_trans_enable && this->registrated_ &&
-            this->reg_result_->inlier > 0) {
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(this->reg_result_->H_raw.block<3, 3>(3, 3));
-            if (solver_trans.info() == Eigen::Success) {
-                const float low = this->params_.motion_prediction_adaptive_trans_eigen_low;
-                const float high = this->params_.motion_prediction_adaptive_trans_eigen_high;
-                const float max_factor = this->params_.motion_prediction_adaptive_trans_factor_max;
-                const float min_factor = this->params_.motion_prediction_adaptive_trans_factor_min;
+            if (this->params_.motion_prediction_adaptive_trans_enable) {
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(this->reg_result_->H_raw.block<3, 3>(3, 3));
+                if (solver_trans.info() == Eigen::Success) {
+                    const float low = this->params_.motion_prediction_adaptive_trans_min_eigenvalue_low;
+                    const float high = this->params_.motion_prediction_adaptive_trans_min_eigenvalue_high;
+                    const float max_factor = this->params_.motion_prediction_adaptive_trans_factor_max;
+                    const float min_factor = this->params_.motion_prediction_adaptive_trans_factor_min;
 
-                const float min_eig_ratio = solver_trans.eigenvalues().minCoeff() / this->reg_result_->inlier;
-                const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
-                trans_factor = max_factor * (1.0f - score) + min_factor * score;
-            }
-            if (this->params_.motion_prediction_verbose) {
-                std::cout << "[motion predictor] trans: factor=" << trans_factor << ", eigen value=["
-                          << solver_trans.eigenvalues().transpose() / this->reg_result_->inlier << "]" << std::endl;
+                    const float min_eig_ratio = solver_trans.eigenvalues().minCoeff() / this->reg_result_->inlier;
+                    const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
+                    trans_factor = max_factor * (1.0f - score) + min_factor * score;
+                }
+                if (this->params_.motion_prediction_verbose) {
+                    std::cout << "[motion predictor] trans: factor=" << trans_factor << ", eigen value=["
+                              << solver_trans.eigenvalues().transpose() / this->reg_result_->inlier << "]" << std::endl;
+                }
             }
         }
 

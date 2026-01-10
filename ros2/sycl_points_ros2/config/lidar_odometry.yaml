@@ -60,13 +60,13 @@ lidar_odometry_node:
     motion_prediction/adaptive/rotation/enable: true
     motion_prediction/adaptive/rotation/factor/min: 0.2
     motion_prediction/adaptive/rotation/factor/max: 1.0
-    motion_prediction/adaptive/rotation/eigen/low: 5.0
-    motion_prediction/adaptive/rotation/eigen/high: 10.0
+    motion_prediction/adaptive/rotation/min_eigenvalue/low: 5.0
+    motion_prediction/adaptive/rotation/min_eigenvalue/high: 10.0
     motion_prediction/adaptive/translation/enable: true
     motion_prediction/adaptive/translation/factor/min: 0.2
     motion_prediction/adaptive/translation/factor/max: 1.0
-    motion_prediction/adaptive/translation/eigen/low: 1.0
-    motion_prediction/adaptive/translation/eigen/high: 10.0
+    motion_prediction/adaptive/translation/min_eigenvalue/low: 1.0
+    motion_prediction/adaptive/translation/min_eigenvalue/high: 10.0
 
     registration/type: gicp  # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
@@ -105,7 +105,7 @@ lidar_odometry_node:
     registration/dogleg/gamma_decrease: 0.80
     registration/dogleg/gamma_increase: 1.25
     registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
-    registration/degenerate_regularization/nl_reg/trans_eig_threshold: 10.0
-    registration/degenerate_regularization/nl_reg/rot_eig_threshold: 10.0
+    registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold: 10.0
+    registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/nl_reg/base_factor: 0.2
     registration/verbose: false

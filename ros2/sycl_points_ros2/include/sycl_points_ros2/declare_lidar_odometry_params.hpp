@@ -120,10 +120,12 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "motion_prediction/adaptive/rotation/factor/min", params.motion_prediction_adaptive_rot_factor_min);
         params.motion_prediction_adaptive_rot_factor_max = node->declare_parameter<double>(
             "motion_prediction/adaptive/rotation/factor/max", params.motion_prediction_adaptive_rot_factor_max);
-        params.motion_prediction_adaptive_rot_eigen_low = node->declare_parameter<double>(
-            "motion_prediction/adaptive/rotation/eigen/low", params.motion_prediction_adaptive_rot_eigen_low);
-        params.motion_prediction_adaptive_rot_eigen_high = node->declare_parameter<double>(
-            "motion_prediction/adaptive/rotation/eigen/high", params.motion_prediction_adaptive_rot_eigen_high);
+        params.motion_prediction_adaptive_rot_min_eigenvalue_low =
+            node->declare_parameter<double>("motion_prediction/adaptive/rotation/min_eigenvalue/low",
+                                            params.motion_prediction_adaptive_rot_min_eigenvalue_low);
+        params.motion_prediction_adaptive_rot_min_eigenvalue_high =
+            node->declare_parameter<double>("motion_prediction/adaptive/rotation/min_eigenvalue/high",
+                                            params.motion_prediction_adaptive_rot_min_eigenvalue_high);
 
         params.motion_prediction_adaptive_trans_enable = node->declare_parameter<bool>(
             "motion_prediction/adaptive/translation/enable", params.motion_prediction_adaptive_trans_enable);
@@ -131,10 +133,12 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "motion_prediction/adaptive/translation/factor/min", params.motion_prediction_adaptive_trans_factor_min);
         params.motion_prediction_adaptive_trans_factor_max = node->declare_parameter<double>(
             "motion_prediction/adaptive/translation/factor/max", params.motion_prediction_adaptive_trans_factor_max);
-        params.motion_prediction_adaptive_trans_eigen_low = node->declare_parameter<double>(
-            "motion_prediction/adaptive/translation/eigen/low", params.motion_prediction_adaptive_trans_eigen_low);
-        params.motion_prediction_adaptive_trans_eigen_high = node->declare_parameter<double>(
-            "motion_prediction/adaptive/translation/eigen/high", params.motion_prediction_adaptive_trans_eigen_high);
+        params.motion_prediction_adaptive_trans_min_eigenvalue_low =
+            node->declare_parameter<double>("motion_prediction/adaptive/translation/min_eigenvalue/low",
+                                            params.motion_prediction_adaptive_trans_min_eigenvalue_low);
+        params.motion_prediction_adaptive_trans_min_eigenvalue_high =
+            node->declare_parameter<double>("motion_prediction/adaptive/translation/min_eigenvalue/high",
+                                            params.motion_prediction_adaptive_trans_min_eigenvalue_high);
     }
 
     // Registration
@@ -255,12 +259,12 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.reg_params.degenerate_reg.base_factor =
                 node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/base_factor",
                                                 params.reg_params.degenerate_reg.base_factor);
-            params.reg_params.degenerate_reg.trans_eig_threshold =
-                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/trans_eig_threshold",
-                                                params.reg_params.degenerate_reg.trans_eig_threshold);
-            params.reg_params.degenerate_reg.rot_eig_threshold =
-                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/rot_eig_threshold",
-                                                params.reg_params.degenerate_reg.rot_eig_threshold);
+            params.reg_params.degenerate_reg.trans_eigenvalue_threshold = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold",
+                params.reg_params.degenerate_reg.trans_eigenvalue_threshold);
+            params.reg_params.degenerate_reg.rot_eigenvalue_threshold = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold",
+                params.reg_params.degenerate_reg.rot_eigenvalue_threshold);
         }
     }
 

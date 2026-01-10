@@ -38,8 +38,8 @@ DegenerateRegularizationType DegenerateRegularizationType_from_string(const std:
 
 struct DegenerateRegularizationParams {
     DegenerateRegularizationType type = DegenerateRegularizationType::none;
-    float rot_eig_threshold = 10.0f;
-    float trans_eig_threshold = 1.0f;
+    float rot_eigenvalue_threshold = 10.0f;
+    float trans_eigenvalue_threshold = 1.0f;
     float base_factor = 1.0f;
 };
 
@@ -66,8 +66,8 @@ private:
         if (this->params_.type == DegenerateRegularizationType::none) {
             return ret;
         } else if (this->params_.type == DegenerateRegularizationType::nl_reg) {
-            const float rot_threshold = this->params_.rot_eig_threshold;
-            const float trans_threshold = this->params_.trans_eig_threshold;
+            const float rot_threshold = this->params_.rot_eigenvalue_threshold;
+            const float trans_threshold = this->params_.trans_eigenvalue_threshold;
             const float lambda = this->params_.base_factor * inlier;
 
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
