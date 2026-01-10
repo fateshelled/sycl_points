@@ -38,12 +38,19 @@ namespace kernel {
 /// @param v Input value (only lower 21 bits are used)
 /// @return 63-bit expanded value with bits at positions 0, 3, 6, 9, ..., 60
 SYCL_EXTERNAL inline uint64_t expand_bits_21(uint64_t v) {
-    v &= 0x1FFFFF;                              // Mask to 21 bits
-    v = (v | (v << 32)) & 0x1F00000000FFFFULL;  // Split: upper 5 bits and lower 16 bits
-    v = (v | (v << 16)) & 0x1F0000FF0000FFULL;  // Split into 5-8-8 bit groups
-    v = (v | (v << 8)) & 0x100F00F00F00F00FULL; // Split into smaller groups
-    v = (v | (v << 4)) & 0x10C30C30C30C30C3ULL; // 2-bit groups
-    v = (v | (v << 2)) & 0x1249249249249249ULL; // Final: 1-bit with 2-bit gaps
+    static constexpr uint64_t MASK_21_BITS = 0x1FFFFF;
+    static constexpr uint64_t MASK_STEP_1 = 0x1F00000000FFFFULL;
+    static constexpr uint64_t MASK_STEP_2 = 0x1F0000FF0000FFULL;
+    static constexpr uint64_t MASK_STEP_3 = 0x100F00F00F00F00FULL;
+    static constexpr uint64_t MASK_STEP_4 = 0x10C30C30C30C30C3ULL;
+    static constexpr uint64_t MASK_STEP_5 = 0x1249249249249249ULL;
+
+    v &= MASK_21_BITS;                           // Mask to 21 bits
+    v = (v | (v << 32)) & MASK_STEP_1; // Split: upper 5 bits and lower 16 bits
+    v = (v | (v << 16)) & MASK_STEP_2; // Split into 5-8-8 bit groups
+    v = (v | (v << 8))  & MASK_STEP_3; // Split into smaller groups
+    v = (v | (v << 4))  & MASK_STEP_4; // 2-bit groups
+    v = (v | (v << 2))  & MASK_STEP_5; // Final: 1-bit with 2-bit gaps
     return v;
 }
 

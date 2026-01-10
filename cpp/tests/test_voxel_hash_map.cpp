@@ -398,11 +398,11 @@ TEST(MortonCodeTest, MortonEncode3DInterleavesCorrectly) {
     EXPECT_EQ(morton_encode_3d(0, 0, 2), 0b100000ULL);
 
     // Combined test: X=3, Y=5, Z=7
-    // X=3 = 0b11 -> bits 0,3 of output
-    // Y=5 = 0b101 -> bits 1,4,7 of output (shifted by 1)
-    // Z=7 = 0b111 -> bits 2,5,8 of output (shifted by 2)
-    // Output: z2y2x2 z1y1x1 z0y0x0 = 111 101 011 = 0b111101011
-    EXPECT_EQ(morton_encode_3d(3, 5, 7), 0b111101011ULL);
+    // X=3 = 0b11
+    // Y=5 = 0b101
+    // Z=7 = 0b111
+    // Output: z2y2x2 z1y1x1 z0y0x0 = 110 101 111 = 0b110101111
+    EXPECT_EQ(morton_encode_3d(3, 5, 7), 0b110101111ULL);
 }
 
 TEST(MortonCodeTest, MortonCodePreservesSpatialLocality) {
@@ -417,10 +417,10 @@ TEST(MortonCodeTest, MortonCodePreservesSpatialLocality) {
 
     // Neighbors should differ by small amounts (within some bits)
     // The difference between adjacent cells is bounded by the Morton curve structure
-    uint64_t diff_x = (origin > neighbor_x) ? (origin - neighbor_x) : (neighbor_x - origin);
-    uint64_t diff_y = (origin > neighbor_y) ? (origin - neighbor_y) : (neighbor_y - origin);
-    uint64_t diff_z = (origin > neighbor_z) ? (origin - neighbor_z) : (neighbor_z - origin);
-    uint64_t diff_far = (origin > far_point) ? (origin - far_point) : (far_point - origin);
+    uint64_t diff_x = std::max(origin, neighbor_x) - std::min(origin, neighbor_x);
+    uint64_t diff_y = std::max(origin, neighbor_y) - std::min(origin, neighbor_y);
+    uint64_t diff_z = std::max(origin, neighbor_z) - std::min(origin, neighbor_z);
+    uint64_t diff_far = std::max(origin, far_point) - std::min(origin, far_point);
 
     // Neighbors should be closer than far points
     EXPECT_LT(diff_x, diff_far);
