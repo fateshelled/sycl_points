@@ -2,7 +2,7 @@
 
 #include <Eigen/Geometry>
 
-#include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/registration/registration_params.hpp"
 
 namespace sycl_points {
 namespace pipeline {
