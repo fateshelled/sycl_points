@@ -59,8 +59,9 @@ struct RegistrationParams {
     };
     struct RotationConstraint {
         bool enable = false;
-        float weight = 1.0f;  // Scaling factor to balance constraint error with geometric error
-        float robust_scale = 5.0f;
+        float weight = 1.0f;              // Scaling factor to balance constraint error with geometric error
+        float robust_init_scale = 10.0f;  // scale for robust loss function
+        float robust_min_scale = 0.5f;    // minimum scale
     };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)

@@ -89,9 +89,10 @@ lidar_odometry_node:
     registration/photometric/weight: 0.2        # Scaling factor to balance photometric error with geometric error
     registration/photometric/robust_scale: 5.0  # Large scale is strong constraint
     registration/genz/planarity_threshold: 0.2
-    registration/rotation_constraint/enable: false
+    registration/rotation_constraint/enable: true
     registration/rotation_constraint/weight: 5.0        # Scaling factor to balance constraint error with geometric error
-    registration/rotation_constraint/robust_scale: 7.5  # Large scale is strong constraint
+    registration/rotation_constraint/robust/init_scale: 10.0
+    registration/rotation_constraint/robust/min_scale: 7.5
     registration/optimization_method: DOGLEG  # GN, LM, DOGLEG
     registration/lm/max_inner_iterations: 5
     registration/lm/lambda_factor: 2.0
