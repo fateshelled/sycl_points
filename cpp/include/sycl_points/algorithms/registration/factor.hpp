@@ -250,10 +250,10 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
                              target_pt.z() - transform_source_pt.z(), 0.0f);
 
     Covariance normalized_source_cov = source_cov;
-    covariance::kernel::normalize_covariance(normalized_source_cov);
+    covariance::kernel::update_covariance_plane(normalized_source_cov);
 
     Covariance normalized_target_cov = target_cov;
-    covariance::kernel::normalize_covariance(normalized_target_cov);
+    covariance::kernel::update_covariance_plane(normalized_target_cov);
 
     const Covariance mahalanobis = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
 
@@ -293,10 +293,10 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
                              target_pt.z() - transform_source_pt.z(), 0.0f);
 
     Covariance normalized_source_cov = source_cov;
-    covariance::kernel::normalize_covariance(normalized_source_cov);
+    covariance::kernel::update_covariance_plane(normalized_source_cov);
 
     Covariance normalized_target_cov = target_cov;
-    covariance::kernel::normalize_covariance(normalized_target_cov);
+    covariance::kernel::update_covariance_plane(normalized_target_cov);
 
     const Covariance mahalanobis = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
 
