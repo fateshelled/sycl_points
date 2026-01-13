@@ -42,11 +42,12 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
         this->pub_pose_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("sycl_lo/pose", rclcpp::QoS(5));
         this->pub_keyframe_pose_ =
             this->create_publisher<nav_msgs::msg::Odometry>("sycl_lo/keyframe/pose", rclcpp::QoS(5));
-        this->pub_covariance_markers_ =
-            this->create_publisher<visualization_msgs::msg::MarkerArray>("sycl_lo/covariance_markers", rclcpp::QoS(5));
 
         this->tf_broadcaster_ =
             std::make_unique<tf2_ros::TransformBroadcaster>(*this, tf2_ros::DynamicBroadcasterQoS(1000));
+
+        this->covariance_marker_publisher_ =
+            std::make_unique<CovarianceMarkerPublisher>(*this, "sycl_lo/covariance_markers");
     }
 
     RCLCPP_INFO(this->get_logger(), "Subscribe PointCloud: %s", this->sub_pc_->get_topic_name());
@@ -55,7 +56,8 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
     RCLCPP_INFO(this->get_logger(), "Publish Odometry: %s", this->pub_odom_->get_topic_name());
     RCLCPP_INFO(this->get_logger(), "Publish Pose: %s", this->pub_pose_->get_topic_name());
     RCLCPP_INFO(this->get_logger(), "Publish Keyframe Pose: %s", this->pub_keyframe_pose_->get_topic_name());
-    RCLCPP_INFO(this->get_logger(), "Publish Covariance Markers: %s", this->pub_covariance_markers_->get_topic_name());
+    RCLCPP_INFO(this->get_logger(), "Publish Covariance Markers: %s",
+                this->covariance_marker_publisher_->get_topic_name());
 }
 
 /// @brief destructor
@@ -129,9 +131,8 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
                 }
             }
 
-            if (this->pub_covariance_markers_->get_subscription_count() > 0) {
-                this->publish_covariance_markers(msg->header, this->pipeline_->get_preprocessed_point_cloud());
-            }
+            this->covariance_marker_publisher_->publish_if_subscribed(
+                msg->header, this->pipeline_->get_preprocessed_point_cloud());
 
             if (this->pub_submap_->get_subscription_count() > 0) {
                 auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), msg->header);
@@ -240,98 +241,6 @@ void LiDAROdometryNode::publish_keyframe_pose(const std_msgs::msg::Header& heade
     odom_msg.pose.pose.orientation.z = odom_quat.z();
     odom_msg.pose.pose.orientation.w = odom_quat.w();
     this->pub_keyframe_pose_->publish(odom_msg);
-}
-
-void LiDAROdometryNode::publish_covariance_markers(const std_msgs::msg::Header& header, const PointCloudShared& cloud) {
-    if (!cloud.has_cov() || cloud.size() == 0) {
-        return;
-    }
-
-    visualization_msgs::msg::MarkerArray marker_array;
-
-    // Delete all previous markers
-    visualization_msgs::msg::Marker delete_marker;
-    delete_marker.header = header;
-    delete_marker.ns = "covariance_ellipsoids";
-    delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
-    marker_array.markers.push_back(delete_marker);
-
-    const size_t num_points = cloud.size();
-    const auto* points_ptr = cloud.points_ptr();
-    const auto* covs_ptr = cloud.covs_ptr();
-
-    // Scale factor for ellipsoid visualization
-    constexpr float scale_factor = 3.0f;  // 3-sigma ellipsoid
-
-    for (size_t i = 0; i < num_points; ++i) {
-        const auto& point = points_ptr[i];
-        const auto& cov = covs_ptr[i];
-
-        // Extract 3x3 covariance block
-        const Eigen::Matrix3f cov3x3 = cov.block<3, 3>(0, 0);
-
-        // Perform eigenvalue decomposition
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(cov3x3);
-        if (solver.info() != Eigen::Success) {
-            continue;
-        }
-
-        const Eigen::Vector3f eigenvalues = solver.eigenvalues();
-        const Eigen::Matrix3f eigenvectors = solver.eigenvectors();
-
-        // Skip if any eigenvalue is invalid
-        if (eigenvalues.minCoeff() < 0.0f) {
-            continue;
-        }
-
-        // Create ellipsoid marker
-        visualization_msgs::msg::Marker marker;
-        marker.header = header;
-        marker.ns = "covariance_ellipsoids";
-        marker.id = static_cast<int32_t>(i);
-        marker.type = visualization_msgs::msg::Marker::SPHERE;
-        marker.action = visualization_msgs::msg::Marker::ADD;
-
-        // Position
-        marker.pose.position.x = static_cast<double>(point.x());
-        marker.pose.position.y = static_cast<double>(point.y());
-        marker.pose.position.z = static_cast<double>(point.z());
-
-        // Orientation from eigenvectors
-        // Ensure proper rotation matrix (det = 1)
-        Eigen::Matrix3f rotation = eigenvectors;
-        if (rotation.determinant() < 0) {
-            rotation.col(0) *= -1.0f;
-        }
-        const Eigen::Quaternionf quat(rotation);
-        marker.pose.orientation.x = static_cast<double>(quat.x());
-        marker.pose.orientation.y = static_cast<double>(quat.y());
-        marker.pose.orientation.z = static_cast<double>(quat.z());
-        marker.pose.orientation.w = static_cast<double>(quat.w());
-
-        // Scale from eigenvalues (sqrt for std dev, scaled for visualization)
-        marker.scale.x = static_cast<double>(scale_factor * std::sqrt(eigenvalues(0)));
-        marker.scale.y = static_cast<double>(scale_factor * std::sqrt(eigenvalues(1)));
-        marker.scale.z = static_cast<double>(scale_factor * std::sqrt(eigenvalues(2)));
-
-        // Clamp scale to reasonable values
-        constexpr double min_scale = 0.001;
-        constexpr double max_scale = 1.0;
-        marker.scale.x = std::clamp(marker.scale.x, min_scale, max_scale);
-        marker.scale.y = std::clamp(marker.scale.y, min_scale, max_scale);
-        marker.scale.z = std::clamp(marker.scale.z, min_scale, max_scale);
-
-        // Color based on eigenvalue ratio (planarity indicator)
-        const float planarity = 1.0f - eigenvalues(0) / (eigenvalues(2) + 1e-6f);
-        marker.color.r = static_cast<float>(1.0 - planarity);
-        marker.color.g = static_cast<float>(planarity);
-        marker.color.b = 0.2f;
-        marker.color.a = 0.5f;
-
-        marker_array.markers.push_back(marker);
-    }
-
-    this->pub_covariance_markers_->publish(marker_array);
 }
 }  // namespace ros2
 }  // namespace sycl_points
