@@ -8,7 +8,7 @@
 #include <sycl_points/pipeline/lidar_odometry_params.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 
-#include "sycl_points_ros2/covariance_marker_publisher.hpp"
+#include <sycl_points/ros2/covariance_marker_publisher.hpp>
 
 namespace sycl_points {
 namespace ros2 {

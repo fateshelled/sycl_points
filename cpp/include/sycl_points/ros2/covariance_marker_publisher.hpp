@@ -5,8 +5,9 @@
 #include <cmath>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
-#include <sycl_points/points/point_cloud.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+
+#include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
 namespace ros2 {
