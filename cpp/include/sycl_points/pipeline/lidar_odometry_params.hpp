@@ -3,6 +3,7 @@
 #include <Eigen/Geometry>
 
 #include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/ros2/covariance_marker_publisher.hpp"
 
 namespace sycl_points {
 namespace pipeline {
@@ -83,6 +84,9 @@ struct Parameters {
     Eigen::Isometry3f T_lidar_to_base_link = Eigen::Isometry3f::Identity();
 
     Eigen::Isometry3f initial_pose = Eigen::Isometry3f::Identity();  // map to base_link
+
+    // Visualizer
+    ros2::CovarianceMarkerConfig scan_cov_marker_config;
 };
 
 }  // namespace lidar_odometry

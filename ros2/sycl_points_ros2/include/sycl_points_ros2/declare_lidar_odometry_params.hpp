@@ -298,6 +298,31 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.initial_pose.matrix().block<3, 3>(0, 0) = quat.matrix();
         }
     }
+
+    // Visualizer
+    {
+        // Preprocessed Scan Covariances
+        params.scan_cov_marker_config.topic_name = node->declare_parameter<std::string>(
+            "vis/covariance_markers/scan/topic_name", params.scan_cov_marker_config.topic_name);
+        params.scan_cov_marker_config.marker_ns = node->declare_parameter<std::string>(
+            "vis/covariance_markers/scan/marker_ns", params.scan_cov_marker_config.marker_ns);
+        params.scan_cov_marker_config.scale_factor = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/scale_factor", params.scan_cov_marker_config.scale_factor);
+        params.scan_cov_marker_config.min_scale = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/min_scale", params.scan_cov_marker_config.min_scale);
+        params.scan_cov_marker_config.max_scale = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/max_scale", params.scan_cov_marker_config.max_scale);
+        params.scan_cov_marker_config.alpha =
+            node->declare_parameter<double>("vis/covariance_markers/scan/alpha", params.scan_cov_marker_config.alpha);
+        params.scan_cov_marker_config.color_by_planarity = node->declare_parameter<bool>(
+            "vis/covariance_markers/scan/color_by_planarity", params.scan_cov_marker_config.color_by_planarity);
+        params.scan_cov_marker_config.default_r = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/default_r", params.scan_cov_marker_config.default_r);
+        params.scan_cov_marker_config.default_g = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/default_g", params.scan_cov_marker_config.default_g);
+        params.scan_cov_marker_config.default_b = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/default_b", params.scan_cov_marker_config.default_b);
+    }
     return params;
 }
 }  // namespace ros2

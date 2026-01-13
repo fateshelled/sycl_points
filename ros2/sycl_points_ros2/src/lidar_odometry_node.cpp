@@ -47,7 +47,7 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
             std::make_unique<tf2_ros::TransformBroadcaster>(*this, tf2_ros::DynamicBroadcasterQoS(1000));
 
         this->covariance_marker_publisher_ =
-            std::make_unique<CovarianceMarkerPublisher>(*this, "sycl_lo/covariance_markers");
+            std::make_unique<CovarianceMarkerPublisher>(*this, this->params_.scan_cov_marker_config);
     }
 
     RCLCPP_INFO(this->get_logger(), "Subscribe PointCloud: %s", this->sub_pc_->get_topic_name());

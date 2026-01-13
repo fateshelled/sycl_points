@@ -110,3 +110,14 @@ lidar_odometry_node:
     registration/degenerate_regularization/nl_reg/rot_eig_threshold: 10.0
     registration/degenerate_regularization/nl_reg/base_factor: 0.2
     registration/verbose: false
+
+    vis/covariance_markers/scan/topic_name: "sycl_lo/scan_covariance_markers"
+    vis/covariance_markers/scan/marker_ns: "covariance_ellipsoids"
+    vis/covariance_markers/scan/scale_factor: 1.0
+    vis/covariance_markers/scan/min_scale: 0.0
+    vis/covariance_markers/scan/max_scale: 1.0
+    vis/covariance_markers/scan/alpha: 0.2
+    vis/covariance_markers/scan/color_by_planarity: false
+    vis/covariance_markers/scan/default_r: 0.0
+    vis/covariance_markers/scan/default_g: 1.0
+    vis/covariance_markers/scan/default_b: 0.2
