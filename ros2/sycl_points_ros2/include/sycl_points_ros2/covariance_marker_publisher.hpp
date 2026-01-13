@@ -1,42 +1,42 @@
 #pragma once
 
-#include <rclcpp/rclcpp.hpp>
-#include <sycl_points/points/point_cloud.hpp>
-#include <visualization_msgs/msg/marker_array.hpp>
-
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
+#include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <sycl_points/points/point_cloud.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 namespace sycl_points {
 namespace ros2 {
 
+/// @brief Configuration parameters for covariance visualization
+struct CovarianceMarkerConfig {
+    std::string topic_name = "covariance_markers";
+    std::string marker_ns = "covariance_ellipsoids";
+    float scale_factor = 1.0f;       // Sigma multiplier for ellipsoid size
+    double min_scale = 0.001;        // Minimum ellipsoid scale
+    double max_scale = 1.0;          // Maximum ellipsoid scale
+    float alpha = 0.5f;              // Marker transparency
+    bool color_by_planarity = true;  // Color based on planarity indicator
+    float default_r = 0.0f;          // Default red color (if not using planarity)
+    float default_g = 1.0f;          // Default green color
+    float default_b = 0.2f;          // Default blue color
+    size_t qos_depth = 10;           // QoS history depth
+};
+
 /// @brief Publisher class for visualizing point cloud covariance matrices as ellipsoid markers
 class CovarianceMarkerPublisher {
 public:
-    /// @brief Configuration parameters for covariance visualization
-    struct Config {
-        std::string topic_name = "covariance_markers";
-        std::string marker_ns = "covariance_ellipsoids";
-        float scale_factor = 3.0f;       // Sigma multiplier for ellipsoid size
-        double min_scale = 0.001;        // Minimum ellipsoid scale
-        double max_scale = 1.0;          // Maximum ellipsoid scale
-        float alpha = 0.5f;              // Marker transparency
-        bool color_by_planarity = true;  // Color based on planarity indicator
-        float default_r = 0.0f;          // Default red color (if not using planarity)
-        float default_g = 1.0f;          // Default green color
-        float default_b = 0.2f;          // Default blue color
-        size_t qos_depth = 5;            // QoS history depth
-    };
-
     using Ptr = std::shared_ptr<CovarianceMarkerPublisher>;
     using ConstPtr = std::shared_ptr<const CovarianceMarkerPublisher>;
 
     /// @brief Constructor
     /// @param node ROS2 node to create publisher on
     /// @param config Configuration parameters
-    explicit CovarianceMarkerPublisher(rclcpp::Node& node, const Config& config = Config())
+    explicit CovarianceMarkerPublisher(rclcpp::Node& node,
+                                       const CovarianceMarkerConfig& config = CovarianceMarkerConfig())
         : config_(config), node_(node) {
         init_publisher();
     }
@@ -63,11 +63,11 @@ public:
 
     /// @brief Get the configuration
     /// @return Current configuration
-    const Config& get_config() const { return config_; }
+    const CovarianceMarkerConfig& get_config() const { return config_; }
 
     /// @brief Set the configuration
     /// @param config New configuration
-    void set_config(const Config& config) { config_ = config; }
+    void set_config(const CovarianceMarkerConfig& config) { config_ = config; }
 
     /// @brief Publish covariance markers for a point cloud
     /// @param header ROS2 message header (timestamp and frame_id)
@@ -98,7 +98,7 @@ public:
     /// @param cloud Point cloud with covariance data
     /// @return MarkerArray message containing ellipsoid markers
     visualization_msgs::msg::MarkerArray create_marker_array(const std_msgs::msg::Header& header,
-                                                              const PointCloudShared& cloud) const {
+                                                             const PointCloudShared& cloud) const {
         visualization_msgs::msg::MarkerArray marker_array;
 
         if (!cloud.has_cov() || cloud.size() == 0) {
@@ -145,9 +145,8 @@ private:
     /// @param id Marker ID
     /// @return Optional marker (empty if eigendecomposition fails)
     std::optional<visualization_msgs::msg::Marker> create_ellipsoid_marker(const std_msgs::msg::Header& header,
-                                                                            const PointType& point,
-                                                                            const Covariance& cov,
-                                                                            int32_t id) const {
+                                                                           const PointType& point,
+                                                                           const Covariance& cov, int32_t id) const {
         // Extract 3x3 covariance block
         const Eigen::Matrix3f cov3x3 = cov.block<3, 3>(0, 0);
 
@@ -192,15 +191,12 @@ private:
         marker.pose.orientation.w = static_cast<double>(quat.w());
 
         // Scale from eigenvalues (sqrt for std dev, scaled for visualization)
-        marker.scale.x =
-            std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(0))),
-                       config_.min_scale, config_.max_scale);
-        marker.scale.y =
-            std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(1))),
-                       config_.min_scale, config_.max_scale);
-        marker.scale.z =
-            std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(2))),
-                       config_.min_scale, config_.max_scale);
+        marker.scale.x = std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(0))),
+                                    config_.min_scale, config_.max_scale);
+        marker.scale.y = std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(1))),
+                                    config_.min_scale, config_.max_scale);
+        marker.scale.z = std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(2))),
+                                    config_.min_scale, config_.max_scale);
 
         // Color
         if (config_.color_by_planarity) {
@@ -219,7 +215,7 @@ private:
         return marker;
     }
 
-    Config config_;
+    CovarianceMarkerConfig config_;
     rclcpp::Node& node_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher_;
 };
