@@ -38,8 +38,7 @@ public:
     /// @param config Configuration parameters
     explicit CovarianceMarkerPublisher(rclcpp::Node& node, const Config& config = Config())
         : config_(config), node_(node) {
-        publisher_ = node.create_publisher<visualization_msgs::msg::MarkerArray>(
-            config_.topic_name, rclcpp::QoS(static_cast<size_t>(config_.qos_depth)));
+        init_publisher();
     }
 
     /// @brief Constructor with topic name override
@@ -47,8 +46,7 @@ public:
     /// @param topic_name Topic name for the MarkerArray publisher
     CovarianceMarkerPublisher(rclcpp::Node& node, const std::string& topic_name) : node_(node) {
         config_.topic_name = topic_name;
-        publisher_ = node.create_publisher<visualization_msgs::msg::MarkerArray>(
-            config_.topic_name, rclcpp::QoS(static_cast<size_t>(config_.qos_depth)));
+        init_publisher();
     }
 
     /// @brief Get the topic name
@@ -107,19 +105,24 @@ public:
             return marker_array;
         }
 
+        const size_t num_points = cloud.size();
+        const auto* points_ptr = cloud.points_ptr();
+        const auto* covs_ptr = cloud.covs_ptr();
+
         // Delete all previous markers
         visualization_msgs::msg::Marker delete_marker;
         delete_marker.header = header;
         delete_marker.ns = config_.marker_ns;
         delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+
+        // Reserve capacity for all markers (delete marker + one per point)
+        marker_array.markers.reserve(num_points + 1);
         marker_array.markers.push_back(delete_marker);
 
-        const size_t num_points = cloud.size();
-        const auto* points_ptr = cloud.points_ptr();
-        const auto* covs_ptr = cloud.covs_ptr();
-
         for (size_t i = 0; i < num_points; ++i) {
-            auto marker = create_ellipsoid_marker(header, points_ptr[i], covs_ptr[i], static_cast<int32_t>(i));
+            // Prevent marker ID overflow by wrapping around INT32_MAX
+            const int32_t marker_id = static_cast<int32_t>(i % INT32_MAX);
+            auto marker = create_ellipsoid_marker(header, points_ptr[i], covs_ptr[i], marker_id);
             if (marker.has_value()) {
                 marker_array.markers.push_back(marker.value());
             }
@@ -129,6 +132,12 @@ public:
     }
 
 private:
+    /// @brief Initialize the publisher with current configuration
+    void init_publisher() {
+        publisher_ = node_.create_publisher<visualization_msgs::msg::MarkerArray>(
+            config_.topic_name, rclcpp::QoS(static_cast<size_t>(config_.qos_depth)));
+    }
+
     /// @brief Create an ellipsoid marker from a point and its covariance matrix
     /// @param header ROS2 message header
     /// @param point Point position
@@ -151,8 +160,9 @@ private:
         const Eigen::Vector3f eigenvalues = solver.eigenvalues();
         const Eigen::Matrix3f eigenvectors = solver.eigenvectors();
 
-        // Skip if any eigenvalue is invalid
-        if (eigenvalues.minCoeff() < 0.0f) {
+        // Skip if any eigenvalue is invalid (NaN, negative, or too small)
+        constexpr float MIN_EIGENVALUE = 1e-8f;
+        if (!eigenvalues.allFinite() || eigenvalues.minCoeff() < MIN_EIGENVALUE) {
             return std::nullopt;
         }
 
@@ -195,7 +205,7 @@ private:
         // Color
         if (config_.color_by_planarity) {
             // Color based on eigenvalue ratio (planarity indicator)
-            const float planarity = 1.0f - eigenvalues(0) / (eigenvalues(2) + 1e-6f);
+            const float planarity = std::clamp(1.0f - eigenvalues(0) / (eigenvalues(2) + 1e-6f), 0.0f, 1.0f);
             marker.color.r = static_cast<float>(1.0 - planarity);
             marker.color.g = static_cast<float>(planarity);
             marker.color.b = 0.2f;
