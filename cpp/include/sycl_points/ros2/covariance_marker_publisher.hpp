@@ -16,7 +16,7 @@ namespace ros2 {
 struct CovarianceMarkerConfig {
     std::string topic_name = "covariance_markers";
     std::string marker_ns = "covariance_ellipsoids";
-    float scale_factor = 1.0f;       // Sigma multiplier for ellipsoid size
+    double scale_factor = 1.0;       // Sigma multiplier for ellipsoid size
     double min_scale = 0.001;        // Minimum ellipsoid scale
     double max_scale = 1.0;          // Maximum ellipsoid scale
     float alpha = 0.5f;              // Marker transparency
@@ -192,11 +192,11 @@ private:
         marker.pose.orientation.w = static_cast<double>(quat.w());
 
         // Scale from eigenvalues (sqrt for std dev, scaled for visualization)
-        marker.scale.x = std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(0))),
+        marker.scale.x = std::clamp(config_.scale_factor * static_cast<double>(std::sqrt(eigenvalues(0))),
                                     config_.min_scale, config_.max_scale);
-        marker.scale.y = std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(1))),
+        marker.scale.y = std::clamp(config_.scale_factor * static_cast<double>(std::sqrt(eigenvalues(1))),
                                     config_.min_scale, config_.max_scale);
-        marker.scale.z = std::clamp(static_cast<double>(config_.scale_factor * std::sqrt(eigenvalues(2))),
+        marker.scale.z = std::clamp(config_.scale_factor * static_cast<double>(std::sqrt(eigenvalues(2))),
                                     config_.min_scale, config_.max_scale);
 
         // Color
