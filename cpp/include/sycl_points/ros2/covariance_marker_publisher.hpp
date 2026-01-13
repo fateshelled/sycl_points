@@ -79,7 +79,7 @@ public:
         }
 
         auto marker_array = create_marker_array(header, cloud);
-        publisher_->publish(marker_array);
+        publisher_->publish(std::move(marker_array));
     }
 
     /// @brief Publish covariance markers only if there are subscribers
@@ -98,9 +98,10 @@ public:
     /// @param header ROS2 message header
     /// @param cloud Point cloud with covariance data
     /// @return MarkerArray message containing ellipsoid markers
-    visualization_msgs::msg::MarkerArray create_marker_array(const std_msgs::msg::Header& header,
-                                                             const PointCloudShared& cloud) const {
-        visualization_msgs::msg::MarkerArray marker_array;
+    visualization_msgs::msg::MarkerArray::UniquePtr create_marker_array(const std_msgs::msg::Header& header,
+                                                                        const PointCloudShared& cloud) const {
+        visualization_msgs::msg::MarkerArray::UniquePtr marker_array =
+            std::make_unique<visualization_msgs::msg::MarkerArray>();
 
         if (!cloud.has_cov() || cloud.size() == 0) {
             return marker_array;
@@ -114,18 +115,19 @@ public:
         visualization_msgs::msg::Marker delete_marker;
         delete_marker.header = header;
         delete_marker.ns = config_.marker_ns;
+        delete_marker.id = -1;
         delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
 
         // Reserve capacity for all markers (delete marker + one per point)
-        marker_array.markers.reserve(num_points + 1);
-        marker_array.markers.push_back(delete_marker);
+        marker_array->markers.reserve(num_points + 1);
+        marker_array->markers.push_back(delete_marker);
 
         for (size_t i = 0; i < num_points; ++i) {
             // Prevent marker ID overflow by wrapping around INT32_MAX
             const int32_t marker_id = static_cast<int32_t>(i % INT32_MAX);
             auto marker = create_ellipsoid_marker(header, points_ptr[i], covs_ptr[i], marker_id);
             if (marker.has_value()) {
-                marker_array.markers.push_back(marker.value());
+                marker_array->markers.push_back(marker.value());
             }
         }
 

@@ -113,7 +113,7 @@ lidar_odometry_node:
 
     vis/covariance_markers/scan/topic_name: "sycl_lo/scan_covariance_markers"
     vis/covariance_markers/scan/marker_ns: "covariance_ellipsoids"
-    vis/covariance_markers/scan/scale_factor: 1.0
+    vis/covariance_markers/scan/scale_factor: 0.5
     vis/covariance_markers/scan/min_scale: 0.0
     vis/covariance_markers/scan/max_scale: 1.0
     vis/covariance_markers/scan/alpha: 0.2
