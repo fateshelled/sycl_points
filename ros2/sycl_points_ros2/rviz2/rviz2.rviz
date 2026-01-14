@@ -136,14 +136,14 @@ Visualization Manager:
       Position Tolerance: 0.10000000149011612
       Shape:
         Alpha: 1
-        Axes Length: 1
+        Axes Length: 0.30000001192092896
         Axes Radius: 0.10000000149011612
         Color: 255; 25; 0
         Head Length: 0.30000001192092896
         Head Radius: 0.30000001192092896
         Shaft Length: 0.5
         Shaft Radius: 0.05000000074505806
-        Value: Arrow
+        Value: Axes
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -153,7 +153,7 @@ Visualization Manager:
         Value: /sycl_lo/odom
       Value: true
     - Alpha: 1
-      Axes Length: 1
+      Axes Length: 0.800000011920929
       Axes Radius: 0.10000000149011612
       Class: rviz_default_plugins/Pose
       Color: 255; 25; 0
@@ -187,17 +187,17 @@ Visualization Manager:
         Value: /alphasense/cam0/image_raw
       Value: true
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Name: MarkerArray
       Namespaces:
-        covariance_ellipsoids: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /sycl_lo/scan_covariance_markers
-      Value: true
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
