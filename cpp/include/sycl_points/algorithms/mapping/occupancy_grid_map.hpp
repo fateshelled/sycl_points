@@ -1363,7 +1363,7 @@ private:
             this->queue_.get_device().get_info<sycl::info::device::max_work_group_size>();
         const size_t compute_units = this->queue_.get_device().get_info<sycl::info::device::max_compute_units>();
         if (this->queue_.is_nvidia()) {
-            return std::min(max_work_group_size, size_t{64});
+            return std::min(max_work_group_size, size_t{256});
         }
         if (this->queue_.is_intel() && this->queue_.is_gpu()) {
             return std::min(max_work_group_size, compute_units * size_t{8});
