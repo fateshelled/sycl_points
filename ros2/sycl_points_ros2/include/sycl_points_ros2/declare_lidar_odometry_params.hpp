@@ -183,8 +183,8 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
                 node->declare_parameter<double>("registration/robust/init_scale", params.reg_params.robust.init_scale);
             params.reg_params.robust.min_scale =
                 node->declare_parameter<double>("registration/robust/min_scale", params.reg_params.robust.min_scale);
-            params.reg_params.robust.scaling_iter = node->declare_parameter<int64_t>(
-                "registration/robust/scaling_iter", params.reg_params.robust.scaling_iter);
+            params.reg_params.robust.auto_scaling_iter = node->declare_parameter<int64_t>(
+                "registration/robust/auto_scaling_iter", params.reg_params.robust.auto_scaling_iter);
         }
         // deskew
         {

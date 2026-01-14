@@ -350,6 +350,7 @@ private:
 
     void compute_covariances() {
         if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+            this->params_.reg_params.rotation_constraint.enable ||
             this->params_.scan_preprocess_angle_incidence_filter_enable) {
             // build KDTree
             const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
@@ -518,9 +519,11 @@ private:
                 compute_normal = true;
                 cov_events += algorithms::covariance::compute_normals_async(this->knn_result_, *this->submap_pc_ptr_,
                                                                             knn_events.evs);
-            } else if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-                       this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
-                       this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
+            }
+            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+                this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
+                this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ ||
+                this->params_.reg_params.rotation_constraint.enable) {
                 compute_cov = true;
                 cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);

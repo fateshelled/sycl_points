@@ -44,10 +44,10 @@ struct RegistrationParams {
     };
     struct Robust {
         robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
-        bool auto_scale = false;                                     // enable auto robust scale
+        bool auto_scale = false;                                     // If false, the robust scale is fixed to init_scale.
         float init_scale = 10.0f;                                    // scale for robust loss function
         float min_scale = 0.5f;                                      // minimum scale
-        size_t scaling_iter = 4;                                     // scaling iteration
+        size_t auto_scaling_iter = 4;                                // auto scaling iterations
     };
     struct PhotometricTerm {
         bool enable = false;  // If true, use photometric term.

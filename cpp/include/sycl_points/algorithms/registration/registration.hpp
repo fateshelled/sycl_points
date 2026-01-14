@@ -193,8 +193,8 @@ public:
                         << std::endl;
                     this->params_.robust.auto_scale = false;
                 }
-                if (this->params_.robust.scaling_iter <= 0) {
-                    std::cout << "[Caution] `robust.scaling_iter` must be greater than zero. Disable auto scaling."
+                if (this->params_.robust.auto_scaling_iter <= 0) {
+                    std::cout << "[Caution] `robust.auto_scaling_iter` must be greater than zero. Disable auto scaling."
                               << std::endl;
                     this->params_.robust.auto_scale = false;
                 }
@@ -228,7 +228,7 @@ public:
             const bool enable_robust_auto_scaling =
                 this->params_.robust.type != robust::RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
-                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
+                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.auto_scaling_iter) : 1;
             const float robust_scaling_factor =
                 robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
                                              1.0f / static_cast<float>(robust_levels - 1))
@@ -324,7 +324,7 @@ public:
             const bool enable_robust_auto_scaling =
                 this->params_.robust.type != robust::RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
-                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
+                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.auto_scaling_iter) : 1;
             const float robust_scaling_factor =
                 robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
                                              1.0f / static_cast<float>(robust_levels - 1))
