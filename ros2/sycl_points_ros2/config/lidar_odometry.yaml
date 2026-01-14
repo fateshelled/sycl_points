@@ -27,6 +27,7 @@ lidar_odometry_node:
     scan/intensity_correction/scale: 1.0e-3
     scan/intensity_correction/min_intensity: 0.0
     scan/intensity_correction/max_intensity: 1.0
+
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
     scan/downsampling/polar/enable: true
@@ -72,27 +73,33 @@ lidar_odometry_node:
     registration/min_num_points: 300
     registration/random_sampling/enable: true
     registration/random_sampling/num: 2048
-    registration/velocity_update/enable: true
-    registration/velocity_update/iter: 2
     registration/max_iterations: 4
     registration/lambda: 1.0e-2
     registration/max_correspondence_distance: 2.0
-    registration/mahalanobis_distance_threshold: 2.5  # (p = 0.90)
+    registration/mahalanobis_distance_threshold: 10.0
     registration/criteria/translation: 1.0e-3
     registration/criteria/rotation: 1.0e-6
-    registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
-    registration/robust/auto_scale: true
+
+    registration/velocity_update/enable: true
+    registration/velocity_update/iter: 2
+
+    registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    registration/robust/auto_scale: true    # If false, the robust scale is fixed to init_scale.
+    registration/robust/auto_scaling_iter: 4
     registration/robust/init_scale: 10.0
     registration/robust/min_scale: 1.25
-    registration/robust/scaling_iter: 4
+
     registration/photometric/enable: false
     registration/photometric/weight: 0.2        # Scaling factor to balance photometric error with geometric error
     registration/photometric/robust_scale: 5.0  # Robust kernel is same as registration/robust/type
+
     registration/rotation_constraint/enable: true
     registration/rotation_constraint/weight: 1.0              # Scaling factor to balance constraint error with geometric error
     registration/rotation_constraint/robust/init_scale: 10.0  # Robust kernel is same as registration/robust/type
     registration/rotation_constraint/robust/min_scale:   7.5
+
     registration/genz/planarity_threshold: 0.2
+
     registration/optimization_method: DOGLEG  # GN, LM, DOGLEG
     registration/lm/max_inner_iterations: 5
     registration/lm/lambda_factor: 2.0
