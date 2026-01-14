@@ -45,6 +45,9 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
 
         this->tf_broadcaster_ =
             std::make_unique<tf2_ros::TransformBroadcaster>(*this, tf2_ros::DynamicBroadcasterQoS(1000));
+
+        this->covariance_marker_publisher_ =
+            std::make_unique<CovarianceMarkerPublisher>(*this, this->params_.scan_cov_marker_config);
     }
 
     RCLCPP_INFO(this->get_logger(), "Subscribe PointCloud: %s", this->sub_pc_->get_topic_name());
@@ -53,6 +56,8 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
     RCLCPP_INFO(this->get_logger(), "Publish Odometry: %s", this->pub_odom_->get_topic_name());
     RCLCPP_INFO(this->get_logger(), "Publish Pose: %s", this->pub_pose_->get_topic_name());
     RCLCPP_INFO(this->get_logger(), "Publish Keyframe Pose: %s", this->pub_keyframe_pose_->get_topic_name());
+    RCLCPP_INFO(this->get_logger(), "Publish Covariance Markers: %s",
+                this->covariance_marker_publisher_->get_topic_name());
 }
 
 /// @brief destructor
@@ -125,6 +130,9 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
                     this->pub_preprocessed_->publish(*preprocessed_msg);
                 }
             }
+
+            this->covariance_marker_publisher_->publish_if_subscribed(msg->header,
+                                                                      this->pipeline_->get_registration_input_point_cloud());
 
             if (this->pub_submap_->get_subscription_count() > 0) {
                 auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), msg->header);
