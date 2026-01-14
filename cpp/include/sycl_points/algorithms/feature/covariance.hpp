@@ -93,27 +93,6 @@ SYCL_EXTERNAL inline void normalize_covariance(Covariance& cov) {
                                                            eigen_utils::transpose<3, 3>(eigenvectors));
 }
 
-SYCL_EXTERNAL inline void clamp_covariance_min_eigenvalue(Covariance& cov, float min_eigenvalue = 1e-3f,
-                                                          float min_condition_number = 1e-2f) {
-    Eigen::Vector3f eigenvalues;
-    Eigen::Matrix3f eigenvectors;
-    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
-
-    // Clamp eigenvalues to ensure minimum value and condition number
-    eigenvalues(2) = std::max(eigenvalues(2), min_eigenvalue);
-    if (eigenvalues(2) < std::numeric_limits<float>::min()) {
-        cov.block<3, 3>(0, 0).setIdentity();
-        return;
-    }
-    const float min_allowed = std::max(min_condition_number * eigenvalues(2), min_eigenvalue);
-    eigenvalues(0) = std::max(eigenvalues(0), min_allowed);
-    eigenvalues(1) = std::max(eigenvalues(1), min_allowed);
-
-    const auto diag = eigen_utils::as_diagonal<3>(eigenvalues);
-    cov.block<3, 3>(0, 0) = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
-                                                           eigen_utils::transpose<3, 3>(eigenvectors));
-}
-
 }  // namespace kernel
 
 /// @brief Async compute covariance using SYCL
