@@ -169,7 +169,7 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         {
             params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
                 "registration/max_correspondence_distance", params.reg_params.max_correspondence_distance);
-            params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
+            params.reg_params.mahalanobis_distance_threshold = node->declare_parameter<double>(
                 "registration/mahalanobis_distance_threshold", params.reg_params.mahalanobis_distance_threshold);
         }
 
