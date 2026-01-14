@@ -453,6 +453,7 @@ private:
         uint32_t color_count = 0U;
         uint32_t intensity_count = 0U;
         uint32_t last_updated = 0U;  // Frame index when the voxel was last modified.
+        uint32_t padding = 0U;       // Padding to align to 64 bytes for cache line efficiency.
     };
 
     struct VoxelAccumulator {
