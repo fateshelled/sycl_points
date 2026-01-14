@@ -522,6 +522,10 @@ private:
             if (stored_key == VoxelConstants::invalid_coord) {
                 break;
             }
+            // Robin Hood optimization: if stored PSL < current probe distance, key doesn't exist.
+            if (stored_key != VoxelConstants::deleted_coord && this->psl_ptr_.get()[slot] < static_cast<uint8_t>(j)) {
+                break;
+            }
             if (stored_key == VoxelConstants::deleted_coord) {
                 continue;
             }
@@ -542,9 +546,12 @@ private:
                                                    [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->data_ptr_ = std::shared_ptr<VoxelData>(sycl::malloc_shared<VoxelData>(this->capacity_, *this->queue_.ptr),
                                                      [&](VoxelData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+        this->psl_ptr_ = std::shared_ptr<uint8_t>(sycl::malloc_shared<uint8_t>(this->capacity_, *this->queue_.ptr),
+                                                  [&](uint8_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
 
         this->queue_.set_accessed_by_device(this->key_ptr_.get(), this->capacity_);
         this->queue_.set_accessed_by_device(this->data_ptr_.get(), this->capacity_);
+        this->queue_.set_accessed_by_device(this->psl_ptr_.get(), this->capacity_);
     }
 
     void initialize_storage() {
@@ -552,6 +559,7 @@ private:
         sycl_utils::events evs;
         evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
         evs += this->queue_.ptr->fill<VoxelData>(this->data_ptr_.get(), VoxelData{}, this->capacity_);
+        evs += this->queue_.ptr->fill<uint8_t>(this->psl_ptr_.get(), uint8_t{0}, this->capacity_);
         evs.wait_and_throw();
     }
 
@@ -595,6 +603,7 @@ private:
                 const auto old_data_ptr = old_data.get();
                 auto new_key_ptr = this->key_ptr_.get();
                 auto new_data_ptr = this->data_ptr_.get();
+                auto new_psl_ptr = this->psl_ptr_.get();
                 const size_t new_capacity_local = this->capacity_;
                 const size_t max_probe = this->max_probe_length_;
                 auto voxel_num_ptr = voxel_counter.data();
@@ -621,6 +630,9 @@ private:
 
                             if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
                                 new_data_ptr[slot] = data;
+                                using atomic_ref_uint8_t =
+                                    sycl::atomic_ref<uint8_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
+                                atomic_ref_uint8_t(new_psl_ptr[slot]).store(static_cast<uint8_t>(probe));
                                 voxel_num_arg += 1U;
                                 inserted = true;
                                 break;
@@ -648,6 +660,9 @@ private:
 
                             if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
                                 new_data_ptr[slot] = data;
+                                using atomic_ref_uint8_t =
+                                    sycl::atomic_ref<uint8_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
+                                atomic_ref_uint8_t(new_psl_ptr[slot]).store(static_cast<uint8_t>(probe));
                                 atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
                                 inserted = true;
                                 break;
@@ -671,7 +686,7 @@ private:
     }
 
     template <typename CounterFunc>
-    static void global_reduction(const VoxelLocalData& data, uint64_t* key_ptr, VoxelData* voxel_ptr,
+    static void global_reduction(const VoxelLocalData& data, uint64_t* key_ptr, VoxelData* voxel_ptr, uint8_t* psl_ptr,
                                  const uint32_t current_frame, const size_t max_probe, const size_t capacity,
                                  CounterFunc counter) {
         const uint64_t voxel_hash = data.voxel_idx;
@@ -689,6 +704,10 @@ private:
                     counter(1U);
                     atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                     atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
+                    // Store PSL for Robin Hood hashing optimization.
+                    using atomic_ref_uint8_t =
+                        sycl::atomic_ref<uint8_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
+                    atomic_ref_uint8_t(psl_ptr[slot_idx]).store(static_cast<uint8_t>(probe));
                     break;
                 }
             }
@@ -883,6 +902,7 @@ private:
             const auto intensity_ptr = has_intensity ? cloud.intensities_ptr() : static_cast<float*>(nullptr);
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
+            auto psl_ptr = this->psl_ptr_.get();
             const auto voxel_size_inv = this->inv_voxel_size_;
             const auto current_frame = this->frame_index_;
             const auto max_probe = this->max_probe_length_;
@@ -966,7 +986,7 @@ private:
                         }
 
                         const VoxelLocalData local = local_voxel_data[lid];
-                        global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                        global_reduction(local, key_ptr, voxel_ptr, psl_ptr, current_frame, max_probe, capacity,
                                          [&](uint32_t add) { voxel_num_arg += add; });
                     });
             } else {
@@ -985,7 +1005,7 @@ private:
 
                         const VoxelLocalData local = local_voxel_data[lid];
                         global_reduction(
-                            local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                            local, key_ptr, voxel_ptr, psl_ptr, current_frame, max_probe, capacity,
                             [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); });
                     });
             }
@@ -1125,6 +1145,7 @@ private:
 
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
+            auto psl_ptr = this->psl_ptr_.get();
             auto counter_ptr = voxel_counter.data();
             auto origin_hit_ptr = origin_hit_flag.data();
 
@@ -1171,7 +1192,7 @@ private:
                     local.acc.voxel_hash = key;
                     local.acc.log_odds_delta = log_miss;
 
-                    global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                    global_reduction(local, key_ptr, voxel_ptr, psl_ptr, current_frame, max_probe, capacity,
                                      [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); });
                 };
 
@@ -1240,6 +1261,7 @@ private:
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
+            auto psl_ptr = this->psl_ptr_.get();
             auto counter_ptr = voxel_counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
@@ -1254,6 +1276,7 @@ private:
                 if (is_stale) {
                     key_ptr[i] = VoxelConstants::deleted_coord;
                     voxel_ptr[i] = VoxelData{};
+                    psl_ptr[i] = 0U;
                     return;
                 }
 
@@ -1399,6 +1422,7 @@ private:
 
     std::shared_ptr<uint64_t> key_ptr_ = nullptr;
     std::shared_ptr<VoxelData> data_ptr_ = nullptr;
+    std::shared_ptr<uint8_t> psl_ptr_ = nullptr;  // Probe Sequence Length for Robin Hood hashing.
 };
 
 }  // namespace mapping
