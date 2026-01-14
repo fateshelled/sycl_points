@@ -73,8 +73,6 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         params.submap_voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap_voxel_size);
         params.submap_covariance_neighbor_num =
             node->declare_parameter<int64_t>("submap/covariance/neighbor_num", params.submap_covariance_neighbor_num);
-        params.submap_covariance_update_to_plane = node->declare_parameter<bool>(
-            "submap/covariance/update_to_plane", params.submap_covariance_update_to_plane);
         params.submap_color_gradient_neighbor_num = node->declare_parameter<int64_t>(
             "submap/color_gradient/neighbor_num", params.submap_color_gradient_neighbor_num);
         params.submap_max_distance_range =
@@ -122,10 +120,12 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "motion_prediction/adaptive/rotation/factor/min", params.motion_prediction_adaptive_rot_factor_min);
         params.motion_prediction_adaptive_rot_factor_max = node->declare_parameter<double>(
             "motion_prediction/adaptive/rotation/factor/max", params.motion_prediction_adaptive_rot_factor_max);
-        params.motion_prediction_adaptive_rot_eigen_low = node->declare_parameter<double>(
-            "motion_prediction/adaptive/rotation/eigen/low", params.motion_prediction_adaptive_rot_eigen_low);
-        params.motion_prediction_adaptive_rot_eigen_high = node->declare_parameter<double>(
-            "motion_prediction/adaptive/rotation/eigen/high", params.motion_prediction_adaptive_rot_eigen_high);
+        params.motion_prediction_adaptive_rot_min_eigenvalue_low =
+            node->declare_parameter<double>("motion_prediction/adaptive/rotation/min_eigenvalue/low",
+                                            params.motion_prediction_adaptive_rot_min_eigenvalue_low);
+        params.motion_prediction_adaptive_rot_min_eigenvalue_high =
+            node->declare_parameter<double>("motion_prediction/adaptive/rotation/min_eigenvalue/high",
+                                            params.motion_prediction_adaptive_rot_min_eigenvalue_high);
 
         params.motion_prediction_adaptive_trans_enable = node->declare_parameter<bool>(
             "motion_prediction/adaptive/translation/enable", params.motion_prediction_adaptive_trans_enable);
@@ -133,10 +133,12 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "motion_prediction/adaptive/translation/factor/min", params.motion_prediction_adaptive_trans_factor_min);
         params.motion_prediction_adaptive_trans_factor_max = node->declare_parameter<double>(
             "motion_prediction/adaptive/translation/factor/max", params.motion_prediction_adaptive_trans_factor_max);
-        params.motion_prediction_adaptive_trans_eigen_low = node->declare_parameter<double>(
-            "motion_prediction/adaptive/translation/eigen/low", params.motion_prediction_adaptive_trans_eigen_low);
-        params.motion_prediction_adaptive_trans_eigen_high = node->declare_parameter<double>(
-            "motion_prediction/adaptive/translation/eigen/high", params.motion_prediction_adaptive_trans_eigen_high);
+        params.motion_prediction_adaptive_trans_min_eigenvalue_low =
+            node->declare_parameter<double>("motion_prediction/adaptive/translation/min_eigenvalue/low",
+                                            params.motion_prediction_adaptive_trans_min_eigenvalue_low);
+        params.motion_prediction_adaptive_trans_min_eigenvalue_high =
+            node->declare_parameter<double>("motion_prediction/adaptive/translation/min_eigenvalue/high",
+                                            params.motion_prediction_adaptive_trans_min_eigenvalue_high);
     }
 
     // Registration
@@ -167,7 +169,7 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         {
             params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
                 "registration/max_correspondence_distance", params.reg_params.max_correspondence_distance);
-            params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
+            params.reg_params.mahalanobis_distance_threshold = node->declare_parameter<double>(
                 "registration/mahalanobis_distance_threshold", params.reg_params.mahalanobis_distance_threshold);
         }
 
@@ -181,8 +183,8 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
                 node->declare_parameter<double>("registration/robust/init_scale", params.reg_params.robust.init_scale);
             params.reg_params.robust.min_scale =
                 node->declare_parameter<double>("registration/robust/min_scale", params.reg_params.robust.min_scale);
-            params.reg_params.robust.scaling_iter = node->declare_parameter<int64_t>(
-                "registration/robust/scaling_iter", params.reg_params.robust.scaling_iter);
+            params.reg_params.robust.auto_scaling_iter = node->declare_parameter<int64_t>(
+                "registration/robust/auto_scaling_iter", params.reg_params.robust.auto_scaling_iter);
         }
         // deskew
         {
@@ -211,8 +213,12 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
                 "registration/rotation_constraint/enable", params.reg_params.rotation_constraint.enable);
             params.reg_params.rotation_constraint.weight = node->declare_parameter<double>(
                 "registration/rotation_constraint/weight", params.reg_params.rotation_constraint.weight);
-            params.reg_params.rotation_constraint.robust_scale = node->declare_parameter<double>(
-                "registration/rotation_constraint/robust_scale", params.reg_params.rotation_constraint.robust_scale);
+            params.reg_params.rotation_constraint.robust_init_scale =
+                node->declare_parameter<double>("registration/rotation_constraint/robust/init_scale",
+                                                params.reg_params.rotation_constraint.robust_init_scale);
+            params.reg_params.rotation_constraint.robust_min_scale =
+                node->declare_parameter<double>("registration/rotation_constraint/robust/min_scale",
+                                                params.reg_params.rotation_constraint.robust_min_scale);
         }
 
         // Optimization
@@ -257,12 +263,12 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.reg_params.degenerate_reg.base_factor =
                 node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/base_factor",
                                                 params.reg_params.degenerate_reg.base_factor);
-            params.reg_params.degenerate_reg.trans_eig_threshold =
-                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/trans_eig_threshold",
-                                                params.reg_params.degenerate_reg.trans_eig_threshold);
-            params.reg_params.degenerate_reg.rot_eig_threshold =
-                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/rot_eig_threshold",
-                                                params.reg_params.degenerate_reg.rot_eig_threshold);
+            params.reg_params.degenerate_reg.trans_eigenvalue_threshold = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold",
+                params.reg_params.degenerate_reg.trans_eigenvalue_threshold);
+            params.reg_params.degenerate_reg.rot_eigenvalue_threshold = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold",
+                params.reg_params.degenerate_reg.rot_eigenvalue_threshold);
         }
     }
 

@@ -2,7 +2,7 @@
 
 #include <Eigen/Geometry>
 
-#include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/ros2/covariance_marker_publisher.hpp"
 
 namespace sycl_points {
@@ -39,7 +39,6 @@ struct Parameters {
 
     float submap_voxel_size = 1.0f;
     size_t submap_covariance_neighbor_num = 10;
-    bool submap_covariance_update_to_plane = false;
     size_t submap_color_gradient_neighbor_num = 10;
     float submap_max_distance_range = 30.0f;
     size_t submap_point_random_sampling_num = 2000;
@@ -62,13 +61,13 @@ struct Parameters {
     bool motion_prediction_adaptive_rot_enable = true;
     float motion_prediction_adaptive_rot_factor_min = 0.2f;
     float motion_prediction_adaptive_rot_factor_max = 1.0f;
-    float motion_prediction_adaptive_rot_eigen_low = 5.0f;
-    float motion_prediction_adaptive_rot_eigen_high = 10.0f;
+    float motion_prediction_adaptive_rot_min_eigenvalue_low = 5.0f;
+    float motion_prediction_adaptive_rot_min_eigenvalue_high = 10.0f;
     bool motion_prediction_adaptive_trans_enable = true;
     float motion_prediction_adaptive_trans_factor_min = 0.2f;
     float motion_prediction_adaptive_trans_factor_max = 1.0f;
-    float motion_prediction_adaptive_trans_eigen_low = 1.0f;
-    float motion_prediction_adaptive_trans_eigen_high = 10.0f;
+    float motion_prediction_adaptive_trans_min_eigenvalue_low = 1.0f;
+    float motion_prediction_adaptive_trans_min_eigenvalue_high = 10.0f;
 
     size_t registration_min_num_points = 100;
     bool registration_velocity_update_enable = true;

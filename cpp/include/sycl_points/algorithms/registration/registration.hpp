@@ -13,100 +13,14 @@
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/algorithms/registration/photometric_factor.hpp"
+#include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/algorithms/registration/rotation_constraint.hpp"
 #include "sycl_points/algorithms/robust/robust.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
-
 namespace algorithms {
-
 namespace registration {
-
-enum class OptimizationMethod {
-    GAUSS_NEWTON = 0,
-    LEVENBERG_MARQUARDT,
-    POWELL_DOGLEG,
-};
-
-OptimizationMethod OptimizationMethod_from_string(const std::string& str) {
-    std::string upper = str;
-    std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
-
-    if (upper.compare("GN") == 0 || upper.compare("GAUSS_NEWTON") == 0) {
-        return OptimizationMethod::GAUSS_NEWTON;
-    } else if (upper.compare("LM") == 0 || upper.compare("LEVENBERG_MARQUARDT") == 0) {
-        return OptimizationMethod::LEVENBERG_MARQUARDT;
-    } else if (upper.compare("DOGLEG") == 0 || upper.compare("POWELL_DOGLEG") == 0) {
-        return OptimizationMethod::POWELL_DOGLEG;
-    }
-    std::string error_str = "[OptimizationMethod_from_string] Invalid OptimizationMethod str [";
-    error_str += str;
-    error_str += "]";
-    throw std::runtime_error(error_str);
-}
-
-struct RegistrationParams {
-    struct Criteria {
-        float translation = 1e-3f;  // translation tolerance
-        float rotation = 1e-3f;     // rotation tolerance [rad]
-    };
-    struct Robust {
-        robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
-        bool auto_scale = false;                                     // enable auto robust scale
-        float init_scale = 10.0f;                                    // scale for robust loss function
-        float min_scale = 0.5f;                                      // minimum scale
-        size_t scaling_iter = 4;                                     // scaling iteration
-    };
-    struct PhotometricTerm {
-        bool enable = false;  // If true, use photometric term.
-        float weight = 0.2f;  // Scaling factor to balance photometric error with geometric error
-        float robust_scale = 5.0f;
-    };
-    struct GenZ {
-        float planarity_threshold = 0.2f;
-    };
-    struct RotationConstraint {
-        bool enable = false;
-        float weight = 1.0f;  // Scaling factor to balance constraint error with geometric error
-        float robust_scale = 5.0f;
-    };
-    struct LevenbergMarquardt {
-        size_t max_inner_iterations = 10;  // (for LM method)
-        float lambda_factor = 2.0f;        // lambda increase factor (for LM method)
-        float max_lambda = 1e3f;           // max lambda (for LM method)
-        float min_lambda = 1e-6f;          // min lambda (for LM method)
-    };
-    struct Dogleg {
-        float initial_trust_region_radius = 1.0f;  // Initial trust region radius (for Powell's dogleg method)
-        float min_trust_region_radius = 1e-4f;     // Minimum trust region radius (for Powell's dogleg method)
-        float max_trust_region_radius = 10.0f;     // Maximum trust region radius (for Powell's dogleg method)
-        float eta1 = 0.25f;                        // Lower acceptance threshold for ratio (for Powell's dogleg method)
-        float eta2 = 0.75f;                        // Upper acceptance threshold for ratio (for Powell's dogleg method)
-        float gamma_decrease = 0.25f;              // Shrink factor for trust region (for Powell's dogleg method)
-        float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
-    };
-
-    RegType reg_type = RegType::GICP;          // Registration Type
-    size_t max_iterations = 20;                // max iteration
-    float lambda = 1e-6f;                      // damping factor
-    float max_correspondence_distance = 2.0f;  // max correspondence distance
-    float mahalanobis_distance_threshold =
-        100.0f;  // Mahalanobis distance threshold (for GICP and Point to Distribution)
-
-    Criteria criteria;
-    Robust robust;
-    PhotometricTerm photometric;
-    RotationConstraint rotation_constraint;
-    GenZ genz;
-    LevenbergMarquardt lm;
-    Dogleg dogleg;
-    OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
-
-    DegenerateRegularizationParams degenerate_reg;  // Degenerate Regularization
-
-    bool verbose = false;  // If true, print debug messages
-};
 
 namespace {
 
@@ -279,8 +193,8 @@ public:
                         << std::endl;
                     this->params_.robust.auto_scale = false;
                 }
-                if (this->params_.robust.scaling_iter <= 0) {
-                    std::cout << "[Caution] `robust.scaling_iter` must be greater than zero. Disable auto scaling."
+                if (this->params_.robust.auto_scaling_iter <= 0) {
+                    std::cout << "[Caution] `robust.auto_scaling_iter` must be greater than zero. Disable auto scaling."
                               << std::endl;
                     this->params_.robust.auto_scale = false;
                 }
@@ -314,9 +228,16 @@ public:
             const bool enable_robust_auto_scaling =
                 this->params_.robust.type != robust::RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
-                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
+                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.auto_scaling_iter) : 1;
             const float robust_scaling_factor =
                 robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
+                                             1.0f / static_cast<float>(robust_levels - 1))
+                                  : 1.0f;
+
+            float rotation_robust_scale = this->params_.rotation_constraint.robust_init_scale;
+            const float rotation_robust_scaling_factor =
+                robust_levels > 1 ? std::pow(this->params_.rotation_constraint.robust_min_scale /
+                                                 this->params_.rotation_constraint.robust_init_scale,
                                              1.0f / static_cast<float>(robust_levels - 1))
                                   : 1.0f;
 
@@ -331,8 +252,8 @@ public:
                         target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, result.T.matrix());
 
                     // Linearize on device for the current robust scale level
-                    const LinearizedResult linearized_result =
-                        this->linearize(source, target, result.T.matrix(), robust_scale, knn_event.evs);
+                    const LinearizedResult linearized_result = this->linearize(
+                        source, target, result.T.matrix(), robust_scale, rotation_robust_scale, knn_event.evs);
 
                     result.H_raw = linearized_result.H;
                     result.b_raw = linearized_result.b;
@@ -345,11 +266,12 @@ public:
                     switch (this->params_.optimization_method) {
                         case OptimizationMethod::LEVENBERG_MARQUARDT:
                             this->optimize_levenberg_marquardt(source, target, result, regularized_result, lambda, iter,
-                                                               robust_scale);
+                                                               robust_scale, rotation_robust_scale);
                             break;
                         case OptimizationMethod::POWELL_DOGLEG:
                             this->optimize_powell_dogleg(source, target, result, regularized_result,
-                                                         trust_region_radius, iter, robust_scale);
+                                                         trust_region_radius, iter, robust_scale,
+                                                         rotation_robust_scale);
                             break;
                         case OptimizationMethod::GAUSS_NEWTON:
                             this->optimize_gauss_newton(result, regularized_result, lambda, iter);
@@ -361,6 +283,7 @@ public:
                 }
 
                 robust_scale *= robust_scaling_factor;
+                rotation_robust_scale *= rotation_robust_scaling_factor;
             }
         }
 
@@ -401,11 +324,19 @@ public:
             const bool enable_robust_auto_scaling =
                 this->params_.robust.type != robust::RobustLossType::NONE && this->params_.robust.auto_scale;
             const size_t robust_levels =
-                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.scaling_iter) : 1;
+                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.auto_scaling_iter) : 1;
             const float robust_scaling_factor =
                 robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
                                              1.0f / static_cast<float>(robust_levels - 1))
                                   : 1.0f;
+
+            float rotation_robust_scale = this->params_.rotation_constraint.robust_init_scale;
+            const float rotation_robust_scaling_factor =
+                robust_levels > 1 ? std::pow(this->params_.rotation_constraint.robust_min_scale /
+                                                 this->params_.rotation_constraint.robust_init_scale,
+                                             1.0f / static_cast<float>(robust_levels - 1))
+                                  : 1.0f;
+
             const bool has_timestamp = source.has_timestamps();
             const size_t deskew_levels = std::max<size_t>(1, velocity_update_iter);
 
@@ -435,8 +366,8 @@ public:
                                                                                   result.T.matrix());
 
                         // Linearize on device for the current robust scale level
-                        const LinearizedResult linearized_result =
-                            this->linearize(deskewed, target, result.T.matrix(), robust_scale, knn_event.evs);
+                        const LinearizedResult linearized_result = this->linearize(
+                            deskewed, target, result.T.matrix(), robust_scale, rotation_robust_scale, knn_event.evs);
 
                         result.H_raw = linearized_result.H;
                         result.b_raw = linearized_result.b;
@@ -449,11 +380,12 @@ public:
                         switch (this->params_.optimization_method) {
                             case OptimizationMethod::LEVENBERG_MARQUARDT:
                                 this->optimize_levenberg_marquardt(deskewed, target, result, regularized_result, lambda,
-                                                                   iter, robust_scale);
+                                                                   iter, robust_scale, rotation_robust_scale);
                                 break;
                             case OptimizationMethod::POWELL_DOGLEG:
                                 this->optimize_powell_dogleg(deskewed, target, result, regularized_result,
-                                                             trust_region_radius, iter, robust_scale);
+                                                             trust_region_radius, iter, robust_scale,
+                                                             rotation_robust_scale);
                                 break;
                             case OptimizationMethod::GAUSS_NEWTON:
                                 this->optimize_gauss_newton(result, regularized_result, lambda, iter);
@@ -466,6 +398,7 @@ public:
                 }
 
                 robust_scale *= robust_scaling_factor;
+                rotation_robust_scale *= rotation_robust_scaling_factor;
             }
         }
 
@@ -583,7 +516,8 @@ private:
     template <RegType reg, robust::RobustLossType loss>
     sycl_utils::events linearize_parallel_reduction_async(const PointCloudShared& source,
                                                           const PointCloudShared& target, const Eigen::Matrix4f transT,
-                                                          float robust_scale, const std::vector<sycl::event>& depends) {
+                                                          float robust_scale, float rotation_robust_scale,
+                                                          const std::vector<sycl::event>& depends) {
         if constexpr (reg == RegType::GENZ) {
             this->genz_alpha_ = compute_genz_alpha(source, target, this->params_.max_correspondence_distance, depends);
             if (this->params_.verbose) {
@@ -633,7 +567,7 @@ private:
             const float genz_alpha = this->genz_alpha_;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
-            const float rotation_constraint_robust_scale = this->params_.rotation_constraint.robust_scale;
+            const float rotation_constraint_robust_scale = rotation_robust_scale;
             const float rotation_constraint_weight = this->params_.rotation_constraint.weight;
 
             // reduction
@@ -793,10 +727,11 @@ private:
     }
 
     LinearizedResult linearize(const PointCloudShared& source, const PointCloudShared& target,
-                               const Eigen::Matrix4f transT, float robust_scale,
+                               const Eigen::Matrix4f transT, float robust_scale, float rotation_robust_scale,
                                const std::vector<sycl::event>& depends) {
         auto events = this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
-            return this->linearize_parallel_reduction_async<reg, loss>(source, target, transT, robust_scale, depends);
+            return this->linearize_parallel_reduction_async<reg, loss>(source, target, transT, robust_scale,
+                                                                       rotation_robust_scale, depends);
         });
 
         events.wait_and_throw();
@@ -807,7 +742,8 @@ private:
     std::tuple<float, uint32_t> compute_error_parallel_reduction(const PointCloudShared& source,
                                                                  const PointCloudShared& target,
                                                                  const knn::KNNResult& knn_results,
-                                                                 const Eigen::Matrix4f transT, float robust_scale) {
+                                                                 const Eigen::Matrix4f transT, float robust_scale,
+                                                                 float rotation_robust_scale) {
         // The robust_scale argument ensures error reduction uses the caller-provided loss scale.
         shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
         shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
@@ -851,7 +787,7 @@ private:
                 this->params_.photometric.enable ? this->params_.photometric.robust_scale : 0.0f;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
-            const float rotation_constraint_robust_scale = this->params_.rotation_constraint.robust_scale;
+            const float rotation_constraint_robust_scale = rotation_robust_scale;
             const float rotation_constraint_weight = this->params_.rotation_constraint.weight;
 
             // output
@@ -942,11 +878,11 @@ private:
 
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
                                               const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
-                                              float robust_scale) {
+                                              float robust_scale, float rotation_robust_scale) {
         std::tuple<float, uint32_t> result = {0.0f, 0};
         this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
-            result =
-                this->compute_error_parallel_reduction<reg, loss>(source, target, knn_results, transT, robust_scale);
+            result = this->compute_error_parallel_reduction<reg, loss>(source, target, knn_results, transT,
+                                                                       robust_scale, rotation_robust_scale);
             return sycl_utils::events{};
         });
         return result;
@@ -992,7 +928,7 @@ private:
 
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
                                       RegistrationResult& result, const LinearizedResult& linearized_result,
-                                      float& lambda, size_t iter, float robust_scale) {
+                                      float& lambda, size_t iter, float robust_scale, float rotation_robust_scale) {
         const auto& H = linearized_result.H;
         const auto& g = linearized_result.b;
         const float current_error = linearized_result.error;
@@ -1011,8 +947,8 @@ private:
             }
             const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
 
-            const auto [new_error, inlier] =
-                compute_error(source, target, this->neighbors_->at(0), new_T.matrix(), robust_scale);
+            const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
+                                                           robust_scale, rotation_robust_scale);
 
             if (this->params_.verbose) {
                 std::cout << "iter [" << iter << "] ";
@@ -1057,7 +993,8 @@ private:
 
     bool optimize_powell_dogleg(const PointCloudShared& source, const PointCloudShared& target,
                                 RegistrationResult& result, const LinearizedResult& linearized_result,
-                                float& trust_region_radius, size_t iter, float robust_scale) {
+                                float& trust_region_radius, size_t iter, float robust_scale,
+                                float rotation_robust_scale) {
         bool updated = false;
         const auto& H = linearized_result.H;
         const auto& g = linearized_result.b;
@@ -1141,7 +1078,7 @@ private:
 
         const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(p_dl));
         const auto [new_error, inlier] =
-            compute_error(source, target, this->neighbors_->at(0), new_T.matrix(), robust_scale);
+            compute_error(source, target, this->neighbors_->at(0), new_T.matrix(), robust_scale, rotation_robust_scale);
 
         const float actual_reduction = current_error - new_error;
         const float rho = actual_reduction / predicted_reduction;

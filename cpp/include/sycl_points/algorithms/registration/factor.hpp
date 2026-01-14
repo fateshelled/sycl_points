@@ -4,6 +4,7 @@
 #include <type_traits>
 
 #include "sycl_points/algorithms/common/transform.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/algorithms/registration/result.hpp"
 #include "sycl_points/points/types.hpp"
@@ -248,7 +249,13 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
 
-    const Covariance mahalanobis = compute_mahalanobis_covariance(source_cov, target_cov, T);
+    Covariance normalized_source_cov = source_cov;
+    covariance::kernel::update_covariance_plane(normalized_source_cov);
+
+    Covariance normalized_target_cov = target_cov;
+    covariance::kernel::update_covariance_plane(normalized_target_cov);
+
+    const Covariance mahalanobis = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
 
     const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, Eigen::Matrix4f::Identity());
 
@@ -285,7 +292,13 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
     const PointType residual(target_pt.x() - transform_source_pt.x(), target_pt.y() - transform_source_pt.y(),
                              target_pt.z() - transform_source_pt.z(), 0.0f);
 
-    const Covariance mahalanobis = compute_mahalanobis_covariance(source_cov, target_cov, T);
+    Covariance normalized_source_cov = source_cov;
+    covariance::kernel::update_covariance_plane(normalized_source_cov);
+
+    Covariance normalized_target_cov = target_cov;
+    covariance::kernel::update_covariance_plane(normalized_target_cov);
+
+    const Covariance mahalanobis = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
 
     return (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
 }
