@@ -64,5 +64,12 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
 }  // namespace kernel
 }  // namespace filter
 
+/// @brief Hash a 64-bit voxel key to a 32-bit hash value using XOR folding.
+/// @param key The 64-bit voxel key.
+/// @return The 32-bit hash value.
+SYCL_EXTERNAL inline uint32_t hash_voxel_key_to_32bit(const uint64_t key) {
+    return static_cast<uint32_t>((key >> 32) ^ (key & 0xFFFFFFFF));
+}
+
 }  // namespace algorithms
 }  // namespace sycl_points

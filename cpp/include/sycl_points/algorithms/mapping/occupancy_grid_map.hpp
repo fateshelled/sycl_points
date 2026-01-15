@@ -213,10 +213,13 @@ public:
             // Allow backward visibility once the horizontal FOV reaches 180 degrees.
             const bool include_backward = horizontal_fov >= (kPi - kFovTolerance);
 
+            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
+            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                const uint64_t current_key = key_ptr[i];
-                if (current_key == VoxelConstants::invalid_coord || current_key == VoxelConstants::deleted_coord) {
+                const uint32_t current_hash = key_ptr[i];
+                if (current_hash == invalid_hash || current_hash == deleted_hash) {
                     return;
                 }
 
@@ -224,6 +227,8 @@ public:
                 if (voxel.hit_count == 0U || voxel.log_odds < occupancy_threshold) {
                     return;
                 }
+
+                const uint64_t current_key = voxel.voxel_key;
 
                 const float inv_count = 1.0f / static_cast<float>(voxel.hit_count);
                 const float cx = voxel.sum_x * inv_count;
@@ -290,12 +295,14 @@ public:
                                 return true;
                             }
 
+                            const uint32_t sample_hash = hash_voxel_key_to_32bit(sample_key);
                             for (size_t probe = 0; probe < max_probe; ++probe) {
-                                const size_t slot = compute_slot_id(sample_key, probe, capacity);
-                                const uint64_t stored_key = key_ptr[slot];
-                                if (stored_key == sample_key) {
+                                const size_t slot = compute_slot_id(sample_hash, probe, capacity);
+                                const uint32_t stored_hash = key_ptr[slot];
+                                if (stored_hash == sample_hash) {
                                     const VoxelData& occ = voxel_ptr[slot];
-                                    if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
+                                    // Verify the original key matches
+                                    if (occ.voxel_key == sample_key && occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
                                         const float inv_occ = 1.0f / static_cast<float>(occ.hit_count);
                                         const float occ_cx = occ.sum_x * inv_occ;
                                         const float occ_cy = occ.sum_y * inv_occ;
@@ -311,10 +318,10 @@ public:
                                     }
                                     return true;
                                 }
-                                if (stored_key == VoxelConstants::invalid_coord) {
+                                if (stored_hash == invalid_hash) {
                                     return true;
                                 }
-                                if (stored_key == VoxelConstants::deleted_coord) {
+                                if (stored_hash == deleted_hash) {
                                     continue;
                                 }
                             }
@@ -393,32 +400,36 @@ public:
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
 
+            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
+            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+
             h.parallel_for(sycl::range<1>(N), overlap_reduction, [=](sycl::id<1> idx, auto& overlap_sum) {
                 const size_t i = idx[0];
                 const PointType local_point = point_ptr[i];
                 PointType world_point;
                 // Transform the input point into the map frame before voxel hashing.
                 transform::kernel::transform_point(local_point, world_point, trans);
-                const uint64_t voxel_hash = filter::kernel::compute_voxel_bit(world_point, voxel_size_inv);
-                if (voxel_hash == VoxelConstants::invalid_coord) {
+                const uint64_t voxel_key = filter::kernel::compute_voxel_bit(world_point, voxel_size_inv);
+                if (voxel_key == VoxelConstants::invalid_coord) {
                     return;
                 }
 
+                const uint32_t hash_value = hash_voxel_key_to_32bit(voxel_key);
                 for (size_t probe = 0; probe < max_probe; ++probe) {
-                    const size_t slot = compute_slot_id(voxel_hash, probe, capacity);
-                    const uint64_t stored_key = key_ptr[slot];
-                    if (stored_key == voxel_hash) {
+                    const size_t slot = compute_slot_id(hash_value, probe, capacity);
+                    const uint32_t stored_hash = key_ptr[slot];
+                    if (stored_hash == hash_value) {
                         // Count as overlap only when the voxel is confidently occupied.
                         const VoxelData& voxel = voxel_ptr[slot];
-                        if (voxel.hit_count > 0U && voxel.log_odds >= occupancy_threshold) {
+                        if (voxel.voxel_key == voxel_key && voxel.hit_count > 0U && voxel.log_odds >= occupancy_threshold) {
                             overlap_sum += 1U;
                         }
                         return;
                     }
-                    if (stored_key == VoxelConstants::invalid_coord) {
+                    if (stored_hash == invalid_hash) {
                         return;
                     }
-                    if (stored_key == VoxelConstants::deleted_coord) {
+                    if (stored_hash == deleted_hash) {
                         continue;
                     }
                 }
@@ -439,6 +450,7 @@ private:
     using atomic_ref_uint64_t = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
 
     struct VoxelData {
+        uint64_t voxel_key = VoxelConstants::invalid_coord;  // Store the original 64-bit voxel key
         float sum_x = 0.0f;
         float sum_y = 0.0f;
         float sum_z = 0.0f;
@@ -512,33 +524,41 @@ private:
         if (!this->key_ptr_) {
             return nullptr;
         }
+        const uint32_t hash = hash_voxel_key_to_32bit(key);
+        constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
+        constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+
         for (size_t j = 0; j < this->max_probe_length_; ++j) {
-            const size_t slot = this->compute_slot_id(key, j, this->capacity_);
-            const uint64_t stored_key = this->key_ptr_.get()[slot];
-            if (stored_key == key) {
-                return &this->data_ptr_.get()[slot];
+            const size_t slot = this->compute_slot_id(hash, j, this->capacity_);
+            const uint32_t stored_hash = this->key_ptr_.get()[slot];
+            if (stored_hash == hash) {
+                // Hash matches, verify the original key
+                const VoxelData& data = this->data_ptr_.get()[slot];
+                if (data.voxel_key == key) {
+                    return &data;
+                }
             }
-            if (stored_key == VoxelConstants::invalid_coord) {
+            if (stored_hash == invalid_hash) {
                 break;
             }
-            if (stored_key == VoxelConstants::deleted_coord) {
+            if (stored_hash == deleted_hash) {
                 continue;
             }
         }
         return nullptr;
     }
 
-    static uint64_t hash2(const uint64_t voxel_hash, const size_t capacity) {
-        return (capacity - 2) - (voxel_hash % (capacity - 2));
+    static uint32_t hash2(const uint32_t hash_value, const size_t capacity) {
+        return (capacity - 2) - (hash_value % (capacity - 2));
     }
 
-    static size_t compute_slot_id(const uint64_t voxel_hash, const size_t probe, const size_t capacity) {
-        return (voxel_hash + probe * hash2(voxel_hash, capacity)) % capacity;
+    static size_t compute_slot_id(const uint32_t hash_value, const size_t probe, const size_t capacity) {
+        return (hash_value + probe * hash2(hash_value, capacity)) % capacity;
     }
 
     void allocate_storage() {
-        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
-                                                   [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+        this->key_ptr_ = std::shared_ptr<uint32_t>(sycl::malloc_shared<uint32_t>(this->capacity_, *this->queue_.ptr),
+                                                   [&](uint32_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->data_ptr_ = std::shared_ptr<VoxelData>(sycl::malloc_shared<VoxelData>(this->capacity_, *this->queue_.ptr),
                                                      [&](VoxelData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
 
@@ -548,8 +568,10 @@ private:
 
     void initialize_storage() {
         // Reset the hash table content before the next integration round.
+        // Use 32-bit invalid hash value for the hash table
+        constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
         sycl_utils::events evs;
-        evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
+        evs += this->queue_.ptr->fill<uint32_t>(this->key_ptr_.get(), invalid_hash, this->capacity_);
         evs += this->queue_.ptr->fill<VoxelData>(this->data_ptr_.get(), VoxelData{}, this->capacity_);
         evs.wait_and_throw();
     }
@@ -600,6 +622,9 @@ private:
                 auto failure_ptr = failure_flag.data();
                 auto range = sycl::nd_range<1>(global_size, work_group_size);
 
+                constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
+                constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+
                 if (this->queue_.is_nvidia()) {
                     // Count inserted voxels via reduction when running on NVIDIA GPUs.
                     auto voxel_num = sycl::reduction(voxel_num_ptr, sycl::plus<uint32_t>());
@@ -608,17 +633,19 @@ private:
                         const uint32_t i = item.get_global_id(0);
                         if (i >= N) return;
 
-                        const uint64_t key = old_key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
+                        const uint32_t old_hash = old_key_ptr[i];
+                        if (old_hash == invalid_hash || old_hash == deleted_hash) return;
 
                         const VoxelData data = old_data_ptr[i];
+                        const uint64_t voxel_key = data.voxel_key;
+                        const uint32_t hash_value = hash_voxel_key_to_32bit(voxel_key);
                         bool inserted = false;
 
                         for (size_t probe = 0; probe < max_probe; ++probe) {
-                            const size_t slot = compute_slot_id(key, probe, new_capacity_local);
-                            uint64_t expected = VoxelConstants::invalid_coord;
+                            const size_t slot = compute_slot_id(hash_value, probe, new_capacity_local);
+                            uint32_t expected = invalid_hash;
 
-                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                            if (atomic_ref_uint32_t(new_key_ptr[slot]).compare_exchange_strong(expected, hash_value)) {
                                 new_data_ptr[slot] = data;
                                 voxel_num_arg += 1U;
                                 inserted = true;
@@ -635,17 +662,19 @@ private:
                         const uint32_t i = item.get_global_id(0);
                         if (i >= N) return;
 
-                        const uint64_t key = old_key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
+                        const uint32_t old_hash = old_key_ptr[i];
+                        if (old_hash == invalid_hash || old_hash == deleted_hash) return;
 
                         const VoxelData data = old_data_ptr[i];
+                        const uint64_t voxel_key = data.voxel_key;
+                        const uint32_t hash_value = hash_voxel_key_to_32bit(voxel_key);
                         bool inserted = false;
 
                         for (size_t probe = 0; probe < max_probe; ++probe) {
-                            const size_t slot = compute_slot_id(key, probe, new_capacity_local);
-                            uint64_t expected = VoxelConstants::invalid_coord;
+                            const size_t slot = compute_slot_id(hash_value, probe, new_capacity_local);
+                            uint32_t expected = invalid_hash;
 
-                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                            if (atomic_ref_uint32_t(new_key_ptr[slot]).compare_exchange_strong(expected, hash_value)) {
                                 new_data_ptr[slot] = data;
                                 atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
                                 inserted = true;
@@ -670,32 +699,55 @@ private:
     }
 
     template <typename CounterFunc>
-    static void global_reduction(const VoxelLocalData& data, uint64_t* key_ptr, VoxelData* voxel_ptr,
+    static void global_reduction(const VoxelLocalData& data, uint32_t* key_ptr, VoxelData* voxel_ptr,
                                  const uint32_t current_frame, const size_t max_probe, const size_t capacity,
                                  CounterFunc counter) {
-        const uint64_t voxel_hash = data.voxel_idx;
-        if (voxel_hash == VoxelConstants::invalid_coord) {
+        const uint64_t voxel_key = data.voxel_idx;
+        if (voxel_key == VoxelConstants::invalid_coord) {
             return;
         }
 
+        const uint32_t hash_value = hash_voxel_key_to_32bit(voxel_key);
+        constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
+        constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+
         for (size_t probe = 0; probe < max_probe; ++probe) {
-            const size_t slot_idx = compute_slot_id(voxel_hash, probe, capacity);
-            auto key_ref = atomic_ref_uint64_t(key_ptr[slot_idx]);
-            uint64_t expected = key_ref.load();
-            if (expected == VoxelConstants::invalid_coord || expected == VoxelConstants::deleted_coord) {
+            const size_t slot_idx = compute_slot_id(hash_value, probe, capacity);
+            auto key_ref = atomic_ref_uint32_t(key_ptr[slot_idx]);
+            uint32_t expected = key_ref.load();
+
+            if (expected == invalid_hash || expected == deleted_hash) {
+                // Store the voxel key first before attempting CAS
+                atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).store(voxel_key);
+
                 // Attempt to insert. On CAS failure, `expected` is updated, and we fall through.
-                if (key_ref.compare_exchange_strong(expected, voxel_hash)) {
+                if (key_ref.compare_exchange_strong(expected, hash_value)) {
+                    // Successfully inserted
                     counter(1U);
                     atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                     atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                     break;
+                } else {
+                    // CAS failed, reset voxel_key if the slot was taken by a different hash
+                    if (expected != hash_value) {
+                        atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).store(VoxelConstants::invalid_coord);
+                    }
                 }
             }
-            // If the slot was already occupied, or if another thread just inserted our key, update it.
-            if (expected == voxel_hash) {
-                atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
-                atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
-                break;
+
+            // Reload the current hash to handle race conditions
+            expected = key_ref.load();
+
+            // If the slot was already occupied, check if it's the same voxel
+            if (expected == hash_value) {
+                // Hash matches, verify the original key
+                const uint64_t stored_key = atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).load();
+                if (stored_key == voxel_key) {
+                    atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
+                    atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
+                    break;
+                }
+                // Hash collision: different voxel key with same hash, continue probing
             }
         }
     }
@@ -1209,9 +1261,12 @@ private:
             auto voxel_ptr = this->data_ptr_.get();
             const float min_log_odds = this->min_log_odds_;
             const float max_log_odds = this->max_log_odds_;
+            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
+            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
+                if (key_ptr[i] == invalid_hash || key_ptr[i] == deleted_hash) {
                     return;
                 }
 
@@ -1241,9 +1296,12 @@ private:
             auto voxel_ptr = this->data_ptr_.get();
             auto counter_ptr = voxel_counter.data();
 
+            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
+            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
+                if (key_ptr[i] == invalid_hash || key_ptr[i] == deleted_hash) {
                     return;
                 }
 
@@ -1251,7 +1309,7 @@ private:
                 // Evict voxels whose last update frame is older than the allowed threshold.
                 const bool is_stale = (current_frame - data.last_updated) > stale_threshold;
                 if (is_stale) {
-                    key_ptr[i] = VoxelConstants::deleted_coord;
+                    key_ptr[i] = deleted_hash;
                     voxel_ptr[i] = VoxelData{};
                     return;
                 }
@@ -1294,9 +1352,12 @@ private:
             const bool has_intensity = this->has_intensity_data_;
             auto counter_ptr = counter.data();
 
+            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
+            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
+                if (key_ptr[i] == invalid_hash || key_ptr[i] == deleted_hash) {
                     return;
                 }
 
@@ -1396,7 +1457,7 @@ private:
     const size_t max_probe_length_ = 128;
     float rehash_threshold_ = 0.7f;
 
-    std::shared_ptr<uint64_t> key_ptr_ = nullptr;
+    std::shared_ptr<uint32_t> key_ptr_ = nullptr;  // Store 32-bit hash values
     std::shared_ptr<VoxelData> data_ptr_ = nullptr;
 };
 
