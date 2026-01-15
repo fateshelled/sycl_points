@@ -53,6 +53,7 @@ lidar_odometry_node:
     submap/occupancy_grid_map/log_odds_limits/min: -10.0
     submap/occupancy_grid_map/log_odds_limits/max: 10.0
     submap/occupancy_grid_map/occupied_threshold: 0.5
+    submap/occupancy_grid_map/enable_free_space_update: true
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
 

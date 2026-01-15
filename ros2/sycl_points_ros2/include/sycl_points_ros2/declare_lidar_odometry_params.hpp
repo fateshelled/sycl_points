@@ -101,6 +101,8 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "submap/occupancy_grid_map/log_odds_limits/max", params.occupancy_grid_map_log_odds_limits_max);
         params.occupancy_grid_map_occupied_threshold = node->declare_parameter<double>(
             "submap/occupancy_grid_map/occupied_threshold", params.occupancy_grid_map_occupied_threshold);
+        params.occupancy_grid_map_enable_free_space_updates = node->declare_parameter<bool>(
+            "submap/occupancy_grid_map/enable_free_space_update", params.occupancy_grid_map_enable_free_space_updates);
         params.occupancy_grid_map_enable_pruning = node->declare_parameter<bool>(
             "submap/occupancy_grid_map/enable_pruning", params.occupancy_grid_map_enable_pruning);
         params.occupancy_grid_map_stale_frame_threshold = node->declare_parameter<int64_t>(
