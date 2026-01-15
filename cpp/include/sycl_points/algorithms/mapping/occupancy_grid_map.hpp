@@ -183,6 +183,7 @@ public:
         }
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            auto sig_ptr = this->signature_ptr_.get();
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
 
@@ -215,6 +216,11 @@ public:
 
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
+                const uint32_t stored_sig = sig_ptr[i];
+                // Skip empty slots (signature == 0).
+                if (stored_sig == 0U) {
+                    return;
+                }
                 const uint64_t current_key = key_ptr[i];
                 if (current_key == VoxelConstants::invalid_coord || current_key == VoxelConstants::deleted_coord) {
                     return;
@@ -290,33 +296,37 @@ public:
                                 return true;
                             }
 
+                            const uint32_t sample_sig = compute_signature(sample_key);
                             for (size_t probe = 0; probe < max_probe; ++probe) {
                                 const size_t slot = compute_slot_id(sample_key, probe, capacity);
-                                const uint64_t stored_key = key_ptr[slot];
-                                if (stored_key == sample_key) {
-                                    const VoxelData& occ = voxel_ptr[slot];
-                                    if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
-                                        const float inv_occ = 1.0f / static_cast<float>(occ.hit_count);
-                                        const float occ_cx = occ.sum_x * inv_occ;
-                                        const float occ_cy = occ.sum_y * inv_occ;
-                                        const float occ_cz = occ.sum_z * inv_occ;
-                                        const float occ_dx = occ_cx - sensor_x;
-                                        const float occ_dy = occ_cy - sensor_y;
-                                        const float occ_dz = occ_cz - sensor_z;
-                                        const float occ_dist_sq = occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
-                                        if (occ_dist_sq + kOcclusionEpsilon < dist_sq) {
-                                            occluded = true;
-                                            return false;
+                                const uint32_t stored_sig = sig_ptr[slot];
+                                // Empty slot: key not found.
+                                if (stored_sig == 0U) {
+                                    return true;
+                                }
+                                // Signature matches: verify the actual key.
+                                if (stored_sig == sample_sig) {
+                                    const uint64_t stored_key = key_ptr[slot];
+                                    if (stored_key == sample_key) {
+                                        const VoxelData& occ = voxel_ptr[slot];
+                                        if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
+                                            const float inv_occ = 1.0f / static_cast<float>(occ.hit_count);
+                                            const float occ_cx = occ.sum_x * inv_occ;
+                                            const float occ_cy = occ.sum_y * inv_occ;
+                                            const float occ_cz = occ.sum_z * inv_occ;
+                                            const float occ_dx = occ_cx - sensor_x;
+                                            const float occ_dy = occ_cy - sensor_y;
+                                            const float occ_dz = occ_cz - sensor_z;
+                                            const float occ_dist_sq = occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
+                                            if (occ_dist_sq + kOcclusionEpsilon < dist_sq) {
+                                                occluded = true;
+                                                return false;
+                                            }
                                         }
+                                        return true;
                                     }
-                                    return true;
                                 }
-                                if (stored_key == VoxelConstants::invalid_coord) {
-                                    return true;
-                                }
-                                if (stored_key == VoxelConstants::deleted_coord) {
-                                    continue;
-                                }
+                                // Continue probing if signature doesn't match or false positive.
                             }
                             return true;
                         });
@@ -386,6 +396,7 @@ public:
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             const auto point_ptr = cloud.points_ptr();
+            auto sig_ptr = this->signature_ptr_.get();
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             const float voxel_size_inv = this->inv_voxel_size_;
@@ -404,23 +415,27 @@ public:
                     return;
                 }
 
+                const uint32_t sig = compute_signature(voxel_hash);
                 for (size_t probe = 0; probe < max_probe; ++probe) {
                     const size_t slot = compute_slot_id(voxel_hash, probe, capacity);
-                    const uint64_t stored_key = key_ptr[slot];
-                    if (stored_key == voxel_hash) {
-                        // Count as overlap only when the voxel is confidently occupied.
-                        const VoxelData& voxel = voxel_ptr[slot];
-                        if (voxel.hit_count > 0U && voxel.log_odds >= occupancy_threshold) {
-                            overlap_sum += 1U;
+                    const uint32_t stored_sig = sig_ptr[slot];
+                    // Empty slot: key not found.
+                    if (stored_sig == 0U) {
+                        return;
+                    }
+                    // Signature matches: verify the actual key.
+                    if (stored_sig == sig) {
+                        const uint64_t stored_key = key_ptr[slot];
+                        if (stored_key == voxel_hash) {
+                            // Count as overlap only when the voxel is confidently occupied.
+                            const VoxelData& voxel = voxel_ptr[slot];
+                            if (voxel.hit_count > 0U && voxel.log_odds >= occupancy_threshold) {
+                                overlap_sum += 1U;
+                            }
+                            return;
                         }
-                        return;
                     }
-                    if (stored_key == VoxelConstants::invalid_coord) {
-                        return;
-                    }
-                    if (stored_key == VoxelConstants::deleted_coord) {
-                        continue;
-                    }
+                    // Continue probing if signature doesn't match or false positive.
                 }
             });
         });
@@ -509,23 +524,35 @@ private:
     }
 
     const VoxelData* find_voxel(const uint64_t key) const {
-        if (!this->key_ptr_) {
+        if (!this->signature_ptr_ || !this->key_ptr_) {
             return nullptr;
         }
+        const uint32_t sig = this->compute_signature(key);
         for (size_t j = 0; j < this->max_probe_length_; ++j) {
             const size_t slot = this->compute_slot_id(key, j, this->capacity_);
-            const uint64_t stored_key = this->key_ptr_.get()[slot];
-            if (stored_key == key) {
-                return &this->data_ptr_.get()[slot];
-            }
-            if (stored_key == VoxelConstants::invalid_coord) {
+            const uint32_t stored_sig = this->signature_ptr_.get()[slot];
+            // Empty slot: key not found.
+            if (stored_sig == 0U) {
                 break;
             }
-            if (stored_key == VoxelConstants::deleted_coord) {
-                continue;
+            // Signature matches: verify the actual key.
+            if (stored_sig == sig) {
+                const uint64_t stored_key = this->key_ptr_.get()[slot];
+                if (stored_key == key) {
+                    return &this->data_ptr_.get()[slot];
+                }
             }
+            // Continue probing if signature doesn't match or false positive.
         }
         return nullptr;
+    }
+
+    /// @brief Compute a 32-bit signature from a 64-bit key (guaranteed non-zero).
+    static uint32_t compute_signature(const uint64_t key) {
+        // Simple hash: XOR upper and lower 32 bits, then ensure non-zero.
+        const uint32_t sig = static_cast<uint32_t>(key ^ (key >> 32));
+        // Ensure signature is never 0 (0 is reserved for empty slots).
+        return (sig == 0U) ? 1U : sig;
     }
 
     static uint64_t hash2(const uint64_t voxel_hash, const size_t capacity) {
@@ -537,11 +564,15 @@ private:
     }
 
     void allocate_storage() {
+        this->signature_ptr_ =
+            std::shared_ptr<uint32_t>(sycl::malloc_shared<uint32_t>(this->capacity_, *this->queue_.ptr),
+                                      [&](uint32_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
                                                    [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->data_ptr_ = std::shared_ptr<VoxelData>(sycl::malloc_shared<VoxelData>(this->capacity_, *this->queue_.ptr),
                                                      [&](VoxelData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
 
+        this->queue_.set_accessed_by_device(this->signature_ptr_.get(), this->capacity_);
         this->queue_.set_accessed_by_device(this->key_ptr_.get(), this->capacity_);
         this->queue_.set_accessed_by_device(this->data_ptr_.get(), this->capacity_);
     }
@@ -549,6 +580,7 @@ private:
     void initialize_storage() {
         // Reset the hash table content before the next integration round.
         sycl_utils::events evs;
+        evs += this->queue_.ptr->fill<uint32_t>(this->signature_ptr_.get(), 0U, this->capacity_);
         evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
         evs += this->queue_.ptr->fill<VoxelData>(this->data_ptr_.get(), VoxelData{}, this->capacity_);
         evs.wait_and_throw();
@@ -592,6 +624,7 @@ private:
 
                 const auto old_key_ptr = old_keys.get();
                 const auto old_data_ptr = old_data.get();
+                auto new_sig_ptr = this->signature_ptr_.get();
                 auto new_key_ptr = this->key_ptr_.get();
                 auto new_data_ptr = this->data_ptr_.get();
                 const size_t new_capacity_local = this->capacity_;
@@ -612,13 +645,15 @@ private:
                         if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
                         const VoxelData data = old_data_ptr[i];
+                        const uint32_t sig = compute_signature(key);
                         bool inserted = false;
 
                         for (size_t probe = 0; probe < max_probe; ++probe) {
                             const size_t slot = compute_slot_id(key, probe, new_capacity_local);
-                            uint64_t expected = VoxelConstants::invalid_coord;
+                            uint32_t expected_sig = 0U;
 
-                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                            if (atomic_ref_uint32_t(new_sig_ptr[slot]).compare_exchange_strong(expected_sig, sig)) {
+                                new_key_ptr[slot] = key;
                                 new_data_ptr[slot] = data;
                                 voxel_num_arg += 1U;
                                 inserted = true;
@@ -639,13 +674,15 @@ private:
                         if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
                         const VoxelData data = old_data_ptr[i];
+                        const uint32_t sig = compute_signature(key);
                         bool inserted = false;
 
                         for (size_t probe = 0; probe < max_probe; ++probe) {
                             const size_t slot = compute_slot_id(key, probe, new_capacity_local);
-                            uint64_t expected = VoxelConstants::invalid_coord;
+                            uint32_t expected_sig = 0U;
 
-                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                            if (atomic_ref_uint32_t(new_sig_ptr[slot]).compare_exchange_strong(expected_sig, sig)) {
+                                new_key_ptr[slot] = key;
                                 new_data_ptr[slot] = data;
                                 atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
                                 inserted = true;
@@ -670,33 +707,46 @@ private:
     }
 
     template <typename CounterFunc>
-    static void global_reduction(const VoxelLocalData& data, uint64_t* key_ptr, VoxelData* voxel_ptr,
-                                 const uint32_t current_frame, const size_t max_probe, const size_t capacity,
-                                 CounterFunc counter) {
+    static void global_reduction(const VoxelLocalData& data, uint32_t* signature_ptr, uint64_t* key_ptr,
+                                 VoxelData* voxel_ptr, const uint32_t current_frame, const size_t max_probe,
+                                 const size_t capacity, CounterFunc counter) {
         const uint64_t voxel_hash = data.voxel_idx;
         if (voxel_hash == VoxelConstants::invalid_coord) {
             return;
         }
 
+        // Compute signature from key (guaranteed non-zero).
+        const uint32_t sig = compute_signature(voxel_hash);
+
         for (size_t probe = 0; probe < max_probe; ++probe) {
             const size_t slot_idx = compute_slot_id(voxel_hash, probe, capacity);
-            auto key_ref = atomic_ref_uint64_t(key_ptr[slot_idx]);
-            uint64_t expected = key_ref.load();
-            if (expected == VoxelConstants::invalid_coord || expected == VoxelConstants::deleted_coord) {
-                // Attempt to insert. On CAS failure, `expected` is updated, and we fall through.
-                if (key_ref.compare_exchange_strong(expected, voxel_hash)) {
-                    counter(1U);
-                    atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
-                    atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
-                    break;
-                }
-            }
-            // If the slot was already occupied, or if another thread just inserted our key, update it.
-            if (expected == voxel_hash) {
+            auto sig_ref = atomic_ref_uint32_t(signature_ptr[slot_idx]);
+
+            // Try to reserve the slot by CAS on the signature.
+            uint32_t expected_sig = 0U;
+            if (sig_ref.compare_exchange_strong(expected_sig, sig)) {
+                // Successfully reserved: write key and data.
+                key_ptr[slot_idx] = voxel_hash;
+                counter(1U);
                 atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                 atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                 break;
             }
+
+            // CAS failed: slot is occupied.
+            // Check if the stored signature matches ours.
+            if (expected_sig == sig) {
+                // Potential match: verify the actual key to avoid false positives.
+                const uint64_t stored_key = key_ptr[slot_idx];
+                if (stored_key == voxel_hash) {
+                    // Same key: update existing voxel.
+                    atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
+                    atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
+                    break;
+                }
+                // False positive (different key, same signature): continue probing.
+            }
+            // Different signature: collision, continue probing.
         }
     }
 
@@ -880,6 +930,7 @@ private:
             const auto point_ptr = cloud.points_ptr();
             const auto rgb_ptr = has_rgb ? cloud.rgb_ptr() : static_cast<RGBType*>(nullptr);
             const auto intensity_ptr = has_intensity ? cloud.intensities_ptr() : static_cast<float*>(nullptr);
+            auto sig_ptr = this->signature_ptr_.get();
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             const auto voxel_size_inv = this->inv_voxel_size_;
@@ -965,7 +1016,7 @@ private:
                         }
 
                         const VoxelLocalData local = local_voxel_data[lid];
-                        global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                        global_reduction(local, sig_ptr, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
                                          [&](uint32_t add) { voxel_num_arg += add; });
                     });
             } else {
@@ -984,7 +1035,7 @@ private:
 
                         const VoxelLocalData local = local_voxel_data[lid];
                         global_reduction(
-                            local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                            local, sig_ptr, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
                             [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); });
                     });
             }
@@ -1122,6 +1173,7 @@ private:
 
             const float inv_voxel_size = this->inv_voxel_size_;
 
+            auto sig_ptr = this->signature_ptr_.get();
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             auto counter_ptr = voxel_counter.data();
@@ -1170,7 +1222,7 @@ private:
                     local.acc.voxel_hash = key;
                     local.acc.log_odds_delta = log_miss;
 
-                    global_reduction(local, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
+                    global_reduction(local, sig_ptr, key_ptr, voxel_ptr, current_frame, max_probe, capacity,
                                      [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); });
                 };
 
@@ -1205,13 +1257,14 @@ private:
         const size_t N = this->capacity_;
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            auto key_ptr = this->key_ptr_.get();
+            auto sig_ptr = this->signature_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             const float min_log_odds = this->min_log_odds_;
             const float max_log_odds = this->max_log_odds_;
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
+                // Skip empty slots (signature == 0).
+                if (sig_ptr[i] == 0U) {
                     return;
                 }
 
@@ -1237,13 +1290,15 @@ private:
         shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            auto sig_ptr = this->signature_ptr_.get();
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             auto counter_ptr = voxel_counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
+                // Skip empty slots (signature == 0).
+                if (sig_ptr[i] == 0U) {
                     return;
                 }
 
@@ -1251,6 +1306,7 @@ private:
                 // Evict voxels whose last update frame is older than the allowed threshold.
                 const bool is_stale = (current_frame - data.last_updated) > stale_threshold;
                 if (is_stale) {
+                    sig_ptr[i] = 0U;
                     key_ptr[i] = VoxelConstants::deleted_coord;
                     voxel_ptr[i] = VoxelData{};
                     return;
@@ -1278,6 +1334,7 @@ private:
         }
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            auto sig_ptr = this->signature_ptr_.get();
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
 
@@ -1296,7 +1353,8 @@ private:
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
-                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
+                // Skip empty slots (signature == 0).
+                if (sig_ptr[i] == 0U) {
                     return;
                 }
 
@@ -1396,6 +1454,7 @@ private:
     const size_t max_probe_length_ = 128;
     float rehash_threshold_ = 0.7f;
 
+    std::shared_ptr<uint32_t> signature_ptr_ = nullptr;
     std::shared_ptr<uint64_t> key_ptr_ = nullptr;
     std::shared_ptr<VoxelData> data_ptr_ = nullptr;
 };
