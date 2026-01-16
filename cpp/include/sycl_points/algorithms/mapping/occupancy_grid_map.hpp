@@ -711,22 +711,17 @@ private:
             uint32_t expected = key_ref.load();
 
             if (expected == kInvalidHash || expected == kDeletedHash) {
-                // Store the voxel key first before attempting CAS
-                atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).store(voxel_key);
-
                 // Attempt to insert. On CAS failure, `expected` is updated, and we fall through.
                 if (key_ref.compare_exchange_strong(expected, hash_value)) {
-                    // Successfully inserted
+                    // Successfully acquired the slot - now store voxel_key with release semantics
+                    // This ensures the voxel_key write is visible to other threads that read the hash
+                    atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).store(voxel_key, sycl::memory_order::release);
                     counter(1U);
                     atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                     atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
                     break;
-                } else {
-                    // CAS failed, reset voxel_key if the slot was taken by a different hash
-                    if (expected != hash_value) {
-                        atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).store(VoxelConstants::invalid_coord);
-                    }
                 }
+                // CAS failed, another thread took the slot - fall through to check if it's the same voxel
             }
 
             // Reload the current hash to handle race conditions
@@ -734,8 +729,18 @@ private:
 
             // If the slot was already occupied, check if it's the same voxel
             if (expected == hash_value) {
-                // Hash matches, verify the original key
-                const uint64_t stored_key = atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).load();
+                // Hash matches - load voxel_key with acquire semantics for proper synchronization
+                uint64_t stored_key = atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).load(sycl::memory_order::acquire);
+
+                // Handle the case where another thread just acquired the slot but hasn't written voxel_key yet
+                // Spin briefly if we see invalid_coord to allow the writing thread to complete
+                if (stored_key == VoxelConstants::invalid_coord) {
+                    // Brief spin-wait to allow the owning thread to write voxel_key
+                    for (int spin = 0; spin < 100 && stored_key == VoxelConstants::invalid_coord; ++spin) {
+                        stored_key = atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).load(sycl::memory_order::acquire);
+                    }
+                }
+
                 if (stored_key == voxel_key) {
                     atomic_add_voxel_data(data.acc, voxel_ptr[slot_idx]);
                     atomic_ref_uint32_t(voxel_ptr[slot_idx].last_updated).store(current_frame);
