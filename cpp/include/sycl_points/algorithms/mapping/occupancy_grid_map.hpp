@@ -357,18 +357,20 @@ public:
             });
         });
 
-        event.wait_and_throw();
-
-        const uint32_t final_count = counter.at(0);
-        result.resize_points(final_count);
-        if (this->has_rgb_data_) {
-            result.resize_rgb(final_count);
-        }
-        if (this->has_intensity_data_) {
-            result.resize_intensities(final_count);
-        }
-
-        return;
+        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(event);
+            h.host_task([&]() {
+                const uint32_t final_count = counter.at(0);
+                result.resize_points(final_count);
+                if (this->has_rgb_data_) {
+                    result.resize_rgb(final_count);
+                }
+                if (this->has_intensity_data_) {
+                    result.resize_intensities(final_count);
+                }
+            });
+        });
+        host_event.wait_and_throw();
     }
 
     /// @brief Compute the overlap ratio between the map and an input point cloud.
@@ -569,10 +571,10 @@ private:
             sycl::malloc_shared<VoxelIntensityData>(this->capacity_, *this->queue_.ptr),
             [&](VoxelIntensityData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
 
-        this->queue_.set_accessed_by_device(this->key_ptr_.get(), this->capacity_);
-        this->queue_.set_accessed_by_device(this->core_data_ptr_.get(), this->capacity_);
-        this->queue_.set_accessed_by_device(this->color_data_ptr_.get(), this->capacity_);
-        this->queue_.set_accessed_by_device(this->intensity_data_ptr_.get(), this->capacity_);
+        // this->queue_.set_accessed_by_device(this->key_ptr_.get(), this->capacity_);
+        // this->queue_.set_accessed_by_device(this->core_data_ptr_.get(), this->capacity_);
+        // this->queue_.set_accessed_by_device(this->color_data_ptr_.get(), this->capacity_);
+        // this->queue_.set_accessed_by_device(this->intensity_data_ptr_.get(), this->capacity_);
     }
 
     void initialize_storage() {
@@ -618,101 +620,104 @@ private:
         shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
         shared_vector<uint32_t> failure_flag(1, 0U, *this->queue_.ptr);
 
-        this->queue_.ptr
-            ->submit([&](sycl::handler& h) {
-                const size_t N = old_capacity;
-                const size_t work_group_size = this->queue_.get_work_group_size();
-                const size_t global_size = this->queue_.get_global_size(N);
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = old_capacity;
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
 
-                const auto old_key_ptr = old_keys.get();
-                const auto old_core_ptr = old_core_data.get();
-                const auto old_color_ptr = old_color_data.get();
-                const auto old_intensity_ptr = old_intensity_data.get();
-                auto new_key_ptr = this->key_ptr_.get();
-                auto new_core_ptr = this->core_data_ptr_.get();
-                auto new_color_ptr = this->color_data_ptr_.get();
-                auto new_intensity_ptr = this->intensity_data_ptr_.get();
-                const size_t new_capacity_local = this->capacity_;
-                const size_t max_probe = this->max_probe_length_;
-                auto voxel_num_ptr = voxel_counter.data();
-                auto failure_ptr = failure_flag.data();
-                auto range = sycl::nd_range<1>(global_size, work_group_size);
+            const auto old_key_ptr = old_keys.get();
+            const auto old_core_ptr = old_core_data.get();
+            const auto old_color_ptr = old_color_data.get();
+            const auto old_intensity_ptr = old_intensity_data.get();
+            auto new_key_ptr = this->key_ptr_.get();
+            auto new_core_ptr = this->core_data_ptr_.get();
+            auto new_color_ptr = this->color_data_ptr_.get();
+            auto new_intensity_ptr = this->intensity_data_ptr_.get();
+            const size_t new_capacity_local = this->capacity_;
+            const size_t max_probe = this->max_probe_length_;
+            auto voxel_num_ptr = voxel_counter.data();
+            auto failure_ptr = failure_flag.data();
+            auto range = sycl::nd_range<1>(global_size, work_group_size);
 
-                if (this->queue_.is_nvidia()) {
-                    // Count inserted voxels via reduction when running on NVIDIA GPUs.
-                    auto voxel_num = sycl::reduction(voxel_num_ptr, sycl::plus<uint32_t>());
+            if (this->queue_.is_nvidia()) {
+                // Count inserted voxels via reduction when running on NVIDIA GPUs.
+                auto voxel_num = sycl::reduction(voxel_num_ptr, sycl::plus<uint32_t>());
 
-                    h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
-                        const uint32_t i = item.get_global_id(0);
-                        if (i >= N) return;
+                h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
+                    const uint32_t i = item.get_global_id(0);
+                    if (i >= N) return;
 
-                        const uint64_t key = old_key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
+                    const uint64_t key = old_key_ptr[i];
+                    if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
-                        const VoxelCoreData core_data = old_core_ptr[i];
-                        const VoxelColorData color_data = old_color_ptr[i];
-                        const VoxelIntensityData intensity_data = old_intensity_ptr[i];
-                        bool inserted = false;
+                    const VoxelCoreData core_data = old_core_ptr[i];
+                    const VoxelColorData color_data = old_color_ptr[i];
+                    const VoxelIntensityData intensity_data = old_intensity_ptr[i];
+                    bool inserted = false;
 
-                        for (size_t probe = 0; probe < max_probe; ++probe) {
-                            const size_t slot = compute_slot_id(key, probe, new_capacity_local);
-                            uint64_t expected = VoxelConstants::invalid_coord;
+                    for (size_t probe = 0; probe < max_probe; ++probe) {
+                        const size_t slot = compute_slot_id(key, probe, new_capacity_local);
+                        uint64_t expected = VoxelConstants::invalid_coord;
 
-                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
-                                new_core_ptr[slot] = core_data;
-                                new_color_ptr[slot] = color_data;
-                                new_intensity_ptr[slot] = intensity_data;
-                                voxel_num_arg += 1U;
-                                inserted = true;
-                                break;
-                            }
+                        if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                            new_core_ptr[slot] = core_data;
+                            new_color_ptr[slot] = color_data;
+                            new_intensity_ptr[slot] = intensity_data;
+                            voxel_num_arg += 1U;
+                            inserted = true;
+                            break;
                         }
+                    }
 
-                        if (!inserted) {
-                            atomic_ref_uint32_t(failure_ptr[0]).store(1U);
+                    if (!inserted) {
+                        atomic_ref_uint32_t(failure_ptr[0]).store(1U);
+                    }
+                });
+            } else {
+                h.parallel_for(range, [=](sycl::nd_item<1> item) {
+                    const uint32_t i = item.get_global_id(0);
+                    if (i >= N) return;
+
+                    const uint64_t key = old_key_ptr[i];
+                    if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
+
+                    const VoxelCoreData core_data = old_core_ptr[i];
+                    const VoxelColorData color_data = old_color_ptr[i];
+                    const VoxelIntensityData intensity_data = old_intensity_ptr[i];
+                    bool inserted = false;
+
+                    for (size_t probe = 0; probe < max_probe; ++probe) {
+                        const size_t slot = compute_slot_id(key, probe, new_capacity_local);
+                        uint64_t expected = VoxelConstants::invalid_coord;
+
+                        if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
+                            new_core_ptr[slot] = core_data;
+                            new_color_ptr[slot] = color_data;
+                            new_intensity_ptr[slot] = intensity_data;
+                            atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
+                            inserted = true;
+                            break;
                         }
-                    });
-                } else {
-                    h.parallel_for(range, [=](sycl::nd_item<1> item) {
-                        const uint32_t i = item.get_global_id(0);
-                        if (i >= N) return;
+                    }
 
-                        const uint64_t key = old_key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
+                    if (!inserted) {
+                        atomic_ref_uint32_t(failure_ptr[0]).store(1U);
+                    }
+                });
+            }
+        });
 
-                        const VoxelCoreData core_data = old_core_ptr[i];
-                        const VoxelColorData color_data = old_color_ptr[i];
-                        const VoxelIntensityData intensity_data = old_intensity_ptr[i];
-                        bool inserted = false;
-
-                        for (size_t probe = 0; probe < max_probe; ++probe) {
-                            const size_t slot = compute_slot_id(key, probe, new_capacity_local);
-                            uint64_t expected = VoxelConstants::invalid_coord;
-
-                            if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
-                                new_core_ptr[slot] = core_data;
-                                new_color_ptr[slot] = color_data;
-                                new_intensity_ptr[slot] = intensity_data;
-                                atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
-                                inserted = true;
-                                break;
-                            }
-                        }
-
-                        if (!inserted) {
-                            atomic_ref_uint32_t(failure_ptr[0]).store(1U);
-                        }
-                    });
+        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(event);
+            h.host_task([&]() {
+                if (failure_flag.at(0) != 0U) {
+                    std::cerr << "Could not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
+                    // throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
                 }
-            })
-            .wait_and_throw();
-
-        if (failure_flag.at(0) != 0U) {
-            std::cerr << "Could not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
-            // throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
-        }
-
-        this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+                this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+            });
+        });
+        host_event.wait_and_throw();
     }
 
     template <typename CounterFunc>
@@ -1037,8 +1042,11 @@ private:
             }
         });
 
-        event.wait_and_throw();
-        this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(event);
+            h.host_task([&]() { this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0)); });
+        });
+        host_event.wait_and_throw();
     }
 
     void update_free_space(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) {
@@ -1143,8 +1151,12 @@ private:
             });
         });
 
-        estimate_event.wait_and_throw();
-        const size_t expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0));
+        size_t expected_voxel_visits = 0;
+        auto expected_voxel_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(estimate_event);
+            h.host_task([&]() { expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0)); });
+        });
+        expected_voxel_event.wait_and_throw();
 
         if (expected_voxel_visits == 0U) {
             hit_event.wait_and_throw();
@@ -1247,8 +1259,11 @@ private:
             });
         });
 
-        event.wait_and_throw();
-        this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(event);
+            h.host_task([&]() { this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0)); });
+        });
+        host_event.wait_and_throw();
     }
 
     void apply_pending_log_odds() {
@@ -1321,7 +1336,7 @@ private:
         });
         auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
             h.depends_on(event);
-            h.host_task([=]() { this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0)); });
+            h.host_task([&]() { this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0)); });
         });
         host_event.wait_and_throw();
     }
@@ -1410,16 +1425,21 @@ private:
             });
         });
 
-        event.wait_and_throw();
+        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(event);
 
-        const uint32_t final_count = counter.at(0);
-        result.resize_points(final_count);
-        if (this->has_rgb_data_) {
-            result.resize_rgb(final_count);
-        }
-        if (this->has_intensity_data_) {
-            result.resize_intensities(final_count);
-        }
+            h.host_task([&]() {
+                const uint32_t final_count = counter.at(0);
+                result.resize_points(final_count);
+                if (this->has_rgb_data_) {
+                    result.resize_rgb(final_count);
+                }
+                if (this->has_intensity_data_) {
+                    result.resize_intensities(final_count);
+                }
+            });
+        });
+        host_event.wait_and_throw();
     }
 
     size_t compute_work_group_size() const {
