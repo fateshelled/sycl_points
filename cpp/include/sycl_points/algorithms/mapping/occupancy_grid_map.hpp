@@ -39,7 +39,6 @@ public:
 
     /// @brief Reset the map data.
     void clear() {
-        this->initialize_storage();
         this->voxel_num_ = 0;
         this->has_rgb_data_ = false;
         this->has_intensity_data_ = false;
@@ -183,10 +182,10 @@ public:
         }
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            auto key_ptr = this->key_ptr_.get();
-            auto core_ptr = this->core_data_ptr_.get();
-            auto color_ptr = this->color_data_ptr_.get();
-            auto intensity_data_ptr = this->intensity_data_ptr_.get();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_data_ptr = this->intensity_data_ptr_->data();
 
             auto points_ptr = result.points_ptr();
             auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
@@ -390,8 +389,8 @@ public:
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             const auto point_ptr = cloud.points_ptr();
-            auto key_ptr = this->key_ptr_.get();
-            auto core_ptr = this->core_data_ptr_.get();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
             const float voxel_size_inv = this->inv_voxel_size_;
             const float occupancy_threshold = this->occupancy_threshold_log_odds_;
             const size_t max_probe = this->max_probe_length_;
@@ -536,9 +535,9 @@ private:
         }
         for (size_t j = 0; j < this->max_probe_length_; ++j) {
             const size_t slot = this->compute_slot_id(key, j, this->capacity_);
-            const uint64_t stored_key = this->key_ptr_.get()[slot];
+            const uint64_t stored_key = this->key_ptr_->at(slot);
             if (stored_key == key) {
-                return &this->core_data_ptr_.get()[slot];
+                return &this->core_data_ptr_->at(slot);
             }
             if (stored_key == VoxelConstants::invalid_coord) {
                 break;
@@ -559,48 +558,12 @@ private:
     }
 
     void allocate_storage(size_t new_capacity) {
-        if (this->key_ptr_) {
-            this->queue_.clear_accessed_by_device(this->key_ptr_.get(), this->capacity_);
-        }
-        if (this->core_data_ptr_) {
-            this->queue_.clear_accessed_by_device(this->core_data_ptr_.get(), this->capacity_);
-        }
-        if (this->color_data_ptr_) {
-            this->queue_.clear_accessed_by_device(this->color_data_ptr_.get(), this->capacity_);
-        }
-        if (this->intensity_data_ptr_) {
-            this->queue_.clear_accessed_by_device(this->intensity_data_ptr_.get(), this->capacity_);
-        }
-
-        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(new_capacity, *this->queue_.ptr),
-                                                   [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
-        this->core_data_ptr_ =
-            std::shared_ptr<VoxelCoreData>(sycl::malloc_shared<VoxelCoreData>(new_capacity, *this->queue_.ptr),
-                                           [&](VoxelCoreData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
-        this->color_data_ptr_ =
-            std::shared_ptr<VoxelColorData>(sycl::malloc_shared<VoxelColorData>(new_capacity, *this->queue_.ptr),
-                                            [&](VoxelColorData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
-        this->intensity_data_ptr_ = std::shared_ptr<VoxelIntensityData>(
-            sycl::malloc_shared<VoxelIntensityData>(new_capacity, *this->queue_.ptr),
-            [&](VoxelIntensityData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
-
-        this->queue_.set_accessed_by_device(this->key_ptr_.get(), new_capacity);
-        this->queue_.set_accessed_by_device(this->core_data_ptr_.get(), new_capacity);
-        this->queue_.set_accessed_by_device(this->color_data_ptr_.get(), new_capacity);
-        this->queue_.set_accessed_by_device(this->intensity_data_ptr_.get(), new_capacity);
+        this->key_ptr_.reset(new shared_vector<uint64_t>(new_capacity, VoxelConstants::invalid_coord, *this->queue_.ptr));
+        this->core_data_ptr_.reset(new shared_vector<VoxelCoreData>(new_capacity, VoxelCoreData{}, *this->queue_.ptr));
+        this->color_data_ptr_.reset(new shared_vector<VoxelColorData>(new_capacity, VoxelColorData{}, *this->queue_.ptr));
+        this->intensity_data_ptr_.reset(new shared_vector<VoxelIntensityData>(new_capacity, VoxelIntensityData{}, *this->queue_.ptr));
 
         this->capacity_ = new_capacity;
-    }
-
-    void initialize_storage() {
-        // Reset the hash table content before the next integration round.
-        sycl_utils::events evs;
-        evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
-        evs += this->queue_.ptr->fill<VoxelCoreData>(this->core_data_ptr_.get(), VoxelCoreData{}, this->capacity_);
-        evs += this->queue_.ptr->fill<VoxelColorData>(this->color_data_ptr_.get(), VoxelColorData{}, this->capacity_);
-        evs += this->queue_.ptr->fill<VoxelIntensityData>(this->intensity_data_ptr_.get(), VoxelIntensityData{},
-                                                          this->capacity_);
-        evs.wait_and_throw();
     }
 
     void ensure_rehash() {
@@ -629,7 +592,6 @@ private:
         auto old_intensity_data = this->intensity_data_ptr_;
 
         this->allocate_storage(new_capacity);
-        this->initialize_storage();
 
         shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
         shared_vector<uint32_t> failure_flag(1, 0U, *this->queue_.ptr);
@@ -639,14 +601,14 @@ private:
             const size_t work_group_size = this->queue_.get_work_group_size();
             const size_t global_size = this->queue_.get_global_size(N);
 
-            const auto old_key_ptr = old_keys.get();
-            const auto old_core_ptr = old_core_data.get();
-            const auto old_color_ptr = old_color_data.get();
-            const auto old_intensity_ptr = old_intensity_data.get();
-            auto new_key_ptr = this->key_ptr_.get();
-            auto new_core_ptr = this->core_data_ptr_.get();
-            auto new_color_ptr = this->color_data_ptr_.get();
-            auto new_intensity_ptr = this->intensity_data_ptr_.get();
+            const auto old_key_ptr = old_keys->data();
+            const auto old_core_ptr = old_core_data->data();
+            const auto old_color_ptr = old_color_data->data();
+            const auto old_intensity_ptr = old_intensity_data->data();
+            auto new_key_ptr = this->key_ptr_->data();
+            auto new_core_ptr = this->core_data_ptr_->data();
+            auto new_color_ptr = this->color_data_ptr_->data();
+            auto new_intensity_ptr = this->intensity_data_ptr_->data();
             const size_t new_capacity_local = this->capacity_;
             const size_t max_probe = this->max_probe_length_;
             auto voxel_num_ptr = voxel_counter.data();
@@ -946,10 +908,10 @@ private:
             const auto point_ptr = cloud.points_ptr();
             const auto rgb_ptr = has_rgb ? cloud.rgb_ptr() : static_cast<RGBType*>(nullptr);
             const auto intensity_ptr = has_intensity ? cloud.intensities_ptr() : static_cast<float*>(nullptr);
-            auto key_ptr = this->key_ptr_.get();
-            auto core_ptr = this->core_data_ptr_.get();
-            auto color_ptr = this->color_data_ptr_.get();
-            auto intensity_data_ptr = this->intensity_data_ptr_.get();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_data_ptr = this->intensity_data_ptr_->data();
             const auto voxel_size_inv = this->inv_voxel_size_;
             const auto current_frame = this->frame_index_;
             const auto max_probe = this->max_probe_length_;
@@ -1195,10 +1157,10 @@ private:
 
             const float inv_voxel_size = this->inv_voxel_size_;
 
-            auto key_ptr = this->key_ptr_.get();
-            auto core_ptr = this->core_data_ptr_.get();
-            auto color_ptr = this->color_data_ptr_.get();
-            auto intensity_ptr = this->intensity_data_ptr_.get();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_ptr = this->intensity_data_ptr_->data();
             auto counter_ptr = voxel_counter.data();
             auto origin_hit_ptr = origin_hit_flag.data();
 
@@ -1284,8 +1246,8 @@ private:
         const size_t N = this->capacity_;
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            auto key_ptr = this->key_ptr_.get();
-            auto core_ptr = this->core_data_ptr_.get();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
             const float min_log_odds = this->min_log_odds_;
             const float max_log_odds = this->max_log_odds_;
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
@@ -1320,10 +1282,10 @@ private:
         shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            auto key_ptr = this->key_ptr_.get();
-            auto core_ptr = this->core_data_ptr_.get();
-            auto color_ptr = this->color_data_ptr_.get();
-            auto intensity_ptr = this->intensity_data_ptr_.get();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_ptr = this->intensity_data_ptr_->data();
 
             auto counter_reduction = sycl::reduction(voxel_counter.data(), sycl::plus<uint32_t>());
 
@@ -1369,10 +1331,10 @@ private:
         }
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            auto key_ptr = this->key_ptr_.get();
-            auto core_ptr = this->core_data_ptr_.get();
-            auto color_ptr = this->color_data_ptr_.get();
-            auto intensity_data_ptr = this->intensity_data_ptr_.get();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_data_ptr = this->intensity_data_ptr_->data();
 
             auto points_ptr = result.points_ptr();
             auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
@@ -1494,10 +1456,10 @@ private:
     const size_t max_probe_length_ = 128;
     float rehash_threshold_ = 0.7f;
 
-    std::shared_ptr<uint64_t> key_ptr_ = nullptr;
-    std::shared_ptr<VoxelCoreData> core_data_ptr_ = nullptr;
-    std::shared_ptr<VoxelColorData> color_data_ptr_ = nullptr;
-    std::shared_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
+    shared_vector_ptr<uint64_t> key_ptr_ = nullptr;
+    shared_vector_ptr<VoxelCoreData> core_data_ptr_ = nullptr;
+    shared_vector_ptr<VoxelColorData> color_data_ptr_ = nullptr;
+    shared_vector_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
 };
 
 }  // namespace mapping
