@@ -32,7 +32,7 @@ public:
     /// @param voxel_size Edge length of a voxel in meters.
     OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
-        this->allocate_storage();
+        this->allocate_storage(this->capacity_);
         // Preallocate the buffer used to store world-frame points before hashing.
         this->clear();
     }
@@ -558,23 +558,38 @@ private:
         return (voxel_hash + probe * hash2(voxel_hash, capacity)) % capacity;
     }
 
-    void allocate_storage() {
-        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
+    void allocate_storage(size_t new_capacity) {
+        if (this->key_ptr_) {
+            this->queue_.clear_accessed_by_device(this->key_ptr_.get(), this->capacity_);
+        }
+        if (this->core_data_ptr_) {
+            this->queue_.clear_accessed_by_device(this->core_data_ptr_.get(), this->capacity_);
+        }
+        if (this->color_data_ptr_) {
+            this->queue_.clear_accessed_by_device(this->color_data_ptr_.get(), this->capacity_);
+        }
+        if (this->intensity_data_ptr_) {
+            this->queue_.clear_accessed_by_device(this->intensity_data_ptr_.get(), this->capacity_);
+        }
+
+        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(new_capacity, *this->queue_.ptr),
                                                    [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->core_data_ptr_ =
-            std::shared_ptr<VoxelCoreData>(sycl::malloc_shared<VoxelCoreData>(this->capacity_, *this->queue_.ptr),
+            std::shared_ptr<VoxelCoreData>(sycl::malloc_shared<VoxelCoreData>(new_capacity, *this->queue_.ptr),
                                            [&](VoxelCoreData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->color_data_ptr_ =
-            std::shared_ptr<VoxelColorData>(sycl::malloc_shared<VoxelColorData>(this->capacity_, *this->queue_.ptr),
+            std::shared_ptr<VoxelColorData>(sycl::malloc_shared<VoxelColorData>(new_capacity, *this->queue_.ptr),
                                             [&](VoxelColorData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
         this->intensity_data_ptr_ = std::shared_ptr<VoxelIntensityData>(
-            sycl::malloc_shared<VoxelIntensityData>(this->capacity_, *this->queue_.ptr),
+            sycl::malloc_shared<VoxelIntensityData>(new_capacity, *this->queue_.ptr),
             [&](VoxelIntensityData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
 
-        // this->queue_.set_accessed_by_device(this->key_ptr_.get(), this->capacity_);
-        // this->queue_.set_accessed_by_device(this->core_data_ptr_.get(), this->capacity_);
-        // this->queue_.set_accessed_by_device(this->color_data_ptr_.get(), this->capacity_);
-        // this->queue_.set_accessed_by_device(this->intensity_data_ptr_.get(), this->capacity_);
+        this->queue_.set_accessed_by_device(this->key_ptr_.get(), new_capacity);
+        this->queue_.set_accessed_by_device(this->core_data_ptr_.get(), new_capacity);
+        this->queue_.set_accessed_by_device(this->color_data_ptr_.get(), new_capacity);
+        this->queue_.set_accessed_by_device(this->intensity_data_ptr_.get(), new_capacity);
+
+        this->capacity_ = new_capacity;
     }
 
     void initialize_storage() {
@@ -613,8 +628,7 @@ private:
         auto old_color_data = this->color_data_ptr_;
         auto old_intensity_data = this->intensity_data_ptr_;
 
-        this->capacity_ = new_capacity;
-        this->allocate_storage();
+        this->allocate_storage(new_capacity);
         this->initialize_storage();
 
         shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
