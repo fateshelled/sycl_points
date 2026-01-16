@@ -212,9 +212,8 @@ public:
             const float cos_limit_vertical = sycl::cos(vertical_fov * 0.5f);
             // Allow backward visibility once the horizontal FOV reaches 180 degrees.
             const bool include_backward = horizontal_fov >= (kPi - kFovTolerance);
-
-            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
-            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+            const uint32_t invalid_hash = kInvalidHash;
+            const uint32_t deleted_hash = kDeletedHash;
 
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -399,9 +398,8 @@ public:
             const float occupancy_threshold = this->occupancy_threshold_log_odds_;
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
-
-            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
-            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+            const uint32_t invalid_hash = kInvalidHash;
+            const uint32_t deleted_hash = kDeletedHash;
 
             h.parallel_for(sycl::range<1>(N), overlap_reduction, [=](sycl::id<1> idx, auto& overlap_sum) {
                 const size_t i = idx[0];
@@ -445,6 +443,8 @@ private:
     inline static constexpr float kPi = 3.1415927f;
     inline static constexpr float kFovTolerance = 1e-6f;
     inline static constexpr float kOcclusionEpsilon = 1e-6f;
+    inline static constexpr uint32_t kInvalidHash = std::numeric_limits<uint32_t>::max();
+    inline static constexpr uint32_t kDeletedHash = std::numeric_limits<uint32_t>::max() - 1;
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint32_t = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint64_t = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
@@ -525,8 +525,6 @@ private:
             return nullptr;
         }
         const uint32_t hash = hash_voxel_key_to_32bit(key);
-        constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
-        constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
 
         for (size_t j = 0; j < this->max_probe_length_; ++j) {
             const size_t slot = this->compute_slot_id(hash, j, this->capacity_);
@@ -538,10 +536,10 @@ private:
                     return &data;
                 }
             }
-            if (stored_hash == invalid_hash) {
+            if (stored_hash == kInvalidHash) {
                 break;
             }
-            if (stored_hash == deleted_hash) {
+            if (stored_hash == kDeletedHash) {
                 continue;
             }
         }
@@ -569,9 +567,8 @@ private:
     void initialize_storage() {
         // Reset the hash table content before the next integration round.
         // Use 32-bit invalid hash value for the hash table
-        constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
         sycl_utils::events evs;
-        evs += this->queue_.ptr->fill<uint32_t>(this->key_ptr_.get(), invalid_hash, this->capacity_);
+        evs += this->queue_.ptr->fill<uint32_t>(this->key_ptr_.get(), kInvalidHash, this->capacity_);
         evs += this->queue_.ptr->fill<VoxelData>(this->data_ptr_.get(), VoxelData{}, this->capacity_);
         evs.wait_and_throw();
     }
@@ -621,9 +618,8 @@ private:
                 auto voxel_num_ptr = voxel_counter.data();
                 auto failure_ptr = failure_flag.data();
                 auto range = sycl::nd_range<1>(global_size, work_group_size);
-
-                constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
-                constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+                const uint32_t invalid_hash = kInvalidHash;
+                const uint32_t deleted_hash = kDeletedHash;
 
                 if (this->queue_.is_nvidia()) {
                     // Count inserted voxels via reduction when running on NVIDIA GPUs.
@@ -708,15 +704,13 @@ private:
         }
 
         const uint32_t hash_value = hash_voxel_key_to_32bit(voxel_key);
-        constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
-        constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
 
         for (size_t probe = 0; probe < max_probe; ++probe) {
             const size_t slot_idx = compute_slot_id(hash_value, probe, capacity);
             auto key_ref = atomic_ref_uint32_t(key_ptr[slot_idx]);
             uint32_t expected = key_ref.load();
 
-            if (expected == invalid_hash || expected == deleted_hash) {
+            if (expected == kInvalidHash || expected == kDeletedHash) {
                 // Store the voxel key first before attempting CAS
                 atomic_ref_uint64_t(voxel_ptr[slot_idx].voxel_key).store(voxel_key);
 
@@ -1261,8 +1255,8 @@ private:
             auto voxel_ptr = this->data_ptr_.get();
             const float min_log_odds = this->min_log_odds_;
             const float max_log_odds = this->max_log_odds_;
-            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
-            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+            const uint32_t invalid_hash = kInvalidHash;
+            const uint32_t deleted_hash = kDeletedHash;
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1295,9 +1289,8 @@ private:
             auto key_ptr = this->key_ptr_.get();
             auto voxel_ptr = this->data_ptr_.get();
             auto counter_ptr = voxel_counter.data();
-
-            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
-            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+            const uint32_t invalid_hash = kInvalidHash;
+            const uint32_t deleted_hash = kDeletedHash;
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1351,9 +1344,8 @@ private:
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
             auto counter_ptr = counter.data();
-
-            constexpr uint32_t invalid_hash = std::numeric_limits<uint32_t>::max();
-            constexpr uint32_t deleted_hash = std::numeric_limits<uint32_t>::max() - 1;
+            const uint32_t invalid_hash = kInvalidHash;
+            const uint32_t deleted_hash = kDeletedHash;
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
