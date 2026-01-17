@@ -61,7 +61,6 @@ public:
         evs += this->queue_.ptr->fill<VoxelIntensityData>(this->intensity_data_ptr_->data(), VoxelIntensityData{},
                                                           this->intensity_data_ptr_->size());
         evs.wait_and_throw();
-
     }
 
     /// @brief Set the voxel size.
@@ -1346,8 +1345,7 @@ private:
 
                 const auto last_updated = core_ptr[i].last_updated;
                 // Evict voxels whose last update frame is older than the allowed threshold.
-                // const bool is_stale = (current_frame - last_updated) > stale_threshold;
-                const bool is_stale = current_frame > stale_threshold + last_updated;
+                const bool is_stale = (current_frame - last_updated) > stale_threshold;
                 if (is_stale) {
                     key_ptr[i] = VoxelConstants::deleted_coord;
                     core_ptr[i] = VoxelCoreData{};
