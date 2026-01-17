@@ -28,7 +28,7 @@ public:
     /// @param voxel_size voxel size
     VoxelHashMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
-        this->malloc_data();
+        this->allocate_storage(this->capacity_);
         this->prefix_sum_ = std::make_shared<common::PrefixSum>(this->queue_);
         this->valid_flags_ptr_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
         this->clear();
@@ -81,11 +81,28 @@ public:
 
     /// @brief
     void clear() {
-        this->initialize_device_ptr();
         this->voxel_num_ = 0;
         this->staleness_counter_ = 0;
         this->has_rgb_data_ = false;
         this->has_intensity_data_ = false;
+
+        this->key_ptr_->resize(this->capacity_);
+        this->core_data_ptr_->resize(this->capacity_);
+        this->color_data_ptr_->resize(this->capacity_);
+        this->intensity_data_ptr_->resize(this->capacity_);
+        this->last_update_ptr_->resize(this->capacity_);
+
+        sycl_utils::events evs;
+        evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_->data(), VoxelConstants::invalid_coord,
+                                                this->key_ptr_->size());
+        evs += this->queue_.ptr->fill<VoxelCoreData>(this->core_data_ptr_->data(), VoxelCoreData{},
+                                                     this->core_data_ptr_->size());
+        evs += this->queue_.ptr->fill<VoxelColorData>(this->color_data_ptr_->data(), VoxelColorData{},
+                                                      this->color_data_ptr_->size());
+        evs += this->queue_.ptr->fill<VoxelIntensityData>(this->intensity_data_ptr_->data(), VoxelIntensityData{},
+                                                          this->intensity_data_ptr_->size());
+        evs += this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_->data(), 0U, this->last_update_ptr_->size());
+        evs.wait_and_throw();
     }
 
     /// @brief add PointCloud to voxel map
@@ -172,8 +189,8 @@ public:
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             const auto point_ptr = cloud.points_ptr();
-            const auto key_ptr = this->key_ptr_.get();
-            const auto core_ptr = this->core_data_ptr_.get();
+            const auto key_ptr = this->key_ptr_->data();
+            const auto core_ptr = this->core_data_ptr_->data();
             const float voxel_size_inv = this->voxel_size_inv_;
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
@@ -372,11 +389,11 @@ private:
         30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};  // prime number
     size_t capacity_ = kCapacityCandidates[0];
 
-    std::shared_ptr<uint64_t> key_ptr_ = nullptr;
-    std::shared_ptr<VoxelCoreData> core_data_ptr_ = nullptr;
-    std::shared_ptr<VoxelColorData> color_data_ptr_ = nullptr;
-    std::shared_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
-    std::shared_ptr<uint32_t> last_update_ptr_ = nullptr;
+    shared_vector_ptr<uint64_t> key_ptr_ = nullptr;
+    shared_vector_ptr<VoxelCoreData> core_data_ptr_ = nullptr;
+    shared_vector_ptr<VoxelColorData> color_data_ptr_ = nullptr;
+    shared_vector_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
+    shared_vector_ptr<uint32_t> last_update_ptr_ = nullptr;
     shared_vector_ptr<uint8_t> valid_flags_ptr_ = nullptr;
     common::PrefixSum::Ptr prefix_sum_ = nullptr;
 
@@ -403,37 +420,18 @@ private:
         }
     }
 
-    void malloc_data() {
-        this->key_ptr_ = std::shared_ptr<uint64_t>(sycl::malloc_shared<uint64_t>(this->capacity_, *this->queue_.ptr),
-                                                   [&](uint64_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+    void allocate_storage(size_t new_capacity) {
+        this->key_ptr_ =
+            std::make_shared<shared_vector<uint64_t>>(new_capacity, VoxelConstants::invalid_coord, *this->queue_.ptr);
         this->core_data_ptr_ =
-            std::shared_ptr<VoxelCoreData>(sycl::malloc_shared<VoxelCoreData>(this->capacity_, *this->queue_.ptr),
-                                           [&](VoxelCoreData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
+            std::make_shared<shared_vector<VoxelCoreData>>(new_capacity, VoxelCoreData{}, *this->queue_.ptr);
         this->color_data_ptr_ =
-            std::shared_ptr<VoxelColorData>(sycl::malloc_shared<VoxelColorData>(this->capacity_, *this->queue_.ptr),
-                                            [&](VoxelColorData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
-        this->intensity_data_ptr_ = std::shared_ptr<VoxelIntensityData>(
-            sycl::malloc_shared<VoxelIntensityData>(this->capacity_, *this->queue_.ptr),
-            [&](VoxelIntensityData* ptr) { sycl::free(ptr, *this->queue_.ptr); });
-        this->last_update_ptr_ =
-            std::shared_ptr<uint32_t>(sycl::malloc_shared<uint32_t>(this->capacity_, *this->queue_.ptr),
-                                      [&](uint32_t* ptr) { sycl::free(ptr, *this->queue_.ptr); });
-        this->queue_.set_accessed_by_device(this->key_ptr_.get(), this->capacity_);
-        this->queue_.set_accessed_by_device(this->core_data_ptr_.get(), this->capacity_);
-        this->queue_.set_accessed_by_device(this->color_data_ptr_.get(), this->capacity_);
-        this->queue_.set_accessed_by_device(this->intensity_data_ptr_.get(), this->capacity_);
-        this->queue_.set_accessed_by_device(this->last_update_ptr_.get(), this->capacity_);
-    }
+            std::make_shared<shared_vector<VoxelColorData>>(new_capacity, VoxelColorData{}, *this->queue_.ptr);
+        this->intensity_data_ptr_ =
+            std::make_shared<shared_vector<VoxelIntensityData>>(new_capacity, VoxelIntensityData{}, *this->queue_.ptr);
+        this->last_update_ptr_ = std::make_shared<shared_vector<uint32_t>>(new_capacity, 0U, *this->queue_.ptr);
 
-    void initialize_device_ptr() {
-        sycl_utils::events evs;
-        evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_.get(), VoxelConstants::invalid_coord, this->capacity_);
-        evs += this->queue_.ptr->fill<VoxelCoreData>(this->core_data_ptr_.get(), VoxelCoreData{}, this->capacity_);
-        evs += this->queue_.ptr->fill<VoxelColorData>(this->color_data_ptr_.get(), VoxelColorData{}, this->capacity_);
-        evs +=
-            this->queue_.ptr->fill<VoxelIntensityData>(this->intensity_data_ptr_.get(), VoxelIntensityData{}, this->capacity_);
-        evs += this->queue_.ptr->fill<uint32_t>(this->last_update_ptr_.get(), 0, this->capacity_);
-        evs.wait_and_throw();
+        this->capacity_ = new_capacity;
     }
 
     size_t get_next_capacity_value() const {
@@ -530,11 +528,11 @@ private:
             }
 
             // memory ptr
-            const auto key_ptr = this->key_ptr_.get();
-            const auto core_ptr = this->core_data_ptr_.get();
-            const auto color_ptr = this->color_data_ptr_.get();
-            const auto intensity_data_ptr = this->intensity_data_ptr_.get();
-            const auto last_update_ptr = this->last_update_ptr_.get();
+            const auto key_ptr = this->key_ptr_->data();
+            const auto core_ptr = this->core_data_ptr_->data();
+            const auto color_ptr = this->color_data_ptr_->data();
+            const auto intensity_data_ptr = this->intensity_data_ptr_->data();
+            const auto last_update_ptr = this->last_update_ptr_->data();
 
             const auto point_ptr = cloud.points_ptr();
             const auto rgb_ptr = has_rgb ? cloud.rgb_ptr() : static_cast<RGBType*>(nullptr);
@@ -669,11 +667,11 @@ private:
                 const size_t global_size = this->queue_.get_global_size(N);
 
                 // memory ptr
-                const auto key_ptr = this->key_ptr_.get();
-                const auto core_ptr = this->core_data_ptr_.get();
-                const auto color_ptr = this->color_data_ptr_.get();
-                const auto intensity_ptr = this->intensity_data_ptr_.get();
-                const auto last_update_ptr = this->last_update_ptr_.get();
+                const auto key_ptr = this->key_ptr_->data();
+                const auto core_ptr = this->core_data_ptr_->data();
+                const auto color_ptr = this->color_data_ptr_->data();
+                const auto intensity_ptr = this->intensity_data_ptr_->data();
+                const auto last_update_ptr = this->last_update_ptr_->data();
                 auto clear_function = [&](uint64_t& key, VoxelCoreData& core, VoxelColorData& color,
                                           VoxelIntensityData& intensity, uint32_t& last_update) {
                     key = VoxelConstants::invalid_coord;
@@ -732,7 +730,6 @@ private:
         if (this->capacity_ >= new_capacity) return;
 
         const auto old_capacity = this->capacity_;
-        this->capacity_ = new_capacity;
 
         // old pointer
         auto old_key_ptr = this->key_ptr_;
@@ -742,8 +739,7 @@ private:
         auto old_last_update_ptr = this->last_update_ptr_;
 
         // make new
-        this->malloc_data();
-        this->initialize_device_ptr();
+        this->allocate_storage(new_capacity);
 
         shared_vector<uint32_t> voxel_num_vec(1, 0, *this->queue_.ptr);
 
@@ -754,16 +750,16 @@ private:
                 const size_t global_size = this->queue_.get_global_size(N);
 
                 // memory ptr
-                const auto old_key = old_key_ptr.get();
-                const auto old_core = old_core_ptr.get();
-                const auto old_color = old_color_ptr.get();
-                const auto old_intensity = old_intensity_ptr.get();
-                const auto old_last_update = old_last_update_ptr.get();
-                const auto new_key = this->key_ptr_.get();
-                const auto new_core = this->core_data_ptr_.get();
-                const auto new_color = this->color_data_ptr_.get();
-                const auto new_intensity = this->intensity_data_ptr_.get();
-                const auto new_last_update = this->last_update_ptr_.get();
+                const auto old_key = old_key_ptr->data();
+                const auto old_core = old_core_ptr->data();
+                const auto old_color = old_color_ptr->data();
+                const auto old_intensity = old_intensity_ptr->data();
+                const auto old_last_update = old_last_update_ptr->data();
+                const auto new_key = this->key_ptr_->data();
+                const auto new_core = this->core_data_ptr_->data();
+                const auto new_color = this->color_data_ptr_->data();
+                const auto new_intensity = this->intensity_data_ptr_->data();
+                const auto new_last_update = this->last_update_ptr_->data();
 
                 const auto new_cp = new_capacity;
                 const auto max_probe = this->max_probe_length_;
@@ -860,8 +856,8 @@ private:
 
                     // memory ptr
                     const auto valid_flags = this->valid_flags_ptr_->data();
-                    const auto key_ptr = this->key_ptr_.get();
-                    const auto core_ptr = this->core_data_ptr_.get();
+                    const auto key_ptr = this->key_ptr_->data();
+                    const auto core_ptr = this->core_data_ptr_->data();
                     const auto min_num_point = this->min_num_point_;
 
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
@@ -896,9 +892,9 @@ private:
                 const size_t global_size = this->queue_.get_global_size(cp);
 
                 // memory ptr
-                const auto core_ptr = this->core_data_ptr_.get();
-                const auto color_ptr = this->color_data_ptr_.get();
-                const auto intensity_data_ptr = this->intensity_data_ptr_.get();
+                const auto core_ptr = this->core_data_ptr_->data();
+                const auto color_ptr = this->color_data_ptr_->data();
+                const auto intensity_data_ptr = this->intensity_data_ptr_->data();
                 const auto result_ptr = result.data();
                 // Optional output arrays for aggregated RGB colors and intensity values.
                 const auto rgb_output = rgb_output_ptr;
@@ -925,7 +921,7 @@ private:
                     });
 
                 } else {
-                    const auto key_ptr = this->key_ptr_.get();
+                    const auto key_ptr = this->key_ptr_->data();
 
                     const auto point_num_ptr = point_num_vec.data();
                     const auto min_num_point = this->min_num_point_;
