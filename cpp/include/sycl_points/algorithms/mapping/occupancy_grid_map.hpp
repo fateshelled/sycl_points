@@ -33,12 +33,7 @@ public:
     OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
         this->allocate_storage(this->capacity_);
-        // Preallocate the buffer used to store world-frame points before hashing.
-        this->clear();
-    }
 
-    /// @brief Reset the map data.
-    void clear() {
         this->voxel_num_ = 0;
         this->has_rgb_data_ = false;
         this->has_intensity_data_ = false;
@@ -558,10 +553,14 @@ private:
     }
 
     void allocate_storage(size_t new_capacity) {
-        this->key_ptr_.reset(new shared_vector<uint64_t>(new_capacity, VoxelConstants::invalid_coord, *this->queue_.ptr));
-        this->core_data_ptr_.reset(new shared_vector<VoxelCoreData>(new_capacity, VoxelCoreData{}, *this->queue_.ptr));
-        this->color_data_ptr_.reset(new shared_vector<VoxelColorData>(new_capacity, VoxelColorData{}, *this->queue_.ptr));
-        this->intensity_data_ptr_.reset(new shared_vector<VoxelIntensityData>(new_capacity, VoxelIntensityData{}, *this->queue_.ptr));
+        this->key_ptr_ =
+            std::make_shared<shared_vector<uint64_t>>(new_capacity, VoxelConstants::invalid_coord, *this->queue_.ptr);
+        this->core_data_ptr_ =
+            std::make_shared<shared_vector<VoxelCoreData>>(new_capacity, VoxelCoreData{}, *this->queue_.ptr);
+        this->color_data_ptr_ =
+            std::make_shared<shared_vector<VoxelColorData>>(new_capacity, VoxelColorData{}, *this->queue_.ptr);
+        this->intensity_data_ptr_ =
+            std::make_shared<shared_vector<VoxelIntensityData>>(new_capacity, VoxelIntensityData{}, *this->queue_.ptr);
 
         this->capacity_ = new_capacity;
     }
