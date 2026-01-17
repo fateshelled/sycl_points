@@ -34,10 +34,34 @@ public:
         this->set_voxel_size(voxel_size);
         this->allocate_storage(this->capacity_);
 
+        this->clear();
+    }
+
+    /// @brief Reset the map data.
+    void clear() {
+        this->capacity_ = kCapacityCandidates[0];
         this->voxel_num_ = 0;
         this->has_rgb_data_ = false;
         this->has_intensity_data_ = false;
         this->frame_index_ = 0;
+
+        this->key_ptr_->resize(this->capacity_);
+        this->core_data_ptr_->resize(this->capacity_);
+        this->color_data_ptr_->resize(this->capacity_);
+        this->intensity_data_ptr_->resize(this->capacity_);
+
+        // Reset the hash table content before the next integration round.
+        sycl_utils::events evs;
+        evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_->data(), VoxelConstants::invalid_coord,
+                                                this->key_ptr_->size());
+        evs += this->queue_.ptr->fill<VoxelCoreData>(this->core_data_ptr_->data(), VoxelCoreData{},
+                                                     this->core_data_ptr_->size());
+        evs += this->queue_.ptr->fill<VoxelColorData>(this->color_data_ptr_->data(), VoxelColorData{},
+                                                      this->color_data_ptr_->size());
+        evs += this->queue_.ptr->fill<VoxelIntensityData>(this->intensity_data_ptr_->data(), VoxelIntensityData{},
+                                                          this->intensity_data_ptr_->size());
+        evs.wait_and_throw();
+
     }
 
     /// @brief Set the voxel size.
@@ -1469,6 +1493,7 @@ private:
     float occupancy_threshold_log_odds_ = probability_to_log_odds(0.5f);
     bool free_space_updates_enabled_ = true;
     bool voxel_pruning_enabled_ = true;
+
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
     uint32_t frame_index_ = 0U;
@@ -1478,8 +1503,9 @@ private:
         30029, 60013, 120011, 240007, 480013, 960017, 1920001, 3840007, 7680017, 15360013, 30720007};
     size_t capacity_ = kCapacityCandidates[0];
     size_t voxel_num_ = 0;
+
     const size_t max_probe_length_ = 128;
-    float rehash_threshold_ = 0.7f;
+    const float rehash_threshold_ = 0.7f;
 
     shared_vector_ptr<uint64_t> key_ptr_ = nullptr;
     shared_vector_ptr<VoxelCoreData> core_data_ptr_ = nullptr;
