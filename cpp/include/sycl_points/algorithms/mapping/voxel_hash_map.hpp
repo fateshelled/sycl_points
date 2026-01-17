@@ -246,6 +246,7 @@ private:
         float sum_z = 0.0f;
         uint32_t count = 0U;
     };
+    static_assert(sizeof(VoxelCoreData) == 16, "VoxelCoreData must be 16 bytes for optimal memory layout");
 
     /// @brief Color data for RGB information (20 bytes)
     struct VoxelColorData {
@@ -255,35 +256,22 @@ private:
         float sum_a = 0.0f;
         uint32_t color_count = 0U;
     };
+    static_assert(sizeof(VoxelColorData) == 20, "VoxelColorData must be 20 bytes for optimal memory layout");
 
     /// @brief Intensity data for reflectivity information (8 bytes)
     struct VoxelIntensityData {
         float sum_intensity = 0.0f;
         uint32_t intensity_count = 0U;
     };
+    static_assert(sizeof(VoxelIntensityData) == 8, "VoxelIntensityData must be 8 bytes for optimal memory layout");
 
-    /// @brief Core accumulator for position
-    struct VoxelCoreAccumulator {
-        float sum_x = 0.0f;
-        float sum_y = 0.0f;
-        float sum_z = 0.0f;
-        uint32_t count = 0U;
-    };
-
-    /// @brief Color accumulator for RGB information
-    struct VoxelColorAccumulator {
-        float sum_r = 0.0f;
-        float sum_g = 0.0f;
-        float sum_b = 0.0f;
-        float sum_a = 0.0f;
-        uint32_t color_count = 0U;
-    };
-
-    /// @brief Intensity accumulator for reflectivity information
-    struct VoxelIntensityAccumulator {
-        float sum_intensity = 0.0f;
-        uint32_t intensity_count = 0U;
-    };
+    /// @brief Accumulator types for local workgroup reduction.
+    /// @note These are type aliases to the corresponding Data structs since they share
+    ///       identical field layouts. The semantic difference (persistent storage vs
+    ///       temporary accumulation) is preserved through naming and usage context.
+    using VoxelCoreAccumulator = VoxelCoreData;
+    using VoxelColorAccumulator = VoxelColorData;
+    using VoxelIntensityAccumulator = VoxelIntensityData;
 
     struct VoxelLocalData {
         uint64_t voxel_idx = VoxelConstants::invalid_coord;
