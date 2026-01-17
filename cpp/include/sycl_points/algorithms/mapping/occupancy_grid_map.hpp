@@ -456,7 +456,7 @@ private:
         float sum_a = 0.0f;
     };
 
-    /// @brief Intensity data for reflectivity information (8 bytes)
+    /// @brief Intensity data for reflectivity information (4 bytes)
     struct VoxelIntensityData {
         float sum_intensity = 0.0f;
     };
