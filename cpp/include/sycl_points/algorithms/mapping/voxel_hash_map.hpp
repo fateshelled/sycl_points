@@ -79,8 +79,9 @@ public:
     /// @return minimum number of accumulated points
     uint32_t get_min_num_point() const { return this->min_num_point_; }
 
-    /// @brief
+    /// @brief Reset the map data.
     void clear() {
+        this->capacity_ = kCapacityCandidates[0];
         this->voxel_num_ = 0;
         this->staleness_counter_ = 0;
         this->has_rgb_data_ = false;
@@ -92,6 +93,7 @@ public:
         this->intensity_data_ptr_->resize(this->capacity_);
         this->last_update_ptr_->resize(this->capacity_);
 
+        // Reset the hash table content before the next integration round.
         sycl_utils::events evs;
         evs += this->queue_.ptr->fill<uint64_t>(this->key_ptr_->data(), VoxelConstants::invalid_coord,
                                                 this->key_ptr_->size());
