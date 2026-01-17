@@ -278,6 +278,7 @@ private:
                 this->occupancy_grid_->set_log_odds_limits(this->params_.occupancy_grid_map_log_odds_limits_min,
                                                            this->params_.occupancy_grid_map_log_odds_limits_max);
                 this->occupancy_grid_->set_occupancy_threshold(this->params_.occupancy_grid_map_occupied_threshold);
+                this->occupancy_grid_->set_free_space_updates_enabled(this->params_.occupancy_grid_map_enable_free_space_updates);
                 this->occupancy_grid_->set_voxel_pruning_enabled(this->params_.occupancy_grid_map_enable_pruning);
                 this->occupancy_grid_->set_stale_frame_threshold(
                     this->params_.occupancy_grid_map_stale_frame_threshold);

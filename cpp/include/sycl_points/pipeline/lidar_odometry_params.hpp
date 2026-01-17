@@ -53,6 +53,7 @@ struct Parameters {
     float occupancy_grid_map_log_odds_limits_min = -1.0f;
     float occupancy_grid_map_log_odds_limits_max = 4.0f;
     float occupancy_grid_map_occupied_threshold = 0.5f;
+    bool occupancy_grid_map_enable_free_space_updates = true;
     bool occupancy_grid_map_enable_pruning = true;
     size_t occupancy_grid_map_stale_frame_threshold = 100U;
 
