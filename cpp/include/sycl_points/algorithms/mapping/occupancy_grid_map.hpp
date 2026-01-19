@@ -164,7 +164,7 @@ public:
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @param max_distance Maximum extract L-infinity distance in meters.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
-                                 const float max_distance = 100.0f) const {
+                                 const float max_distance = 100.0f) {
         result.resize_points(0);
         result.resize_rgb(0);
         result.resize_intensities(0);
@@ -183,7 +183,7 @@ public:
     /// @param horizontal_fov Horizontal field of view in radians.
     /// @param vertical_fov Vertical field of view in radians.
     void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
-                                float horizontal_fov, float vertical_fov) const {
+                                float horizontal_fov, float vertical_fov) {
         result.resize_points(0);
         if (this->voxel_num_ == 0) {
             return;
@@ -1578,18 +1578,24 @@ private:
         host_event.wait_and_throw();
     }
 
-    void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
-                                      const float max_distance) const {
+    /// @brief Template helper for extracting points with prefix sum or fetch_add
+    /// @tparam GenerateFlagsFunc Functor for generating valid flags (NVIDIA path)
+    /// @tparam WriteOutputFunc Functor for writing output data (NVIDIA path)
+    /// @tparam FetchAddFunc Functor for fetch_add path (non-NVIDIA)
+    template<typename GenerateFlagsFunc, typename WriteOutputFunc, typename FetchAddFunc>
+    void extract_points_with_prefix_sum(PointCloudShared& result, size_t estimated_size,
+                                        GenerateFlagsFunc&& generate_flags_func,
+                                        WriteOutputFunc&& write_output_func, FetchAddFunc&& fetch_add_func) {
         const size_t N = this->capacity_;
         const bool is_nvidia = this->queue_.is_nvidia();
         size_t filtered_voxel_count = 0;
 
-        result.resize_points(this->voxel_num_);
+        result.resize_points(estimated_size);
         if (this->has_rgb_data_) {
-            result.resize_rgb(this->voxel_num_);
+            result.resize_rgb(estimated_size);
         }
         if (this->has_intensity_data_) {
-            result.resize_intensities(this->voxel_num_);
+            result.resize_intensities(estimated_size);
         }
 
         if (is_nvidia) {
@@ -1599,196 +1605,20 @@ private:
                 this->valid_flags_ptr_->resize(N);
             }
 
-            this->queue_.ptr
-                ->submit([&](sycl::handler& h) {
-                    const size_t work_group_size = this->queue_.get_work_group_size();
-                    const size_t global_size = this->queue_.get_global_size(N);
-
-                    auto valid_flags = this->valid_flags_ptr_->data();
-                    auto key_ptr = this->key_ptr_->data();
-                    auto core_ptr = this->core_data_ptr_->data();
-
-                    const float threshold = this->occupancy_threshold_log_odds_;
-                    const float sensor_x = sensor_position.x();
-                    const float sensor_y = sensor_position.y();
-                    const float sensor_z = sensor_position.z();
-                    const float max_dist = max_distance;
-
-                    h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                        const size_t i = item.get_global_id(0);
-                        if (i >= N) {
-                            return;
-                        }
-
-                        const uint64_t key = key_ptr[i];
-                        if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) {
-                            valid_flags[i] = 0U;
-                            return;
-                        }
-
-                        const VoxelCoreData& core = core_ptr[i];
-                        if (core.hit_count == 0U || core.log_odds < threshold) {
-                            valid_flags[i] = 0U;
-                            return;
-                        }
-
-                        const float inv_count = 1.0f / static_cast<float>(core.hit_count);
-                        const float cx = core.sum_x * inv_count;
-                        const float cy = core.sum_y * inv_count;
-                        const float cz = core.sum_z * inv_count;
-
-                        const float dx = sycl::fabs(cx - sensor_x);
-                        const float dy = sycl::fabs(cy - sensor_y);
-                        const float dz = sycl::fabs(cz - sensor_z);
-                        if (sycl::fmax(sycl::fmax(dx, dy), dz) > max_dist) {
-                            valid_flags[i] = 0U;
-                            return;
-                        }
-
-                        valid_flags[i] = 1U;
-                    });
-                })
-                .wait_and_throw();
+            this->queue_.ptr->submit(generate_flags_func).wait_and_throw();
 
             // Step 2: Compute prefix sum
+            // Prefix sum guarantees: when valid_flags[i] == 1, prefix_sum_ptr[i] >= 1
+            // The output index is calculated as prefix_sum_ptr[i] - 1 for inclusive scan results
             filtered_voxel_count = this->prefix_sum_->compute(*this->valid_flags_ptr_);
 
             // Step 3: Write output using prefix sum indices
-            this->queue_.ptr
-                ->submit([&](sycl::handler& h) {
-                    const size_t work_group_size = this->queue_.get_work_group_size();
-                    const size_t global_size = this->queue_.get_global_size(N);
-
-                    auto valid_flags = this->valid_flags_ptr_->data();
-                    auto prefix_sum_ptr = this->prefix_sum_->get_prefix_sum().data();
-                    auto key_ptr = this->key_ptr_->data();
-                    auto core_ptr = this->core_data_ptr_->data();
-                    auto color_ptr = this->color_data_ptr_->data();
-                    auto intensity_data_ptr = this->intensity_data_ptr_->data();
-
-                    auto points_ptr = result.points_ptr();
-                    auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
-                    auto intensity_ptr =
-                        this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
-
-                    const bool has_rgb = this->has_rgb_data_;
-                    const bool has_intensity = this->has_intensity_data_;
-                    const float threshold = this->occupancy_threshold_log_odds_;
-
-                    h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-                        const size_t i = item.get_global_id(0);
-                        if (i >= N || valid_flags[i] == 0U) {
-                            return;
-                        }
-
-                        const size_t output_idx = prefix_sum_ptr[i] - 1;
-                        const VoxelCoreData& core = core_ptr[i];
-                        const float inv_count = 1.0f / static_cast<float>(core.hit_count);
-                        const float cx = core.sum_x * inv_count;
-                        const float cy = core.sum_y * inv_count;
-                        const float cz = core.sum_z * inv_count;
-
-                        points_ptr[output_idx].x() = cx;
-                        points_ptr[output_idx].y() = cy;
-                        points_ptr[output_idx].z() = cz;
-                        points_ptr[output_idx].w() = 1.0f;
-
-                        if (has_rgb && rgb_ptr) {
-                            const VoxelColorData& color = color_ptr[i];
-                            if (core.hit_count > 0U) {
-                                rgb_ptr[output_idx].x() = color.sum_r * inv_count;
-                                rgb_ptr[output_idx].y() = color.sum_g * inv_count;
-                                rgb_ptr[output_idx].z() = color.sum_b * inv_count;
-                                rgb_ptr[output_idx].w() = color.sum_a * inv_count;
-                            } else {
-                                rgb_ptr[output_idx].setZero();
-                            }
-                        }
-
-                        if (has_intensity && intensity_ptr) {
-                            const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
-                            if (core.hit_count > 0U) {
-                                intensity_ptr[output_idx] = intensity_data.sum_intensity * inv_count;
-                            } else {
-                                intensity_ptr[output_idx] = 0.0f;
-                            }
-                        }
-                    });
-                })
-                .wait_and_throw();
+            this->queue_.ptr->submit(write_output_func).wait_and_throw();
         } else {
-            // Non-NVIDIA: Use fetch_add approach (original implementation)
+            // Non-NVIDIA: Use fetch_add approach
             shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
-
-            auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-                auto key_ptr = this->key_ptr_->data();
-                auto core_ptr = this->core_data_ptr_->data();
-                auto color_ptr = this->color_data_ptr_->data();
-                auto intensity_data_ptr = this->intensity_data_ptr_->data();
-
-                auto points_ptr = result.points_ptr();
-                auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
-                auto intensity_ptr = this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
-
-                const float threshold = this->occupancy_threshold_log_odds_;
-                const float sensor_x = sensor_position.x();
-                const float sensor_y = sensor_position.y();
-                const float sensor_z = sensor_position.z();
-                const float max_dist = max_distance;
-                const bool has_rgb = this->has_rgb_data_;
-                const bool has_intensity = this->has_intensity_data_;
-                auto counter_ptr = counter.data();
-
-                h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
-                    const size_t i = idx[0];
-                    if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
-                        return;
-                    }
-
-                    const VoxelCoreData& core = core_ptr[i];
-                    if (core.hit_count == 0U || core.log_odds < threshold) {
-                        return;
-                    }
-
-                    const float inv_count = 1.0f / static_cast<float>(core.hit_count);
-                    const float cx = core.sum_x * inv_count;
-                    const float cy = core.sum_y * inv_count;
-                    const float cz = core.sum_z * inv_count;
-
-                    const float dx = sycl::fabs(cx - sensor_x);
-                    const float dy = sycl::fabs(cy - sensor_y);
-                    const float dz = sycl::fabs(cz - sensor_z);
-                    if (sycl::fmax(sycl::fmax(dx, dy), dz) > max_dist) {
-                        return;
-                    }
-
-                    const uint32_t index = atomic_ref_uint32_t(counter_ptr[0]).fetch_add(1U);
-                    points_ptr[index].x() = cx;
-                    points_ptr[index].y() = cy;
-                    points_ptr[index].z() = cz;
-                    points_ptr[index].w() = 1.0f;
-
-                    if (has_rgb && rgb_ptr) {
-                        const VoxelColorData& color = color_ptr[i];
-                        if (core.hit_count > 0U) {
-                            rgb_ptr[index].x() = color.sum_r * inv_count;
-                            rgb_ptr[index].y() = color.sum_g * inv_count;
-                            rgb_ptr[index].z() = color.sum_b * inv_count;
-                            rgb_ptr[index].w() = color.sum_a * inv_count;
-                        } else {
-                            rgb_ptr[index].setZero();
-                        }
-                    }
-
-                    if (has_intensity && intensity_ptr) {
-                        const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
-                        if (core.hit_count > 0U) {
-                            intensity_ptr[index] = intensity_data.sum_intensity * inv_count;
-                        } else {
-                            intensity_ptr[index] = 0.0f;
-                        }
-                    }
-                });
+            auto event = this->queue_.ptr->submit([&, fetch_add_func](sycl::handler& h) {
+                fetch_add_func(h, counter.data());
             });
             event.wait_and_throw();
             filtered_voxel_count = static_cast<size_t>(counter.at(0));
@@ -1802,6 +1632,195 @@ private:
         if (this->has_intensity_data_) {
             result.resize_intensities(filtered_voxel_count);
         }
+    }
+
+    void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
+                                      const float max_distance) {
+        const size_t N = this->capacity_;
+
+        // Lambda for generating valid flags (NVIDIA path)
+        auto generate_flags = [&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+
+            auto valid_flags = this->valid_flags_ptr_->data();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+
+            const float threshold = this->occupancy_threshold_log_odds_;
+            const float sensor_x = sensor_position.x();
+            const float sensor_y = sensor_position.y();
+            const float sensor_z = sensor_position.z();
+            const float max_dist = max_distance;
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) {
+                    return;
+                }
+
+                const uint64_t key = key_ptr[i];
+                if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) {
+                    valid_flags[i] = 0U;
+                    return;
+                }
+
+                const VoxelCoreData& core = core_ptr[i];
+                if (core.hit_count == 0U || core.log_odds < threshold) {
+                    valid_flags[i] = 0U;
+                    return;
+                }
+
+                const float inv_count = 1.0f / static_cast<float>(core.hit_count);
+                const float cx = core.sum_x * inv_count;
+                const float cy = core.sum_y * inv_count;
+                const float cz = core.sum_z * inv_count;
+
+                const float dx = sycl::fabs(cx - sensor_x);
+                const float dy = sycl::fabs(cy - sensor_y);
+                const float dz = sycl::fabs(cz - sensor_z);
+                if (sycl::fmax(sycl::fmax(dx, dy), dz) > max_dist) {
+                    valid_flags[i] = 0U;
+                    return;
+                }
+
+                valid_flags[i] = 1U;
+            });
+        };
+
+        // Lambda for writing output (NVIDIA path)
+        auto write_output = [&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+
+            auto valid_flags = this->valid_flags_ptr_->data();
+            auto prefix_sum_ptr = this->prefix_sum_->get_prefix_sum().data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_data_ptr = this->intensity_data_ptr_->data();
+
+            auto points_ptr = result.points_ptr();
+            auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
+            auto intensity_ptr =
+                this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
+
+            const bool has_rgb = this->has_rgb_data_;
+            const bool has_intensity = this->has_intensity_data_;
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N || valid_flags[i] == 0U) {
+                    return;
+                }
+
+                const size_t output_idx = prefix_sum_ptr[i] - 1;
+                const VoxelCoreData& core = core_ptr[i];
+                const float inv_count = 1.0f / static_cast<float>(core.hit_count);
+                const float cx = core.sum_x * inv_count;
+                const float cy = core.sum_y * inv_count;
+                const float cz = core.sum_z * inv_count;
+
+                points_ptr[output_idx].x() = cx;
+                points_ptr[output_idx].y() = cy;
+                points_ptr[output_idx].z() = cz;
+                points_ptr[output_idx].w() = 1.0f;
+
+                if (has_rgb && rgb_ptr) {
+                    const VoxelColorData& color = color_ptr[i];
+                    if (core.hit_count > 0U) {
+                        rgb_ptr[output_idx].x() = color.sum_r * inv_count;
+                        rgb_ptr[output_idx].y() = color.sum_g * inv_count;
+                        rgb_ptr[output_idx].z() = color.sum_b * inv_count;
+                        rgb_ptr[output_idx].w() = color.sum_a * inv_count;
+                    } else {
+                        rgb_ptr[output_idx].setZero();
+                    }
+                }
+
+                if (has_intensity && intensity_ptr) {
+                    const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
+                    if (core.hit_count > 0U) {
+                        intensity_ptr[output_idx] = intensity_data.sum_intensity * inv_count;
+                    } else {
+                        intensity_ptr[output_idx] = 0.0f;
+                    }
+                }
+            });
+        };
+
+        // Lambda for fetch_add path (non-NVIDIA)
+        auto fetch_add_kernel = [&](sycl::handler& h, uint32_t* counter_ptr) {
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_data_ptr = this->intensity_data_ptr_->data();
+
+            auto points_ptr = result.points_ptr();
+            auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
+            auto intensity_ptr = this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
+
+            const float threshold = this->occupancy_threshold_log_odds_;
+            const float sensor_x = sensor_position.x();
+            const float sensor_y = sensor_position.y();
+            const float sensor_z = sensor_position.z();
+            const float max_dist = max_distance;
+            const bool has_rgb = this->has_rgb_data_;
+            const bool has_intensity = this->has_intensity_data_;
+
+            h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
+                const size_t i = idx[0];
+                if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
+                    return;
+                }
+
+                const VoxelCoreData& core = core_ptr[i];
+                if (core.hit_count == 0U || core.log_odds < threshold) {
+                    return;
+                }
+
+                const float inv_count = 1.0f / static_cast<float>(core.hit_count);
+                const float cx = core.sum_x * inv_count;
+                const float cy = core.sum_y * inv_count;
+                const float cz = core.sum_z * inv_count;
+
+                const float dx = sycl::fabs(cx - sensor_x);
+                const float dy = sycl::fabs(cy - sensor_y);
+                const float dz = sycl::fabs(cz - sensor_z);
+                if (sycl::fmax(sycl::fmax(dx, dy), dz) > max_dist) {
+                    return;
+                }
+
+                const uint32_t index = atomic_ref_uint32_t(counter_ptr[0]).fetch_add(1U);
+                points_ptr[index].x() = cx;
+                points_ptr[index].y() = cy;
+                points_ptr[index].z() = cz;
+                points_ptr[index].w() = 1.0f;
+
+                if (has_rgb && rgb_ptr) {
+                    const VoxelColorData& color = color_ptr[i];
+                    if (core.hit_count > 0U) {
+                        rgb_ptr[index].x() = color.sum_r * inv_count;
+                        rgb_ptr[index].y() = color.sum_g * inv_count;
+                        rgb_ptr[index].z() = color.sum_b * inv_count;
+                        rgb_ptr[index].w() = color.sum_a * inv_count;
+                    } else {
+                        rgb_ptr[index].setZero();
+                    }
+                }
+
+                if (has_intensity && intensity_ptr) {
+                    const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
+                    if (core.hit_count > 0U) {
+                        intensity_ptr[index] = intensity_data.sum_intensity * inv_count;
+                    } else {
+                        intensity_ptr[index] = 0.0f;
+                    }
+                }
+            });
+        };
+
+        this->extract_points_with_prefix_sum(result, this->voxel_num_, generate_flags, write_output,
+                                             fetch_add_kernel);
     }
 
     size_t compute_work_group_size() const {
