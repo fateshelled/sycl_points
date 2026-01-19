@@ -655,8 +655,8 @@ private:
                 const auto color_ptr = this->color_data_ptr_->data();
                 const auto intensity_ptr = this->intensity_data_ptr_->data();
                 const auto last_update_ptr = this->last_update_ptr_->data();
-                auto clear_function = [&](uint64_t& key, VoxelCoreData& core, VoxelColorData& color,
-                                          VoxelIntensityData& intensity, uint32_t& last_update) {
+                auto clear_function = [](uint64_t& key, VoxelCoreData& core, VoxelColorData& color,
+                                         VoxelIntensityData& intensity, uint32_t& last_update) {
                     key = VoxelConstants::invalid_coord;
                     core = VoxelCoreData{};
                     color = VoxelColorData{};
