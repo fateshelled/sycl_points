@@ -248,22 +248,20 @@ private:
     };
     static_assert(sizeof(VoxelCoreData) == 16, "VoxelCoreData must be 16 bytes for optimal memory layout");
 
-    /// @brief Color data for RGB information (20 bytes)
+    /// @brief Color data for RGB information (16 bytes)
     struct VoxelColorData {
         float sum_r = 0.0f;
         float sum_g = 0.0f;
         float sum_b = 0.0f;
         float sum_a = 0.0f;
-        uint32_t color_count = 0U;
     };
-    static_assert(sizeof(VoxelColorData) == 20, "VoxelColorData must be 20 bytes for optimal memory layout");
+    static_assert(sizeof(VoxelColorData) == 16, "VoxelColorData must be 16 bytes for optimal memory layout");
 
-    /// @brief Intensity data for reflectivity information (8 bytes)
+    /// @brief Intensity data for reflectivity information (4 bytes)
     struct VoxelIntensityData {
         float sum_intensity = 0.0f;
-        uint32_t intensity_count = 0U;
     };
-    static_assert(sizeof(VoxelIntensityData) == 8, "VoxelIntensityData must be 8 bytes for optimal memory layout");
+    static_assert(sizeof(VoxelIntensityData) == 4, "VoxelIntensityData must be 4 bytes for optimal memory layout");
 
     /// @brief Accumulator types for local workgroup reduction.
     /// @note These are type aliases to the corresponding Data structs since they share
@@ -281,10 +279,11 @@ private:
     };
 
     SYCL_EXTERNAL static void atomic_add_voxel_data(const VoxelCoreAccumulator& core_src,
-                                                     const VoxelColorAccumulator& color_src,
-                                                     const VoxelIntensityAccumulator& intensity_src,
-                                                     VoxelCoreData& core_dst, VoxelColorData& color_dst,
-                                                     VoxelIntensityData& intensity_dst, bool has_rgb, bool has_intensity) {
+                                                    const VoxelColorAccumulator& color_src,
+                                                    const VoxelIntensityAccumulator& intensity_src,
+                                                    VoxelCoreData& core_dst, VoxelColorData& color_dst,
+                                                    VoxelIntensityData& intensity_dst, bool has_rgb,
+                                                    bool has_intensity) {
         // Core data - position accumulation
         atomic_ref_float(core_dst.sum_x).fetch_add(core_src.sum_x);
         atomic_ref_float(core_dst.sum_y).fetch_add(core_src.sum_y);
@@ -292,18 +291,16 @@ private:
         atomic_ref_uint32_t(core_dst.count).fetch_add(core_src.count);
 
         // Color data (only if present)
-        if (has_rgb && color_src.color_count > 0U) {
+        if (has_rgb) {
             atomic_ref_float(color_dst.sum_r).fetch_add(color_src.sum_r);
             atomic_ref_float(color_dst.sum_g).fetch_add(color_src.sum_g);
             atomic_ref_float(color_dst.sum_b).fetch_add(color_src.sum_b);
             atomic_ref_float(color_dst.sum_a).fetch_add(color_src.sum_a);
-            atomic_ref_uint32_t(color_dst.color_count).fetch_add(color_src.color_count);
         }
 
         // Intensity data (only if present)
-        if (has_intensity && intensity_src.intensity_count > 0U) {
+        if (has_intensity) {
             atomic_ref_float(intensity_dst.sum_intensity).fetch_add(intensity_src.sum_intensity);
-            atomic_ref_uint32_t(intensity_dst.intensity_count).fetch_add(intensity_src.intensity_count);
         }
     }
 
@@ -322,26 +319,21 @@ private:
             pt_output[output_idx].y() = core.sum_y * inv_count;
             pt_output[output_idx].z() = core.sum_z * inv_count;
             pt_output[output_idx].w() = 1.0f;
+            if (rgb_output) {
+                rgb_output[output_idx].x() = color.sum_r * inv_count;
+                rgb_output[output_idx].y() = color.sum_g * inv_count;
+                rgb_output[output_idx].z() = color.sum_b * inv_count;
+                rgb_output[output_idx].w() = color.sum_a * inv_count;
+            }
+            if (intensity_output) {
+                intensity_output[output_idx] = intensity.sum_intensity * inv_count;
+            }
         } else {
             pt_output[output_idx].setZero();
-        }
-        if (rgb_output) {
-            if (color.color_count > 0U) {
-                const float inv_color_count = 1.0f / static_cast<float>(color.color_count);
-                rgb_output[output_idx].x() = color.sum_r * inv_color_count;
-                rgb_output[output_idx].y() = color.sum_g * inv_color_count;
-                rgb_output[output_idx].z() = color.sum_b * inv_color_count;
-                rgb_output[output_idx].w() = color.sum_a * inv_color_count;
-            } else {
+            if (rgb_output) {
                 rgb_output[output_idx].setZero();
             }
-        }
-
-        if (intensity_output) {
-            if (intensity.intensity_count > 0U) {
-                const float inv_intensity_count = 1.0f / static_cast<float>(intensity.intensity_count);
-                intensity_output[output_idx] = intensity.sum_intensity * inv_intensity_count;
-            } else {
+            if (intensity_output) {
                 intensity_output[output_idx] = 0.0f;
             }
         }
@@ -457,7 +449,8 @@ private:
     SYCL_EXTERNAL static void global_reduction(const VoxelLocalData& data, uint64_t* key_ptr, VoxelCoreData* core_ptr,
                                                VoxelColorData* color_ptr, VoxelIntensityData* intensity_ptr,
                                                uint32_t current, uint32_t* last_update_ptr, size_t max_probe,
-                                               size_t capacity, Func voxel_num_counter, bool has_rgb, bool has_intensity) {
+                                               size_t capacity, Func voxel_num_counter, bool has_rgb,
+                                               bool has_intensity) {
         const uint64_t voxel_hash = data.voxel_idx;
         if (voxel_hash == VoxelConstants::invalid_coord) return;
 
@@ -550,10 +543,8 @@ private:
                 entry.color_acc.sum_g = 0.0f;
                 entry.color_acc.sum_b = 0.0f;
                 entry.color_acc.sum_a = 0.0f;
-                entry.color_acc.color_count = 0U;
 
                 entry.intensity_acc.sum_intensity = 0.0f;
-                entry.intensity_acc.intensity_count = 0U;
 
                 if (has_rgb && rgb_ptr) {
                     const auto color = rgb_ptr[idx];
@@ -561,27 +552,27 @@ private:
                     entry.color_acc.sum_g = color.y();
                     entry.color_acc.sum_b = color.z();
                     entry.color_acc.sum_a = color.w();
-                    entry.color_acc.color_count = 1U;
                 }
 
                 if (has_intensity && intensity_ptr) {
                     entry.intensity_acc.sum_intensity = intensity_ptr[idx];
-                    entry.intensity_acc.intensity_count = 1U;
                 }
             };
 
-            auto combine_entry = [](VoxelLocalData& dst, const VoxelLocalData& src) {
+            auto combine_entry = [=](VoxelLocalData& dst, const VoxelLocalData& src) {
                 dst.core_acc.sum_x += src.core_acc.sum_x;
                 dst.core_acc.sum_y += src.core_acc.sum_y;
                 dst.core_acc.sum_z += src.core_acc.sum_z;
                 dst.core_acc.count += src.core_acc.count;
-                dst.color_acc.sum_r += src.color_acc.sum_r;
-                dst.color_acc.sum_g += src.color_acc.sum_g;
-                dst.color_acc.sum_b += src.color_acc.sum_b;
-                dst.color_acc.sum_a += src.color_acc.sum_a;
-                dst.color_acc.color_count += src.color_acc.color_count;
-                dst.intensity_acc.sum_intensity += src.intensity_acc.sum_intensity;
-                dst.intensity_acc.intensity_count += src.intensity_acc.intensity_count;
+                if (has_rgb) {
+                    dst.color_acc.sum_r += src.color_acc.sum_r;
+                    dst.color_acc.sum_g += src.color_acc.sum_g;
+                    dst.color_acc.sum_b += src.color_acc.sum_b;
+                    dst.color_acc.sum_a += src.color_acc.sum_a;
+                }
+                if (has_intensity) {
+                    dst.intensity_acc.sum_intensity += src.intensity_acc.sum_intensity;
+                }
             };
 
             auto reset_entry = [](VoxelLocalData& entry) {
@@ -614,9 +605,10 @@ private:
                     if (global_id >= N) return;
 
                     // Reduction on global memory
-                    global_reduction(local_voxel_data[local_id], key_ptr, core_ptr, color_ptr, intensity_data_ptr, current,
-                                     last_update_ptr, max_probe, cp, [&](uint32_t num) { voxel_num_arg += num; }, has_rgb,
-                                     has_intensity);
+                    global_reduction(
+                        local_voxel_data[local_id], key_ptr, core_ptr, color_ptr, intensity_data_ptr, current,
+                        last_update_ptr, max_probe, cp, [&](uint32_t num) { voxel_num_arg += num; }, has_rgb,
+                        has_intensity);
                 });
             } else {
                 auto voxel_num_ptr = voxel_num_vec.data();
@@ -634,10 +626,11 @@ private:
                     if (global_id >= N) return;
 
                     // Reduction on global memory
-                    global_reduction(local_voxel_data[local_id], key_ptr, core_ptr, color_ptr, intensity_data_ptr, current,
-                                     last_update_ptr, max_probe, cp,
-                                     [&](uint32_t num) { atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(num); }, has_rgb,
-                                     has_intensity);
+                    global_reduction(
+                        local_voxel_data[local_id], key_ptr, core_ptr, color_ptr, intensity_data_ptr, current,
+                        last_update_ptr, max_probe, cp,
+                        [&](uint32_t num) { atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(num); }, has_rgb,
+                        has_intensity);
                 });
             }
         });
@@ -773,17 +766,19 @@ private:
                         data.core_acc.sum_y = old_core[i].sum_y;
                         data.core_acc.sum_z = old_core[i].sum_z;
                         data.core_acc.count = old_core[i].count;
-                        data.color_acc.sum_r = old_color[i].sum_r;
-                        data.color_acc.sum_g = old_color[i].sum_g;
-                        data.color_acc.sum_b = old_color[i].sum_b;
-                        data.color_acc.sum_a = old_color[i].sum_a;
-                        data.color_acc.color_count = old_color[i].color_count;
-                        data.intensity_acc.sum_intensity = old_intensity[i].sum_intensity;
-                        data.intensity_acc.intensity_count = old_intensity[i].intensity_count;
+                        if (has_rgb) {
+                            data.color_acc.sum_r = old_color[i].sum_r;
+                            data.color_acc.sum_g = old_color[i].sum_g;
+                            data.color_acc.sum_b = old_color[i].sum_b;
+                            data.color_acc.sum_a = old_color[i].sum_a;
+                        }
+                        if (has_intensity) {
+                            data.intensity_acc.sum_intensity = old_intensity[i].sum_intensity;
+                        }
 
-                        global_reduction(data, new_key, new_core, new_color, new_intensity, old_last_update[i],
-                                         new_last_update, max_probe, new_cp, [&](uint32_t num) { voxel_num_arg += num; },
-                                         has_rgb, has_intensity);
+                        global_reduction(
+                            data, new_key, new_core, new_color, new_intensity, old_last_update[i], new_last_update,
+                            max_probe, new_cp, [&](uint32_t num) { voxel_num_arg += num; }, has_rgb, has_intensity);
                     });
                 } else {
                     auto voxel_num_ptr = voxel_num_vec.data();
@@ -801,18 +796,21 @@ private:
                         data.core_acc.sum_y = old_core[i].sum_y;
                         data.core_acc.sum_z = old_core[i].sum_z;
                         data.core_acc.count = old_core[i].count;
-                        data.color_acc.sum_r = old_color[i].sum_r;
-                        data.color_acc.sum_g = old_color[i].sum_g;
-                        data.color_acc.sum_b = old_color[i].sum_b;
-                        data.color_acc.sum_a = old_color[i].sum_a;
-                        data.color_acc.color_count = old_color[i].color_count;
-                        data.intensity_acc.sum_intensity = old_intensity[i].sum_intensity;
-                        data.intensity_acc.intensity_count = old_intensity[i].intensity_count;
+                        if (has_rgb) {
+                            data.color_acc.sum_r = old_color[i].sum_r;
+                            data.color_acc.sum_g = old_color[i].sum_g;
+                            data.color_acc.sum_b = old_color[i].sum_b;
+                            data.color_acc.sum_a = old_color[i].sum_a;
+                        }
+                        if (has_intensity) {
+                            data.intensity_acc.sum_intensity = old_intensity[i].sum_intensity;
+                        }
 
-                        global_reduction(data, new_key, new_core, new_color, new_intensity, old_last_update[i],
-                                         new_last_update, max_probe, new_cp,
-                                         [&](uint32_t num) { atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(num); }, has_rgb,
-                                         has_intensity);
+                        global_reduction(
+                            data, new_key, new_core, new_color, new_intensity, old_last_update[i], new_last_update,
+                            max_probe, new_cp,
+                            [&](uint32_t num) { atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(num); }, has_rgb,
+                            has_intensity);
                     });
                 }
             })
@@ -857,8 +855,8 @@ private:
                         const auto key = key_ptr[global_id];
                         const auto core = core_ptr[global_id];
 
-                        if (!should_include_voxel(key, core, min_num_point, bbox_min_x, bbox_min_y, bbox_min_z, bbox_max_x,
-                                                  bbox_max_y, bbox_max_z)) {
+                        if (!should_include_voxel(key, core, min_num_point, bbox_min_x, bbox_min_y, bbox_min_z,
+                                                  bbox_max_x, bbox_max_y, bbox_max_z)) {
                             valid_flags[global_id] = 0U;
                             return;
                         }
@@ -922,8 +920,8 @@ private:
                         const auto key = key_ptr[i];
                         const auto core = core_ptr[i];
 
-                        if (!should_include_voxel(key, core, min_num_point, bbox_min_x, bbox_min_y, bbox_min_z, bbox_max_x,
-                                                  bbox_max_y, bbox_max_z)) {
+                        if (!should_include_voxel(key, core, min_num_point, bbox_min_x, bbox_min_y, bbox_min_z,
+                                                  bbox_max_x, bbox_max_y, bbox_max_z)) {
                             return;
                         }
 
