@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -35,10 +34,6 @@ public:
     OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
         this->allocate_storage(this->capacity_);
-
-        this->prefix_sum_ = std::make_shared<common::PrefixSum>(this->queue_);
-        this->valid_flags_ptr_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
-
         this->clear();
     }
 
@@ -164,13 +159,8 @@ public:
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @param max_distance Maximum extract L-infinity distance in meters.
-    /// @note Thread-safe: Multiple threads can safely call this method concurrently.
-    /// @note This method is logically const (does not modify the map state),
-    ///       but uses mutable internal buffers for GPU computation efficiency.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
                                  const float max_distance = 100.0f) const {
-        std::lock_guard<std::mutex> lock(extract_mutex_);
-
         result.resize_points(0);
         result.resize_rgb(0);
         result.resize_intensities(0);
@@ -188,13 +178,8 @@ public:
     /// @param max_distance Maximum visibility distance in meters.
     /// @param horizontal_fov Horizontal field of view in radians.
     /// @param vertical_fov Vertical field of view in radians.
-    /// @note Thread-safe: Multiple threads can safely call this method concurrently.
-    /// @note This method is logically const (does not modify the map state),
-    ///       but uses mutable internal buffers for GPU computation efficiency.
     void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
                                 float horizontal_fov, float vertical_fov) const {
-        std::lock_guard<std::mutex> lock(extract_mutex_);
-
         result.resize_points(0);
         if (this->voxel_num_ == 0) {
             return;
@@ -205,12 +190,16 @@ public:
 
         const size_t N = this->capacity_;
 
+        // Create local buffers for this extraction operation
+        shared_vector<uint8_t> valid_flags(*this->queue_.ptr);
+        common::PrefixSum prefix_sum(this->queue_);
+
         // Lambda for generating valid flags (NVIDIA path)
         auto generate_flags = [&](sycl::handler& h) {
             const size_t work_group_size = this->queue_.get_work_group_size();
             const size_t global_size = this->queue_.get_global_size(N);
 
-            auto valid_flags = this->valid_flags_ptr_->data();
+            auto valid_flags_ptr = valid_flags.data();
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
 
@@ -238,13 +227,13 @@ public:
 
                 const uint64_t current_key = key_ptr[i];
                 if (current_key == VoxelConstants::invalid_coord || current_key == VoxelConstants::deleted_coord) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
                 const VoxelCoreData& core = core_ptr[i];
                 if (core.hit_count == 0U || core.log_odds < occupancy_threshold) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
@@ -258,7 +247,7 @@ public:
                 const float dz = cz - sensor_z;
                 const float dist_sq = dx * dx + dy * dy + dz * dz;
                 if (dist_sq > max_dist_sq) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
@@ -267,7 +256,7 @@ public:
                     eigen_utils::multiply<3, 3>(world_to_sensor_Mat.block<3, 3>(0, 0), Eigen::Vector3f{dx, dy, dz});
 
                 if (!include_backward && local_pt.x() <= 0.0f) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
@@ -281,7 +270,7 @@ public:
                     cos_horizontal = sycl::clamp(cos_horizontal, -1.0f, 1.0f);
                 }
                 if (cos_horizontal < cos_limit_horizontal) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
@@ -293,7 +282,7 @@ public:
                     cos_vertical = sycl::clamp(cos_vertical, -1.0f, 1.0f);
                 }
                 if (cos_vertical < cos_limit_vertical) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
@@ -342,11 +331,11 @@ public:
                 }
 
                 if (occluded) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
-                valid_flags[i] = 1U;
+                valid_flags_ptr[i] = 1U;
             });
         };
 
@@ -355,8 +344,8 @@ public:
             const size_t work_group_size = this->queue_.get_work_group_size();
             const size_t global_size = this->queue_.get_global_size(N);
 
-            auto valid_flags = this->valid_flags_ptr_->data();
-            auto prefix_sum_ptr = this->prefix_sum_->get_prefix_sum().data();
+            auto valid_flags_ptr = valid_flags.data();
+            auto prefix_sum_ptr = prefix_sum.get_prefix_sum().data();
             auto core_ptr = this->core_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
             auto intensity_data_ptr = this->intensity_data_ptr_->data();
@@ -371,7 +360,7 @@ public:
 
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
-                if (i >= N || valid_flags[i] == 0U) {
+                if (i >= N || valid_flags_ptr[i] == 0U) {
                     return;
                 }
 
@@ -575,8 +564,8 @@ public:
             });
         };
 
-        this->extract_points_with_prefix_sum(result, this->voxel_num_, generate_flags, write_output,
-                                             fetch_add_kernel);
+        this->extract_points_with_prefix_sum(result, this->voxel_num_, valid_flags, prefix_sum, generate_flags,
+                                             write_output, fetch_add_kernel);
     }
 
     /// @brief Compute the overlap ratio between the map and an input point cloud.
@@ -1559,6 +1548,7 @@ private:
     /// @tparam FetchAddFunc Functor for fetch_add path (non-NVIDIA)
     template<typename GenerateFlagsFunc, typename WriteOutputFunc, typename FetchAddFunc>
     void extract_points_with_prefix_sum(PointCloudShared& result, size_t estimated_size,
+                                        shared_vector<uint8_t>& valid_flags, common::PrefixSum& prefix_sum,
                                         GenerateFlagsFunc&& generate_flags_func,
                                         WriteOutputFunc&& write_output_func, FetchAddFunc&& fetch_add_func) const {
         const size_t N = this->capacity_;
@@ -1568,8 +1558,8 @@ private:
         if (is_nvidia) {
             // NVIDIA GPU: Use prefix sum approach
             // Step 1: Compute valid flags
-            if (this->valid_flags_ptr_->size() < N) {
-                this->valid_flags_ptr_->resize(N);
+            if (valid_flags.size() < N) {
+                valid_flags.resize(N);
             }
 
             this->queue_.ptr->submit(generate_flags_func).wait_and_throw();
@@ -1581,7 +1571,7 @@ private:
             // - Output index: prefix_sum_ptr[i] - 1 maps to the compact output array (0-based)
             // Example: valid_flags = [0,1,0,1,1] → prefix_sum = [0,1,1,2,3]
             //          Output indices at positions 1,3,4 map to compact array indices 0,1,2
-            filtered_voxel_count = this->prefix_sum_->compute(*this->valid_flags_ptr_);
+            filtered_voxel_count = prefix_sum.compute(valid_flags);
 
             // Step 3: Allocate output buffers with exact size
             result.resize_points(filtered_voxel_count);
@@ -1627,12 +1617,16 @@ private:
                                       const float max_distance) const {
         const size_t N = this->capacity_;
 
+        // Create local buffers for this extraction operation
+        shared_vector<uint8_t> valid_flags(*this->queue_.ptr);
+        common::PrefixSum prefix_sum(this->queue_);
+
         // Lambda for generating valid flags (NVIDIA path)
         auto generate_flags = [&](sycl::handler& h) {
             const size_t work_group_size = this->queue_.get_work_group_size();
             const size_t global_size = this->queue_.get_global_size(N);
 
-            auto valid_flags = this->valid_flags_ptr_->data();
+            auto valid_flags_ptr = valid_flags.data();
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
 
@@ -1650,13 +1644,13 @@ private:
 
                 const uint64_t key = key_ptr[i];
                 if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
                 const VoxelCoreData& core = core_ptr[i];
                 if (core.hit_count == 0U || core.log_odds < threshold) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
@@ -1669,11 +1663,11 @@ private:
                 const float dy = sycl::fabs(cy - sensor_y);
                 const float dz = sycl::fabs(cz - sensor_z);
                 if (sycl::fmax(sycl::fmax(dx, dy), dz) > max_dist) {
-                    valid_flags[i] = 0U;
+                    valid_flags_ptr[i] = 0U;
                     return;
                 }
 
-                valid_flags[i] = 1U;
+                valid_flags_ptr[i] = 1U;
             });
         };
 
@@ -1682,8 +1676,8 @@ private:
             const size_t work_group_size = this->queue_.get_work_group_size();
             const size_t global_size = this->queue_.get_global_size(N);
 
-            auto valid_flags = this->valid_flags_ptr_->data();
-            auto prefix_sum_ptr = this->prefix_sum_->get_prefix_sum().data();
+            auto valid_flags_ptr = valid_flags.data();
+            auto prefix_sum_ptr = prefix_sum.get_prefix_sum().data();
             auto core_ptr = this->core_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
             auto intensity_data_ptr = this->intensity_data_ptr_->data();
@@ -1698,7 +1692,7 @@ private:
 
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const size_t i = item.get_global_id(0);
-                if (i >= N || valid_flags[i] == 0U) {
+                if (i >= N || valid_flags_ptr[i] == 0U) {
                     return;
                 }
 
@@ -1808,8 +1802,8 @@ private:
             });
         };
 
-        this->extract_points_with_prefix_sum(result, this->voxel_num_, generate_flags, write_output,
-                                             fetch_add_kernel);
+        this->extract_points_with_prefix_sum(result, this->voxel_num_, valid_flags, prefix_sum, generate_flags,
+                                             write_output, fetch_add_kernel);
     }
 
     size_t compute_work_group_size() const {
@@ -1856,13 +1850,6 @@ private:
     shared_vector_ptr<VoxelCoreData> core_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelColorData> color_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
-
-    // Thread synchronization and temporary buffers for extract operations
-    // These are mutable because extract operations are logically const (read-only)
-    // but require temporary buffers as implementation details
-    mutable std::mutex extract_mutex_;
-    mutable shared_vector_ptr<uint8_t> valid_flags_ptr_ = nullptr;
-    mutable common::PrefixSum::Ptr prefix_sum_ = nullptr;
 };
 
 }  // namespace mapping
