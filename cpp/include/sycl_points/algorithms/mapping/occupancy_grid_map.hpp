@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -163,8 +164,13 @@ public:
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @param max_distance Maximum extract L-infinity distance in meters.
+    /// @note Thread-safe: Multiple threads can safely call this method concurrently.
+    /// @note This method is logically const (does not modify the map state),
+    ///       but uses mutable internal buffers for GPU computation efficiency.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
-                                 const float max_distance = 100.0f) {
+                                 const float max_distance = 100.0f) const {
+        std::lock_guard<std::mutex> lock(extract_mutex_);
+
         result.resize_points(0);
         result.resize_rgb(0);
         result.resize_intensities(0);
@@ -182,8 +188,13 @@ public:
     /// @param max_distance Maximum visibility distance in meters.
     /// @param horizontal_fov Horizontal field of view in radians.
     /// @param vertical_fov Vertical field of view in radians.
+    /// @note Thread-safe: Multiple threads can safely call this method concurrently.
+    /// @note This method is logically const (does not modify the map state),
+    ///       but uses mutable internal buffers for GPU computation efficiency.
     void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
-                                float horizontal_fov, float vertical_fov) {
+                                float horizontal_fov, float vertical_fov) const {
+        std::lock_guard<std::mutex> lock(extract_mutex_);
+
         result.resize_points(0);
         if (this->voxel_num_ == 0) {
             return;
@@ -1549,7 +1560,7 @@ private:
     template<typename GenerateFlagsFunc, typename WriteOutputFunc, typename FetchAddFunc>
     void extract_points_with_prefix_sum(PointCloudShared& result, size_t estimated_size,
                                         GenerateFlagsFunc&& generate_flags_func,
-                                        WriteOutputFunc&& write_output_func, FetchAddFunc&& fetch_add_func) {
+                                        WriteOutputFunc&& write_output_func, FetchAddFunc&& fetch_add_func) const {
         const size_t N = this->capacity_;
         const bool is_nvidia = this->queue_.is_nvidia();
         size_t filtered_voxel_count = 0;
@@ -1572,8 +1583,12 @@ private:
             this->queue_.ptr->submit(generate_flags_func).wait_and_throw();
 
             // Step 2: Compute prefix sum
-            // Prefix sum guarantees: when valid_flags[i] == 1, prefix_sum_ptr[i] >= 1
-            // The output index is calculated as prefix_sum_ptr[i] - 1 for inclusive scan results
+            // Prefix sum guarantees (inclusive scan):
+            // - prefix_sum_ptr[i] contains the count of all '1's up to and including index i
+            // - When valid_flags[i] == 1, prefix_sum_ptr[i] >= 1 is always true
+            // - Output index: prefix_sum_ptr[i] - 1 maps to the compact output array (0-based)
+            // Example: valid_flags = [0,1,0,1,1] → prefix_sum = [0,1,1,2,3]
+            //          Output indices at positions 1,3,4 map to compact array indices 0,1,2
             filtered_voxel_count = this->prefix_sum_->compute(*this->valid_flags_ptr_);
 
             // Step 3: Write output using prefix sum indices
@@ -1599,7 +1614,7 @@ private:
     }
 
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
-                                      const float max_distance) {
+                                      const float max_distance) const {
         const size_t N = this->capacity_;
 
         // Lambda for generating valid flags (NVIDIA path)
@@ -1832,8 +1847,12 @@ private:
     shared_vector_ptr<VoxelColorData> color_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
 
-    shared_vector_ptr<uint8_t> valid_flags_ptr_ = nullptr;
-    common::PrefixSum::Ptr prefix_sum_ = nullptr;
+    // Thread synchronization and temporary buffers for extract operations
+    // These are mutable because extract operations are logically const (read-only)
+    // but require temporary buffers as implementation details
+    mutable std::mutex extract_mutex_;
+    mutable shared_vector_ptr<uint8_t> valid_flags_ptr_ = nullptr;
+    mutable common::PrefixSum::Ptr prefix_sum_ = nullptr;
 };
 
 }  // namespace mapping
