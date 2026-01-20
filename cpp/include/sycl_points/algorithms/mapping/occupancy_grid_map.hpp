@@ -1565,14 +1565,6 @@ private:
         const bool is_nvidia = this->queue_.is_nvidia();
         size_t filtered_voxel_count = 0;
 
-        result.resize_points(estimated_size);
-        if (this->has_rgb_data_) {
-            result.resize_rgb(estimated_size);
-        }
-        if (this->has_intensity_data_) {
-            result.resize_intensities(estimated_size);
-        }
-
         if (is_nvidia) {
             // NVIDIA GPU: Use prefix sum approach
             // Step 1: Compute valid flags
@@ -1582,7 +1574,7 @@ private:
 
             this->queue_.ptr->submit(generate_flags_func).wait_and_throw();
 
-            // Step 2: Compute prefix sum
+            // Step 2: Compute prefix sum to determine output size
             // Prefix sum guarantees (inclusive scan):
             // - prefix_sum_ptr[i] contains the count of all '1's up to and including index i
             // - When valid_flags[i] == 1, prefix_sum_ptr[i] >= 1 is always true
@@ -1591,25 +1583,43 @@ private:
             //          Output indices at positions 1,3,4 map to compact array indices 0,1,2
             filtered_voxel_count = this->prefix_sum_->compute(*this->valid_flags_ptr_);
 
-            // Step 3: Write output using prefix sum indices
+            // Step 3: Allocate output buffers with exact size
+            result.resize_points(filtered_voxel_count);
+            if (this->has_rgb_data_) {
+                result.resize_rgb(filtered_voxel_count);
+            }
+            if (this->has_intensity_data_) {
+                result.resize_intensities(filtered_voxel_count);
+            }
+
+            // Step 4: Write output using prefix sum indices
             this->queue_.ptr->submit(write_output_func).wait_and_throw();
         } else {
             // Non-NVIDIA: Use fetch_add approach
+            // Pre-allocate to estimated size (required for fetch_add)
+            result.resize_points(estimated_size);
+            if (this->has_rgb_data_) {
+                result.resize_rgb(estimated_size);
+            }
+            if (this->has_intensity_data_) {
+                result.resize_intensities(estimated_size);
+            }
+
             shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
             auto event = this->queue_.ptr->submit([&, fetch_add_func](sycl::handler& h) {
                 fetch_add_func(h, counter.data());
             });
             event.wait_and_throw();
             filtered_voxel_count = static_cast<size_t>(counter.at(0));
-        }
 
-        // Resize to actual count
-        result.resize_points(filtered_voxel_count);
-        if (this->has_rgb_data_) {
-            result.resize_rgb(filtered_voxel_count);
-        }
-        if (this->has_intensity_data_) {
-            result.resize_intensities(filtered_voxel_count);
+            // Resize to actual count
+            result.resize_points(filtered_voxel_count);
+            if (this->has_rgb_data_) {
+                result.resize_rgb(filtered_voxel_count);
+            }
+            if (this->has_intensity_data_) {
+                result.resize_intensities(filtered_voxel_count);
+            }
         }
     }
 
