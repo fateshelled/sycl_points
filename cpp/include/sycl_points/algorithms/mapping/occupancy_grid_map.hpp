@@ -159,6 +159,8 @@ public:
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @param max_distance Maximum extract L-infinity distance in meters.
+    /// @note Thread-safe: Each call allocates independent local buffers, allowing
+    ///       concurrent calls without synchronization overhead or race conditions.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
                                  const float max_distance = 100.0f) const {
         result.resize_points(0);
@@ -178,6 +180,8 @@ public:
     /// @param max_distance Maximum visibility distance in meters.
     /// @param horizontal_fov Horizontal field of view in radians.
     /// @param vertical_fov Vertical field of view in radians.
+    /// @note Thread-safe: Each call allocates independent local buffers, allowing
+    ///       concurrent calls without synchronization overhead or race conditions.
     void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
                                 float horizontal_fov, float vertical_fov) const {
         result.resize_points(0);
@@ -1546,6 +1550,13 @@ private:
     /// @tparam GenerateFlagsFunc Functor for generating valid flags (NVIDIA path)
     /// @tparam WriteOutputFunc Functor for writing output data (NVIDIA path)
     /// @tparam FetchAddFunc Functor for fetch_add path (non-NVIDIA)
+    /// @param result Output point cloud to populate
+    /// @param estimated_size Estimated output size for pre-allocation (non-NVIDIA only)
+    /// @param valid_flags Local buffer for validity flags (per-call allocation)
+    /// @param prefix_sum Local prefix sum object (per-call allocation)
+    /// @param generate_flags_func Kernel for computing validity flags
+    /// @param write_output_func Kernel for writing compacted output
+    /// @param fetch_add_func Kernel for atomic indexing (non-NVIDIA path)
     template<typename GenerateFlagsFunc, typename WriteOutputFunc, typename FetchAddFunc>
     void extract_points_with_prefix_sum(PointCloudShared& result, size_t estimated_size,
                                         shared_vector<uint8_t>& valid_flags, common::PrefixSum& prefix_sum,
