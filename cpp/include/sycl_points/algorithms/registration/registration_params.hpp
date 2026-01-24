@@ -64,7 +64,7 @@ struct RegistrationParams {
         float robust_min_scale = 0.5f;    // minimum scale
     };
 
-    struct GausseNewton {
+    struct GaussNewton {
         float lambda = 1.0f;  // damping factor
     };
     struct LevenbergMarquardt {
