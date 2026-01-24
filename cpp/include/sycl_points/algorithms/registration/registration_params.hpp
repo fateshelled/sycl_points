@@ -96,7 +96,7 @@ struct RegistrationParams {
     PhotometricTerm photometric;
     RotationConstraint rotation_constraint;
     GenZ genz;
-    GausseNewton gn;
+    GaussNewton gn;
     LevenbergMarquardt lm;
     Dogleg dogleg;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
