@@ -222,7 +222,6 @@ public:
 
         {
             const float max_corr_dist = this->params_.max_correspondence_distance;
-            float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
             const bool enable_robust_auto_scaling =
@@ -243,6 +242,7 @@ public:
 
             // Iterate over each configured robust loss scale and perform the standard ICP update cycle.
             for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
+                float lm_lambda = this->params_.lm.init_lambda;
                 if (enable_robust_auto_scaling && this->params_.verbose) {
                     std::cout << "Robust scale: " << robust_scale << std::endl;
                 }
@@ -265,8 +265,8 @@ public:
                     // Optimize on Host
                     switch (this->params_.optimization_method) {
                         case OptimizationMethod::LEVENBERG_MARQUARDT:
-                            this->optimize_levenberg_marquardt(source, target, result, regularized_result, lambda, iter,
-                                                               robust_scale, rotation_robust_scale);
+                            this->optimize_levenberg_marquardt(source, target, result, regularized_result, lm_lambda,
+                                                               iter, robust_scale, rotation_robust_scale);
                             break;
                         case OptimizationMethod::POWELL_DOGLEG:
                             this->optimize_powell_dogleg(source, target, result, regularized_result,
@@ -274,7 +274,7 @@ public:
                                                          rotation_robust_scale);
                             break;
                         case OptimizationMethod::GAUSS_NEWTON:
-                            this->optimize_gauss_newton(result, regularized_result, lambda, iter);
+                            this->optimize_gauss_newton(result, regularized_result, iter);
                             break;
                     }
                     if (result.converged) {
@@ -318,7 +318,6 @@ public:
         auto deskewed = source;
 
         {
-            float lambda = this->params_.lambda;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             float robust_scale = this->params_.robust.init_scale;
             const bool enable_robust_auto_scaling =
@@ -360,6 +359,7 @@ public:
                     deskew::deskew_point_cloud_constant_velocity(source, deskewed, Eigen::Isometry3f(prev_pose),
                                                                  result.T, dt);
 
+                    float lm_lambda = this->params_.lm.init_lambda;
                     for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
                         // Nearest neighbor search on device
                         auto knn_event = target_knn.nearest_neighbor_search_async(deskewed, (*this->neighbors_)[0], {},
@@ -379,8 +379,9 @@ public:
                         // Optimize on Host
                         switch (this->params_.optimization_method) {
                             case OptimizationMethod::LEVENBERG_MARQUARDT:
-                                this->optimize_levenberg_marquardt(deskewed, target, result, regularized_result, lambda,
-                                                                   iter, robust_scale, rotation_robust_scale);
+                                this->optimize_levenberg_marquardt(deskewed, target, result, regularized_result,
+                                                                   lm_lambda, iter, robust_scale,
+                                                                   rotation_robust_scale);
                                 break;
                             case OptimizationMethod::POWELL_DOGLEG:
                                 this->optimize_powell_dogleg(deskewed, target, result, regularized_result,
@@ -388,7 +389,7 @@ public:
                                                              rotation_robust_scale);
                                 break;
                             case OptimizationMethod::GAUSS_NEWTON:
-                                this->optimize_gauss_newton(result, regularized_result, lambda, iter);
+                                this->optimize_gauss_newton(result, regularized_result, iter);
                                 break;
                         }
                         if (result.converged) {
@@ -900,11 +901,11 @@ private:
         return false;
     }
 
-    void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result, float lambda,
-                               size_t iter) {
+    void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result, size_t iter) {
         Eigen::Vector<float, 6> delta;
         const bool success = this->solve_linear_system(
-            linearized_result.H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), linearized_result.b, delta);
+            linearized_result.H + this->params_.gn.lambda * Eigen::Matrix<float, 6, 6>::Identity(), linearized_result.b,
+            delta);
         if (success) {
             result.converged = this->is_converged(delta);
         } else {
