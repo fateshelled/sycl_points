@@ -278,7 +278,8 @@ private:
                 this->occupancy_grid_->set_log_odds_limits(this->params_.occupancy_grid_map_log_odds_limits_min,
                                                            this->params_.occupancy_grid_map_log_odds_limits_max);
                 this->occupancy_grid_->set_occupancy_threshold(this->params_.occupancy_grid_map_occupied_threshold);
-                this->occupancy_grid_->set_free_space_updates_enabled(this->params_.occupancy_grid_map_enable_free_space_updates);
+                this->occupancy_grid_->set_free_space_updates_enabled(
+                    this->params_.occupancy_grid_map_enable_free_space_updates);
                 this->occupancy_grid_->set_voxel_pruning_enabled(this->params_.occupancy_grid_map_enable_pruning);
                 this->occupancy_grid_->set_stale_frame_threshold(
                     this->params_.occupancy_grid_map_stale_frame_threshold);
@@ -355,10 +356,19 @@ private:
             this->params_.scan_preprocess_angle_incidence_filter_enable) {
             // build KDTree
             const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
-            auto events = src_tree->knn_search_async(*this->preprocessed_pc_,
-                                                     this->params_.scan_covariance_neighbor_num, this->knn_result_);
-            events += algorithms::covariance::compute_covariances_async(this->knn_result_, *this->preprocessed_pc_,
-                                                                        events.evs);
+            auto events = src_tree->knn_search_async(
+                *this->preprocessed_pc_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
+            if (this->params_.covariance_estimation_m_estimation_enable) {
+                events += algorithms::covariance::compute_covariances_with_m_estimation_async(
+                    this->knn_result_, *this->preprocessed_pc_, this->params_.covariance_estimation_m_estimation_type,
+                    this->params_.covariance_estimation_m_estimation_mad_scale,
+                    this->params_.covariance_estimation_m_estimation_min_robust_scale,
+                    this->params_.covariance_estimation_m_estimation_max_iterations, events.evs);
+
+            } else {
+                events += algorithms::covariance::compute_covariances_async(this->knn_result_, *this->preprocessed_pc_,
+                                                                            events.evs);
+            }
             events.wait_and_throw();
         }
     }
@@ -481,33 +491,17 @@ private:
         // KNN search
         this->submap_tree_ = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->submap_pc_ptr_);
         auto knn_events = this->submap_tree_->knn_search_async(
-            *this->submap_pc_ptr_, this->params_.submap_covariance_neighbor_num, this->knn_result_);
+            *this->submap_pc_ptr_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
 
         // compute grad
         sycl_utils::events grad_events;
         if (this->params_.reg_params.photometric.enable) {
             if (this->submap_pc_ptr_->has_rgb()) {
-                if (this->params_.submap_covariance_neighbor_num != this->params_.submap_color_gradient_neighbor_num) {
-                    grad_events += this->submap_tree_->knn_search_async(
-                        *this->submap_pc_ptr_, this->params_.submap_color_gradient_neighbor_num,
-                        this->knn_result_grad_);
-                    grad_events += algorithms::color_gradient::compute_color_gradients_async(
-                        *this->submap_pc_ptr_, this->knn_result_grad_, grad_events.evs);
-                } else {
-                    grad_events += algorithms::color_gradient::compute_color_gradients_async(
-                        *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
-                }
+                grad_events += algorithms::color_gradient::compute_color_gradients_async(
+                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             } else if (this->submap_pc_ptr_->has_intensity()) {
-                if (this->params_.submap_covariance_neighbor_num != this->params_.submap_color_gradient_neighbor_num) {
-                    grad_events += this->submap_tree_->knn_search_async(
-                        *this->submap_pc_ptr_, this->params_.submap_color_gradient_neighbor_num,
-                        this->knn_result_grad_);
-                    grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
-                        *this->submap_pc_ptr_, this->knn_result_grad_, grad_events.evs);
-                } else {
-                    grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
-                        *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
-                }
+                grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
+                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             }
         }
 
