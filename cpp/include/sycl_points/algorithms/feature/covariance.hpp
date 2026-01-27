@@ -33,6 +33,8 @@ SYCL_EXTERNAL inline void compute_covariance(Covariance& ret, const PointType* p
         ++correspondences;
     }
 
+    // Ensure at least 4 points to maintain a full-rank 3D covariance matrix.
+    min_num_correspondences = std::max(min_num_correspondences, 4UL);
     if (correspondences < min_num_correspondences) {
         ret(0, 0) = 1.0f;
         ret(1, 1) = 1.0f;
@@ -117,6 +119,8 @@ SYCL_EXTERNAL inline bool compute_covariance_weighted(Covariance& ret, PointType
         total_weight += weights[j];
     }
 
+    // Ensure at least 4 points to maintain a full-rank 3D covariance matrix.
+    min_num_correspondences = std::max(min_num_correspondences, 4UL);
     if (correspondences < min_num_correspondences || total_weight < std::numeric_limits<float>::epsilon()) {
         ret(0, 0) = 1.0f;
         ret(1, 1) = 1.0f;
