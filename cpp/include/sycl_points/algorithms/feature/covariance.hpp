@@ -263,6 +263,7 @@ SYCL_EXTERNAL Covariance compute_covariances_with_m_estimation(const PointType* 
 /// @param neightbors KNN search result
 /// @param points Point Container
 /// @param covs Covariance Container
+/// @param depends Dependent events
 /// @return eventscd
 inline sycl_utils::events compute_covariances_async(
     const sycl_utils::DeviceQueue& queue, const knn::KNNResult& neightbors, const PointContainerShared& points,
@@ -296,6 +297,7 @@ inline sycl_utils::events compute_covariances_async(
 /// @brief Compute covariance using SYCL
 /// @param neightbors KNN search result
 /// @param points Point Cloud
+/// @param depends Dependent events
 /// @return events
 inline sycl_utils::events compute_covariances_async(
     const knn::KNNResult& neightbors, const PointCloudShared& points,
@@ -307,6 +309,7 @@ inline sycl_utils::events compute_covariances_async(
 /// @param knn KNN search
 /// @param points Point Cloud
 /// @param k_correspondences Number of neighbor points
+/// @param depends Dependent events
 /// @return events
 inline sycl_utils::events compute_covariances_async(
     const knn::KNNBase& knn, const PointCloudShared& points, const size_t k_correspondences,
@@ -321,7 +324,11 @@ inline sycl_utils::events compute_covariances_async(
 /// @param neightbors KNN search result
 /// @param points Point Container
 /// @param covs Covariance Container
-/// @return eventscd
+/// @param robust_type M estimation kernel type
+/// @param mad_scale Median Absolute Deviation (MAD) scale parameter for robust estimation
+/// @param min_robust_scale Minimum value for the robust scale parameter
+/// @param depends Dependent events
+/// @return events
 inline sycl_utils::events compute_covariances_with_m_estimation_async(
     const sycl_utils::DeviceQueue& queue, const knn::KNNResult& neightbors, const PointContainerShared& points,
     CovarianceContainerShared& covs, robust::RobustLossType robust_type = robust::RobustLossType::CAUCHY,
@@ -378,6 +385,14 @@ inline sycl_utils::events compute_covariances_with_m_estimation_async(
     return events;
 }
 
+/// @brief Async compute covariance with M estimation using SYCL
+/// @param neightbors KNN search result
+/// @param points Point Cloud Container
+/// @param robust_type M estimation kernel type
+/// @param mad_scale Median Absolute Deviation (MAD) scale parameter for robust estimation
+/// @param min_robust_scale Minimum value for the robust scale parameter
+/// @param depends Dependent events
+/// @return events
 inline sycl_utils::events compute_covariances_with_m_estimation_async(
     const knn::KNNResult& neightbors, const PointCloudShared& points,
     robust::RobustLossType robust_type = robust::RobustLossType::CAUCHY, float mad_scale = 1.0f,
@@ -388,6 +403,14 @@ inline sycl_utils::events compute_covariances_with_m_estimation_async(
                                                        depends);
 }
 
+/// @brief Async compute covariance with M estimation using SYCL
+/// @param knn KNN search
+/// @param points Point Cloud Container
+/// @param k_correspondences Number of neighbor points
+/// @param robust_type M estimation kernel type
+/// @param mad_scale Median Absolute Deviation (MAD) scale parameter for robust estimation
+/// @param min_robust_scale Minimum value for the robust scale parameter
+/// @param depends Dependent events
 inline sycl_utils::events compute_covariances_with_m_estimation_async(
     const knn::KNNBase& knn, const PointCloudShared& points, const size_t k_correspondences,
     robust::RobustLossType robust_type = robust::RobustLossType::CAUCHY, float mad_scale = 1.0f,
@@ -402,6 +425,7 @@ inline sycl_utils::events compute_covariances_with_m_estimation_async(
 /// @brief Compute normal vector using SYCL
 /// @param neightbors KNN search result
 /// @param points Point Cloud
+/// @param depends Dependent events
 /// @return events
 inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors, const PointCloudShared& points,
                                                 const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
@@ -437,6 +461,7 @@ inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors
 /// @param knn KNN search
 /// @param points Point Cloud
 /// @param k_correspondences Number of neighbor points
+/// @param depends Dependent events
 /// @return events
 inline sycl_utils::events compute_normals_async(const knn::KNNBase& knn, const PointCloudShared& points,
                                                 const size_t k_correspondences,
@@ -448,6 +473,7 @@ inline sycl_utils::events compute_normals_async(const knn::KNNBase& knn, const P
 
 /// @brief Async compute normal vector from covariance using SYCL
 /// @param points Point Cloud with covatiance
+/// @param depends Dependent events
 /// @return events
 inline sycl_utils::events compute_normals_from_covariances_async(
     const PointCloudShared& points, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
@@ -483,6 +509,7 @@ inline sycl_utils::events compute_normals_from_covariances_async(
 
 /// @brief Compute normal vector from covariance
 /// @param points Point Cloud with covatiance
+/// @param depends Dependent events
 inline void compute_normals_from_covariances(const PointCloudShared& points,
                                              const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = points.size();
