@@ -29,7 +29,6 @@ struct Parameters {
     bool scan_downsampling_random_enable = true;
     size_t scan_downsampling_random_num = 5000;
 
-    size_t scan_covariance_neighbor_num = 10;
     bool scan_preprocess_box_filter_enable = true;
     float scan_preprocess_box_filter_min = 2.0f;
     float scan_preprocess_box_filter_max = 50.0f;
@@ -38,14 +37,20 @@ struct Parameters {
     float scan_preprocess_angle_incidence_filter_max_angle = 80.0f * M_PIf / 180.0f;  // 80.0 degrees
 
     float submap_voxel_size = 1.0f;
-    size_t submap_covariance_neighbor_num = 10;
-    size_t submap_color_gradient_neighbor_num = 10;
     float submap_max_distance_range = 30.0f;
     size_t submap_point_random_sampling_num = 2000;
     float keyframe_inlier_ratio_threshold = 0.7f;
     float keyframe_distance_threshold = 2.0f;
     float keyframe_angle_threshold_degrees = 20.0f;
     float keyframe_time_threshold_seconds = 1.0f;
+
+    size_t covariance_estimation_neighbor_num = 10;
+    bool covariance_estimation_m_estimation_enable = true;
+    algorithms::robust::RobustLossType covariance_estimation_m_estimation_type =
+        algorithms::robust::RobustLossType::GEMAN_MCCLURE;
+    float covariance_estimation_m_estimation_mad_scale = 1.0f;
+    float covariance_estimation_m_estimation_min_robust_scale = 5.0f;
+    size_t covariance_estimation_m_estimation_max_iterations = 1;
 
     bool occupancy_grid_map_enable = true;
     float occupancy_grid_map_log_odds_hit = 0.8f;

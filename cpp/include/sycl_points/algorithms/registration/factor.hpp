@@ -118,9 +118,7 @@ SYCL_EXTERNAL inline Covariance compute_mahalanobis_covariance(const Covariance&
     transform::kernel::transform_covs(source_cov, transform_source_cov, T);
     const Eigen::Matrix3f RCR =
         eigen_utils::add<3, 3>(transform_source_cov.block<3, 3>(0, 0), target_cov.block<3, 3>(0, 0));
-    const Eigen::Matrix3f RCR_inv = eigen_utils::inverse(RCR);
-
-    mahalanobis.block<3, 3>(0, 0) = RCR_inv;
+    mahalanobis.block<3, 3>(0, 0) = RCR;
 
     return mahalanobis;
 }
@@ -255,12 +253,13 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
     Covariance normalized_target_cov = target_cov;
     covariance::kernel::update_covariance_plane(normalized_target_cov);
 
-    const Covariance mahalanobis = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
+    const Covariance mahalanobis_cov = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
+    const Covariance mahalanobis_cov_inv = covariance::kernel::compute_covariance_inverse(mahalanobis_cov);
 
     const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, Eigen::Matrix4f::Identity());
 
     const Eigen::Matrix<float, 6, 4> J_T_mah =
-        eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis);
+        eigen_utils::multiply<6, 4, 4>(eigen_utils::transpose<4, 6>(J), mahalanobis_cov_inv);
 
     LinearizedKernelResult ret;
     // H = J.transpose() * mahalanobis * J;
@@ -268,7 +267,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
     // b = J.transpose() * mahalanobis * residual;
     ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
 
-    const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual));
+    const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis_cov_inv, residual));
     residual_norm = sycl::sqrt(squared_norm);
 
     ret.squared_error = squared_norm;
@@ -298,9 +297,10 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
     Covariance normalized_target_cov = target_cov;
     covariance::kernel::update_covariance_plane(normalized_target_cov);
 
-    const Covariance mahalanobis = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
+    const Covariance mahalanobis_cov = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
+    const Covariance mahalanobis_cov_inv = covariance::kernel::compute_covariance_inverse(mahalanobis_cov);
 
-    return (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
+    return (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis_cov_inv, residual)));
 }
 
 /// @brief Compute inverse covariance matrix for Point-to-Distribution ICP

@@ -44,10 +44,10 @@ struct RegistrationParams {
     };
     struct Robust {
         robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
-        bool auto_scale = false;                                     // If false, the robust scale is fixed to init_scale.
-        float init_scale = 10.0f;                                    // scale for robust loss function
-        float min_scale = 0.5f;                                      // minimum scale
-        size_t auto_scaling_iter = 4;                                // auto scaling iterations
+        bool auto_scale = false;       // If false, the robust scale is fixed to init_scale.
+        float init_scale = 10.0f;      // scale for robust loss function
+        float min_scale = 0.5f;        // minimum scale
+        size_t auto_scaling_iter = 4;  // auto scaling iterations
     };
     struct PhotometricTerm {
         bool enable = false;  // If true, use photometric term.
@@ -63,9 +63,14 @@ struct RegistrationParams {
         float robust_init_scale = 10.0f;  // scale for robust loss function
         float robust_min_scale = 0.5f;    // minimum scale
     };
+
+    struct GaussNewton {
+        float lambda = 1.0f;  // damping factor
+    };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)
         float lambda_factor = 2.0f;        // lambda increase factor (for LM method)
+        float init_lambda = 1.0f;          // initial lambda (for LM method)
         float max_lambda = 1e3f;           // max lambda (for LM method)
         float min_lambda = 1e-6f;          // min lambda (for LM method)
     };
@@ -91,6 +96,7 @@ struct RegistrationParams {
     PhotometricTerm photometric;
     RotationConstraint rotation_constraint;
     GenZ genz;
+    GaussNewton gn;
     LevenbergMarquardt lm;
     Dogleg dogleg;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector

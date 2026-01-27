@@ -80,7 +80,7 @@ SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float scal
         const float x = normalized_residual * normalized_residual;
         return 1.0f / (1.0f + x);
     } else if constexpr (LossType == RobustLossType::GEMAN_MCCLURE) {
-        // German-McClure loss: w = 1 / (1 + (r/scale)^2)^2
+        // Geman-McClure loss: w = 1 / (1 + (r/scale)^2)^2
         const float x = normalized_residual * normalized_residual;
         const float denominator = 1.0f + x;
         return 1.0f / (denominator * denominator);
