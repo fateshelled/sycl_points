@@ -184,12 +184,8 @@ SYCL_EXTERNAL Covariance compute_covariances_with_m_estimation(const PointType* 
                                                                float min_robust_scale, size_t robust_max_iter) {
     float weights[MAX_K];
     float dist_squared[MAX_K];
-    // std::fill(weights, weights + MAX_K, 1.0f);
-    // std::fill(dist_squared, dist_squared + MAX_K, 0.0f);
-    for (size_t j = 0; j < MAX_K; ++j) {
-        weights[j] = 1.0f;
-        dist_squared[j] = 0.0f;
-    }
+    std::fill(weights, weights + MAX_K, 1.0f);
+    std::fill(dist_squared, dist_squared + MAX_K, 0.0f);
 
     Covariance cov;
     PointType mean;
@@ -251,7 +247,12 @@ SYCL_EXTERNAL Covariance compute_covariances_with_m_estimation(const PointType* 
             return compute_covariances_with_m_estimation<MAX_K, robust::RobustLossType::GEMAN_MCCLURE>(
                 point_ptr, k_correspondences, index_ptr, i, mad_scale, min_robust_scale, robust_max_iter);
             break;
+        case robust::RobustLossType::NONE:
+            Covariance ret;
+            compute_covariance(ret, point_ptr, k_correspondences, index_ptr, i);
+            return ret;
         default:
+            return Covariance::Identity();
             break;
     }
 }
