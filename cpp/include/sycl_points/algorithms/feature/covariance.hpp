@@ -234,39 +234,32 @@ SYCL_EXTERNAL Covariance compute_covariances_with_m_estimation(const PointType* 
         case robust::RobustLossType::HUBER:
             return compute_covariances_with_m_estimation<MAX_K, robust::RobustLossType::HUBER>(
                 point_ptr, k_correspondences, index_ptr, i, mad_scale, min_robust_scale, robust_max_iter);
-            break;
         case robust::RobustLossType::TUKEY:
             return compute_covariances_with_m_estimation<MAX_K, robust::RobustLossType::TUKEY>(
                 point_ptr, k_correspondences, index_ptr, i, mad_scale, min_robust_scale, robust_max_iter);
-            break;
         case robust::RobustLossType::CAUCHY:
             return compute_covariances_with_m_estimation<MAX_K, robust::RobustLossType::CAUCHY>(
                 point_ptr, k_correspondences, index_ptr, i, mad_scale, min_robust_scale, robust_max_iter);
-            break;
         case robust::RobustLossType::GEMAN_MCCLURE:
             return compute_covariances_with_m_estimation<MAX_K, robust::RobustLossType::GEMAN_MCCLURE>(
                 point_ptr, k_correspondences, index_ptr, i, mad_scale, min_robust_scale, robust_max_iter);
-            break;
         case robust::RobustLossType::NONE:
             Covariance ret;
             compute_covariance(ret, point_ptr, k_correspondences, index_ptr, i);
             return ret;
-        default:
-            return Covariance::Identity();
-            break;
     }
 }
 }  // namespace kernel
 
 /// @brief Async compute covariance using SYCL
 /// @param queue SYCL queue
-/// @param neightbors KNN search result
+/// @param neighbors KNN search result
 /// @param points Point Container
 /// @param covs Covariance Container
 /// @param depends Dependent events
 /// @return eventscd
 inline sycl_utils::events compute_covariances_async(
-    const sycl_utils::DeviceQueue& queue, const knn::KNNResult& neightbors, const PointContainerShared& points,
+    const sycl_utils::DeviceQueue& queue, const knn::KNNResult& neighbors, const PointContainerShared& points,
     CovarianceContainerShared& covs, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = points.size();
     if (covs.size() != N) {
@@ -281,8 +274,8 @@ inline sycl_utils::events compute_covariances_async(
     events += queue.ptr->submit([&](sycl::handler& h) {
         const auto point_ptr = points.data();
         const auto cov_ptr = covs.data();
-        const auto index_ptr = neightbors.indices->data();
-        const auto k_correspondences = neightbors.k;
+        const auto index_ptr = neighbors.indices->data();
+        const auto k_correspondences = neighbors.k;
 
         h.depends_on(depends);
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
@@ -295,14 +288,14 @@ inline sycl_utils::events compute_covariances_async(
 }
 
 /// @brief Compute covariance using SYCL
-/// @param neightbors KNN search result
+/// @param neighbors KNN search result
 /// @param points Point Cloud
 /// @param depends Dependent events
 /// @return events
 inline sycl_utils::events compute_covariances_async(
-    const knn::KNNResult& neightbors, const PointCloudShared& points,
+    const knn::KNNResult& neighbors, const PointCloudShared& points,
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    return compute_covariances_async(points.queue, neightbors, *points.points, *points.covs, depends);
+    return compute_covariances_async(points.queue, neighbors, *points.points, *points.covs, depends);
 }
 
 /// @brief Async compute covariance using SYCL
@@ -314,14 +307,14 @@ inline sycl_utils::events compute_covariances_async(
 inline sycl_utils::events compute_covariances_async(
     const knn::KNNBase& knn, const PointCloudShared& points, const size_t k_correspondences,
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    knn::KNNResult neightbors;
-    auto knn_events = knn.knn_search_async(points, k_correspondences, neightbors, depends);
-    return compute_covariances_async(neightbors, points, knn_events.evs);
+    knn::KNNResult neighbors;
+    auto knn_events = knn.knn_search_async(points, k_correspondences, neighbors, depends);
+    return compute_covariances_async(neighbors, points, knn_events.evs);
 }
 
 /// @brief Async compute covariance with M estimation using SYCL
 /// @param queue SYCL queue
-/// @param neightbors KNN search result
+/// @param neighbors KNN search result
 /// @param points Point Container
 /// @param covs Covariance Container
 /// @param robust_type M estimation kernel type
@@ -330,13 +323,13 @@ inline sycl_utils::events compute_covariances_async(
 /// @param depends Dependent events
 /// @return events
 inline sycl_utils::events compute_covariances_with_m_estimation_async(
-    const sycl_utils::DeviceQueue& queue, const knn::KNNResult& neightbors, const PointContainerShared& points,
+    const sycl_utils::DeviceQueue& queue, const knn::KNNResult& neighbors, const PointContainerShared& points,
     CovarianceContainerShared& covs, robust::RobustLossType robust_type = robust::RobustLossType::CAUCHY,
     float mad_scale = 1.0f, float min_robust_scale = 1.0f, size_t robust_max_iterations = 1,
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     constexpr size_t MAX_K = 64;
-    if (MAX_K < neightbors.k) {
-        throw std::runtime_error("[compute_covariances_with_m_estimation_async] neightbor K is too large. MAX_K is 64");
+    if (MAX_K < neighbors.k) {
+        throw std::runtime_error("[compute_covariances_with_m_estimation_async] neighbor K is too large. MAX_K is 64");
     }
 
     const size_t N = points.size();
@@ -352,8 +345,8 @@ inline sycl_utils::events compute_covariances_with_m_estimation_async(
     events += queue.ptr->submit([&](sycl::handler& h) {
         const auto point_ptr = points.data();
         const auto cov_ptr = covs.data();
-        const auto index_ptr = neightbors.indices->data();
-        const auto k_correspondences = neightbors.k;
+        const auto index_ptr = neighbors.indices->data();
+        const auto k_correspondences = neighbors.k;
         const auto robust_max_iter = robust_max_iterations;
 
         h.depends_on(depends);
@@ -386,7 +379,7 @@ inline sycl_utils::events compute_covariances_with_m_estimation_async(
 }
 
 /// @brief Async compute covariance with M estimation using SYCL
-/// @param neightbors KNN search result
+/// @param neighbors KNN search result
 /// @param points Point Cloud Container
 /// @param robust_type M estimation kernel type
 /// @param mad_scale Median Absolute Deviation (MAD) scale parameter for robust estimation
@@ -394,11 +387,11 @@ inline sycl_utils::events compute_covariances_with_m_estimation_async(
 /// @param depends Dependent events
 /// @return events
 inline sycl_utils::events compute_covariances_with_m_estimation_async(
-    const knn::KNNResult& neightbors, const PointCloudShared& points,
+    const knn::KNNResult& neighbors, const PointCloudShared& points,
     robust::RobustLossType robust_type = robust::RobustLossType::CAUCHY, float mad_scale = 1.0f,
     float min_robust_scale = 1.0f, size_t robust_max_iterations = 1,
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    return compute_covariances_with_m_estimation_async(points.queue, neightbors, *points.points, *points.covs,
+    return compute_covariances_with_m_estimation_async(points.queue, neighbors, *points.points, *points.covs,
                                                        robust_type, mad_scale, min_robust_scale, robust_max_iterations,
                                                        depends);
 }
@@ -416,18 +409,18 @@ inline sycl_utils::events compute_covariances_with_m_estimation_async(
     robust::RobustLossType robust_type = robust::RobustLossType::CAUCHY, float mad_scale = 1.0f,
     float min_robust_scale = 1.0f, size_t robust_max_iterations = 1,
     const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    knn::KNNResult neightbors;
-    auto knn_events = knn.knn_search_async(points, k_correspondences, neightbors, depends);
-    return compute_covariances_with_m_estimation_async(neightbors, points, robust_type, mad_scale, min_robust_scale,
+    knn::KNNResult neighbors;
+    auto knn_events = knn.knn_search_async(points, k_correspondences, neighbors, depends);
+    return compute_covariances_with_m_estimation_async(neighbors, points, robust_type, mad_scale, min_robust_scale,
                                                        robust_max_iterations, knn_events.evs);
 }
 
 /// @brief Compute normal vector using SYCL
-/// @param neightbors KNN search result
+/// @param neighbors KNN search result
 /// @param points Point Cloud
 /// @param depends Dependent events
 /// @return events
-inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors, const PointCloudShared& points,
+inline sycl_utils::events compute_normals_async(const knn::KNNResult& neighbors, const PointCloudShared& points,
                                                 const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     const size_t N = points.size();
     if (points.normals->size() != N) {
@@ -442,8 +435,8 @@ inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors
     events += points.queue.ptr->submit([&](sycl::handler& h) {
         const auto point_ptr = points.points_ptr();
         const auto normal_ptr = points.normals_ptr();
-        const auto index_ptr = neightbors.indices->data();
-        const auto k_correspondences = neightbors.k;
+        const auto index_ptr = neighbors.indices->data();
+        const auto k_correspondences = neighbors.k;
 
         h.depends_on(depends);
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
@@ -466,9 +459,9 @@ inline sycl_utils::events compute_normals_async(const knn::KNNResult& neightbors
 inline sycl_utils::events compute_normals_async(const knn::KNNBase& knn, const PointCloudShared& points,
                                                 const size_t k_correspondences,
                                                 const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
-    knn::KNNResult neightbors;
-    auto knn_events = knn.knn_search_async(points, k_correspondences, neightbors, depends);
-    return compute_normals_async(neightbors, points, knn_events.evs);
+    knn::KNNResult neighbors;
+    auto knn_events = knn.knn_search_async(points, k_correspondences, neighbors, depends);
+    return compute_normals_async(neighbors, points, knn_events.evs);
 }
 
 /// @brief Async compute normal vector from covariance using SYCL
