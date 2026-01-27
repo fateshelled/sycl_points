@@ -38,7 +38,7 @@ lidar_odometry_node:
     scan/downsampling/random/num: 4096
 
     covariance_estimation/neighbor_num: 32
-    covariance_estimation/m_estimation/enable: true  # EXPERIMENTAL
+    covariance_estimation/m_estimation/enable: false  # EXPERIMENTAL
     covariance_estimation/m_estimation/type: GEMAN_MCCLURE # HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     covariance_estimation/m_estimation/mad_scale: 2.0
     covariance_estimation/m_estimation/min_robust_scale: 5.0
