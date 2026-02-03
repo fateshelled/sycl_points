@@ -29,7 +29,8 @@ SYCL_EXTERNAL inline float calculate_logdet_divergence_squared(const Covariance&
     // M = 0.5 * (Cs' + Ct)
     const Eigen::Matrix3f M = eigen_utils::multiply<3, 3>(eigen_utils::add<3, 3>(Cs_prime, Ct), 0.5f);
 
-    // Jensen-Bregman LogDet Divergence: D(Cs, Ct') = log(det(0.5 * (Cs + Ct'))) - 0.5 * (log(det(Cs)) + log(det(Ct')))
+    // Jensen-Bregman LogDet Divergence: D(Cs', Ct) = log(det(0.5 * (Cs' + Ct))) - 0.5 * (log(det(Cs')) + log(det(Ct)))
+    // where Cs' = R * Cs * R^T
     const float det_M = eigen_utils::determinant(M);
     const float det_Cs = eigen_utils::determinant(Cs);
     const float det_Ct = eigen_utils::determinant(Ct);
@@ -58,7 +59,8 @@ SYCL_EXTERNAL inline float calculate_logdet_divergence(const Covariance& source_
     // M = 0.5 * (Cs' + Ct)
     const Eigen::Matrix3f M = eigen_utils::multiply<3, 3>(eigen_utils::add<3, 3>(Cs_prime, Ct), 0.5f);
 
-    // Jensen-Bregman LogDet Divergence: D(Cs, Ct') = log(det(0.5 * (Cs + Ct'))) - 0.5 * (log(det(Cs)) + log(det(Ct')))
+    // Jensen-Bregman LogDet Divergence: D(Cs', Ct) = log(det(0.5 * (Cs' + Ct))) - 0.5 * (log(det(Cs')) + log(det(Ct)))
+    // where Cs' = R * Cs * R^T
     auto logdet = [](const Eigen::Matrix3f& mat) {
         return sycl::log(sycl::fmax(eigen_utils::determinant(mat), 1e-10f));
     };
