@@ -21,15 +21,16 @@ SYCL_EXTERNAL inline float calculate_logdet_divergence_squared(const Covariance&
     const Eigen::Matrix3f Cs = source_cov.block<3, 3>(0, 0);
     const Eigen::Matrix3f Ct = target_cov.block<3, 3>(0, 0);
 
-    // transform target covariance to source coordinate
-    // Ct' = R.T * Ct * R
-    const Eigen::Matrix3f Ct_prime =
-        eigen_utils::multiply<3, 3, 3>(eigen_utils::transpose<3, 3>(R), eigen_utils::multiply<3, 3, 3>(Ct, R));
+    // transform source covariance to target coordinate
+    // Cs' = R * Cs * R^T
+    const Eigen::Matrix3f Cs_prime =
+        eigen_utils::multiply<3, 3, 3>(R, eigen_utils::multiply<3, 3, 3>(Cs, eigen_utils::transpose<3, 3>(R)));
 
-    // M = 0.5 * (Cs + Ct')
-    const Eigen::Matrix3f M = eigen_utils::multiply<3, 3>(eigen_utils::add<3, 3>(Cs, Ct_prime), 0.5f);
+    // M = 0.5 * (Cs' + Ct)
+    const Eigen::Matrix3f M = eigen_utils::multiply<3, 3>(eigen_utils::add<3, 3>(Cs_prime, Ct), 0.5f);
 
-    // Jensen-Bregman LogDet Divergence: D(Cs, Ct') = log(det(0.5 * (Cs + Ct'))) - 0.5 * (log(det(Cs)) + log(det(Ct')))
+    // Jensen-Bregman LogDet Divergence: D(Cs', Ct) = log(det(0.5 * (Cs' + Ct))) - 0.5 * (log(det(Cs')) + log(det(Ct)))
+    // where Cs' = R * Cs * R^T
     const float det_M = eigen_utils::determinant(M);
     const float det_Cs = eigen_utils::determinant(Cs);
     const float det_Ct = eigen_utils::determinant(Ct);
@@ -50,15 +51,16 @@ SYCL_EXTERNAL inline float calculate_logdet_divergence(const Covariance& source_
     const Eigen::Matrix3f Cs = source_cov.block<3, 3>(0, 0);
     const Eigen::Matrix3f Ct = target_cov.block<3, 3>(0, 0);
 
-    // transform target covariance to source coordinate
-    // Ct' = R.T * Ct * R
-    const Eigen::Matrix3f Ct_prime =
-        eigen_utils::multiply<3, 3, 3>(eigen_utils::transpose<3, 3>(R), eigen_utils::multiply<3, 3, 3>(Ct, R));
+    // transform source covariance to target coordinate
+    // Cs' = R * Cs * R^T
+    const Eigen::Matrix3f Cs_prime =
+        eigen_utils::multiply<3, 3, 3>(R, eigen_utils::multiply<3, 3, 3>(Cs, eigen_utils::transpose<3, 3>(R)));
 
-    // M = 0.5 * (Cs + Ct')
-    const Eigen::Matrix3f M = eigen_utils::multiply<3, 3>(eigen_utils::add<3, 3>(Cs, Ct_prime), 0.5f);
+    // M = 0.5 * (Cs' + Ct)
+    const Eigen::Matrix3f M = eigen_utils::multiply<3, 3>(eigen_utils::add<3, 3>(Cs_prime, Ct), 0.5f);
 
-    // Jensen-Bregman LogDet Divergence: D(Cs, Ct') = log(det(0.5 * (Cs + Ct'))) - 0.5 * (log(det(Cs)) + log(det(Ct')))
+    // Jensen-Bregman LogDet Divergence: D(Cs', Ct) = log(det(0.5 * (Cs' + Ct))) - 0.5 * (log(det(Cs')) + log(det(Ct)))
+    // where Cs' = R * Cs * R^T
     auto logdet = [](const Eigen::Matrix3f& mat) {
         return sycl::log(sycl::fmax(eigen_utils::determinant(mat), 1e-10f));
     };
@@ -66,16 +68,20 @@ SYCL_EXTERNAL inline float calculate_logdet_divergence(const Covariance& source_
     const float log_det_ref = 0.5f * (logdet(Cs) + logdet(Ct));
     const float D = sycl::fmax(log_det_M - log_det_ref, 0.0f);
 
-    // Gradient: g = -vex([M^{-1}, Ct')
+    // Gradient: g = - R^T * vex([Cs', M^{-1}])
     const Eigen::Matrix3f M_inv = eigen_utils::inverse(M);
-    // commutator
-    const Eigen::Matrix3f comm = eigen_utils::subtract<3, 3>(eigen_utils::multiply<3, 3, 3>(M_inv, Ct_prime),
-                                                             eigen_utils::multiply<3, 3, 3>(Ct_prime, M_inv));
+    // commutator [Cs', M^-1]
+    const Eigen::Matrix3f comm = eigen_utils::subtract<3, 3>(eigen_utils::multiply<3, 3, 3>(Cs_prime, M_inv),
+                                                             eigen_utils::multiply<3, 3, 3>(M_inv, Cs_prime));
 
     // vex
-    grad[0] = -0.5f * (comm(2, 1) - comm(1, 2));
-    grad[1] = -0.5f * (comm(0, 2) - comm(2, 0));
-    grad[2] = -0.5f * (comm(1, 0) - comm(0, 1));
+    Eigen::Vector3f g_global;
+    g_global[0] = -0.5f * (comm(2, 1) - comm(1, 2));
+    g_global[1] = -0.5f * (comm(0, 2) - comm(2, 0));
+    g_global[2] = -0.5f * (comm(1, 0) - comm(0, 1));
+
+    // Transform gradient to local frame
+    grad = eigen_utils::multiply<3, 3, 1>(eigen_utils::transpose<3, 3>(R), g_global);
 
     return D;
 }
