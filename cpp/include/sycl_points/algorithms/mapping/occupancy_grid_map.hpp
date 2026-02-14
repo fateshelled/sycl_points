@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "sycl_points/algorithms/common/prefix_sum.hpp"
 #include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/algorithms/common/workgroup_utils.hpp"
@@ -33,7 +34,6 @@ public:
     OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
         this->allocate_storage(this->capacity_);
-
         this->clear();
     }
 
@@ -159,6 +159,8 @@ public:
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @param max_distance Maximum extract L-infinity distance in meters.
+    /// @note Thread-safe: Each call allocates independent local buffers, allowing
+    ///       concurrent calls without synchronization overhead or race conditions.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
                                  const float max_distance = 100.0f) const {
         result.resize_points(0);
@@ -178,6 +180,8 @@ public:
     /// @param max_distance Maximum visibility distance in meters.
     /// @param horizontal_fov Horizontal field of view in radians.
     /// @param vertical_fov Vertical field of view in radians.
+    /// @note Thread-safe: Each call allocates independent local buffers, allowing
+    ///       concurrent calls without synchronization overhead or race conditions.
     void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
                                 float horizontal_fov, float vertical_fov) const {
         result.resize_points(0);
@@ -188,18 +192,219 @@ public:
         horizontal_fov = std::clamp(horizontal_fov, kFovTolerance, kPi - kFovTolerance);
         vertical_fov = std::clamp(vertical_fov, kFovTolerance, 2.0f * kPi - kFovTolerance);
 
-        shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
+        const size_t N = this->capacity_;
 
-        // Allocate the worst-case storage before the filtering pass and shrink once visibility is known.
-        result.resize_points(this->voxel_num_);
-        if (this->has_rgb_data_) {
-            result.resize_rgb(this->voxel_num_);
-        }
-        if (this->has_intensity_data_) {
-            result.resize_intensities(this->voxel_num_);
-        }
+        // Create local buffers for this extraction operation
+        shared_vector<uint8_t> valid_flags(*this->queue_.ptr);
+        common::PrefixSum prefix_sum(this->queue_);
 
-        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+        // Lambda for generating valid flags (NVIDIA path)
+        auto generate_flags = [&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+
+            auto valid_flags_ptr = valid_flags.data();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+
+            const auto world_to_sensor_T = eigen_utils::to_sycl_vec(sensor_pose.inverse().matrix());
+            const float occupancy_threshold = this->occupancy_threshold_log_odds_;
+            const float voxel_size = this->voxel_size_;
+            const float inv_voxel_size = this->inv_voxel_size_;
+            const size_t max_probe = this->max_probe_length_;
+            const size_t capacity = this->capacity_;
+
+            const float sensor_x = sensor_pose.translation().x();
+            const float sensor_y = sensor_pose.translation().y();
+            const float sensor_z = sensor_pose.translation().z();
+
+            const float max_dist_sq = max_distance * max_distance;
+            const float cos_limit_horizontal = sycl::cos(horizontal_fov * 0.5f);
+            const float cos_limit_vertical = sycl::cos(vertical_fov * 0.5f);
+            const bool include_backward = horizontal_fov >= (kPi - kFovTolerance);
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) {
+                    return;
+                }
+
+                const uint64_t current_key = key_ptr[i];
+                if (current_key == VoxelConstants::invalid_coord || current_key == VoxelConstants::deleted_coord) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                const VoxelCoreData& core = core_ptr[i];
+                if (core.hit_count == 0U || core.log_odds < occupancy_threshold) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                const float inv_count = 1.0f / static_cast<float>(core.hit_count);
+                const float cx = core.sum_x * inv_count;
+                const float cy = core.sum_y * inv_count;
+                const float cz = core.sum_z * inv_count;
+
+                const float dx = cx - sensor_x;
+                const float dy = cy - sensor_y;
+                const float dz = cz - sensor_z;
+                const float dist_sq = dx * dx + dy * dy + dz * dz;
+                if (dist_sq > max_dist_sq) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                const auto world_to_sensor_Mat = eigen_utils::from_sycl_vec(world_to_sensor_T);
+                const Eigen::Vector3f local_pt =
+                    eigen_utils::multiply<3, 3>(world_to_sensor_Mat.block<3, 3>(0, 0), Eigen::Vector3f{dx, dy, dz});
+
+                if (!include_backward && local_pt.x() <= 0.0f) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                const float forward_projection = include_backward ? sycl::fabs(local_pt.x()) : local_pt.x();
+
+                const float horizontal_norm_sq = forward_projection * forward_projection + local_pt.y() * local_pt.y();
+                float cos_horizontal = 1.0f;
+                if (horizontal_norm_sq > 0.0f) {
+                    const float inv_horizontal_norm = sycl::rsqrt(horizontal_norm_sq);
+                    cos_horizontal = forward_projection * inv_horizontal_norm;
+                    cos_horizontal = sycl::clamp(cos_horizontal, -1.0f, 1.0f);
+                }
+                if (cos_horizontal < cos_limit_horizontal) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                const float vertical_norm_sq = forward_projection * forward_projection + local_pt.z() * local_pt.z();
+                float cos_vertical = 1.0f;
+                if (vertical_norm_sq > 0.0f) {
+                    const float inv_vertical_norm = sycl::rsqrt(vertical_norm_sq);
+                    cos_vertical = forward_projection * inv_vertical_norm;
+                    cos_vertical = sycl::clamp(cos_vertical, -1.0f, 1.0f);
+                }
+                if (cos_vertical < cos_limit_vertical) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                const float distance = sycl::sqrt(dist_sq);
+                bool occluded = false;
+
+                if (distance > voxel_size) {
+                    traverse_ray_exclusive_impl(
+                        sensor_x, sensor_y, sensor_z, cx, cy, cz, inv_voxel_size,
+                        [&](int64_t ix, int64_t iy, int64_t iz) {
+                            uint64_t sample_key = VoxelConstants::invalid_coord;
+                            if (!grid_to_key_device(ix, iy, iz, sample_key) || sample_key == current_key) {
+                                return true;
+                            }
+
+                            for (size_t probe = 0; probe < max_probe; ++probe) {
+                                const size_t slot = compute_slot_id(sample_key, probe, capacity);
+                                const uint64_t stored_key = key_ptr[slot];
+                                if (stored_key == sample_key) {
+                                    const VoxelCoreData& occ = core_ptr[slot];
+                                    if (occ.hit_count > 0U && occ.log_odds >= occupancy_threshold) {
+                                        const float inv_occ = 1.0f / static_cast<float>(occ.hit_count);
+                                        const float occ_cx = occ.sum_x * inv_occ;
+                                        const float occ_cy = occ.sum_y * inv_occ;
+                                        const float occ_cz = occ.sum_z * inv_occ;
+                                        const float occ_dx = occ_cx - sensor_x;
+                                        const float occ_dy = occ_cy - sensor_y;
+                                        const float occ_dz = occ_cz - sensor_z;
+                                        const float occ_dist_sq = occ_dx * occ_dx + occ_dy * occ_dy + occ_dz * occ_dz;
+                                        if (occ_dist_sq + kOcclusionEpsilon < dist_sq) {
+                                            occluded = true;
+                                            return false;
+                                        }
+                                    }
+                                    return true;
+                                }
+                                if (stored_key == VoxelConstants::invalid_coord) {
+                                    return true;
+                                }
+                                if (stored_key == VoxelConstants::deleted_coord) {
+                                    continue;
+                                }
+                            }
+                            return true;
+                        });
+                }
+
+                if (occluded) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                valid_flags_ptr[i] = 1U;
+            });
+        };
+
+        // Lambda for writing output (NVIDIA path)
+        auto write_output = [&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+
+            auto valid_flags_ptr = valid_flags.data();
+            auto prefix_sum_ptr = prefix_sum.get_prefix_sum().data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_data_ptr = this->intensity_data_ptr_->data();
+
+            auto points_ptr = result.points_ptr();
+            auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
+            auto intensity_ptr =
+                this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
+
+            const bool has_rgb = this->has_rgb_data_;
+            const bool has_intensity = this->has_intensity_data_;
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N || valid_flags_ptr[i] == 0U) {
+                    return;
+                }
+
+                const size_t output_idx = prefix_sum_ptr[i] - 1;
+                const VoxelCoreData& core = core_ptr[i];
+                const float inv_count = 1.0f / static_cast<float>(core.hit_count);
+                const float cx = core.sum_x * inv_count;
+                const float cy = core.sum_y * inv_count;
+                const float cz = core.sum_z * inv_count;
+
+                points_ptr[output_idx].x() = cx;
+                points_ptr[output_idx].y() = cy;
+                points_ptr[output_idx].z() = cz;
+                points_ptr[output_idx].w() = 1.0f;
+
+                if (has_rgb && rgb_ptr) {
+                    const VoxelColorData& color = color_ptr[i];
+                    if (core.hit_count > 0U) {
+                        rgb_ptr[output_idx].x() = color.sum_r * inv_count;
+                        rgb_ptr[output_idx].y() = color.sum_g * inv_count;
+                        rgb_ptr[output_idx].z() = color.sum_b * inv_count;
+                        rgb_ptr[output_idx].w() = color.sum_a * inv_count;
+                    } else {
+                        rgb_ptr[output_idx].setZero();
+                    }
+                }
+
+                if (has_intensity && intensity_ptr) {
+                    const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
+                    if (core.hit_count > 0U) {
+                        intensity_ptr[output_idx] = intensity_data.sum_intensity * inv_count;
+                    } else {
+                        intensity_ptr[output_idx] = 0.0f;
+                    }
+                }
+            });
+        };
+
+        // Lambda for fetch_add path (non-NVIDIA)
+        auto fetch_add_kernel = [&](sycl::handler& h, uint32_t* counter_ptr) {
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
@@ -221,7 +426,6 @@ public:
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
 
-            auto counter_ptr = counter.data();
             const float sensor_x = sensor_pose.translation().x();
             const float sensor_y = sensor_pose.translation().y();
             const float sensor_z = sensor_pose.translation().z();
@@ -229,7 +433,6 @@ public:
             const float max_dist_sq = max_distance * max_distance;
             const float cos_limit_horizontal = sycl::cos(horizontal_fov * 0.5f);
             const float cos_limit_vertical = sycl::cos(vertical_fov * 0.5f);
-            // Allow backward visibility once the horizontal FOV reaches 180 degrees.
             const bool include_backward = horizontal_fov >= (kPi - kFovTolerance);
 
             h.parallel_for(sycl::range<1>(this->capacity_), [=](sycl::id<1> idx) {
@@ -264,12 +467,8 @@ public:
                     return;
                 }
 
-                // Mirror the forward component when backward visibility is enabled so that
-                // the same angular limits apply behind the sensor.
                 const float forward_projection = include_backward ? sycl::fabs(local_pt.x()) : local_pt.x();
 
-                // Compute the cosine of the horizontal angle without using atan2. The mirrored forward
-                // projection is used in the norm so that forward/backward views are evaluated symmetrically.
                 const float horizontal_norm_sq = forward_projection * forward_projection + local_pt.y() * local_pt.y();
                 float cos_horizontal = 1.0f;
                 if (horizontal_norm_sq > 0.0f) {
@@ -281,9 +480,6 @@ public:
                     return;
                 }
 
-                // Reuse the mirrored forward component so that the vertical FOV is symmetric when backward
-                // viewing is enabled. The vertical angle is measured in the sensor XZ-plane to remain
-                // consistent with the horizontal computation that projects into the XY-plane.
                 const float vertical_norm_sq = forward_projection * forward_projection + local_pt.z() * local_pt.z();
                 float cos_vertical = 1.0f;
                 if (vertical_norm_sq > 0.0f) {
@@ -298,9 +494,7 @@ public:
                 const float distance = sycl::sqrt(dist_sq);
                 bool occluded = false;
 
-                // March along the viewing ray to detect occupied voxels that would occlude the candidate.
                 if (distance > voxel_size) {
-                    // Reuse the same discrete traversal used for free-space carving to test occlusion.
                     traverse_ray_exclusive_impl(
                         sensor_x, sensor_y, sensor_z, cx, cy, cz, inv_voxel_size,
                         [&](int64_t ix, int64_t iy, int64_t iz) {
@@ -372,22 +566,10 @@ public:
                     }
                 }
             });
-        });
+        };
 
-        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(event);
-            h.host_task([&]() {
-                const uint32_t final_count = counter.at(0);
-                result.resize_points(final_count);
-                if (this->has_rgb_data_) {
-                    result.resize_rgb(final_count);
-                }
-                if (this->has_intensity_data_) {
-                    result.resize_intensities(final_count);
-                }
-            });
-        });
-        host_event.wait_and_throw();
+        this->extract_points_with_prefix_sum(result, this->voxel_num_, valid_flags, prefix_sum, generate_flags,
+                                             write_output, fetch_add_kernel);
     }
 
     /// @brief Compute the overlap ratio between the map and an input point cloud.
@@ -1364,20 +1546,204 @@ private:
         host_event.wait_and_throw();
     }
 
+    /// @brief Template helper for extracting points with prefix sum or fetch_add
+    /// @tparam GenerateFlagsFunc Functor for generating valid flags (NVIDIA path)
+    /// @tparam WriteOutputFunc Functor for writing output data (NVIDIA path)
+    /// @tparam FetchAddFunc Functor for fetch_add path (non-NVIDIA)
+    /// @param result Output point cloud to populate
+    /// @param estimated_size Estimated output size for pre-allocation (non-NVIDIA only)
+    /// @param valid_flags Local buffer for validity flags (per-call allocation)
+    /// @param prefix_sum Local prefix sum object (per-call allocation)
+    /// @param generate_flags_func Kernel for computing validity flags
+    /// @param write_output_func Kernel for writing compacted output
+    /// @param fetch_add_func Kernel for atomic indexing (non-NVIDIA path)
+    template<typename GenerateFlagsFunc, typename WriteOutputFunc, typename FetchAddFunc>
+    void extract_points_with_prefix_sum(PointCloudShared& result, size_t estimated_size,
+                                        shared_vector<uint8_t>& valid_flags, common::PrefixSum& prefix_sum,
+                                        GenerateFlagsFunc&& generate_flags_func,
+                                        WriteOutputFunc&& write_output_func, FetchAddFunc&& fetch_add_func) const {
+        const size_t N = this->capacity_;
+        const bool is_nvidia = this->queue_.is_nvidia();
+        size_t filtered_voxel_count = 0;
+
+        if (is_nvidia) {
+            // NVIDIA GPU: Use prefix sum approach
+            // Step 1: Compute valid flags
+            if (valid_flags.size() < N) {
+                valid_flags.resize(N);
+            }
+
+            this->queue_.ptr->submit(generate_flags_func).wait_and_throw();
+
+            // Step 2: Compute prefix sum to determine output size
+            // Prefix sum guarantees (inclusive scan):
+            // - prefix_sum_ptr[i] contains the count of all '1's up to and including index i
+            // - When valid_flags[i] == 1, prefix_sum_ptr[i] >= 1 is always true
+            // - Output index: prefix_sum_ptr[i] - 1 maps to the compact output array (0-based)
+            // Example: valid_flags = [0,1,0,1,1] → prefix_sum = [0,1,1,2,3]
+            //          Output indices at positions 1,3,4 map to compact array indices 0,1,2
+            filtered_voxel_count = prefix_sum.compute(valid_flags);
+
+            // Step 3: Allocate output buffers with exact size
+            result.resize_points(filtered_voxel_count);
+            if (this->has_rgb_data_) {
+                result.resize_rgb(filtered_voxel_count);
+            }
+            if (this->has_intensity_data_) {
+                result.resize_intensities(filtered_voxel_count);
+            }
+
+            // Step 4: Write output using prefix sum indices
+            this->queue_.ptr->submit(write_output_func).wait_and_throw();
+        } else {
+            // Non-NVIDIA: Use fetch_add approach
+            // Pre-allocate to estimated size (required for fetch_add)
+            result.resize_points(estimated_size);
+            if (this->has_rgb_data_) {
+                result.resize_rgb(estimated_size);
+            }
+            if (this->has_intensity_data_) {
+                result.resize_intensities(estimated_size);
+            }
+
+            shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
+            auto event = this->queue_.ptr->submit([&, fetch_add_func](sycl::handler& h) {
+                fetch_add_func(h, counter.data());
+            });
+            event.wait_and_throw();
+            filtered_voxel_count = static_cast<size_t>(counter.at(0));
+
+            // Resize to actual count
+            result.resize_points(filtered_voxel_count);
+            if (this->has_rgb_data_) {
+                result.resize_rgb(filtered_voxel_count);
+            }
+            if (this->has_intensity_data_) {
+                result.resize_intensities(filtered_voxel_count);
+            }
+        }
+    }
+
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
                                       const float max_distance) const {
         const size_t N = this->capacity_;
-        shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
-        result.resize_points(this->voxel_num_);
-        if (this->has_rgb_data_) {
-            result.resize_rgb(this->voxel_num_);
-        }
-        if (this->has_intensity_data_) {
-            result.resize_intensities(this->voxel_num_);
-        }
+        // Create local buffers for this extraction operation
+        shared_vector<uint8_t> valid_flags(*this->queue_.ptr);
+        common::PrefixSum prefix_sum(this->queue_);
 
-        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+        // Lambda for generating valid flags (NVIDIA path)
+        auto generate_flags = [&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+
+            auto valid_flags_ptr = valid_flags.data();
+            auto key_ptr = this->key_ptr_->data();
+            auto core_ptr = this->core_data_ptr_->data();
+
+            const float threshold = this->occupancy_threshold_log_odds_;
+            const float sensor_x = sensor_position.x();
+            const float sensor_y = sensor_position.y();
+            const float sensor_z = sensor_position.z();
+            const float max_dist = max_distance;
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) {
+                    return;
+                }
+
+                const uint64_t key = key_ptr[i];
+                if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                const VoxelCoreData& core = core_ptr[i];
+                if (core.hit_count == 0U || core.log_odds < threshold) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                const float inv_count = 1.0f / static_cast<float>(core.hit_count);
+                const float cx = core.sum_x * inv_count;
+                const float cy = core.sum_y * inv_count;
+                const float cz = core.sum_z * inv_count;
+
+                const float dx = sycl::fabs(cx - sensor_x);
+                const float dy = sycl::fabs(cy - sensor_y);
+                const float dz = sycl::fabs(cz - sensor_z);
+                if (sycl::fmax(sycl::fmax(dx, dy), dz) > max_dist) {
+                    valid_flags_ptr[i] = 0U;
+                    return;
+                }
+
+                valid_flags_ptr[i] = 1U;
+            });
+        };
+
+        // Lambda for writing output (NVIDIA path)
+        auto write_output = [&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+
+            auto valid_flags_ptr = valid_flags.data();
+            auto prefix_sum_ptr = prefix_sum.get_prefix_sum().data();
+            auto core_ptr = this->core_data_ptr_->data();
+            auto color_ptr = this->color_data_ptr_->data();
+            auto intensity_data_ptr = this->intensity_data_ptr_->data();
+
+            auto points_ptr = result.points_ptr();
+            auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
+            auto intensity_ptr =
+                this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
+
+            const bool has_rgb = this->has_rgb_data_;
+            const bool has_intensity = this->has_intensity_data_;
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N || valid_flags_ptr[i] == 0U) {
+                    return;
+                }
+
+                const size_t output_idx = prefix_sum_ptr[i] - 1;
+                const VoxelCoreData& core = core_ptr[i];
+                const float inv_count = 1.0f / static_cast<float>(core.hit_count);
+                const float cx = core.sum_x * inv_count;
+                const float cy = core.sum_y * inv_count;
+                const float cz = core.sum_z * inv_count;
+
+                points_ptr[output_idx].x() = cx;
+                points_ptr[output_idx].y() = cy;
+                points_ptr[output_idx].z() = cz;
+                points_ptr[output_idx].w() = 1.0f;
+
+                if (has_rgb && rgb_ptr) {
+                    const VoxelColorData& color = color_ptr[i];
+                    if (core.hit_count > 0U) {
+                        rgb_ptr[output_idx].x() = color.sum_r * inv_count;
+                        rgb_ptr[output_idx].y() = color.sum_g * inv_count;
+                        rgb_ptr[output_idx].z() = color.sum_b * inv_count;
+                        rgb_ptr[output_idx].w() = color.sum_a * inv_count;
+                    } else {
+                        rgb_ptr[output_idx].setZero();
+                    }
+                }
+
+                if (has_intensity && intensity_ptr) {
+                    const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
+                    if (core.hit_count > 0U) {
+                        intensity_ptr[output_idx] = intensity_data.sum_intensity * inv_count;
+                    } else {
+                        intensity_ptr[output_idx] = 0.0f;
+                    }
+                }
+            });
+        };
+
+        // Lambda for fetch_add path (non-NVIDIA)
+        auto fetch_add_kernel = [&](sycl::handler& h, uint32_t* counter_ptr) {
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
@@ -1394,7 +1760,6 @@ private:
             const float max_dist = max_distance;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
-            auto counter_ptr = counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1446,23 +1811,10 @@ private:
                     }
                 }
             });
-        });
+        };
 
-        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(event);
-
-            h.host_task([&]() {
-                const uint32_t final_count = counter.at(0);
-                result.resize_points(final_count);
-                if (this->has_rgb_data_) {
-                    result.resize_rgb(final_count);
-                }
-                if (this->has_intensity_data_) {
-                    result.resize_intensities(final_count);
-                }
-            });
-        });
-        host_event.wait_and_throw();
+        this->extract_points_with_prefix_sum(result, this->voxel_num_, valid_flags, prefix_sum, generate_flags,
+                                             write_output, fetch_add_kernel);
     }
 
     size_t compute_work_group_size() const {
