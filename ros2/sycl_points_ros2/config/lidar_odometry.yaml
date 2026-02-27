@@ -21,12 +21,16 @@ lidar_odometry_node:
     scan/preprocess/angle_incidence_filter/max_angle: 1.396 # 80 degrees
     # scan/preprocess/angle_incidence_filter/max_angle: 1.570796 # 90 degrees (upper limit)
 
-    # Corrected Intensity = clamp(scale * Intensity * dist^exponent, min_intensity, max_intensity
+    # Distance-only:  I' = clamp(scale * I * dist^exp, min, max)
+    # Normal-aware:   I' = clamp(scale * I * dist^exp / max(cos(theta), min_cos_theta), min, max)
+    #                 cos(theta) = |n . p| / dist  (angle of incidence correction)
     scan/intensity_correction/enable: false
     scan/intensity_correction/exp: 2.0
     scan/intensity_correction/scale: 1.0e-3
     scan/intensity_correction/min_intensity: 0.0
     scan/intensity_correction/max_intensity: 1.0
+    scan/intensity_correction/use_normal: false       # If true, apply angle-of-incidence correction using surface normals
+    scan/intensity_correction/min_cos_theta: 0.17     # Minimum cos(theta) clamp (~10 degrees) to avoid amplification at grazing angles
 
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3

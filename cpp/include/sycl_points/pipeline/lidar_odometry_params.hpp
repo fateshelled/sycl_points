@@ -19,6 +19,8 @@ struct Parameters {
     float scan_intensity_correction_scale = 1e-3f;
     float scan_intensity_correction_min_intensity = 0.0f;
     float scan_intensity_correction_max_intensity = 1.0f;
+    bool scan_intensity_correction_use_normal = false;
+    float scan_intensity_correction_min_cos_theta = 0.17f;  // ~10 degrees
     bool scan_downsampling_voxel_enable = false;
     float scan_downsampling_voxel_size = 1.0f;
     bool scan_downsampling_polar_enable = true;
