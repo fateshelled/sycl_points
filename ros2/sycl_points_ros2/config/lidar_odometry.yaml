@@ -21,6 +21,7 @@ lidar_odometry_node:
     scan/preprocess/angle_incidence_filter/max_angle: 1.396 # 80 degrees
     # scan/preprocess/angle_incidence_filter/max_angle: 1.570796 # 90 degrees (upper limit)
 
+    # Corrected Intensity = clamp(scale * Intensity * dist^exponent, min_intensity, max_intensity
     scan/intensity_correction/enable: false
     scan/intensity_correction/exp: 2.0
     scan/intensity_correction/scale: 1.0e-3
