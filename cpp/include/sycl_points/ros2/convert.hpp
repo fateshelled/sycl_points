@@ -43,7 +43,7 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         } else if (field.name == "intensity") {
             intensity_type = field.datatype;
             intensity_offset = field.offset;
-        } else if (field.name == "time" || field.name == "timestamp") {
+        } else if (field.name == "time" || field.name == "timestamp" || field.name == "t") {
             timestamp_type = field.datatype;
             timestamp_offset = field.offset;
         }
@@ -86,7 +86,8 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
 
     const bool has_timestamp_field =
         (timestamp_offset >= 0) && (timestamp_type == sensor_msgs::msg::PointField::FLOAT32 ||
-                                    timestamp_type == sensor_msgs::msg::PointField::FLOAT64);
+                                    timestamp_type == sensor_msgs::msg::PointField::FLOAT64 ||
+                                    timestamp_type == sensor_msgs::msg::PointField::UINT32);
     if (timestamp_offset >= 0 && !has_timestamp_field) {
         std::cerr << "Not supported timestamp field type" << std::endl;
     }
@@ -109,21 +110,30 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
 
         for (size_t i = 0; i < point_size; ++i) {
             const size_t base = point_step * i + timestamp_offset;
-            double timestamp_seconds = 0.0;
+
+            if (timestamp_type == sensor_msgs::msg::PointField::UINT32) {
+                // Ouster
+                // nanoseconds to milliseconds
+                const float timestamp_offset =
+                    static_cast<float>(reinterpret_cast<const uint32_t*>(&msg_bytes[base])[0]) * 1e-6f;
+                offsets[i] = timestamp_offset;
+                max_offset_ms = std::max(max_offset_ms, static_cast<double>(timestamp_offset));
+                continue;
+            }
+
+            double timestamp_ms = 0.0;
             if (timestamp_type == sensor_msgs::msg::PointField::FLOAT32) {
-                timestamp_seconds = static_cast<double>(reinterpret_cast<const float*>(&msg_bytes[base])[0]);
-            } else {
-                timestamp_seconds = reinterpret_cast<const double*>(&msg_bytes[base])[0];
+                timestamp_ms = static_cast<double>(reinterpret_cast<const float*>(&msg_bytes[base])[0]) * 1e3;
+            } else if (timestamp_type == sensor_msgs::msg::PointField::FLOAT64) {
+                timestamp_ms = reinterpret_cast<const double*>(&msg_bytes[base])[0] * 1e3;
+            }
+            if (!std::isfinite(timestamp_ms)) {
+                timestamp_ms = 0.0;
+            }
+            if (timestamp_ms < 0.0) {
+                timestamp_ms = 0.0;
             }
 
-            if (!std::isfinite(timestamp_seconds)) {
-                timestamp_seconds = 0.0;
-            }
-            if (timestamp_seconds < 0.0) {
-                timestamp_seconds = 0.0;
-            }
-
-            const double timestamp_ms = timestamp_seconds * 1e3;
             const double offset = timestamp_ms - start_time_ms;
             offsets[i] = static_cast<float>(offset);
             max_offset_ms = std::max(max_offset_ms, offset);
