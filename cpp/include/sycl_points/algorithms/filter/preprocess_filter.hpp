@@ -28,6 +28,31 @@ SYCL_EXTERNAL inline void box_filter(const PointType& pt, uint8_t& flag, float m
     }
 }
 
+/// @brief Computes the spherical bin index for a surface normal vector.
+/// @param normal  Surface normal (x, y, z components used; w ignored).
+/// @param n_elevation Number of bins along the elevation axis.
+/// @param n_azimuth   Number of bins along the azimuth axis.
+/// @return Bin index in [0, n_elevation*n_azimuth), or n_elevation*n_azimuth for non-finite normals.
+SYCL_EXTERNAL inline uint32_t compute_normal_bin_index(const Normal& normal, uint32_t n_elevation,
+                                                        uint32_t n_azimuth) {
+    const uint32_t invalid_bin = n_elevation * n_azimuth;
+    if (!sycl::isfinite(normal.x()) || !sycl::isfinite(normal.y()) || !sycl::isfinite(normal.z())) {
+        return invalid_bin;
+    }
+    // Elevation: asin(nz) in [-pi/2, pi/2] -> [0, n_elevation)
+    const float nz = sycl::clamp(normal.z(), -1.0f, 1.0f);
+    const float elevation = sycl::asin(nz);
+    const float elevation_norm = (elevation + M_PIf * 0.5f) / M_PIf;
+    const uint32_t elev_bin =
+        sycl::min(static_cast<uint32_t>(elevation_norm * static_cast<float>(n_elevation)), n_elevation - 1);
+    // Azimuth: atan2(ny, nx) in [-pi, pi] -> [0, n_azimuth)
+    const float azimuth = sycl::atan2(normal.y(), normal.x());
+    const float azimuth_norm = (azimuth + M_PIf) / (2.0f * M_PIf);
+    const uint32_t azim_bin =
+        sycl::min(static_cast<uint32_t>(azimuth_norm * static_cast<float>(n_azimuth)), n_azimuth - 1);
+    return elev_bin * n_azimuth + azim_bin;
+}
+
 }  // namespace kernel
 
 /// @brief Preprocessing filter for point cloud data
@@ -41,6 +66,7 @@ public:
         this->filter_ = std::make_shared<FilterByFlags>(this->queue_);
         this->flags_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
         this->dist_sq_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
+        this->bin_indices_ = std::make_shared<shared_vector<uint32_t>>(*this->queue_.ptr);
 
         this->mt_.seed(1234);  // Default seed for reproducibility
     }
@@ -120,13 +146,48 @@ public:
         this->angle_incidence_filter_impl(source, output, min_angle, max_angle);
     }
 
+    /// @brief Sets the number of spherical bins used by normal_sampling.
+    /// @param num_elevation_bins Number of bins along the elevation axis (0 = auto-detect from sampling count).
+    /// @param num_azimuth_bins   Number of bins along the azimuth axis   (0 = auto-detect from sampling count).
+    void set_normal_sampling_bins(size_t num_elevation_bins, size_t num_azimuth_bins) {
+        normal_sampling_elevation_bins_ = num_elevation_bins;
+        normal_sampling_azimuth_bins_ = num_azimuth_bins;
+    }
+
+    /// @brief Normal vector-based sampling.
+    ///        Divides surface normals into a spherical elevation-azimuth grid and round-robin
+    ///        samples across bins so that the retained points have a roughly uniform distribution
+    ///        of normal directions.
+    /// @param data Point cloud to be sampled (modified in-place).
+    /// @param sampling_num Number of points to retain after sampling.
+    /// @note Requires per-point normals or covariance matrices.
+    void normal_sampling(PointCloudShared& data, size_t sampling_num) {
+        this->normal_sampling_impl(data, data, sampling_num);
+    }
+
+    /// @brief Normal vector-based sampling.
+    ///        Divides surface normals into a spherical elevation-azimuth grid and round-robin
+    ///        samples across bins so that the retained points have a roughly uniform distribution
+    ///        of normal directions.
+    /// @param source       Source point cloud to be sampled.
+    /// @param output       Output point cloud.
+    /// @param sampling_num Number of points to retain after sampling.
+    /// @note Requires per-point normals or covariance matrices.
+    void normal_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+        this->normal_sampling_impl(source, output, sampling_num);
+    }
+
 private:
     sycl_utils::DeviceQueue queue_;
     FilterByFlags::Ptr filter_;
     shared_vector_ptr<uint8_t> flags_;
-    shared_vector_ptr<float> dist_sq_ = nullptr;  // for FPS
+    shared_vector_ptr<float> dist_sq_ = nullptr;      // for FPS
+    shared_vector_ptr<uint32_t> bin_indices_ = nullptr;  // for normal sampling
 
     std::mt19937 mt_;
+
+    size_t normal_sampling_elevation_bins_ = 0;  // 0 = auto-detect
+    size_t normal_sampling_azimuth_bins_ = 0;    // 0 = auto-detect
 
     /// @brief Initializes the flags vector with a specified value
     /// @param data_size Size needed for the flags vector
@@ -424,6 +485,134 @@ private:
             } else {
                 this->queue_.clear_accessed_by_device(source.covs_ptr(), N);
             }
+        }
+
+        this->filter_by_flags(source, output);
+    }
+
+    /// @brief Normal vector-based sampling implementation.
+    /// @param source       Source point cloud.
+    /// @param output       Output point cloud.
+    /// @param sampling_num Number of points to retain.
+    void normal_sampling_impl(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+        const size_t N = source.size();
+        if (N == 0) return;
+        if (N <= sampling_num) return;
+
+        if (!source.has_normal() && !source.has_cov()) {
+            throw std::runtime_error(
+                "[PreprocessFilter::normal_sampling] Normal vector or covariance matrices must be pre-computed.");
+        }
+
+        // Determine bin counts (auto = floor(sqrt(sampling_num)))
+        const size_t auto_bins =
+            std::max(size_t(1), static_cast<size_t>(std::sqrt(static_cast<double>(sampling_num))));
+        const uint32_t n_elevation =
+            static_cast<uint32_t>(normal_sampling_elevation_bins_ > 0 ? normal_sampling_elevation_bins_ : auto_bins);
+        const uint32_t n_azimuth =
+            static_cast<uint32_t>(normal_sampling_azimuth_bins_ > 0 ? normal_sampling_azimuth_bins_ : auto_bins);
+        const uint32_t n_bins = n_elevation * n_azimuth;
+
+        if (this->bin_indices_->size() < N) {
+            this->bin_indices_->resize(N);
+        }
+
+        this->initialize_flags(N, REMOVE_FLAG).wait_and_throw();
+
+        // mem_advise set to device
+        {
+            this->queue_.set_accessed_by_device(this->bin_indices_->data(), N);
+            this->queue_.set_accessed_by_device(source.points_ptr(), N);
+            if (source.has_normal()) {
+                this->queue_.set_accessed_by_device(source.normals_ptr(), N);
+            } else {
+                this->queue_.set_accessed_by_device(source.covs_ptr(), N);
+            }
+        }
+
+        // Device kernel: compute bin index for each point
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size();
+            const size_t global_size = this->queue_.get_global_size(N);
+            const auto point_ptr = source.points_ptr();
+            const auto cov_ptr = source.covs_ptr();
+            const auto normal_ptr = source.normals_ptr();
+            const auto bin_ptr = this->bin_indices_->data();
+            const auto n_elev = n_elevation;
+            const auto n_azim = n_azimuth;
+
+            if (source.has_normal()) {
+                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                    const size_t i = item.get_global_id(0);
+                    if (i >= N) return;
+                    bin_ptr[i] = kernel::compute_normal_bin_index(normal_ptr[i], n_elev, n_azim);
+                });
+            } else {
+                h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                    const size_t i = item.get_global_id(0);
+                    if (i >= N) return;
+                    Normal normal;
+                    algorithms::covariance::kernel::compute_normal_from_covariance(point_ptr[i], cov_ptr[i], normal);
+                    bin_ptr[i] = kernel::compute_normal_bin_index(normal, n_elev, n_azim);
+                });
+            }
+        });
+        event.wait_and_throw();
+
+        // mem_advise clear device
+        {
+            this->queue_.clear_accessed_by_device(this->bin_indices_->data(), N);
+            this->queue_.clear_accessed_by_device(source.points_ptr(), N);
+            if (source.has_normal()) {
+                this->queue_.clear_accessed_by_device(source.normals_ptr(), N);
+            } else {
+                this->queue_.clear_accessed_by_device(source.covs_ptr(), N);
+            }
+        }
+
+        // Host: build bins and round-robin sample
+        {
+            this->queue_.set_accessed_by_host(this->flags_->data(), N);
+            this->queue_.set_accessed_by_host(this->bin_indices_->data(), N);
+        }
+
+        // Build bin lists (last slot n_bins holds invalid/non-finite normals)
+        std::vector<std::vector<size_t>> bins(n_bins + 1);
+        for (size_t i = 0; i < N; ++i) {
+            const uint32_t bin_idx = (*this->bin_indices_)[i];
+            bins[std::min(bin_idx, n_bins)].push_back(i);
+        }
+
+        // Shuffle within each valid bin for random fairness
+        for (uint32_t b = 0; b < n_bins; ++b) {
+            std::shuffle(bins[b].begin(), bins[b].end(), this->mt_);
+        }
+
+        // Collect non-empty valid bin indices
+        std::vector<size_t> active_bins;
+        for (uint32_t b = 0; b < n_bins; ++b) {
+            if (!bins[b].empty()) active_bins.push_back(b);
+        }
+
+        // Round-robin: cycle through active bins, one point per bin per round
+        std::vector<size_t> bin_cursors(n_bins, 0);
+        size_t selected = 0;
+        bool progress = true;
+        while (selected < sampling_num && progress) {
+            progress = false;
+            for (const size_t b : active_bins) {
+                if (selected >= sampling_num) break;
+                if (bin_cursors[b] < bins[b].size()) {
+                    (*this->flags_)[bins[b][bin_cursors[b]++]] = INCLUDE_FLAG;
+                    ++selected;
+                    progress = true;
+                }
+            }
+        }
+
+        {
+            this->queue_.clear_accessed_by_host(this->flags_->data(), N);
+            this->queue_.clear_accessed_by_host(this->bin_indices_->data(), N);
         }
 
         this->filter_by_flags(source, output);

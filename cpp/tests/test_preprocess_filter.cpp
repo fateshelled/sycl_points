@@ -271,5 +271,180 @@ TEST_F(PreprocessFilterTest, AngleIncidenceFilterValidatesAngles) {
     EXPECT_THROW(filter.angle_incidence_filter(shared_cloud, 0.1f, 2.0f), std::invalid_argument);
 }
 
+TEST_F(PreprocessFilterTest, NormalSamplingThrowsWithoutNormals) {
+
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(10);
+    for (size_t i = 0; i < 10; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+    }
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(filter.normal_sampling(shared_cloud, 5), std::runtime_error);
+}
+
+TEST_F(PreprocessFilterTest, NormalSamplingNoOpWhenSamplingCountTooLarge) {
+
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.normals->resize(3);
+    (*cpu_cloud.points)[0] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[1] = PointType(2.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[2] = PointType(3.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.normals)[0] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+    (*cpu_cloud.normals)[1] = Normal(0.0f, 1.0f, 0.0f, 0.0f);
+    (*cpu_cloud.normals)[2] = Normal(0.0f, 0.0f, 1.0f, 0.0f);
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.normal_sampling(shared_cloud, 10);
+
+    ASSERT_EQ(shared_cloud.size(), 3U);
+}
+
+TEST_F(PreprocessFilterTest, NormalSamplingReducesCount) {
+
+    PointCloudCPU cpu_cloud;
+    const size_t num_points = 100;
+    cpu_cloud.points->resize(num_points);
+    cpu_cloud.normals->resize(num_points);
+    for (size_t i = 0; i < num_points; ++i) {
+        const float angle = static_cast<float>(i) / num_points * 2.0f * M_PIf;
+        (*cpu_cloud.points)[i] = PointType(std::cos(angle), std::sin(angle), 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = Normal(std::cos(angle), std::sin(angle), 0.0f, 0.0f);
+    }
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.normal_sampling(shared_cloud, 20);
+
+    ASSERT_EQ(shared_cloud.size(), 20U);
+}
+
+TEST_F(PreprocessFilterTest, NormalSamplingAchievesUniformDistribution) {
+
+    // 4 groups of 20 points with normals pointing into 4 distinct spherical bins (2x2 grid).
+    // With equal-sized bins the round-robin must select exactly 5 points per group.
+    //
+    // Bin assignment with n_elevation=2, n_azimuth=2:
+    //   ny < 0, nz < 0  -> elev_bin 0, azim_bin 0 -> bin 0
+    //   ny > 0, nz < 0  -> elev_bin 0, azim_bin 1 -> bin 1
+    //   ny < 0, nz > 0  -> elev_bin 1, azim_bin 0 -> bin 2
+    //   ny > 0, nz > 0  -> elev_bin 1, azim_bin 1 -> bin 3
+    const float val = 1.0f / std::sqrt(2.0f);
+    const Normal group_normals[4] = {
+        Normal(0.0f, -val, -val, 0.0f),
+        Normal(0.0f, +val, -val, 0.0f),
+        Normal(0.0f, -val, +val, 0.0f),
+        Normal(0.0f, +val, +val, 0.0f),
+    };
+
+    const size_t points_per_group = 20;
+    const size_t num_points = points_per_group * 4;
+
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(num_points);
+    cpu_cloud.normals->resize(num_points);
+    for (size_t g = 0; g < 4; ++g) {
+        for (size_t j = 0; j < points_per_group; ++j) {
+            const size_t idx = g * points_per_group + j;
+            (*cpu_cloud.points)[idx] = PointType(static_cast<float>(idx), 0.0f, 0.0f, 1.0f);
+            (*cpu_cloud.normals)[idx] = group_normals[g];
+        }
+    }
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.set_random_seed(42);
+    filter.set_normal_sampling_bins(2, 2);
+
+    const size_t sampling_num = 20;
+    filter.normal_sampling(shared_cloud, sampling_num);
+
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+    ASSERT_TRUE(shared_cloud.has_normal());
+
+    // Count how many points were selected from each group
+    size_t counts[4] = {0, 0, 0, 0};
+    for (size_t i = 0; i < shared_cloud.size(); ++i) {
+        const Normal& n = (*shared_cloud.normals)[i];
+        if (n.y() < 0.0f && n.z() < 0.0f) ++counts[0];
+        else if (n.y() > 0.0f && n.z() < 0.0f) ++counts[1];
+        else if (n.y() < 0.0f && n.z() > 0.0f) ++counts[2];
+        else if (n.y() > 0.0f && n.z() > 0.0f) ++counts[3];
+    }
+
+    // Round-robin over 4 equal bins for 20 samples -> exactly 5 per bin
+    const size_t expected_per_group = sampling_num / 4;
+    EXPECT_EQ(counts[0], expected_per_group);
+    EXPECT_EQ(counts[1], expected_per_group);
+    EXPECT_EQ(counts[2], expected_per_group);
+    EXPECT_EQ(counts[3], expected_per_group);
+}
+
+TEST_F(PreprocessFilterTest, NormalSamplingWorksWithCovariance) {
+
+    // Two groups with covariances whose smallest eigenvector (normal) lies in different bins:
+    //   Group A: cov = diag(1, 1, 0.001)  -> normal ~ (0, 0, 1)  -> upper hemisphere
+    //   Group B: cov = diag(0.001, 1, 1)  -> normal ~ (1, 0, 0)  -> equatorial
+    const size_t points_per_group = 50;
+    const size_t num_points = points_per_group * 2;
+
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(num_points);
+    cpu_cloud.covs->resize(num_points);
+
+    for (size_t i = 0; i < num_points; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        Covariance cov = Covariance::Zero();
+        if (i < points_per_group) {
+            cov(0, 0) = 1.0f; cov(1, 1) = 1.0f; cov(2, 2) = 0.001f;
+        } else {
+            cov(0, 0) = 0.001f; cov(1, 1) = 1.0f; cov(2, 2) = 1.0f;
+        }
+        (*cpu_cloud.covs)[i] = cov;
+    }
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.set_normal_sampling_bins(2, 4);
+
+    const size_t sampling_num = 20;
+    filter.normal_sampling(shared_cloud, sampling_num);
+
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+}
+
+TEST_F(PreprocessFilterTest, NormalSamplingKeepsAttributes) {
+
+    const size_t num_points = 40;
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(num_points);
+    cpu_cloud.normals->resize(num_points);
+    cpu_cloud.intensities->resize(num_points);
+
+    const float val = 1.0f / std::sqrt(2.0f);
+    const Normal normals[2] = {Normal(0.0f, -val, -val, 0.0f), Normal(0.0f, +val, +val, 0.0f)};
+    for (size_t i = 0; i < num_points; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = normals[i % 2];
+        (*cpu_cloud.intensities)[i] = static_cast<float>(i);
+    }
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.set_normal_sampling_bins(2, 2);
+
+    filter.normal_sampling(shared_cloud, 10);
+
+    ASSERT_EQ(shared_cloud.size(), 10U);
+    EXPECT_TRUE(shared_cloud.has_normal());
+    EXPECT_TRUE(shared_cloud.has_intensity());
+}
+
 }  // namespace
 }  // namespace sycl_points
