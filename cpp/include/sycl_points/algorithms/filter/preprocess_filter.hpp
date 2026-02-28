@@ -98,6 +98,37 @@ public:
         this->farthest_point_sampling_impl(source, output, sampling_num);
     }
 
+    /// @brief Normal Histogram Bucket Sampling
+    ///
+    /// Divides the unit hemisphere into longitude×latitude bins and samples equally from each bin,
+    /// ensuring the selected points cover all normal directions for GICP constraint coverage.
+    /// Requires pre-computed normals or covariance matrices.
+    ///
+    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param sampling_num Number of points to retain after sampling
+    /// @param longitude_bins Number of bins along the longitude axis (default: 8)
+    /// @param latitude_bins Number of bins along the latitude axis, covering [0, π/2] (default: 4)
+    void normal_histogram_sampling(PointCloudShared& data, size_t sampling_num, size_t longitude_bins = 8,
+                                   size_t latitude_bins = 4) {
+        this->normal_histogram_sampling_impl(data, data, sampling_num, longitude_bins, latitude_bins);
+    }
+
+    /// @brief Normal Histogram Bucket Sampling
+    ///
+    /// Divides the unit hemisphere into longitude×latitude bins and samples equally from each bin,
+    /// ensuring the selected points cover all normal directions for GICP constraint coverage.
+    /// Requires pre-computed normals or covariance matrices.
+    ///
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param sampling_num Number of points to retain after sampling
+    /// @param longitude_bins Number of bins along the longitude axis (default: 8)
+    /// @param latitude_bins Number of bins along the latitude axis, covering [0, π/2] (default: 4)
+    void normal_histogram_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num,
+                                   size_t longitude_bins = 8, size_t latitude_bins = 4) {
+        this->normal_histogram_sampling_impl(source, output, sampling_num, longitude_bins, latitude_bins);
+    }
+
     /// @brief Filters points by incidence angle between point position and surface normal.
     /// @param data Point cloud to be filtered (modified in-place).
     /// @param min_angle Minimum allowable incidence angle in radians.
@@ -238,6 +269,110 @@ private:
 
         // mem_advise clear
         this->queue_.clear_accessed_by_host(this->flags_->data(), N);
+
+        this->filter_by_flags(source, output);
+    }
+
+    /// @brief Normal Histogram Bucket Sampling implementation
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param sampling_num Number of points to retain after sampling
+    /// @param longitude_bins Number of longitude bins
+    /// @param latitude_bins Number of latitude bins
+    void normal_histogram_sampling_impl(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num,
+                                        size_t longitude_bins, size_t latitude_bins) {
+        const size_t N = source.size();
+        if (N == 0) return;
+        if (N <= sampling_num) return;
+
+        if (!source.has_normal() && !source.has_cov()) {
+            throw std::runtime_error(
+                "[PreprocessFilter::normal_histogram_sampling] Normal vectors or covariance matrices must be "
+                "pre-computed.");
+        }
+
+        this->initialize_flags(N, REMOVE_FLAG).wait_and_throw();
+
+        // Access data on host
+        this->queue_.set_accessed_by_host(this->flags_->data(), N);
+        if (source.has_normal()) {
+            this->queue_.set_accessed_by_host(source.normals_ptr(), N);
+        } else {
+            // compute_normal_from_covariance requires both point position and covariance
+            this->queue_.set_accessed_by_host(source.points_ptr(), N);
+            this->queue_.set_accessed_by_host(source.covs_ptr(), N);
+        }
+
+        const size_t num_bins = longitude_bins * latitude_bins;
+        std::vector<std::vector<size_t>> bins(num_bins);
+
+        // Assign each point to a bin based on its normal direction
+        for (size_t i = 0; i < N; ++i) {
+            Normal normal;
+            if (source.has_normal()) {
+                normal = source.normals_ptr()[i];
+            } else {
+                algorithms::covariance::kernel::compute_normal_from_covariance(source.points_ptr()[i],
+                                                                               source.covs_ptr()[i], normal);
+            }
+
+            float nx = normal.x(), ny = normal.y(), nz = normal.z();
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            if (len < 1e-6f) continue;
+            nx /= len;
+            ny /= len;
+            nz /= len;
+
+            // Half-sphere symmetry: fold to upper hemisphere (nz >= 0)
+            if (nz < 0.0f) {
+                nx = -nx;
+                ny = -ny;
+                nz = -nz;
+            }
+
+            // Longitude bin: atan2(ny, nx) in [-π, π] → shifted to [0, 2π)
+            float lon = std::atan2(ny, nx);
+            if (lon < 0.0f) lon += 2.0f * eigen_utils::PI;
+            const size_t lon_bin =
+                std::min(static_cast<size_t>(lon / (2.0f * eigen_utils::PI) * longitude_bins), longitude_bins - 1);
+
+            // Latitude bin: acos(nz) in [0, π/2] → [0, latitude_bins)
+            const float lat = std::acos(std::min(nz, 1.0f));
+            const size_t lat_bin =
+                std::min(static_cast<size_t>(lat / (eigen_utils::PI * 0.5f) * latitude_bins), latitude_bins - 1);
+
+            bins[lon_bin + lat_bin * longitude_bins].push_back(i);
+        }
+
+        // Shuffle each bin for randomness within the bin
+        for (auto& bin : bins) {
+            std::shuffle(bin.begin(), bin.end(), this->mt_);
+        }
+
+        // Round-robin sampling across bins until sampling_num points are selected
+        size_t selected = 0;
+        std::vector<size_t> bin_offsets(num_bins, 0);
+        bool any_progress = true;
+        while (selected < sampling_num && any_progress) {
+            any_progress = false;
+            for (size_t b = 0; b < num_bins && selected < sampling_num; ++b) {
+                if (bin_offsets[b] < bins[b].size()) {
+                    (*this->flags_)[bins[b][bin_offsets[b]]] = INCLUDE_FLAG;
+                    ++bin_offsets[b];
+                    ++selected;
+                    any_progress = true;
+                }
+            }
+        }
+
+        // Clear memory advise
+        this->queue_.clear_accessed_by_host(this->flags_->data(), N);
+        if (source.has_normal()) {
+            this->queue_.clear_accessed_by_host(source.normals_ptr(), N);
+        } else {
+            this->queue_.clear_accessed_by_host(source.points_ptr(), N);
+            this->queue_.clear_accessed_by_host(source.covs_ptr(), N);
+        }
 
         this->filter_by_flags(source, output);
     }

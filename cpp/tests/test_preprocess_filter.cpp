@@ -271,5 +271,169 @@ TEST_F(PreprocessFilterTest, AngleIncidenceFilterValidatesAngles) {
     EXPECT_THROW(filter.angle_incidence_filter(shared_cloud, 0.1f, 2.0f), std::invalid_argument);
 }
 
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingNoOpWhenSamplingCountExceedsSize) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.normals->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.normal_histogram_sampling(shared_cloud, 10);
+
+    ASSERT_EQ(shared_cloud.size(), 3U);
+}
+
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingNoOpWhenSamplingCountEqualsSize) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.normals->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.normal_histogram_sampling(shared_cloud, 3);
+
+    ASSERT_EQ(shared_cloud.size(), 3U);
+}
+
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingThrowsWithoutNormalsOrCovs) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(5);
+    for (size_t i = 0; i < 5; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(filter.normal_histogram_sampling(shared_cloud, 3), std::runtime_error);
+}
+
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingRetainsCorrectCount) {
+    const size_t N = 100;
+    const size_t sampling_num = 20;
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(N);
+    cpu_cloud.normals->resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        // Spread normals across 4 cardinal equatorial directions
+        const float angle = static_cast<float>(i) / N * 2.0f * eigen_utils::PI;
+        (*cpu_cloud.normals)[i] = Normal(std::cos(angle), std::sin(angle), 0.0f, 0.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.normal_histogram_sampling(shared_cloud, sampling_num);
+
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+}
+
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingPreservesAttributes) {
+    const size_t N = 40;
+    const size_t sampling_num = 10;
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(N);
+    cpu_cloud.normals->resize(N);
+    cpu_cloud.intensities->resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+        (*cpu_cloud.intensities)[i] = static_cast<float>(i) * 0.1f;
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.normal_histogram_sampling(shared_cloud, sampling_num);
+
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+    ASSERT_TRUE(shared_cloud.has_normal());
+    ASSERT_TRUE(shared_cloud.has_intensity());
+    // Each selected point's intensity must match a valid intensity from the original cloud
+    for (size_t i = 0; i < shared_cloud.size(); ++i) {
+        const float x = (*shared_cloud.points)[i].x();
+        const float expected_intensity = x * 0.1f;
+        EXPECT_NEAR((*shared_cloud.intensities)[i], expected_intensity, 1e-5f);
+    }
+}
+
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingCoversAllBins) {
+    // 4 groups of 20 points, each with normals in one of the 4 cardinal equatorial directions.
+    // With 8 longitude bins and 1 latitude bin, the 4 groups map to bins 0, 2, 4, 6.
+    // Requesting sampling_num=4 should yield exactly 1 point from each group via round-robin.
+    const size_t group_size = 20;
+    const size_t N = 4 * group_size;
+    const size_t sampling_num = 4;
+
+    const std::array<Normal, 4> group_normals = {
+        Normal(1.0f, 0.0f, 0.0f, 0.0f),   // lon_bin=0 with 8 bins
+        Normal(0.0f, 1.0f, 0.0f, 0.0f),   // lon_bin=2
+        Normal(-1.0f, 0.0f, 0.0f, 0.0f),  // lon_bin=4
+        Normal(0.0f, -1.0f, 0.0f, 0.0f),  // lon_bin=6
+    };
+
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(N);
+    cpu_cloud.normals->resize(N);
+    for (size_t g = 0; g < 4; ++g) {
+        for (size_t j = 0; j < group_size; ++j) {
+            const size_t i = g * group_size + j;
+            (*cpu_cloud.points)[i] = PointType(static_cast<float>(g * 100 + j), 0.0f, 0.0f, 1.0f);
+            (*cpu_cloud.normals)[i] = group_normals[g];
+        }
+    }
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.normal_histogram_sampling(shared_cloud, sampling_num, /*longitude_bins=*/8, /*latitude_bins=*/1);
+
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+
+    // Each of the 4 direction groups must be represented in the output
+    std::array<bool, 4> group_covered = {false, false, false, false};
+    for (size_t i = 0; i < shared_cloud.size(); ++i) {
+        const auto& n = (*shared_cloud.normals)[i];
+        for (size_t g = 0; g < 4; ++g) {
+            const auto& gn = group_normals[g];
+            if (std::abs(n.x() - gn.x()) < 1e-3f && std::abs(n.y() - gn.y()) < 1e-3f) {
+                group_covered[g] = true;
+            }
+        }
+    }
+    for (size_t g = 0; g < 4; ++g) {
+        EXPECT_TRUE(group_covered[g]) << "Direction group " << g << " not covered in output";
+    }
+}
+
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingWorksWithCovariancesOnly) {
+    // Covariance matrix C = diag(0, 1, 1) → smallest eigenvalue eigenvector = (1, 0, 0) → normal along +x
+    const size_t N = 40;
+    const size_t sampling_num = 10;
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(N);
+    cpu_cloud.covs->resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        Covariance cov = Covariance::Zero();
+        // Small eigenvalue in x → normal along +x
+        cov(0, 0) = 1e-4f;
+        cov(1, 1) = 1.0f;
+        cov(2, 2) = 1.0f;
+        (*cpu_cloud.covs)[i] = cov;
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_NO_THROW(filter.normal_histogram_sampling(shared_cloud, sampling_num));
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+}
+
 }  // namespace
 }  // namespace sycl_points
