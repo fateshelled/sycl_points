@@ -303,6 +303,68 @@ TEST_F(PreprocessFilterTest, NormalHistogramSamplingNoOpWhenSamplingCountEqualsS
     ASSERT_EQ(shared_cloud.size(), 3U);
 }
 
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingCopiesSourceWhenSamplingCountExceedsSize) {
+    PointCloudCPU src_cpu;
+    src_cpu.points->resize(3);
+    src_cpu.normals->resize(3);
+    src_cpu.intensities->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*src_cpu.points)[i] = PointType(static_cast<float>(i + 1), static_cast<float>(i + 2), 0.0f, 1.0f);
+        (*src_cpu.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+        (*src_cpu.intensities)[i] = static_cast<float>(i) * 0.5f;
+    }
+
+    PointCloudShared source(*queue_, src_cpu);
+    PointCloudCPU dummy_cpu;
+    dummy_cpu.points->resize(1);
+    (*dummy_cpu.points)[0] = PointType(999.0f, 999.0f, 999.0f, 1.0f);
+    PointCloudShared output(*queue_, dummy_cpu);
+
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.normal_histogram_sampling(source, output, 10);
+
+    ASSERT_EQ(output.size(), source.size());
+    ASSERT_TRUE(output.has_normal());
+    ASSERT_TRUE(output.has_intensity());
+    for (size_t i = 0; i < source.size(); ++i) {
+        EXPECT_TRUE((*output.points)[i].isApprox((*source.points)[i], 1e-6f));
+        EXPECT_TRUE((*output.normals)[i].isApprox((*source.normals)[i], 1e-6f));
+        EXPECT_NEAR((*output.intensities)[i], (*source.intensities)[i], 1e-6f);
+    }
+}
+
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingThrowsOnZeroBinSize) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(8);
+    cpu_cloud.normals->resize(8);
+    for (size_t i = 0; i < 8; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(filter.normal_histogram_sampling(shared_cloud, 4, 0, 4), std::invalid_argument);
+    EXPECT_THROW(filter.normal_histogram_sampling(shared_cloud, 4, 4, 0), std::invalid_argument);
+}
+
+TEST_F(PreprocessFilterTest, NormalHistogramSamplingThrowsOnBinCountOverflow) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(8);
+    cpu_cloud.normals->resize(8);
+    for (size_t i = 0; i < 8; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(
+        filter.normal_histogram_sampling(shared_cloud, 4, std::numeric_limits<size_t>::max(), 2), std::overflow_error);
+}
+
 TEST_F(PreprocessFilterTest, NormalHistogramSamplingThrowsWithoutNormalsOrCovs) {
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(5);
@@ -396,16 +458,19 @@ TEST_F(PreprocessFilterTest, NormalHistogramSamplingCoversAllBins) {
 
     ASSERT_EQ(shared_cloud.size(), sampling_num);
 
-    // Each of the 4 direction groups must be represented in the output
+    // Each of the 4 direction groups must be represented in the output.
     std::array<bool, 4> group_covered = {false, false, false, false};
     for (size_t i = 0; i < shared_cloud.size(); ++i) {
         const auto& n = (*shared_cloud.normals)[i];
+        bool matched = false;
         for (size_t g = 0; g < 4; ++g) {
-            const auto& gn = group_normals[g];
-            if (std::abs(n.x() - gn.x()) < 1e-3f && std::abs(n.y() - gn.y()) < 1e-3f) {
+            if (n.isApprox(group_normals[g], 1e-3f)) {
                 group_covered[g] = true;
+                matched = true;
+                break;
             }
         }
+        EXPECT_TRUE(matched) << "Sampled normal does not match any expected group normal.";
     }
     for (size_t g = 0; g < 4; ++g) {
         EXPECT_TRUE(group_covered[g]) << "Direction group " << g << " not covered in output";

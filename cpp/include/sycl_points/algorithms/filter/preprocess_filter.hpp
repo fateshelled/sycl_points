@@ -315,8 +315,27 @@ private:
     void normal_histogram_sampling_impl(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num,
                                         size_t longitude_bins, size_t latitude_bins) {
         const size_t N = source.size();
-        if (N == 0) return;
-        if (N <= sampling_num) return;
+        if (N == 0) {
+            output = PointCloudShared(output.queue);
+            return;
+        }
+        if (N <= sampling_num) {
+            // Keep output behavior consistent between in-place and out-of-place overloads.
+            output = PointCloudShared(output.queue, source);
+            return;
+        }
+
+        if (longitude_bins == 0 || latitude_bins == 0) {
+            throw std::invalid_argument(
+                "[PreprocessFilter::normal_histogram_sampling] longitude_bins and latitude_bins must be greater "
+                "than zero.");
+        }
+
+        if (longitude_bins > std::numeric_limits<size_t>::max() / latitude_bins) {
+            throw std::overflow_error(
+                "[PreprocessFilter::normal_histogram_sampling] Bin count overflow: longitude_bins * latitude_bins "
+                "is too large.");
+        }
 
         if (!source.has_normal() && !source.has_cov()) {
             throw std::runtime_error(
