@@ -435,5 +435,149 @@ TEST_F(PreprocessFilterTest, NormalHistogramSamplingWorksWithCovariancesOnly) {
     ASSERT_EQ(shared_cloud.size(), sampling_num);
 }
 
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingNoOpWhenSamplingCountExceedsSize) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.normals->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.spherical_fibonacci_sampling(shared_cloud, 10);
+
+    ASSERT_EQ(shared_cloud.size(), 3U);
+}
+
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingNoOpWhenSamplingCountEqualsSize) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.normals->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.spherical_fibonacci_sampling(shared_cloud, 3);
+
+    ASSERT_EQ(shared_cloud.size(), 3U);
+}
+
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingThrowsWithoutNormalsOrCovs) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(5);
+    for (size_t i = 0; i < 5; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(filter.spherical_fibonacci_sampling(shared_cloud, 3), std::runtime_error);
+}
+
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingRetainsCorrectCount) {
+    const size_t N = 100;
+    const size_t sampling_num = 20;
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(N);
+    cpu_cloud.normals->resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        const float angle = static_cast<float>(i) / N * 2.0f * eigen_utils::PI;
+        (*cpu_cloud.normals)[i] = Normal(std::cos(angle), std::sin(angle), 0.0f, 0.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.spherical_fibonacci_sampling(shared_cloud, sampling_num);
+
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+}
+
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingSelectsUniquePoints) {
+    // Each point has a unique x-coordinate; after sampling, all x-coordinates must be distinct.
+    const size_t N = 50;
+    const size_t sampling_num = 10;
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(N);
+    cpu_cloud.normals->resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        // Spread normals uniformly on the equator
+        const float angle = static_cast<float>(i) / N * 2.0f * eigen_utils::PI;
+        (*cpu_cloud.normals)[i] = Normal(std::cos(angle), std::sin(angle), 0.0f, 0.0f);
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.spherical_fibonacci_sampling(shared_cloud, sampling_num);
+
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+
+    // Verify all selected points are distinct (unique x-coordinates)
+    std::vector<float> xs;
+    xs.reserve(sampling_num);
+    for (size_t i = 0; i < shared_cloud.size(); ++i) {
+        xs.push_back((*shared_cloud.points)[i].x());
+    }
+    std::sort(xs.begin(), xs.end());
+    const bool all_unique = std::adjacent_find(xs.begin(), xs.end()) == xs.end();
+    EXPECT_TRUE(all_unique) << "Duplicate points found in Fibonacci sampling output";
+}
+
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingPreservesAttributes) {
+    const size_t N = 50;
+    const size_t sampling_num = 10;
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(N);
+    cpu_cloud.normals->resize(N);
+    cpu_cloud.intensities->resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        const float angle = static_cast<float>(i) / N * 2.0f * eigen_utils::PI;
+        (*cpu_cloud.normals)[i] = Normal(std::cos(angle), std::sin(angle), 0.0f, 0.0f);
+        (*cpu_cloud.intensities)[i] = static_cast<float>(i) * 2.0f;
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.spherical_fibonacci_sampling(shared_cloud, sampling_num);
+
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+    ASSERT_TRUE(shared_cloud.has_normal());
+    ASSERT_TRUE(shared_cloud.has_intensity());
+    // Each selected point's intensity must match its original value (intensity = x * 2)
+    for (size_t i = 0; i < shared_cloud.size(); ++i) {
+        const float x = (*shared_cloud.points)[i].x();
+        EXPECT_NEAR((*shared_cloud.intensities)[i], x * 2.0f, 1e-5f);
+    }
+}
+
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingWorksWithCovariancesOnly) {
+    const size_t N = 50;
+    const size_t sampling_num = 10;
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(N);
+    cpu_cloud.covs->resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        // Covariance with small eigenvalue in x → normal along +x
+        Covariance cov = Covariance::Zero();
+        cov(0, 0) = 1e-4f;
+        cov(1, 1) = 1.0f;
+        cov(2, 2) = 1.0f;
+        (*cpu_cloud.covs)[i] = cov;
+    }
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_NO_THROW(filter.spherical_fibonacci_sampling(shared_cloud, sampling_num));
+    ASSERT_EQ(shared_cloud.size(), sampling_num);
+}
+
 }  // namespace
 }  // namespace sycl_points

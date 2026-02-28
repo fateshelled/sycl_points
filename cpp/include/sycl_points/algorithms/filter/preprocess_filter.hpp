@@ -129,6 +129,39 @@ public:
         this->normal_histogram_sampling_impl(source, output, sampling_num, longitude_bins, latitude_bins);
     }
 
+    /// @brief Spherical Fibonacci Grid Sampling
+    ///
+    /// Generates sampling_num uniformly distributed target directions on S² using the golden-ratio
+    /// Fibonacci lattice, then selects the point whose normal direction is closest (by absolute dot
+    /// product) to each target. This provides mathematically near-optimal sphere coverage and
+    /// guarantees constraints in all directions for GICP.
+    /// Requires pre-computed normals or covariance matrices.
+    ///
+    /// Time complexity: O(N × sampling_num) on CPU.
+    ///
+    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param sampling_num Number of points to retain after sampling
+    void spherical_fibonacci_sampling(PointCloudShared& data, size_t sampling_num) {
+        this->spherical_fibonacci_sampling_impl(data, data, sampling_num);
+    }
+
+    /// @brief Spherical Fibonacci Grid Sampling
+    ///
+    /// Generates sampling_num uniformly distributed target directions on S² using the golden-ratio
+    /// Fibonacci lattice, then selects the point whose normal direction is closest (by absolute dot
+    /// product) to each target. This provides mathematically near-optimal sphere coverage and
+    /// guarantees constraints in all directions for GICP.
+    /// Requires pre-computed normals or covariance matrices.
+    ///
+    /// Time complexity: O(N × sampling_num) on CPU.
+    ///
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param sampling_num Number of points to retain after sampling
+    void spherical_fibonacci_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
+        this->spherical_fibonacci_sampling_impl(source, output, sampling_num);
+    }
+
     /// @brief Filters points by incidence angle between point position and surface normal.
     /// @param data Point cloud to be filtered (modified in-place).
     /// @param min_angle Minimum allowable incidence angle in radians.
@@ -373,6 +406,93 @@ private:
             this->queue_.clear_accessed_by_host(source.points_ptr(), N);
             this->queue_.clear_accessed_by_host(source.covs_ptr(), N);
         }
+
+        this->filter_by_flags(source, output);
+    }
+
+    /// @brief Spherical Fibonacci Grid Sampling implementation
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param sampling_num Number of points to retain after sampling
+    void spherical_fibonacci_sampling_impl(const PointCloudShared& source, PointCloudShared& output,
+                                           size_t sampling_num) {
+        const size_t N = source.size();
+        if (N == 0) return;
+        if (N <= sampling_num) return;
+
+        if (!source.has_normal() && !source.has_cov()) {
+            throw std::runtime_error(
+                "[PreprocessFilter::spherical_fibonacci_sampling] Normal vectors or covariance matrices must be "
+                "pre-computed.");
+        }
+
+        // Generate uniformly distributed target directions on S² via the Fibonacci lattice.
+        // z_i = 1 - (2i+1)/N places points from north to south pole.
+        // theta_i = 2π*i/φ (φ = golden ratio) distributes longitude uniformly without repetition.
+        const float golden_ratio = (1.0f + std::sqrt(5.0f)) * 0.5f;
+        std::vector<Eigen::Vector3f> targets(sampling_num);
+        for (size_t i = 0; i < sampling_num; ++i) {
+            const float z = 1.0f - (2.0f * static_cast<float>(i) + 1.0f) / static_cast<float>(sampling_num);
+            const float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
+            const float theta = 2.0f * eigen_utils::PI * static_cast<float>(i) / golden_ratio;
+            targets[i] = Eigen::Vector3f(r * std::cos(theta), r * std::sin(theta), z);
+        }
+
+        // Extract and normalize all normals on the host
+        if (source.has_normal()) {
+            this->queue_.set_accessed_by_host(source.normals_ptr(), N);
+        } else {
+            this->queue_.set_accessed_by_host(source.points_ptr(), N);
+            this->queue_.set_accessed_by_host(source.covs_ptr(), N);
+        }
+
+        std::vector<Eigen::Vector3f> normals(N);
+        for (size_t i = 0; i < N; ++i) {
+            Normal normal;
+            if (source.has_normal()) {
+                normal = source.normals_ptr()[i];
+            } else {
+                algorithms::covariance::kernel::compute_normal_from_covariance(source.points_ptr()[i],
+                                                                               source.covs_ptr()[i], normal);
+            }
+            const float nx = normal.x(), ny = normal.y(), nz = normal.z();
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            normals[i] = (len > 1e-6f) ? Eigen::Vector3f(nx / len, ny / len, nz / len) : Eigen::Vector3f::Zero();
+        }
+
+        if (source.has_normal()) {
+            this->queue_.clear_accessed_by_host(source.normals_ptr(), N);
+        } else {
+            this->queue_.clear_accessed_by_host(source.points_ptr(), N);
+            this->queue_.clear_accessed_by_host(source.covs_ptr(), N);
+        }
+
+        // For each Fibonacci target direction, select the closest unselected normal (half-sphere symmetric)
+        this->initialize_flags(N, REMOVE_FLAG).wait_and_throw();
+        this->queue_.set_accessed_by_host(this->flags_->data(), N);
+
+        std::vector<bool> used(N, false);
+        for (const auto& target : targets) {
+            float best_abs_dot = -1.0f;
+            size_t best_idx = N;  // invalid sentinel
+
+            for (size_t i = 0; i < N; ++i) {
+                if (used[i]) continue;
+                // |dot| accounts for half-sphere symmetry: n and -n are equivalent
+                const float abs_dot = std::abs(normals[i].dot(target));
+                if (abs_dot > best_abs_dot) {
+                    best_abs_dot = abs_dot;
+                    best_idx = i;
+                }
+            }
+
+            if (best_idx < N) {
+                (*this->flags_)[best_idx] = INCLUDE_FLAG;
+                used[best_idx] = true;
+            }
+        }
+
+        this->queue_.clear_accessed_by_host(this->flags_->data(), N);
 
         this->filter_by_flags(source, output);
     }
