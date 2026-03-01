@@ -114,10 +114,10 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             if (timestamp_type == sensor_msgs::msg::PointField::UINT32) {
                 // Ouster
                 // nanoseconds to milliseconds
-                const float timestamp_offset =
+                const float offset_ms =
                     static_cast<float>(reinterpret_cast<const uint32_t*>(&msg_bytes[base])[0]) * 1e-6f;
-                offsets[i] = timestamp_offset;
-                max_offset_ms = std::max(max_offset_ms, static_cast<double>(timestamp_offset));
+                offsets[i] = offset_ms;
+                max_offset_ms = std::max(max_offset_ms, static_cast<double>(offset_ms));
                 continue;
             }
 
