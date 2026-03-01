@@ -84,6 +84,14 @@ public:
             this->add_delta_time(ProcessName::compute_covariances, dt_covariance);
         }
 
+        // normal-aware intensity correction (applied after covariances are available)
+        {
+            double dt_normal_intensity_correction = 0.0;
+            time_utils::measure_execution([&]() { this->apply_normal_intensity_correction(); },
+                                          dt_normal_intensity_correction);
+            dt_preprocessing += dt_normal_intensity_correction;
+        }
+
         // angle incidence filter
         {
             double dt_angle_incidence_filter = 0.0;
@@ -334,7 +342,9 @@ private:
                                                       this->params_.scan_downsampling_random_num);
         }
 
-        if (this->params_.scan_intensity_correction_enable && this->preprocessed_pc_->has_intensity()) {
+        if (this->params_.scan_intensity_correction_enable &&
+            !this->params_.scan_intensity_correction_use_normal &&
+            this->preprocessed_pc_->has_intensity()) {
             algorithms::intensity_correction::correct_intensity(
                 *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
                 this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
@@ -350,10 +360,28 @@ private:
         }
     }
 
+    void apply_normal_intensity_correction() {
+        if (!this->params_.scan_intensity_correction_enable) return;
+        if (!this->params_.scan_intensity_correction_use_normal) return;
+        if (!this->preprocessed_pc_->has_intensity()) return;
+
+        // Derive normals from covariances computed in compute_covariances()
+        auto events = algorithms::covariance::compute_normals_from_covariances_async(*this->preprocessed_pc_);
+        events.wait_and_throw();
+
+        algorithms::intensity_correction::correct_intensity_with_normal(
+            *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
+            this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
+            this->params_.scan_intensity_correction_max_intensity,
+            this->params_.scan_intensity_correction_min_cos_theta);
+    }
+
     void compute_covariances() {
         if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
             this->params_.reg_params.rotation_constraint.enable ||
-            this->params_.scan_preprocess_angle_incidence_filter_enable) {
+            this->params_.scan_preprocess_angle_incidence_filter_enable ||
+            (this->params_.scan_intensity_correction_enable &&
+             this->params_.scan_intensity_correction_use_normal)) {
             // build KDTree
             const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
             auto events = src_tree->knn_search_async(
