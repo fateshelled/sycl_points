@@ -71,8 +71,9 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_color(
     const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
 
     // Color Jacobian: -gradient * P_tangent * J_geo
+    // Optimization: Compute (gradient * P_tangent) first to reduce operations
     const Eigen::Matrix<float, 3, 6> J_color = eigen_utils::multiply<3, 6>(
-        eigen_utils::multiply<3, 3, 6>(target_rgb_grad, eigen_utils::multiply<3, 3, 6>(tangent_proj, J_geo)), -1.0f);
+        eigen_utils::multiply<3, 3, 6>(eigen_utils::multiply<3, 3, 3>(target_rgb_grad, tangent_proj), J_geo), -1.0f);
 
     LinearizedKernelResult ret;
     // H = J.T * J
@@ -120,8 +121,9 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_intensity(
 
     // Intensity Jacobian: -gradient (row vector) * P_tangent * J_geo
     const Eigen::Matrix<float, 1, 3> grad_row = target_intensity_grad.transpose();
+    // Optimization: Compute (grad_row * P_tangent) first. (1x3)*(3x3) is cheaper than (3x3)*(3x6)
     const Eigen::Matrix<float, 1, 6> J_intensity = eigen_utils::multiply<1, 6>(
-        eigen_utils::multiply<1, 3, 6>(grad_row, eigen_utils::multiply<3, 3, 6>(tangent_proj, J_geo)), -1.0f);
+        eigen_utils::multiply<1, 3, 6>(eigen_utils::multiply<1, 3, 3>(grad_row, tangent_proj), J_geo), -1.0f);
     const Eigen::Matrix<float, 6, 1> J_intensity_T = eigen_utils::transpose<1, 6>(J_intensity);
 
     LinearizedKernelResult ret;
