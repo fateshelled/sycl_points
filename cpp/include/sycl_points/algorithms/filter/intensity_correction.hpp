@@ -69,7 +69,7 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
 /// @param max_intensity Maximum intensity after correction
 /// @param min_cos_theta Minimum cos(theta) to prevent division by zero at grazing angles (~10 deg = 0.17)
 inline void correct_intensity_with_normal(PointCloudShared& cloud, float exponent = 2.0f, float scale = 1.0f,
-                                          float min_intensity = 0.0f, float max_intensity = 1.0f,
+                                          float min_intensity = 0.0f, float max_intensity = 1000.0f,
                                           float min_cos_theta = 0.17f) {
     const size_t N = cloud.size();
     if (N == 0) {
