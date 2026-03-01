@@ -11,15 +11,17 @@ namespace algorithms {
 
 namespace intensity_correction {
 
-/// @brief Correct intensity based on distance and scaling
-///        (Intensity' = clamp(scale * Intensity * dist^exponent, min_intensity, max_intensity)
+/// @brief Correct intensity based on normalized distance and scaling
+///        (Intensity' = clamp(scale * Intensity * (dist/reference_distance)^exponent, min_intensity, max_intensity))
 /// @param cloud Point Cloud (will be updated in place)
 /// @param exponent Exponent for distance correction
 /// @param scale Scale factor
 /// @param min_intensity minimum intensity
 /// @param max_intensity maximum intensity
+/// @param reference_distance Reference distance for normalization
 inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, float scale = 1.0f,
-                              float min_intensity = 0.0f, float max_intensity = 1000.0f) {
+                              float min_intensity = 0.0f, float max_intensity = 1000.0f,
+                              float reference_distance = 1.0f) {
     const size_t N = cloud.size();
     if (N == 0) {
         return;
@@ -27,6 +29,9 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
 
     if (exponent < 0.0f) {
         throw std::runtime_error("[correct_intensity] exponent must be non-negative");
+    }
+    if (reference_distance <= 0.0f) {
+        throw std::runtime_error("[correct_intensity] reference_distance must be positive");
     }
     if (!cloud.has_intensity()) {
         throw std::runtime_error("[correct_intensity] Intensity field not found");
@@ -41,6 +46,7 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
         const float s = scale;
         const float min = min_intensity;
         const float max = max_intensity;
+        const float inv_ref_dist_sq = 1.0f / (reference_distance * reference_distance);
 
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
@@ -50,7 +56,8 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
 
             const auto point = point_ptr[i];
             const float dist_sq = point.x() * point.x() + point.y() * point.y() + point.z() * point.z();
-            const float corrected_intensity = intensity_ptr[i] * sycl::pow(dist_sq, exponent * 0.5f);
+            const float normalized_dist_sq = dist_sq * inv_ref_dist_sq;
+            const float corrected_intensity = intensity_ptr[i] * sycl::pow(normalized_dist_sq, exponent * 0.5f);
             intensity_ptr[i] = sycl::clamp(corrected_intensity * s, min, max);
         });
     });
@@ -58,8 +65,9 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
     event.wait_and_throw();
 }
 
-/// @brief Correct intensity based on distance and angle of incidence using surface normals
-///        (I' = clamp(scale * I * dist^exponent / max(cos(theta), min_cos_theta), min_intensity, max_intensity))
+/// @brief Correct intensity based on normalized distance and angle of incidence using surface normals
+///        (I' = clamp(scale * I * (dist/reference_distance)^exponent / max(cos(theta), min_cos_theta),
+///         min_intensity, max_intensity))
 ///        cos(theta) = |n . p| / dist  where n is the surface normal and p is the point position
 ///        (beam direction = -p/dist, so cos(theta) = |n . (-p/dist)| = |n . p| / dist)
 /// @param cloud Point Cloud with intensity and normals (will be updated in place)
@@ -68,9 +76,10 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
 /// @param min_intensity Minimum intensity after correction
 /// @param max_intensity Maximum intensity after correction
 /// @param min_cos_theta Minimum cos(theta) to prevent division by zero at grazing angles (~10 deg = 0.17)
+/// @param reference_distance Reference distance for normalization
 inline void correct_intensity_with_normal(PointCloudShared& cloud, float exponent = 2.0f, float scale = 1.0f,
                                           float min_intensity = 0.0f, float max_intensity = 1000.0f,
-                                          float min_cos_theta = 0.17f) {
+                                          float min_cos_theta = 0.17f, float reference_distance = 1.0f) {
     const size_t N = cloud.size();
     if (N == 0) {
         return;
@@ -81,6 +90,9 @@ inline void correct_intensity_with_normal(PointCloudShared& cloud, float exponen
     }
     if (min_cos_theta <= 0.0f) {
         throw std::runtime_error("[correct_intensity_with_normal] min_cos_theta must be positive");
+    }
+    if (reference_distance <= 0.0f) {
+        throw std::runtime_error("[correct_intensity_with_normal] reference_distance must be positive");
     }
     if (!cloud.has_intensity()) {
         throw std::runtime_error("[correct_intensity_with_normal] Intensity field not found");
@@ -100,6 +112,7 @@ inline void correct_intensity_with_normal(PointCloudShared& cloud, float exponen
         const float min = min_intensity;
         const float max = max_intensity;
         const float min_cos = min_cos_theta;
+        const float inv_ref_dist_sq = 1.0f / (reference_distance * reference_distance);
 
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
@@ -124,7 +137,9 @@ inline void correct_intensity_with_normal(PointCloudShared& cloud, float exponen
             const float n_dot_p = sycl::fabs(normal.x() * px + normal.y() * py + normal.z() * pz);
             const float cos_theta = sycl::max(n_dot_p / dist, min_cos);
 
-            const float corrected_intensity = intensity_ptr[i] * sycl::pow(dist_sq, exponent * 0.5f) / cos_theta;
+            const float normalized_dist_sq = dist_sq * inv_ref_dist_sq;
+            const float corrected_intensity =
+                intensity_ptr[i] * sycl::pow(normalized_dist_sq, exponent * 0.5f) / cos_theta;
             intensity_ptr[i] = sycl::clamp(corrected_intensity * s, min, max);
         });
     });

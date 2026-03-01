@@ -84,6 +84,41 @@ TEST(IntensityCorrectionTest, ThrowsNegativeExponent) {
                  std::runtime_error);
 }
 
+TEST(IntensityCorrectionTest, AppliesReferenceDistanceNormalization) {
+    sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+
+    sycl_points::PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(1);
+    cpu_cloud.intensities->resize(1);
+    (*cpu_cloud.points)[0] = sycl_points::PointType(2.0f, 0.0f, 0.0f, 1.0f);  // distance 2
+    (*cpu_cloud.intensities)[0] = 3.0f;
+
+    sycl_points::PointCloudShared shared_cloud(queue, cpu_cloud);
+    sycl_points::algorithms::intensity_correction::correct_intensity(
+        shared_cloud, 2.0f, 1.0f, 0.0f, 1000.0f, 2.0f);
+
+    ASSERT_TRUE(shared_cloud.has_intensity());
+    // (dist/reference_distance)^exp = (2/2)^2 = 1
+    EXPECT_NEAR((*shared_cloud.intensities)[0], 3.0f, 1e-5f);
+}
+
+TEST(IntensityCorrectionTest, ThrowsNonPositiveReferenceDistance) {
+    sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+
+    sycl_points::PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(1);
+    cpu_cloud.intensities->resize(1);
+    (*cpu_cloud.points)[0] = sycl_points::PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.intensities)[0] = 1.0f;
+
+    sycl_points::PointCloudShared shared_cloud(queue, cpu_cloud);
+    EXPECT_THROW(
+        sycl_points::algorithms::intensity_correction::correct_intensity(shared_cloud, 2.0f, 1.0f, 0.0f, 1.0f, 0.0f),
+        std::runtime_error);
+}
+
 // --- Normal-aware intensity correction tests ---
 
 TEST(IntensityCorrectionWithNormalTest, NormalPerpendicular_CosThetaEqualsOne) {
@@ -219,5 +254,24 @@ TEST(IntensityCorrectionWithNormalTest, ThrowsWithNonPositiveMinCosTheta) {
     EXPECT_THROW(
         sycl_points::algorithms::intensity_correction::correct_intensity_with_normal(
             shared_cloud, 2.0f, 1.0f, 0.0f, 1.0f, 0.0f),  // min_cos_theta = 0 → invalid
+        std::runtime_error);
+}
+
+TEST(IntensityCorrectionWithNormalTest, ThrowsWithNonPositiveReferenceDistance) {
+    sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+
+    sycl_points::PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(1);
+    cpu_cloud.intensities->resize(1);
+    cpu_cloud.normals->resize(1);
+    (*cpu_cloud.points)[0] = sycl_points::PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.intensities)[0] = 1.0f;
+    (*cpu_cloud.normals)[0] = sycl_points::Normal(1.0f, 0.0f, 0.0f, 0.0f);
+
+    sycl_points::PointCloudShared shared_cloud(queue, cpu_cloud);
+    EXPECT_THROW(
+        sycl_points::algorithms::intensity_correction::correct_intensity_with_normal(
+            shared_cloud, 2.0f, 1.0f, 0.0f, 1.0f, 0.5f, 0.0f),
         std::runtime_error);
 }
