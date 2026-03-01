@@ -98,7 +98,8 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
     double dt_from_ros2_msg = 0.0;
     time_utils::measure_execution(
         [&]() {
-            return fromROS2msg(*this->pipeline_->get_device_queue(), *msg, this->scan_pc_, this->msg_data_buffer_);
+            return fromROS2msg(*this->pipeline_->get_device_queue(), *msg, this->scan_pc_, this->msg_data_buffer_,
+                               this->params_.scan_use_reflectivity_as_intensity);
         },
         dt_from_ros2_msg);
 
@@ -131,8 +132,8 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
                 }
             }
 
-            this->covariance_marker_publisher_->publish_if_subscribed(msg->header,
-                                                                      this->pipeline_->get_registration_input_point_cloud());
+            this->covariance_marker_publisher_->publish_if_subscribed(
+                msg->header, this->pipeline_->get_registration_input_point_cloud());
 
             if (this->pub_submap_->get_subscription_count() > 0) {
                 auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), msg->header);

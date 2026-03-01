@@ -14,6 +14,7 @@ struct Parameters {
 
     std::string sycl_device_vendor = "intel";
     std::string sycl_device_type = "gpu";
+    bool scan_use_reflectivity_as_intensity = true;
     bool scan_intensity_correction_enable = true;
     float scan_intensity_correction_exp = 2.0f;
     float scan_intensity_correction_scale = 1e-3f;
