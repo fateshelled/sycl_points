@@ -168,7 +168,7 @@ public:
             }
             if (this->params_.robust.type != robust::RobustLossType::NONE &&
                 this->params_.photometric.robust_scale <= 0.0f) {
-                std::cout << "[Caution] `photometric.robust_scale` must be greater than zero. "
+                std::cerr << "[Caution] `photometric.robust_scale` must be greater than zero. "
                           << "Set to robust.init_scale." << std::endl;
                 this->params_.photometric.robust_scale = this->params_.robust.init_scale;
             }
