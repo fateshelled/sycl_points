@@ -532,6 +532,51 @@ TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingNoOpWhenSamplingCountEqua
     ASSERT_EQ(shared_cloud.size(), 3U);
 }
 
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingCopiesSourceWhenSamplingCountExceedsSize) {
+    PointCloudCPU src_cpu;
+    src_cpu.points->resize(3);
+    src_cpu.normals->resize(3);
+    src_cpu.intensities->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*src_cpu.points)[i] = PointType(static_cast<float>(i + 1), static_cast<float>(i + 2), 0.0f, 1.0f);
+        (*src_cpu.normals)[i] = Normal(1.0f, 0.0f, 0.0f, 0.0f);
+        (*src_cpu.intensities)[i] = static_cast<float>(i) * 2.0f;
+    }
+
+    PointCloudShared source(*queue_, src_cpu);
+    PointCloudCPU dummy_cpu;
+    dummy_cpu.points->resize(1);
+    (*dummy_cpu.points)[0] = PointType(999.0f, 999.0f, 999.0f, 1.0f);
+    PointCloudShared output(*queue_, dummy_cpu);
+
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.spherical_fibonacci_sampling(source, output, 10);
+
+    ASSERT_EQ(output.size(), source.size());
+    ASSERT_TRUE(output.has_normal());
+    ASSERT_TRUE(output.has_intensity());
+    for (size_t i = 0; i < source.size(); ++i) {
+        EXPECT_TRUE((*output.points)[i].isApprox((*source.points)[i], 1e-6f));
+        EXPECT_TRUE((*output.normals)[i].isApprox((*source.normals)[i], 1e-6f));
+        EXPECT_NEAR((*output.intensities)[i], (*source.intensities)[i], 1e-6f);
+    }
+}
+
+TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingReturnsEmptyOutputForEmptyInputOutOfPlace) {
+    PointCloudCPU empty_cpu;
+    PointCloudShared source(*queue_, empty_cpu);
+
+    PointCloudCPU dummy_cpu;
+    dummy_cpu.points->resize(1);
+    (*dummy_cpu.points)[0] = PointType(123.0f, 456.0f, 789.0f, 1.0f);
+    PointCloudShared output(*queue_, dummy_cpu);
+
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.spherical_fibonacci_sampling(source, output, 4);
+
+    ASSERT_EQ(output.size(), 0U);
+}
+
 TEST_F(PreprocessFilterTest, SphericalFibonacciSamplingThrowsWithoutNormalsOrCovs) {
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(5);

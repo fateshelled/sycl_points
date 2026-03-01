@@ -436,8 +436,15 @@ private:
     void spherical_fibonacci_sampling_impl(const PointCloudShared& source, PointCloudShared& output,
                                            size_t sampling_num) {
         const size_t N = source.size();
-        if (N == 0) return;
-        if (N <= sampling_num) return;
+        if (N == 0) {
+            output = PointCloudShared(output.queue);
+            return;
+        }
+        if (N <= sampling_num) {
+            // Keep output behavior consistent between in-place and out-of-place overloads.
+            output = PointCloudShared(output.queue, source);
+            return;
+        }
 
         if (!source.has_normal() && !source.has_cov()) {
             throw std::runtime_error(
