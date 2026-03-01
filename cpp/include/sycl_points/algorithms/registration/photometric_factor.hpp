@@ -142,7 +142,7 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
     const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
     const Eigen::Vector3f residual_color = color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);
 
-    return 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
+    return eigen_utils::frobenius_norm_squared<3>(residual_color);
 }
 
 /// @brief Evaluate intensity photometric error including geometric correction
