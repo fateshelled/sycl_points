@@ -348,7 +348,8 @@ private:
             algorithms::intensity_correction::correct_intensity(
                 *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
                 this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
-                this->params_.scan_intensity_correction_max_intensity);
+                this->params_.scan_intensity_correction_max_intensity,
+                this->params_.scan_intensity_correction_reference_distance);
         }
     }
 
@@ -373,7 +374,8 @@ private:
             *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
             this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
             this->params_.scan_intensity_correction_max_intensity,
-            this->params_.scan_intensity_correction_min_cos_theta);
+            this->params_.scan_intensity_correction_min_cos_theta,
+            this->params_.scan_intensity_correction_reference_distance);
     }
 
     void compute_covariances() {
