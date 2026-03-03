@@ -226,6 +226,24 @@ public:
     }
 
 private:
+    static float compute_median(std::vector<float>& values) {
+        if (values.empty()) {
+            return 0.0f;
+        }
+
+        const size_t mid = values.size() / 2;
+        std::nth_element(values.begin(), values.begin() + mid, values.end());
+        const float upper = values[mid];
+
+        if ((values.size() % 2) != 0U) {
+            return upper;
+        }
+
+        std::nth_element(values.begin(), values.begin() + (mid - 1), values.begin() + mid);
+        const float lower = values[mid - 1];
+        return 0.5f * (lower + upper);
+    }
+
     sycl_points::sycl_utils::DeviceQueue queue_;
     float distance_voxel_size_;
     float elevation_voxel_size_;
@@ -371,12 +389,13 @@ private:
 
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
         size_t group_begin = 0;
+        std::vector<float> intensity_values;
         while (group_begin < N) {
             const auto key = (*this->bit_ptr_)[sorted_indices[group_begin]];
             PointType point_sum = PointType::Zero();
             RGBType rgb_sum = RGBType::Zero();
-            float intensity_sum = 0.0f;
             float timestamp_sum = 0.0f;
+            intensity_values.clear();
 
             size_t group_end = group_begin;
             while (group_end < N && (*this->bit_ptr_)[sorted_indices[group_end]] == key) {
@@ -386,7 +405,7 @@ private:
                     rgb_sum += (*cloud.rgb)[idx];
                 }
                 if (has_intensity) {
-                    intensity_sum += (*cloud.intensities)[idx];
+                    intensity_values.push_back((*cloud.intensities)[idx]);
                 }
                 if (has_timestamp) {
                     timestamp_sum += (*cloud.timestamp_offsets)[idx];
@@ -401,7 +420,8 @@ private:
                     result.rgb->emplace_back(rgb_sum / point_count);
                 }
                 if (has_intensity) {
-                    result.intensities->emplace_back(intensity_sum / point_count);
+                    // Use the median intensity as a robust representative value for the voxel.
+                    result.intensities->emplace_back(compute_median(intensity_values));
                 }
                 if (has_timestamp) {
                     result.timestamp_offsets->emplace_back(timestamp_sum / point_count);
