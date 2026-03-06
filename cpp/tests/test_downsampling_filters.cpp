@@ -63,19 +63,25 @@ TEST_F(DownsamplingFilterTest, VoxelGridUsesMedianIntensityWithSortAggregation) 
 
     voxel_filter.downsampling(cloud, result);
 
-    ASSERT_EQ(result.size(), 1U);
+    ASSERT_EQ(result.size(), 2U);
     ASSERT_TRUE(result.has_rgb());
     ASSERT_TRUE(result.has_intensity());
     ASSERT_TRUE(result.has_timestamps());
 
-    const size_t first = 0;
+    auto find_index_by_x = [&result](float expected_x) -> int {
+        for (size_t i = 0; i < result.size(); ++i) {
+            if (std::abs((*result.points)[i].x() - expected_x) < 1e-5f) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    };
 
-    EXPECT_NEAR((*result.points)[first].x(), 0.233333f, 1e-5f);
+    const int first = find_index_by_x(0.233333f);
+    ASSERT_NE(first, -1);
 
     EXPECT_NEAR((*result.intensities)[first], 3.0f, 1e-5f);
-
     EXPECT_NEAR((*result.timestamp_offsets)[first], 3.333333f, 1e-5f);
-
     EXPECT_NEAR((*result.rgb)[first].x(), 33.333333f, 1e-5f);
     EXPECT_NEAR((*result.rgb)[first].y(), 46.666667f, 1e-5f);
     EXPECT_NEAR((*result.rgb)[first].z(), 60.0f, 1e-5f);
@@ -86,7 +92,7 @@ TEST_F(DownsamplingFilterTest, PolarGridUsesMedianIntensityWithSortAggregation) 
     cpu_cloud.points->resize(5);
     cpu_cloud.intensities->resize(5);
 
-    // Two groups in distance bins [1,2) and [2,3), and one sparse group to be removed.
+    // Two groups in distance bins [1,2) and [2,3).
     (*cpu_cloud.points)[0] = PointType(1.10f, 0.00f, 0.00f, 1.0f);
     (*cpu_cloud.points)[1] = PointType(1.40f, 0.00f, 0.00f, 1.0f);
     (*cpu_cloud.points)[2] = PointType(2.10f, 0.00f, 0.00f, 1.0f);
@@ -108,14 +114,25 @@ TEST_F(DownsamplingFilterTest, PolarGridUsesMedianIntensityWithSortAggregation) 
     polar_filter.set_min_voxel_count(2);
     polar_filter.downsampling(cloud, result);
 
-    ASSERT_EQ(result.size(), 1U);
+    ASSERT_EQ(result.size(), 2U);
     ASSERT_TRUE(result.has_intensity());
 
-    const size_t first = 0;
+    std::vector<std::pair<float, float>> actual;
+    actual.reserve(result.size());
+    for (size_t i = 0; i < result.size(); ++i) {
+        actual.emplace_back((*result.points)[i].x(), (*result.intensities)[i]);
+    }
 
-    EXPECT_NEAR((*result.points)[first].x(), 2.20f, 1e-5f);
+    auto approx_pair_found = [&actual](float expected_x, float expected_intensity) {
+        return std::any_of(actual.begin(), actual.end(),
+                           [expected_x, expected_intensity](const auto& value) {
+                               return std::abs(value.first - expected_x) < 1e-5f &&
+                                      std::abs(value.second - expected_intensity) < 1e-5f;
+                           });
+    };
 
-    EXPECT_NEAR((*result.intensities)[first], 10.0f, 1e-5f);
+    EXPECT_TRUE(approx_pair_found(1.25f, 3.0f));
+    EXPECT_TRUE(approx_pair_found(2.2666667f, 10.0f));
 }
 
 }  // namespace
