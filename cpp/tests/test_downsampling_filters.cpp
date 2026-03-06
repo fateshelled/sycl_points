@@ -24,7 +24,7 @@ class DownsamplingFilterTest : public ::testing::Test {
     std::unique_ptr<sycl_points::sycl_utils::DeviceQueue> queue_;
 };
 
-TEST_F(DownsamplingFilterTest, VoxelGridAveragesGroupedAttributesWithSortAggregation) {
+TEST_F(DownsamplingFilterTest, VoxelGridUsesMedianIntensityWithSortAggregation) {
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(5);
     cpu_cloud.rgb->resize(5);
@@ -35,7 +35,7 @@ TEST_F(DownsamplingFilterTest, VoxelGridAveragesGroupedAttributesWithSortAggrega
     (*cpu_cloud.points)[1] = PointType(0.40f, 0.00f, 0.00f, 1.0f);
     (*cpu_cloud.points)[2] = PointType(1.10f, 0.00f, 0.00f, 1.0f);
     (*cpu_cloud.points)[3] = PointType(1.40f, 0.00f, 0.00f, 1.0f);
-    (*cpu_cloud.points)[4] = PointType(2.10f, 0.00f, 0.00f, 1.0f);
+    (*cpu_cloud.points)[4] = PointType(0.20f, 0.00f, 0.00f, 1.0f);
 
     (*cpu_cloud.rgb)[0] = RGBType(10.0f, 20.0f, 30.0f, 1.0f);
     (*cpu_cloud.rgb)[1] = RGBType(20.0f, 40.0f, 60.0f, 1.0f);
@@ -47,7 +47,8 @@ TEST_F(DownsamplingFilterTest, VoxelGridAveragesGroupedAttributesWithSortAggrega
     (*cpu_cloud.intensities)[1] = 3.0f;
     (*cpu_cloud.intensities)[2] = 5.0f;
     (*cpu_cloud.intensities)[3] = 7.0f;
-    (*cpu_cloud.intensities)[4] = 11.0f;
+    (*cpu_cloud.intensities)[4] = 100.0f;
+
 
     (*cpu_cloud.timestamp_offsets)[0] = 0.0f;
     (*cpu_cloud.timestamp_offsets)[1] = 2.0f;
@@ -67,45 +68,43 @@ TEST_F(DownsamplingFilterTest, VoxelGridAveragesGroupedAttributesWithSortAggrega
     ASSERT_TRUE(result.has_intensity());
     ASSERT_TRUE(result.has_timestamps());
 
-    std::vector<size_t> order = {0, 1};
-    std::sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
-        return (*result.points)[lhs].x() < (*result.points)[rhs].x();
-    });
+    auto find_index_by_x = [&result](float expected_x) -> int {
+        for (size_t i = 0; i < result.size(); ++i) {
+            if (std::abs((*result.points)[i].x() - expected_x) < 1e-5f) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    };
 
-    const size_t first = order[0];
-    const size_t second = order[1];
+    const int first = find_index_by_x(0.233333f);
+    ASSERT_NE(first, -1);
 
-    EXPECT_NEAR((*result.points)[first].x(), 0.25f, 1e-5f);
-    EXPECT_NEAR((*result.points)[second].x(), 1.25f, 1e-5f);
-
-    EXPECT_NEAR((*result.intensities)[first], 2.0f, 1e-5f);
-    EXPECT_NEAR((*result.intensities)[second], 6.0f, 1e-5f);
-
-    EXPECT_NEAR((*result.timestamp_offsets)[first], 1.0f, 1e-5f);
-    EXPECT_NEAR((*result.timestamp_offsets)[second], 5.0f, 1e-5f);
-
-    EXPECT_NEAR((*result.rgb)[first].x(), 15.0f, 1e-5f);
-    EXPECT_NEAR((*result.rgb)[first].y(), 30.0f, 1e-5f);
-    EXPECT_NEAR((*result.rgb)[first].z(), 45.0f, 1e-5f);
+    EXPECT_NEAR((*result.intensities)[first], 3.0f, 1e-5f);
+    EXPECT_NEAR((*result.timestamp_offsets)[first], 3.333333f, 1e-5f);
+    EXPECT_NEAR((*result.rgb)[first].x(), 33.333333f, 1e-5f);
+    EXPECT_NEAR((*result.rgb)[first].y(), 46.666667f, 1e-5f);
+    EXPECT_NEAR((*result.rgb)[first].z(), 60.0f, 1e-5f);
 }
 
-TEST_F(DownsamplingFilterTest, PolarGridAveragesGroupedAttributesWithSortAggregation) {
+TEST_F(DownsamplingFilterTest, PolarGridUsesMedianIntensityWithSortAggregation) {
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(5);
     cpu_cloud.intensities->resize(5);
 
-    // Two groups in distance bins [1,2) and [2,3), and one sparse group to be removed.
+    // Two groups in distance bins [1,2) and [2,3).
     (*cpu_cloud.points)[0] = PointType(1.10f, 0.00f, 0.00f, 1.0f);
     (*cpu_cloud.points)[1] = PointType(1.40f, 0.00f, 0.00f, 1.0f);
     (*cpu_cloud.points)[2] = PointType(2.10f, 0.00f, 0.00f, 1.0f);
     (*cpu_cloud.points)[3] = PointType(2.30f, 0.00f, 0.00f, 1.0f);
-    (*cpu_cloud.points)[4] = PointType(3.20f, 0.00f, 0.00f, 1.0f);
+    (*cpu_cloud.points)[4] = PointType(2.40f, 0.00f, 0.00f, 1.0f);
 
     (*cpu_cloud.intensities)[0] = 2.0f;
     (*cpu_cloud.intensities)[1] = 4.0f;
     (*cpu_cloud.intensities)[2] = 6.0f;
     (*cpu_cloud.intensities)[3] = 10.0f;
     (*cpu_cloud.intensities)[4] = 100.0f;
+
 
     PointCloudShared cloud(*queue_, cpu_cloud);
     PointCloudShared result(*queue_);
@@ -118,19 +117,22 @@ TEST_F(DownsamplingFilterTest, PolarGridAveragesGroupedAttributesWithSortAggrega
     ASSERT_EQ(result.size(), 2U);
     ASSERT_TRUE(result.has_intensity());
 
-    std::vector<size_t> order = {0, 1};
-    std::sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
-        return (*result.points)[lhs].x() < (*result.points)[rhs].x();
-    });
+    std::vector<std::pair<float, float>> actual;
+    actual.reserve(result.size());
+    for (size_t i = 0; i < result.size(); ++i) {
+        actual.emplace_back((*result.points)[i].x(), (*result.intensities)[i]);
+    }
 
-    const size_t first = order[0];
-    const size_t second = order[1];
+    auto approx_pair_found = [&actual](float expected_x, float expected_intensity) {
+        return std::any_of(actual.begin(), actual.end(),
+                           [expected_x, expected_intensity](const auto& value) {
+                               return std::abs(value.first - expected_x) < 1e-5f &&
+                                      std::abs(value.second - expected_intensity) < 1e-5f;
+                           });
+    };
 
-    EXPECT_NEAR((*result.points)[first].x(), 1.25f, 1e-5f);
-    EXPECT_NEAR((*result.points)[second].x(), 2.20f, 1e-5f);
-
-    EXPECT_NEAR((*result.intensities)[first], 3.0f, 1e-5f);
-    EXPECT_NEAR((*result.intensities)[second], 8.0f, 1e-5f);
+    EXPECT_TRUE(approx_pair_found(1.25f, 3.0f));
+    EXPECT_TRUE(approx_pair_found(2.2666667f, 10.0f));
 }
 
 }  // namespace
