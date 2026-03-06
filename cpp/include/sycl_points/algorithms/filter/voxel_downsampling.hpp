@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <vector>
+
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 
@@ -50,11 +53,9 @@ public:
             result.resize(0);
             return;
         }
-        // compute Voxel map on host
-        const auto voxel_map = this->compute_voxel_bit_and_voxel_map(points);
-
-        // Voxel map to point cloud on host
-        this->voxel_map_to_cloud(voxel_map, result);
+        // Compute voxel keys on device and aggregate sorted groups on host.
+        const auto sorted_indices = this->compute_sorted_voxel_indices(points);
+        this->sorted_voxel_indices_to_cloud(points, sorted_indices, result);
     }
 
     /// @brief Voxel downsampling
@@ -68,19 +69,9 @@ public:
         }
         const auto start_time_ms = cloud.start_time_ms;
         const auto end_time_ms = cloud.end_time_ms;
-        // compute points map on host
-        const auto voxel_map = this->compute_voxel_bit_and_voxel_map(*cloud.points);
-
-        // compute other fields map on host
-        const auto rgb_map =
-            cloud.has_rgb() ? this->compute_voxel_map<RGBType>(*cloud.rgb) : std::unordered_map<uint64_t, RGBType>{};
-        const auto intensity_map = cloud.has_intensity() ? this->compute_voxel_map<float>(*cloud.intensities)
-                                                         : std::unordered_map<uint64_t, float>{};
-        const auto timestamp_map = cloud.has_timestamps() ? this->compute_voxel_map<float>(*cloud.timestamp_offsets)
-                                                          : std::unordered_map<uint64_t, float>{};
-
-        // Voxel map to point cloud on host
-        this->voxel_map_to_cloud(voxel_map, rgb_map, intensity_map, timestamp_map, result);
+        // Compute voxel keys on device and aggregate sorted groups on host.
+        const auto sorted_indices = this->compute_sorted_voxel_indices(*cloud.points);
+        this->sorted_voxel_indices_to_cloud(cloud, sorted_indices, result);
         if (cloud.has_timestamps()) {
             result.start_time_ms = start_time_ms;
             result.end_time_ms = end_time_ms;
@@ -88,6 +79,24 @@ public:
     }
 
 private:
+    static float compute_median(std::vector<float>& values) {
+        if (values.empty()) {
+            return 0.0f;
+        }
+
+        const size_t mid = values.size() / 2;
+        std::nth_element(values.begin(), values.begin() + mid, values.end());
+        const float upper = values[mid];
+
+        if ((values.size() % 2) != 0U) {
+            return upper;
+        }
+
+        std::nth_element(values.begin(), values.begin() + (mid - 1), values.begin() + mid);
+        const float lower = values[mid - 1];
+        return 0.5f * (lower + upper);
+    }
+
     sycl_points::sycl_utils::DeviceQueue queue_;
     float voxel_size_;
     float voxel_size_inv_;
@@ -127,42 +136,7 @@ private:
         }
     }
 
-    template <typename T>
-    std::unordered_map<uint64_t, T> compute_voxel_map(const shared_vector<T>& data) const {
-        const size_t N = data.size();
-        if (N == 0) {
-            return {};
-        }
-
-        // mem_advise set to host
-        {
-            this->queue_.set_accessed_by_host(this->bit_ptr_->data(), N);
-            this->queue_.set_accessed_by_host(data.data(), N);
-        }
-
-        std::unordered_map<uint64_t, T> voxel_map;
-        {
-            for (size_t i = 0; i < N; ++i) {
-                const auto voxel_bit = (*this->bit_ptr_)[i];
-                if (voxel_bit == VoxelConstants::invalid_coord) continue;
-                const auto it = voxel_map.find(voxel_bit);
-                if (it == voxel_map.end()) {
-                    voxel_map[voxel_bit] = data[i];
-                } else {
-                    it->second += data[i];
-                }
-            }
-        }
-        // mem_advise clear
-        {
-            this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), N);
-            this->queue_.clear_accessed_by_host(data.data(), N);
-        }
-
-        return voxel_map;
-    }
-
-    std::unordered_map<uint64_t, PointType> compute_voxel_bit_and_voxel_map(const PointContainerShared& points) {
+    std::vector<size_t> compute_sorted_voxel_indices(const PointContainerShared& points) {
         const size_t N = points.size();
         if (this->bit_ptr_->size() < N) {
             this->bit_ptr_->resize(N);
@@ -171,33 +145,70 @@ private:
         // compute bit on device
         this->compute_voxel_bit(points);
 
-        // compute Voxel map on host
-        return this->compute_voxel_map<PointType>(points);
+        // mem_advise set to host
+        {
+            this->queue_.set_accessed_by_host(this->bit_ptr_->data(), N);
+        }
+
+        // Collect valid points and sort by voxel key.
+        std::vector<size_t> sorted_indices;
+        sorted_indices.reserve(N);
+        for (size_t i = 0; i < N; ++i) {
+            if ((*this->bit_ptr_)[i] != VoxelConstants::invalid_coord) {
+                sorted_indices.push_back(i);
+            }
+        }
+
+        std::sort(sorted_indices.begin(), sorted_indices.end(), [&](size_t lhs, size_t rhs) {
+            return (*this->bit_ptr_)[lhs] < (*this->bit_ptr_)[rhs];
+        });
+
+        // mem_advise clear
+        {
+            this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), N);
+        }
+
+        return sorted_indices;
     }
 
-    void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
-                            PointContainerShared& result) const {
-        const size_t N = voxel_map.size();
+    void sorted_voxel_indices_to_cloud(const PointContainerShared& points, const std::vector<size_t>& sorted_indices,
+                                       PointContainerShared& result) const {
+        const size_t N = sorted_indices.size();
         result.clear();
         result.reserve(N);
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
-        for (const auto& [_, point] : voxel_map) {
-            const auto point_count = point.w();
-            if (point_count >= min_voxel_count) {
-                result.push_back(point / point_count);
+
+        // mem_advise set to host
+        this->queue_.set_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
+
+        size_t group_begin = 0;
+        while (group_begin < N) {
+            const auto key = (*this->bit_ptr_)[sorted_indices[group_begin]];
+            PointType point_sum = PointType::Zero();
+
+            size_t group_end = group_begin;
+            while (group_end < N && (*this->bit_ptr_)[sorted_indices[group_end]] == key) {
+                point_sum += points[sorted_indices[group_end]];
+                ++group_end;
             }
+
+            const auto point_count = point_sum.w();
+            if (point_count >= min_voxel_count) {
+                result.push_back(point_sum / point_count);
+            }
+            group_begin = group_end;
         }
+
+        // mem_advise clear
+        this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
     }
 
-    void voxel_map_to_cloud(const std::unordered_map<uint64_t, PointType>& voxel_map,
-                            const std::unordered_map<uint64_t, RGBType>& voxel_map_rgb,
-                            const std::unordered_map<uint64_t, float>& voxel_map_intensity,
-                            const std::unordered_map<uint64_t, float>& voxel_map_timestamp,
-                            PointCloudShared& result) const {
-        const size_t N = voxel_map.size();
-        const bool has_rgb = voxel_map_rgb.size() == N;
-        const bool has_intensity = voxel_map_intensity.size() == N;
-        const bool has_timestamp = voxel_map_timestamp.size() == N;
+    void sorted_voxel_indices_to_cloud(const PointCloudShared& cloud, const std::vector<size_t>& sorted_indices,
+                                       PointCloudShared& result) const {
+        const size_t N = sorted_indices.size();
+        const bool has_rgb = cloud.has_rgb();
+        const bool has_intensity = cloud.has_intensity();
+        const bool has_timestamp = cloud.has_timestamps();
         result.clear();
         result.reserve_points(N);
         if (has_rgb) {
@@ -210,23 +221,54 @@ private:
             result.reserve_timestamps(N);
         }
 
-        // to point cloud
+        // mem_advise set to host
+        this->queue_.set_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
+
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
-        for (const auto& [voxel_idx, point] : voxel_map) {
-            const auto point_count = point.w();
-            if (point_count >= min_voxel_count) {
-                result.points->emplace_back(point / point_count);
+        size_t group_begin = 0;
+        std::vector<float> intensity_values;
+        while (group_begin < N) {
+            const auto key = (*this->bit_ptr_)[sorted_indices[group_begin]];
+            PointType point_sum = PointType::Zero();
+            RGBType rgb_sum = RGBType::Zero();
+            float timestamp_sum = 0.0f;
+            intensity_values.clear();
+
+            size_t group_end = group_begin;
+            while (group_end < N && (*this->bit_ptr_)[sorted_indices[group_end]] == key) {
+                const size_t idx = sorted_indices[group_end];
+                point_sum += (*cloud.points)[idx];
                 if (has_rgb) {
-                    result.rgb->emplace_back(voxel_map_rgb.at(voxel_idx) / point_count);
+                    rgb_sum += (*cloud.rgb)[idx];
                 }
                 if (has_intensity) {
-                    result.intensities->emplace_back(voxel_map_intensity.at(voxel_idx) / point_count);
+                    intensity_values.push_back((*cloud.intensities)[idx]);
                 }
                 if (has_timestamp) {
-                    result.timestamp_offsets->emplace_back(voxel_map_timestamp.at(voxel_idx) / point_count);
+                    timestamp_sum += (*cloud.timestamp_offsets)[idx];
+                }
+                ++group_end;
+            }
+
+            const auto point_count = point_sum.w();
+            if (point_count >= min_voxel_count) {
+                result.points->emplace_back(point_sum / point_count);
+                if (has_rgb) {
+                    result.rgb->emplace_back(rgb_sum / point_count);
+                }
+                if (has_intensity) {
+                    // Use the median intensity as a robust representative value for the voxel.
+                    result.intensities->emplace_back(compute_median(intensity_values));
+                }
+                if (has_timestamp) {
+                    result.timestamp_offsets->emplace_back(timestamp_sum / point_count);
                 }
             }
+            group_begin = group_end;
         }
+
+        // mem_advise clear
+        this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
     }
 };
 
