@@ -13,6 +13,10 @@ lidar_odometry_node:
     T_base_link_to_lidar/qz: 0.0
     T_base_link_to_lidar/qw: 1.0
 
+    # Select whether additional point attributes are copied from input PointCloud2.
+    input/convert_rgb: true
+    input/convert_intensity: true
+
     scan/preprocess/box_filter/enable: true
     scan/preprocess/box_filter/max: 100.0
     scan/preprocess/box_filter/min: 0.4

@@ -12,7 +12,8 @@ namespace sycl_points {
 namespace ros2 {
 
 inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const sensor_msgs::msg::PointCloud2& msg,
-                        PointCloudShared::Ptr& cloud, sycl_points::shared_vector_ptr<uint8_t>& msg_buffer) {
+                        PointCloudShared::Ptr& cloud, sycl_points::shared_vector_ptr<uint8_t>& msg_buffer,
+                        bool convert_rgb = true, bool convert_intensity = true) {
     uint8_t x_type = 0;
     uint8_t y_type = 0;
     uint8_t z_type = 0;
@@ -73,14 +74,16 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         return true;
     }
 
-    const bool has_rgb_field = (rgb_offset >= 0) && (rgb_type == sensor_msgs::msg::PointField::FLOAT32 ||
-                                                     rgb_type == sensor_msgs::msg::PointField::UINT32);
-    if (rgb_offset >= 0 && !has_rgb_field) {
+    const bool has_rgb_field =
+        convert_rgb && (rgb_offset >= 0) &&
+        (rgb_type == sensor_msgs::msg::PointField::FLOAT32 || rgb_type == sensor_msgs::msg::PointField::UINT32);
+    if (convert_rgb && rgb_offset >= 0 && !has_rgb_field) {
         std::cerr << "Not supported rgb field type" << std::endl;
     }
 
-    const bool has_intensity_field = (intensity_offset >= 0) && intensity_type == sensor_msgs::msg::PointField::FLOAT32;
-    if (intensity_offset >= 0 && !has_intensity_field) {
+    const bool has_intensity_field =
+        convert_intensity && (intensity_offset >= 0) && intensity_type == sensor_msgs::msg::PointField::FLOAT32;
+    if (convert_intensity && intensity_offset >= 0 && !has_intensity_field) {
         std::cerr << "Not supported intensity field type" << std::endl;
     }
 
@@ -245,9 +248,10 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
 
 inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue,
                                          const sensor_msgs::msg::PointCloud2& msg,
-                                         sycl_points::shared_vector_ptr<uint8_t>& msg_buffer) {
+                                         sycl_points::shared_vector_ptr<uint8_t>& msg_buffer,
+                                         bool convert_rgb = true, bool convert_intensity = true) {
     PointCloudShared::Ptr ret = nullptr;
-    fromROS2msg(queue, msg, ret, msg_buffer);
+    fromROS2msg(queue, msg, ret, msg_buffer, convert_rgb, convert_intensity);
     return ret;
 }
 
