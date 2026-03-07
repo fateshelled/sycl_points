@@ -14,6 +14,8 @@ namespace ros2 {
 LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcpp::Node("lidar_odometry", options) {
     // get parameters
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
+    this->input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
+    this->input_convert_intensity_ = this->declare_parameter<bool>("input/convert_intensity", true);
 
     this->pipeline_ = std::make_unique<pipeline::lidar_odometry::LiDAROdometryPipeline>(this->params_);
     this->pipeline_->get_device_queue()->print_device_info();
@@ -58,6 +60,9 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
     RCLCPP_INFO(this->get_logger(), "Publish Keyframe Pose: %s", this->pub_keyframe_pose_->get_topic_name());
     RCLCPP_INFO(this->get_logger(), "Publish Covariance Markers: %s",
                 this->covariance_marker_publisher_->get_topic_name());
+    RCLCPP_INFO(this->get_logger(), "Input conversion - RGB: %s, intensity: %s",
+                this->input_convert_rgb_ ? "enabled" : "disabled",
+                this->input_convert_intensity_ ? "enabled" : "disabled");
 }
 
 /// @brief destructor
@@ -99,6 +104,7 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
     time_utils::measure_execution(
         [&]() {
             return fromROS2msg(*this->pipeline_->get_device_queue(), *msg, this->scan_pc_, this->msg_data_buffer_,
+                               this->input_convert_rgb_, this->input_convert_intensity_,
                                this->params_.scan_use_reflectivity_as_intensity);
         },
         dt_from_ros2_msg);
