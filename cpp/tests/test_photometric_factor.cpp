@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 
+#include "sycl_points/algorithms/feature/photometric_gradient.hpp"
+#include "sycl_points/algorithms/knn/result.hpp"
 #include "sycl_points/algorithms/registration/photometric_factor.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points::algorithms::registration::kernel {
@@ -151,3 +155,88 @@ TEST(PhotometricFactorTest, IntensityResidualZeroWhenSourceMatchesWarpedTarget) 
 
 }  // namespace
 }  // namespace sycl_points::algorithms::registration::kernel
+
+namespace {
+
+TEST(IntensityDifferenceCalculatorTest, ComputesDifferenceFromNeighborMean) {
+    sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+
+    sycl_points::PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3, sycl_points::PointType::Zero());
+    cpu_cloud.intensities->resize(3);
+    (*cpu_cloud.intensities)[0] = 10.0f;
+    (*cpu_cloud.intensities)[1] = 4.0f;
+    (*cpu_cloud.intensities)[2] = 16.0f;
+
+    sycl_points::PointCloudShared cloud(queue, cpu_cloud);
+
+    sycl_points::algorithms::knn::KNNResult neighbors;
+    neighbors.allocate(queue, cloud.size(), 2);
+    // Each point uses itself and one neighbor.
+    (*neighbors.indices)[0] = 0;
+    (*neighbors.indices)[1] = 1;
+    (*neighbors.indices)[2] = 1;
+    (*neighbors.indices)[3] = 2;
+    (*neighbors.indices)[4] = 2;
+    (*neighbors.indices)[5] = 0;
+
+    sycl_points::algorithms::intensity_difference::IntensityDifferenceCalculator calculator(queue);
+    calculator.compute_async(cloud, neighbors).wait_and_throw();
+
+    const auto diffs = calculator.intensity_differences();
+    ASSERT_EQ(diffs->size(), 3);
+    EXPECT_NEAR((*diffs)[0], 3.0f, 1e-5f);   // 10 - mean(10,4)
+    EXPECT_NEAR((*diffs)[1], -6.0f, 1e-5f);  // 4 - mean(4,16)
+    EXPECT_NEAR((*diffs)[2], 3.0f, 1e-5f);   // 16 - mean(16,10)
+}
+
+TEST(IntensityDifferenceCalculatorTest, IgnoresInvalidNeighborIndices) {
+    sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+
+    sycl_points::PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(2, sycl_points::PointType::Zero());
+    cpu_cloud.intensities->resize(2);
+    (*cpu_cloud.intensities)[0] = 8.0f;
+    (*cpu_cloud.intensities)[1] = 2.0f;
+
+    sycl_points::PointCloudShared cloud(queue, cpu_cloud);
+
+    sycl_points::algorithms::knn::KNNResult neighbors;
+    neighbors.allocate(queue, cloud.size(), 3);
+    (*neighbors.indices)[0] = -1;
+    (*neighbors.indices)[1] = 1;
+    (*neighbors.indices)[2] = -1;
+    (*neighbors.indices)[3] = -1;
+    (*neighbors.indices)[4] = -1;
+    (*neighbors.indices)[5] = -1;
+
+    sycl_points::algorithms::intensity_difference::IntensityDifferenceCalculator calculator(queue);
+    calculator.compute_async(cloud, neighbors).wait_and_throw();
+
+    const auto diffs = calculator.intensity_differences();
+    ASSERT_EQ(diffs->size(), 2);
+    EXPECT_NEAR((*diffs)[0], 6.0f, 1e-5f);  // 8 - mean(2)
+    EXPECT_NEAR((*diffs)[1], 0.0f, 1e-5f);  // no valid neighbors
+}
+
+TEST(IntensityDifferenceCalculatorTest, ThrowsWhenNeighborQuerySizeMismatch) {
+    sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+
+    sycl_points::PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(2, sycl_points::PointType::Zero());
+    cpu_cloud.intensities->resize(2, 1.0f);
+
+    sycl_points::PointCloudShared cloud(queue, cpu_cloud);
+
+    sycl_points::algorithms::knn::KNNResult neighbors;
+    neighbors.allocate(queue, 1, 1);
+    (*neighbors.indices)[0] = 0;
+
+    sycl_points::algorithms::intensity_difference::IntensityDifferenceCalculator calculator(queue);
+    EXPECT_THROW(calculator.compute_async(cloud, neighbors), std::runtime_error);
+}
+
+}  // namespace
