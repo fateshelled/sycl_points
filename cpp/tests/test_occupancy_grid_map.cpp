@@ -213,6 +213,83 @@ TEST(OccupancyGridMapTest, AggregatesColorAndIntensity) {
     }
 }
 
+TEST(OccupancyGridMapTest, AggregatesIntensityWithExponentialMovingAverageAcrossFrames) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
+        map.set_intensity_ema_alpha(0.5f);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.0f, 0.0f, 0.0f},
+            {0.05f, 0.0f, 0.0f},
+        };
+
+        const std::vector<float> first_intensities = {10.0f, 30.0f};
+        auto first_cloud = MakePointCloud(queue, input_positions, nullptr, &first_intensities);
+        map.add_point_cloud(first_cloud, Eigen::Isometry3f::Identity());
+
+        const std::vector<float> second_intensities = {50.0f, 70.0f};
+        auto second_cloud = MakePointCloud(queue, input_positions, nullptr, &second_intensities);
+        map.add_point_cloud(second_cloud, Eigen::Isometry3f::Identity());
+
+        sycl_points::PointCloudShared result(queue);
+        map.extract_occupied_points(result, Eigen::Isometry3f::Identity(), 1.0f);
+
+        ASSERT_EQ(result.size(), 1U);
+        ASSERT_TRUE(result.has_intensity());
+
+        // Frame means are 20 and 60. EMA(alpha=0.5) gives 20 -> 40.
+        const float intensity = (*result.intensities)[0];
+        EXPECT_NEAR(intensity, 40.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(OccupancyGridMapTest, RejectsOutOfRangeIntensityEmaAlpha) {
+    sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+    sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
+
+    EXPECT_THROW(map.set_intensity_ema_alpha(-0.01f), std::invalid_argument);
+    EXPECT_THROW(map.set_intensity_ema_alpha(1.01f), std::invalid_argument);
+}
+
+
+TEST(OccupancyGridMapTest, CanDisableIntensityAggregationToSkipIntensityOutput) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
+        map.set_intensity_integration_enabled(false);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.0f, 0.0f, 0.0f},
+            {0.05f, 0.0f, 0.0f},
+        };
+        const std::vector<sycl_points::RGBType> colors = {
+            sycl_points::RGBType(0.0f, 0.2f, 0.4f, 1.0f),
+            sycl_points::RGBType(0.2f, 0.4f, 0.6f, 1.0f),
+        };
+        const std::vector<float> intensities = {10.0f, 30.0f};
+
+        auto cloud = MakePointCloud(queue, input_positions, &colors, &intensities);
+        map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        sycl_points::PointCloudShared result(queue);
+        map.extract_occupied_points(result, Eigen::Isometry3f::Identity(), 1.0f);
+
+        ASSERT_EQ(result.size(), 1U);
+        ASSERT_TRUE(result.has_rgb());
+        EXPECT_FALSE(result.has_intensity());
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
 TEST(OccupancyGridMapTest, UpdatesFreeSpaceAlongRay) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
