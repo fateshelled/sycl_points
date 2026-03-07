@@ -90,6 +90,8 @@ This is a composable node that performs LiDAR odometry estimation.
 | -------------------------------------- | --------------: | ---------------------------------------------------------------------------------------------- |
 | scan/preprocess/box_filter/max         |           100.0 | remove points far away from the sensor                                                         |
 | scan/preprocess/box_filter/min         |             1.0 | remove points near the sensor (e.g., vehicle body, operator)                                   |
+| input/convert_rgb                      |            true | enable or disable RGB conversion from PointCloud2                                              |
+| input/convert_intensity                |            true | enable or disable intensity conversion from PointCloud2                                        |
 | registration/velocity_update/enable    |            true | enable deskew ※                                                                                |
 | scan/downsampling/polar/coord_system   |           LIDAR | coordinate system                                                                              |
 | scan/downsampling/polar/elevation_size |         0.01745 | elevation grid size (1 degrees)                                                                |
@@ -111,6 +113,8 @@ ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
     rosbag/uri:=${ROSBAG} \
     scan/preprocess/box_filter/max:=100.0 \
     scan/preprocess/box_filter/min:=1.0 \
+    input/convert_rgb:=true \
+    input/convert_intensity:=true \
     registration/velocity_update/enable:=${DESKEW} \
     scan/downsampling/polar/coord_system:=LIDAR \
     scan/downsampling/polar/elevation_size:=0.017453292519943295 \
@@ -142,6 +146,8 @@ ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
     rosbag/uri:=${ROSBAG} \
     scan/preprocess/box_filter/max:=10.0 \
     scan/preprocess/box_filter/min:=0.0 \
+    input/convert_rgb:=false \
+    input/convert_intensity:=true \
     registration/velocity_update/enable:=false \
     scan/downsampling/polar/coord_system:=CAMERA \
     scan/downsampling/polar/elevation_size:=0.01745 \
