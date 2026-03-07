@@ -28,6 +28,9 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
     // scan
     {
+        params.scan_intensity_difference_enable =
+            node->declare_parameter<bool>("scan/intensity_difference/enable", params.scan_intensity_difference_enable);
+
         params.scan_intensity_correction_enable =
             node->declare_parameter<bool>("scan/intensity_correction/enable", params.scan_intensity_correction_enable);
         params.scan_intensity_correction_exp =

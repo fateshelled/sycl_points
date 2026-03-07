@@ -61,6 +61,8 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
     RCLCPP_INFO(this->get_logger(), "Input conversion - RGB: %s, intensity: %s",
                 this->params_.input_convert_rgb ? "enabled" : "disabled",
                 this->params_.input_convert_intensity ? "enabled" : "disabled");
+    RCLCPP_INFO(this->get_logger(), "Scan intensity difference: %s",
+                this->params_.scan_intensity_difference_enable ? "enabled" : "disabled");
 }
 
 /// @brief destructor
