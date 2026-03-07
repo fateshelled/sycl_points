@@ -36,9 +36,6 @@ private:
 
     pipeline::lidar_odometry::Parameters params_;
 
-    bool input_convert_rgb_ = true;
-    bool input_convert_intensity_ = true;
-
     std::map<std::string, std::vector<double>> processing_times_;
     void add_delta_time(const std::string& name, double dt) {
         if (this->processing_times_.count(name) > 0) {

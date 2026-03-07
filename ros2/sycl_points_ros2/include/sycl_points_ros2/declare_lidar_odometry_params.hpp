@@ -16,10 +16,18 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         params.sycl_device_type = node->declare_parameter<std::string>("sycl/device_type", params.sycl_device_type);
     }
 
+    // input
+    {
+        params.input_convert_rgb = node->declare_parameter<bool>("input/convert_rgb", params.input_convert_rgb);
+        params.input_convert_intensity =
+            node->declare_parameter<bool>("input/convert_intensity", params.input_convert_intensity);
+
+        params.input_use_reflectivity_as_intensity = node->declare_parameter<bool>(
+            "input/use_reflectivity_as_intensity", params.input_use_reflectivity_as_intensity);
+    }
+
     // scan
     {
-        params.scan_use_reflectivity_as_intensity = node->declare_parameter<bool>(
-            "scan/use_reflectivity_as_intensity", params.scan_use_reflectivity_as_intensity);
         params.scan_intensity_correction_enable =
             node->declare_parameter<bool>("scan/intensity_correction/enable", params.scan_intensity_correction_enable);
         params.scan_intensity_correction_exp =
