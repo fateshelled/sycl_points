@@ -39,7 +39,7 @@ lidar_odometry_node:
     scan/intensity_correction/use_normal: true       # If true, apply angle-of-incidence correction using surface normals
     scan/intensity_correction/min_cos_theta: 0.01    # Minimum cos(theta) clamp to avoid amplification at grazing angles
 
-    scan/intensity_difference/enable: true
+    scan/intensity_z_score/enable: true
 
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3

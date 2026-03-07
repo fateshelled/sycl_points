@@ -165,7 +165,7 @@ private:
     algorithms::knn::KDTree::Ptr submap_tree_ = nullptr;
     algorithms::knn::KNNResult knn_result_;
     algorithms::knn::KNNResult knn_result_grad_;
-    algorithms::intensity_difference::IntensityDifferenceCalculator::Ptr intensity_difference_calculator_ = nullptr;
+    algorithms::intensity_z_score::IntensityZScoreCalculator::Ptr intensity_z_score_calculator_ = nullptr;
 
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
     algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
@@ -306,8 +306,8 @@ private:
         }
         // Feature utilities
         {
-            this->intensity_difference_calculator_ =
-                std::make_shared<algorithms::intensity_difference::IntensityDifferenceCalculator>(*this->queue_ptr_);
+            this->intensity_z_score_calculator_ =
+                std::make_shared<algorithms::intensity_z_score::IntensityZScoreCalculator>(*this->queue_ptr_);
         }
         // utilities
         {
@@ -315,26 +315,26 @@ private:
         }
     }
 
-    sycl_utils::events update_intensity_with_neighbor_difference(
+    sycl_utils::events update_intensity_with_neighbor_z_score(
         const PointCloudShared::Ptr& cloud, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
         if (!cloud->has_intensity()) {
             return sycl_utils::events();
         }
 
-        auto diff_events = this->intensity_difference_calculator_->compute_async(*cloud, this->knn_result_, depends);
-        const auto intensity_differences = this->intensity_difference_calculator_->intensity_differences();
+        auto z_score_events = this->intensity_z_score_calculator_->compute_async(*cloud, this->knn_result_, depends);
+        const auto intensity_z_scores = this->intensity_z_score_calculator_->intensity_z_scores();
 
         if (cloud->size() == 0) {
-            return diff_events;
+            return z_score_events;
         }
 
-        const auto copy_depends = diff_events.evs;
-        diff_events += this->queue_ptr_->ptr->submit([cloud, intensity_differences, copy_depends](sycl::handler& h) {
+        const auto copy_depends = z_score_events.evs;
+        z_score_events += this->queue_ptr_->ptr->submit([cloud, intensity_z_scores, copy_depends](sycl::handler& h) {
             h.depends_on(copy_depends);
-            h.memcpy(cloud->intensities_ptr(), intensity_differences->data(), cloud->size() * sizeof(float));
+            h.memcpy(cloud->intensities_ptr(), intensity_z_scores->data(), cloud->size() * sizeof(float));
         });
-        diff_events.add_resource(intensity_differences);
-        return diff_events;
+        z_score_events.add_resource(intensity_z_scores);
+        return z_score_events;
     }
 
     void preprocess(const PointCloudShared::Ptr scan) {
@@ -412,14 +412,14 @@ private:
             this->params_.reg_params.rotation_constraint.enable ||
             this->params_.scan_preprocess_angle_incidence_filter_enable ||
             (this->params_.scan_intensity_correction_enable && this->params_.scan_intensity_correction_use_normal);
-        const bool compute_intensity_difference =
-            this->params_.scan_intensity_difference_enable && this->preprocessed_pc_->has_intensity();
+        const bool compute_intensity_z_score =
+            this->params_.scan_intensity_z_score_enable && this->preprocessed_pc_->has_intensity();
 
-        if (!compute_covariances && !compute_intensity_difference) {
+        if (!compute_covariances && !compute_intensity_z_score) {
             return;
         }
 
-        // Build KDTree once and reuse neighbors for covariance/intensity-difference calculations.
+        // Build KDTree once and reuse neighbors for covariance/intensity-z-score calculations.
         const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
         const auto knn_events = src_tree->knn_search_async(
             *this->preprocessed_pc_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
@@ -440,8 +440,8 @@ private:
             }
         }
 
-        if (compute_intensity_difference) {
-            events += this->update_intensity_with_neighbor_difference(this->preprocessed_pc_, knn_events.evs);
+        if (compute_intensity_z_score) {
+            events += this->update_intensity_with_neighbor_z_score(this->preprocessed_pc_, knn_events.evs);
         }
 
         events.wait_and_throw();
@@ -567,10 +567,10 @@ private:
         auto knn_events = this->submap_tree_->knn_search_async(
             *this->submap_pc_ptr_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
 
-        // Reuse covariance-neighbor search to replace intensity with local mean differences.
+        // Reuse covariance-neighbor search to replace intensity with local intensity z-scores.
         sycl_utils::events intensity_events;
-        if (this->params_.scan_intensity_difference_enable && this->submap_pc_ptr_->has_intensity()) {
-            intensity_events += this->update_intensity_with_neighbor_difference(this->submap_pc_ptr_, knn_events.evs);
+        if (this->params_.scan_intensity_z_score_enable && this->submap_pc_ptr_->has_intensity()) {
+            intensity_events += this->update_intensity_with_neighbor_z_score(this->submap_pc_ptr_, knn_events.evs);
         }
 
         // compute grad

@@ -20,7 +20,7 @@ struct Parameters {
     bool input_use_reflectivity_as_intensity = true;
 
     bool scan_intensity_correction_enable = true;
-    bool scan_intensity_difference_enable = true;
+    bool scan_intensity_z_score_enable = true;
     float scan_intensity_correction_exp = 2.0f;
     float scan_intensity_correction_scale = 1e-3f;
     float scan_intensity_correction_reference_distance = 1.0f;  // meters

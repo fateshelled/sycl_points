@@ -158,7 +158,7 @@ TEST(PhotometricFactorTest, IntensityResidualZeroWhenSourceMatchesWarpedTarget) 
 
 namespace {
 
-TEST(IntensityDifferenceCalculatorTest, ComputesDifferenceFromNeighborMean) {
+TEST(IntensityZScoreCalculatorTest, ComputesNeighborhoodZScore) {
     sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
     sycl_points::sycl_utils::DeviceQueue queue(device);
 
@@ -181,17 +181,17 @@ TEST(IntensityDifferenceCalculatorTest, ComputesDifferenceFromNeighborMean) {
     (*neighbors.indices)[4] = 2;
     (*neighbors.indices)[5] = 0;
 
-    sycl_points::algorithms::intensity_difference::IntensityDifferenceCalculator calculator(queue);
+    sycl_points::algorithms::intensity_z_score::IntensityZScoreCalculator calculator(queue);
     calculator.compute_async(cloud, neighbors).wait_and_throw();
 
-    const auto diffs = calculator.intensity_differences();
-    ASSERT_EQ(diffs->size(), 3);
-    EXPECT_NEAR((*diffs)[0], 3.0f, 1e-5f);   // 10 - mean(10,4)
-    EXPECT_NEAR((*diffs)[1], -6.0f, 1e-5f);  // 4 - mean(4,16)
-    EXPECT_NEAR((*diffs)[2], 3.0f, 1e-5f);   // 16 - mean(16,10)
+    const auto z_scores = calculator.intensity_z_scores();
+    ASSERT_EQ(z_scores->size(), 3);
+    EXPECT_NEAR((*z_scores)[0], 1.0f, 1e-5f);   // (10 - mean(10,4)) / std(10,4)
+    EXPECT_NEAR((*z_scores)[1], -1.0f, 1e-5f);  // (4 - mean(4,16)) / std(4,16)
+    EXPECT_NEAR((*z_scores)[2], 1.0f, 1e-5f);   // (16 - mean(16,10)) / std(16,10)
 }
 
-TEST(IntensityDifferenceCalculatorTest, IgnoresInvalidNeighborIndices) {
+TEST(IntensityZScoreCalculatorTest, IgnoresInvalidNeighborIndices) {
     sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
     sycl_points::sycl_utils::DeviceQueue queue(device);
 
@@ -207,21 +207,21 @@ TEST(IntensityDifferenceCalculatorTest, IgnoresInvalidNeighborIndices) {
     neighbors.allocate(queue, cloud.size(), 3);
     (*neighbors.indices)[0] = -1;
     (*neighbors.indices)[1] = 1;
-    (*neighbors.indices)[2] = -1;
+    (*neighbors.indices)[2] = 0;
     (*neighbors.indices)[3] = -1;
     (*neighbors.indices)[4] = -1;
     (*neighbors.indices)[5] = -1;
 
-    sycl_points::algorithms::intensity_difference::IntensityDifferenceCalculator calculator(queue);
+    sycl_points::algorithms::intensity_z_score::IntensityZScoreCalculator calculator(queue);
     calculator.compute_async(cloud, neighbors).wait_and_throw();
 
-    const auto diffs = calculator.intensity_differences();
-    ASSERT_EQ(diffs->size(), 2);
-    EXPECT_NEAR((*diffs)[0], 6.0f, 1e-5f);  // 8 - mean(2)
-    EXPECT_NEAR((*diffs)[1], 0.0f, 1e-5f);  // no valid neighbors
+    const auto z_scores = calculator.intensity_z_scores();
+    ASSERT_EQ(z_scores->size(), 2);
+    EXPECT_NEAR((*z_scores)[0], 1.0f, 1e-5f);  // (8 - mean(2,8)) / std(2,8)
+    EXPECT_NEAR((*z_scores)[1], 0.0f, 1e-5f);  // no valid neighbors
 }
 
-TEST(IntensityDifferenceCalculatorTest, ThrowsWhenNeighborQuerySizeMismatch) {
+TEST(IntensityZScoreCalculatorTest, ThrowsWhenNeighborQuerySizeMismatch) {
     sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
     sycl_points::sycl_utils::DeviceQueue queue(device);
 
@@ -235,7 +235,7 @@ TEST(IntensityDifferenceCalculatorTest, ThrowsWhenNeighborQuerySizeMismatch) {
     neighbors.allocate(queue, 1, 1);
     (*neighbors.indices)[0] = 0;
 
-    sycl_points::algorithms::intensity_difference::IntensityDifferenceCalculator calculator(queue);
+    sycl_points::algorithms::intensity_z_score::IntensityZScoreCalculator calculator(queue);
     EXPECT_THROW(calculator.compute_async(cloud, neighbors), std::runtime_error);
 }
 
