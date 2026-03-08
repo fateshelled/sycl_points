@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
+#include "sycl_points/algorithms/mapping/occupancy_grid_map_cpu.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/points/types.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
@@ -255,6 +256,76 @@ TEST(OccupancyGridMapTest, RejectsOutOfRangeIntensityEmaAlpha) {
 
     EXPECT_THROW(map.set_intensity_ema_alpha(-0.01f), std::invalid_argument);
     EXPECT_THROW(map.set_intensity_ema_alpha(1.01f), std::invalid_argument);
+}
+
+TEST(OccupancyGridMapCPUTest, IntegratesSharedPointCloud) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMapCPU map(queue, 0.2f);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.0f, 0.0f, 0.0f},
+            {0.1f, 0.0f, 0.0f},
+            {0.9f, 0.0f, 0.0f},
+        };
+
+        auto cloud = MakePointCloud(queue, input_positions);
+        map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        sycl_points::PointCloudShared result(queue);
+        map.extract_occupied_points(result, Eigen::Isometry3f::Identity(), 2.0f);
+
+        ASSERT_EQ(result.size(), 2U);
+        auto positions = ExtractPositions(result.points);
+        std::sort(positions.begin(), positions.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.x() == rhs.x()) {
+                if (lhs.y() == rhs.y()) {
+                    return lhs.z() < rhs.z();
+                }
+                return lhs.y() < rhs.y();
+            }
+            return lhs.x() < rhs.x();
+        });
+
+        EXPECT_NEAR(positions[0].x(), 0.05f, 1e-5f);
+        EXPECT_NEAR(positions[1].x(), 0.9f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(OccupancyGridMapCPUTest, ComputesOverlapRatio) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMapCPU map(queue, 0.5f);
+
+        const std::vector<Eigen::Vector3f> map_positions = {
+            {0.1f, 0.1f, 0.0f},
+            {1.1f, 0.0f, 0.0f},
+        };
+
+        auto map_cloud = MakePointCloud(queue, map_positions);
+        map.add_point_cloud(map_cloud, Eigen::Isometry3f::Identity());
+
+        const std::vector<Eigen::Vector3f> query_positions = {
+            {-0.9f, 0.1f, 0.0f},
+            {0.1f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+        };
+        auto query_cloud = MakePointCloud(queue, query_positions);
+
+        Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
+        sensor_pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+
+        const float overlap_ratio = map.compute_overlap_ratio(query_cloud, sensor_pose);
+        EXPECT_NEAR(overlap_ratio, 2.0f / 3.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
 }
 
 
