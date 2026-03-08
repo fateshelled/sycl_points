@@ -74,6 +74,7 @@ lidar_odometry_node:
     submap/occupancy_grid_map/enable_free_space_update: true
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
+    submap/occupancy_grid_map/intensity_ema_alpha: 0.2
 
     motion_prediction/static_factor: 0.2
     motion_prediction/verbose: false

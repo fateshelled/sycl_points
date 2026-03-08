@@ -119,6 +119,8 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "submap/occupancy_grid_map/enable_pruning", params.occupancy_grid_map_enable_pruning);
         params.occupancy_grid_map_stale_frame_threshold = node->declare_parameter<int64_t>(
             "submap/occupancy_grid_map/stale_frame_threshold", params.occupancy_grid_map_stale_frame_threshold);
+        params.occupancy_grid_map_intensity_ema_alpha = node->declare_parameter<double>(
+            "submap/occupancy_grid_map/intensity_ema_alpha", params.occupancy_grid_map_intensity_ema_alpha);
     }
 
     // Covariances

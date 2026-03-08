@@ -70,6 +70,7 @@ struct Parameters {
     bool occupancy_grid_map_enable_free_space_updates = true;
     bool occupancy_grid_map_enable_pruning = true;
     size_t occupancy_grid_map_stale_frame_threshold = 100U;
+    float occupancy_grid_map_intensity_ema_alpha = 0.2f;
 
     float motion_prediction_static_factor = 0.5f;
     bool motion_prediction_verbose = false;

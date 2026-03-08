@@ -292,6 +292,7 @@ private:
                 this->occupancy_grid_->set_voxel_pruning_enabled(this->params_.occupancy_grid_map_enable_pruning);
                 this->occupancy_grid_->set_stale_frame_threshold(
                     this->params_.occupancy_grid_map_stale_frame_threshold);
+                this->occupancy_grid_->set_intensity_ema_alpha(this->params_.occupancy_grid_map_intensity_ema_alpha);
             } else {
                 this->submap_voxel_ = std::make_shared<algorithms::mapping::VoxelHashMap>(
                     *this->queue_ptr_, this->params_.submap_voxel_size);
@@ -370,8 +371,7 @@ private:
                                                       this->params_.scan_downsampling_random_num);
         }
 
-        if (this->params_.scan_intensity_correction_enable &&
-            !this->params_.scan_intensity_correction_use_normal &&
+        if (this->params_.scan_intensity_correction_enable && !this->params_.scan_intensity_correction_use_normal &&
             this->preprocessed_pc_->has_intensity()) {
             algorithms::intensity_correction::correct_intensity(
                 *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
@@ -580,8 +580,7 @@ private:
                 grad_events += algorithms::color_gradient::compute_color_gradients_async(
                     *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             } else if (this->submap_pc_ptr_->has_intensity()) {
-                const auto intensity_depends =
-                    intensity_events.evs.empty() ? knn_events.evs : intensity_events.evs;
+                const auto intensity_depends = intensity_events.evs.empty() ? knn_events.evs : intensity_events.evs;
                 grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
                     *this->submap_pc_ptr_, this->knn_result_, intensity_depends);
             }
