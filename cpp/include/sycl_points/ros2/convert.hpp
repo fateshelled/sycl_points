@@ -13,12 +13,14 @@ namespace ros2 {
 
 inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const sensor_msgs::msg::PointCloud2& msg,
                         PointCloudShared::Ptr& cloud, sycl_points::shared_vector_ptr<uint8_t>& msg_buffer,
-                        bool convert_rgb = true, bool convert_intensity = true) {
+                        bool convert_rgb = true, bool convert_intensity = true,
+                        bool use_reflectivity_as_intensity = true) {
     uint8_t x_type = 0;
     uint8_t y_type = 0;
     uint8_t z_type = 0;
     uint8_t rgb_type = 0;
     uint8_t intensity_type = 0;
+    uint8_t reflectivity_type = 0;
     uint8_t timestamp_type = 0;
 
     int32_t x_offset = -1;
@@ -26,6 +28,7 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
     int32_t z_offset = -1;
     int32_t rgb_offset = -1;
     int32_t intensity_offset = -1;
+    int32_t reflectivity_offset = -1;
     int32_t timestamp_offset = -1;
 
     for (const auto& field : msg.fields) {
@@ -44,7 +47,10 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         } else if (field.name == "intensity") {
             intensity_type = field.datatype;
             intensity_offset = field.offset;
-        } else if (field.name == "time" || field.name == "timestamp") {
+        } else if (field.name == "reflectivity") {
+            reflectivity_type = field.datatype;
+            reflectivity_offset = field.offset;
+        } else if (field.name == "time" || field.name == "timestamp" || field.name == "t") {
             timestamp_type = field.datatype;
             timestamp_offset = field.offset;
         }
@@ -81,15 +87,31 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         std::cerr << "Not supported rgb field type" << std::endl;
     }
 
+    // Prefer reflectivity over intensity for Ouster compatibility when requested.
+    bool write_reflectivity = use_reflectivity_as_intensity && reflectivity_offset >= 0;
+    if (write_reflectivity) {
+        if (reflectivity_type != sensor_msgs::msg::PointField::UINT16) {
+            std::cerr << "Not supported reflectivity field type" << std::endl;
+            write_reflectivity = false;
+        } else {
+            intensity_type = reflectivity_type;
+            intensity_offset = reflectivity_offset;
+        }
+    }
+
     const bool has_intensity_field =
-        convert_intensity && (intensity_offset >= 0) && intensity_type == sensor_msgs::msg::PointField::FLOAT32;
+        convert_intensity && (intensity_offset >= 0) &&
+        (intensity_type == sensor_msgs::msg::PointField::FLOAT32 ||
+                                    intensity_type == sensor_msgs::msg::PointField::UINT16);
+
     if (convert_intensity && intensity_offset >= 0 && !has_intensity_field) {
-        std::cerr << "Not supported intensity field type" << std::endl;
+        std::cerr << "Not supported intensity/reflectivity field type" << std::endl;
     }
 
     const bool has_timestamp_field =
         (timestamp_offset >= 0) && (timestamp_type == sensor_msgs::msg::PointField::FLOAT32 ||
-                                    timestamp_type == sensor_msgs::msg::PointField::FLOAT64);
+                                    timestamp_type == sensor_msgs::msg::PointField::FLOAT64 ||
+                                    timestamp_type == sensor_msgs::msg::PointField::UINT32);
     if (timestamp_offset >= 0 && !has_timestamp_field) {
         std::cerr << "Not supported timestamp field type" << std::endl;
     }
@@ -112,21 +134,30 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
 
         for (size_t i = 0; i < point_size; ++i) {
             const size_t base = point_step * i + timestamp_offset;
-            double timestamp_seconds = 0.0;
+
+            if (timestamp_type == sensor_msgs::msg::PointField::UINT32) {
+                // Ouster
+                // nanoseconds to milliseconds
+                const float offset_ms =
+                    static_cast<float>(reinterpret_cast<const uint32_t*>(&msg_bytes[base])[0]) * 1e-6f;
+                offsets[i] = offset_ms;
+                max_offset_ms = std::max(max_offset_ms, static_cast<double>(offset_ms));
+                continue;
+            }
+
+            double timestamp_ms = 0.0;
             if (timestamp_type == sensor_msgs::msg::PointField::FLOAT32) {
-                timestamp_seconds = static_cast<double>(reinterpret_cast<const float*>(&msg_bytes[base])[0]);
-            } else {
-                timestamp_seconds = reinterpret_cast<const double*>(&msg_bytes[base])[0];
+                timestamp_ms = static_cast<double>(reinterpret_cast<const float*>(&msg_bytes[base])[0]) * 1e3;
+            } else if (timestamp_type == sensor_msgs::msg::PointField::FLOAT64) {
+                timestamp_ms = reinterpret_cast<const double*>(&msg_bytes[base])[0] * 1e3;
+            }
+            if (!std::isfinite(timestamp_ms)) {
+                timestamp_ms = 0.0;
+            }
+            if (timestamp_ms < 0.0) {
+                timestamp_ms = 0.0;
             }
 
-            if (!std::isfinite(timestamp_seconds)) {
-                timestamp_seconds = 0.0;
-            }
-            if (timestamp_seconds < 0.0) {
-                timestamp_seconds = 0.0;
-            }
-
-            const double timestamp_ms = timestamp_seconds * 1e3;
             const double offset = timestamp_ms - start_time_ms;
             offsets[i] = static_cast<float>(offset);
             max_offset_ms = std::max(max_offset_ms, offset);
@@ -176,7 +207,17 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
                 }
 
                 if (write_intensity) {
-                    intensity_ptr[i] = reinterpret_cast<const float*>(&msg_data_ptr[base + intensity_offset])[0];
+                    float intensity = 0.0f;
+                    switch (intensity_type) {
+                        case sensor_msgs::msg::PointField::FLOAT32:
+                            intensity = reinterpret_cast<const float*>(&msg_data_ptr[base + intensity_offset])[0];
+                            break;
+                        case sensor_msgs::msg::PointField::UINT16:
+                            intensity = static_cast<float>(
+                                reinterpret_cast<const uint16_t*>(&msg_data_ptr[base + intensity_offset])[0]);
+                            break;
+                    }
+                    intensity_ptr[i] = intensity;
                 }
             });
         });
@@ -235,7 +276,16 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             }
 
             if (has_intensity_field) {
-                const auto intensity = reinterpret_cast<const float*>(&msg.data[base + intensity_offset])[0];
+                float intensity = 0.0f;
+                switch (intensity_type) {
+                    case sensor_msgs::msg::PointField::FLOAT32:
+                        intensity = reinterpret_cast<const float*>(&msg.data[base + intensity_offset])[0];
+                        break;
+                    case sensor_msgs::msg::PointField::UINT16:
+                        intensity = static_cast<float>(
+                            reinterpret_cast<const uint16_t*>(&msg.data[base + intensity_offset])[0]);
+                        break;
+                }
                 (*cloud->intensities)[i] = intensity;
             }
         }
@@ -249,9 +299,10 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
 inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue,
                                          const sensor_msgs::msg::PointCloud2& msg,
                                          sycl_points::shared_vector_ptr<uint8_t>& msg_buffer,
-                                         bool convert_rgb = true, bool convert_intensity = true) {
+                                         bool convert_rgb = true, bool convert_intensity = true,
+                                         bool use_reflectivity_as_intensity = true) {
     PointCloudShared::Ptr ret = nullptr;
-    fromROS2msg(queue, msg, ret, msg_buffer, convert_rgb, convert_intensity);
+    fromROS2msg(queue, msg, ret, msg_buffer, convert_rgb, convert_intensity, use_reflectivity_as_intensity);
     return ret;
 }
 

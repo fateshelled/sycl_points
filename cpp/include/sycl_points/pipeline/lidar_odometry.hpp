@@ -84,6 +84,14 @@ public:
             this->add_delta_time(ProcessName::compute_covariances, dt_covariance);
         }
 
+        // normal-aware intensity correction (applied after covariances are available)
+        {
+            double dt_normal_intensity_correction = 0.0;
+            time_utils::measure_execution([&]() { this->apply_normal_intensity_correction(); },
+                                          dt_normal_intensity_correction);
+            dt_preprocessing += dt_normal_intensity_correction;
+        }
+
         // angle incidence filter
         {
             double dt_angle_incidence_filter = 0.0;
@@ -157,6 +165,7 @@ private:
     algorithms::knn::KDTree::Ptr submap_tree_ = nullptr;
     algorithms::knn::KNNResult knn_result_;
     algorithms::knn::KNNResult knn_result_grad_;
+    algorithms::intensity_z_score::IntensityZScoreCalculator::Ptr intensity_z_score_calculator_ = nullptr;
 
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
     algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
@@ -283,6 +292,7 @@ private:
                 this->occupancy_grid_->set_voxel_pruning_enabled(this->params_.occupancy_grid_map_enable_pruning);
                 this->occupancy_grid_->set_stale_frame_threshold(
                     this->params_.occupancy_grid_map_stale_frame_threshold);
+                this->occupancy_grid_->set_intensity_ema_alpha(this->params_.occupancy_grid_map_intensity_ema_alpha);
             } else {
                 this->submap_voxel_ = std::make_shared<algorithms::mapping::VoxelHashMap>(
                     *this->queue_ptr_, this->params_.submap_voxel_size);
@@ -295,10 +305,37 @@ private:
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
             this->registrated_ = false;
         }
+        // Feature utilities
+        {
+            this->intensity_z_score_calculator_ =
+                std::make_shared<algorithms::intensity_z_score::IntensityZScoreCalculator>(*this->queue_ptr_);
+        }
         // utilities
         {
             this->clear_total_processing_times();
         }
+    }
+
+    sycl_utils::events update_intensity_with_neighbor_z_score(
+        const PointCloudShared::Ptr& cloud, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
+        if (!cloud->has_intensity()) {
+            return sycl_utils::events();
+        }
+
+        auto z_score_events = this->intensity_z_score_calculator_->compute_async(*cloud, this->knn_result_, depends);
+        const auto intensity_z_scores = this->intensity_z_score_calculator_->intensity_z_scores();
+
+        if (cloud->size() == 0) {
+            return z_score_events;
+        }
+
+        const auto copy_depends = z_score_events.evs;
+        z_score_events += this->queue_ptr_->ptr->submit([cloud, intensity_z_scores, copy_depends](sycl::handler& h) {
+            h.depends_on(copy_depends);
+            h.memcpy(cloud->intensities_ptr(), intensity_z_scores->data(), cloud->size() * sizeof(float));
+        });
+        z_score_events.add_resource(intensity_z_scores);
+        return z_score_events;
     }
 
     void preprocess(const PointCloudShared::Ptr scan) {
@@ -334,11 +371,13 @@ private:
                                                       this->params_.scan_downsampling_random_num);
         }
 
-        if (this->params_.scan_intensity_correction_enable && this->preprocessed_pc_->has_intensity()) {
+        if (this->params_.scan_intensity_correction_enable && !this->params_.scan_intensity_correction_use_normal &&
+            this->preprocessed_pc_->has_intensity()) {
             algorithms::intensity_correction::correct_intensity(
                 *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
                 this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
-                this->params_.scan_intensity_correction_max_intensity);
+                this->params_.scan_intensity_correction_max_intensity,
+                this->params_.scan_intensity_correction_reference_distance);
         }
     }
 
@@ -350,27 +389,62 @@ private:
         }
     }
 
+    void apply_normal_intensity_correction() {
+        if (!this->params_.scan_intensity_correction_enable) return;
+        if (!this->params_.scan_intensity_correction_use_normal) return;
+        if (!this->preprocessed_pc_->has_intensity()) return;
+
+        // Derive normals from covariances computed in compute_covariances()
+        auto events = algorithms::covariance::compute_normals_from_covariances_async(*this->preprocessed_pc_);
+        events.wait_and_throw();
+
+        algorithms::intensity_correction::correct_intensity_with_normal(
+            *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
+            this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
+            this->params_.scan_intensity_correction_max_intensity,
+            this->params_.scan_intensity_correction_min_cos_theta,
+            this->params_.scan_intensity_correction_reference_distance);
+    }
+
     void compute_covariances() {
-        if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
+        const bool compute_covariances =
+            this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
             this->params_.reg_params.rotation_constraint.enable ||
-            this->params_.scan_preprocess_angle_incidence_filter_enable) {
-            // build KDTree
-            const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
-            auto events = src_tree->knn_search_async(
-                *this->preprocessed_pc_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
+            this->params_.scan_preprocess_angle_incidence_filter_enable ||
+            (this->params_.scan_intensity_correction_enable && this->params_.scan_intensity_correction_use_normal);
+        const bool compute_intensity_z_score =
+            this->params_.scan_intensity_z_score_enable && this->preprocessed_pc_->has_intensity();
+
+        if (!compute_covariances && !compute_intensity_z_score) {
+            return;
+        }
+
+        // Build KDTree once and reuse neighbors for covariance/intensity-z-score calculations.
+        const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
+        const auto knn_events = src_tree->knn_search_async(
+            *this->preprocessed_pc_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
+        sycl_utils::events events;
+        events += knn_events;
+
+        if (compute_covariances) {
             if (this->params_.covariance_estimation_m_estimation_enable) {
                 events += algorithms::covariance::compute_covariances_with_m_estimation_async(
                     this->knn_result_, *this->preprocessed_pc_, this->params_.covariance_estimation_m_estimation_type,
                     this->params_.covariance_estimation_m_estimation_mad_scale,
                     this->params_.covariance_estimation_m_estimation_min_robust_scale,
-                    this->params_.covariance_estimation_m_estimation_max_iterations, events.evs);
+                    this->params_.covariance_estimation_m_estimation_max_iterations, knn_events.evs);
 
             } else {
                 events += algorithms::covariance::compute_covariances_async(this->knn_result_, *this->preprocessed_pc_,
-                                                                            events.evs);
+                                                                            knn_events.evs);
             }
-            events.wait_and_throw();
         }
+
+        if (compute_intensity_z_score) {
+            events += this->update_intensity_with_neighbor_z_score(this->preprocessed_pc_, knn_events.evs);
+        }
+
+        events.wait_and_throw();
     }
 
     /// Predict initial pose by applying the previous motion model
@@ -493,6 +567,12 @@ private:
         auto knn_events = this->submap_tree_->knn_search_async(
             *this->submap_pc_ptr_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
 
+        // Reuse covariance-neighbor search to replace intensity with local intensity z-scores.
+        sycl_utils::events intensity_events;
+        if (this->params_.scan_intensity_z_score_enable && this->submap_pc_ptr_->has_intensity()) {
+            intensity_events += this->update_intensity_with_neighbor_z_score(this->submap_pc_ptr_, knn_events.evs);
+        }
+
         // compute grad
         sycl_utils::events grad_events;
         if (this->params_.reg_params.photometric.enable) {
@@ -500,8 +580,9 @@ private:
                 grad_events += algorithms::color_gradient::compute_color_gradients_async(
                     *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             } else if (this->submap_pc_ptr_->has_intensity()) {
+                const auto intensity_depends = intensity_events.evs.empty() ? knn_events.evs : intensity_events.evs;
                 grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
-                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
+                    *this->submap_pc_ptr_, this->knn_result_, intensity_depends);
             }
         }
 
@@ -541,6 +622,7 @@ private:
             }
         }
         knn_events.wait_and_throw();
+        intensity_events.wait_and_throw();
         grad_events.wait_and_throw();
         cov_events.wait_and_throw();
     }

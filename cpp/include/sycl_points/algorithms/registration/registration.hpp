@@ -166,6 +166,12 @@ public:
                     "RGB fields with gradients or intensity fields with gradients are required for photometric "
                     "matching.");
             }
+            if (this->params_.robust.type != robust::RobustLossType::NONE &&
+                this->params_.photometric.robust_scale <= 0.0f) {
+                std::cerr << "[Caution] `photometric.robust_scale` must be greater than zero. "
+                          << "Set to robust.init_scale." << std::endl;
+                this->params_.photometric.robust_scale = this->params_.robust.init_scale;
+            }
         }
         if (this->params_.rotation_constraint.enable) {
             if (!source.has_cov()) {
@@ -555,9 +561,9 @@ private:
 
             const auto target_intensity_grad_ptr =
                 target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
-            const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
-            const float photometric_robust_scale =
-                this->params_.photometric.enable ? this->params_.photometric.robust_scale : 0.0f;
+            const bool photometric_enable = this->params_.photometric.enable;
+            const float photometric_weight = photometric_enable ? this->params_.photometric.weight : 0.0f;
+            const float photometric_robust_scale = photometric_enable ? this->params_.photometric.robust_scale : 1.0f;
 
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
@@ -611,9 +617,9 @@ private:
                     const auto target_intensity_grad =
                         target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
 
-                    const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
+                    const bool use_color = photometric_enable && source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
                     const bool use_intensity =
-                        source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
+                        photometric_enable && source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
                     sycl::float16 total_H0;
                     sycl::float16 total_H1;
@@ -783,9 +789,9 @@ private:
 
             const float genz_alpha = this->genz_alpha_;
 
-            const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
-            const float photometric_robust_scale =
-                this->params_.photometric.enable ? this->params_.photometric.robust_scale : 0.0f;
+            const bool photometric_enable = this->params_.photometric.enable;
+            const float photometric_weight = photometric_enable ? this->params_.photometric.weight : 0.0f;
+            const float photometric_robust_scale = photometric_enable ? this->params_.photometric.robust_scale : 1.0f;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
             const float rotation_constraint_robust_scale = rotation_robust_scale;
@@ -816,9 +822,9 @@ private:
                     const float target_intensity = target_intensity_ptr ? target_intensity_ptr[target_idx] : 0.0f;
                     const auto target_intensity_grad =
                         target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
-                    const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
+                    const bool use_color = photometric_enable && source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
                     const bool use_intensity =
-                        source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
+                        photometric_enable && source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
                     float total_error = 0.0f;
                     // ICP term

@@ -118,6 +118,31 @@ public:
     /// @brief Set the frame-age threshold used to prune stale voxels.
     void set_stale_frame_threshold(const uint32_t threshold) { this->stale_frame_threshold_ = threshold; }
 
+    /// @brief Configure the EMA gain used for per-voxel intensity integration.
+    /// @param alpha Smoothing gain in [0, 1]. Larger values track new scans faster.
+    void set_intensity_ema_alpha(const float alpha) {
+        if (alpha < 0.0f || alpha > 1.0f) {
+            throw std::invalid_argument("alpha must be within [0, 1].");
+        }
+        this->intensity_ema_alpha_ = alpha;
+    }
+
+    /// @brief Get the EMA gain used for per-voxel intensity integration.
+    float intensity_ema_alpha() const { return this->intensity_ema_alpha_; }
+
+    /// @brief Enable or disable intensity aggregation during map integration.
+    /// @note Disabling this option skips intensity accumulation kernels and omits intensity output.
+    void set_intensity_integration_enabled(const bool enabled) {
+        this->intensity_integration_enabled_ = enabled;
+        if (!enabled) {
+            // Stop exposing stale intensity output once aggregation is disabled.
+            this->has_intensity_data_ = false;
+        }
+    }
+
+    /// @brief Query whether intensity aggregation is enabled.
+    bool intensity_integration_enabled() const { return this->intensity_integration_enabled_; }
+
     /// @brief Insert a point cloud captured at the given pose.
     /// @param cloud Point cloud in the sensor frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
@@ -132,7 +157,7 @@ public:
         this->ensure_rehash();
 
         const bool has_rgb = cloud.has_rgb();
-        const bool has_intensity = cloud.has_intensity();
+        const bool has_intensity = this->intensity_integration_enabled_ && cloud.has_intensity();
         this->has_rgb_data_ = this->has_rgb_data_ || has_rgb;
         this->has_intensity_data_ = this->has_intensity_data_ || has_intensity;
 
@@ -195,7 +220,7 @@ public:
         if (this->has_rgb_data_) {
             result.resize_rgb(this->voxel_num_);
         }
-        if (this->has_intensity_data_) {
+        if (this->has_intensity_data_ && this->intensity_integration_enabled_) {
             result.resize_intensities(this->voxel_num_);
         }
 
@@ -216,7 +241,7 @@ public:
             const float inv_voxel_size = this->inv_voxel_size_;
 
             const bool has_rgb = this->has_rgb_data_;
-            const bool has_intensity = this->has_intensity_data_;
+            const bool has_intensity = this->has_intensity_data_ && this->intensity_integration_enabled_;
 
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
@@ -365,8 +390,8 @@ public:
 
                 if (has_intensity && intensity_ptr) {
                     const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
-                    if (core.hit_count > 0U) {
-                        intensity_ptr[index] = intensity_data.sum_intensity * inv_count;
+                    if (intensity_data.update_count > 0U) {
+                        intensity_ptr[index] = intensity_data.ema_intensity;
                     } else {
                         intensity_ptr[index] = 0.0f;
                     }
@@ -382,7 +407,7 @@ public:
                 if (this->has_rgb_data_) {
                     result.resize_rgb(final_count);
                 }
-                if (this->has_intensity_data_) {
+                if (this->has_intensity_data_ && this->intensity_integration_enabled_) {
                     result.resize_intensities(final_count);
                 }
             });
@@ -479,9 +504,12 @@ private:
         float sum_a = 0.0f;
     };
 
-    /// @brief Intensity data for reflectivity information (4 bytes)
+    /// @brief Intensity data for reflectivity information.
     struct VoxelIntensityData {
-        float sum_intensity = 0.0f;
+        float ema_intensity = 0.0f;
+        float pending_sum_intensity = 0.0f;
+        uint32_t pending_count = 0U;
+        uint32_t update_count = 0U;
     };
 
     /// @brief Core accumulator for position and occupancy
@@ -505,6 +533,7 @@ private:
     /// @brief Intensity accumulator for reflectivity information
     struct VoxelIntensityAccumulator {
         float sum_intensity = 0.0f;
+        uint32_t count = 0U;
     };
 
     /// @brief Voxel local accumulator (64 bytes)
@@ -638,7 +667,7 @@ private:
             auto range = sycl::nd_range<1>(global_size, work_group_size);
 
             const auto has_rgb = this->has_rgb_data_;
-            const auto has_intensity = this->has_intensity_data_;
+            const auto has_intensity = this->has_intensity_data_ && this->intensity_integration_enabled_;
 
             if (this->queue_.is_nvidia()) {
                 // Count inserted voxels via reduction when running on NVIDIA GPUs.
@@ -920,7 +949,8 @@ private:
 
         // Intensity data (only if present)
         if (has_intensity) {
-            atomic_ref_float(intensity_dst.sum_intensity).fetch_add(intensity_src.sum_intensity);
+            atomic_ref_float(intensity_dst.pending_sum_intensity).fetch_add(intensity_src.sum_intensity);
+            atomic_ref_uint32_t(intensity_dst.pending_count).fetch_add(intensity_src.count);
         }
     }
 
@@ -985,8 +1015,10 @@ private:
 
                 if (has_intensity && intensity_ptr) {
                     entry.intensity_acc.sum_intensity = intensity_ptr[idx];
+                    entry.intensity_acc.count = 1U;
                 } else {
                     entry.intensity_acc.sum_intensity = 0.0f;
+                    entry.intensity_acc.count = 0U;
                 }
             };
 
@@ -1004,6 +1036,7 @@ private:
                 }
                 if (has_intensity) {
                     dst.intensity_acc.sum_intensity += src.intensity_acc.sum_intensity;
+                    dst.intensity_acc.count += src.intensity_acc.count;
                 }
             };
 
@@ -1216,7 +1249,7 @@ private:
             const uint32_t current_frame = this->frame_index_;
 
             const auto has_rgb = this->has_rgb_data_;
-            const auto has_intensity = this->has_intensity_data_;
+            const auto has_intensity = this->has_intensity_data_ && this->intensity_integration_enabled_;
 
             h.parallel_for(sycl::range<1>(point_count), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1296,8 +1329,11 @@ private:
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
+            auto intensity_ptr = this->intensity_data_ptr_->data();
             const float min_log_odds = this->min_log_odds_;
             const float max_log_odds = this->max_log_odds_;
+            const float ema_alpha = this->intensity_ema_alpha_;
+            const bool has_intensity = this->has_intensity_data_ && this->intensity_integration_enabled_;
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
                 if (key_ptr[i] == VoxelConstants::invalid_coord || key_ptr[i] == VoxelConstants::deleted_coord) {
@@ -1305,14 +1341,30 @@ private:
                 }
 
                 const float delta = core_ptr[i].pending_log_odds;
-                if (delta == 0.0f) {
-                    return;
+                if (delta != 0.0f) {
+                    float current_log_odds = core_ptr[i].log_odds;
+                    current_log_odds = sycl::fmax(min_log_odds, sycl::fmin(max_log_odds, current_log_odds + delta));
+                    core_ptr[i].log_odds = current_log_odds;
+                    core_ptr[i].pending_log_odds = 0.0f;
                 }
 
-                float current_log_odds = core_ptr[i].log_odds;
-                current_log_odds = sycl::fmax(min_log_odds, sycl::fmin(max_log_odds, current_log_odds + delta));
-                core_ptr[i].log_odds = current_log_odds;
-                core_ptr[i].pending_log_odds = 0.0f;
+                if (has_intensity) {
+                    VoxelIntensityData& intensity_data = intensity_ptr[i];
+                    if (intensity_data.pending_count > 0U) {
+                        // Integrate intensity once per frame using EMA to reduce temporal flicker.
+                        const float inv_pending_count = 1.0f / static_cast<float>(intensity_data.pending_count);
+                        const float frame_mean_intensity = intensity_data.pending_sum_intensity * inv_pending_count;
+                        if (intensity_data.update_count == 0U) {
+                            intensity_data.ema_intensity = frame_mean_intensity;
+                        } else {
+                            intensity_data.ema_intensity +=
+                                ema_alpha * (frame_mean_intensity - intensity_data.ema_intensity);
+                        }
+                        intensity_data.update_count += 1U;
+                        intensity_data.pending_sum_intensity = 0.0f;
+                        intensity_data.pending_count = 0U;
+                    }
+                }
             });
         });
         event.wait_and_throw();
@@ -1373,7 +1425,7 @@ private:
         if (this->has_rgb_data_) {
             result.resize_rgb(this->voxel_num_);
         }
-        if (this->has_intensity_data_) {
+        if (this->has_intensity_data_ && this->intensity_integration_enabled_) {
             result.resize_intensities(this->voxel_num_);
         }
 
@@ -1393,7 +1445,7 @@ private:
             const float sensor_z = sensor_position.z();
             const float max_dist = max_distance;
             const bool has_rgb = this->has_rgb_data_;
-            const bool has_intensity = this->has_intensity_data_;
+            const bool has_intensity = this->has_intensity_data_ && this->intensity_integration_enabled_;
             auto counter_ptr = counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
@@ -1439,8 +1491,8 @@ private:
 
                 if (has_intensity && intensity_ptr) {
                     const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
-                    if (core.hit_count > 0U) {
-                        intensity_ptr[index] = intensity_data.sum_intensity * inv_count;
+                    if (intensity_data.update_count > 0U) {
+                        intensity_ptr[index] = intensity_data.ema_intensity;
                     } else {
                         intensity_ptr[index] = 0.0f;
                     }
@@ -1457,7 +1509,7 @@ private:
                 if (this->has_rgb_data_) {
                     result.resize_rgb(final_count);
                 }
-                if (this->has_intensity_data_) {
+                if (this->has_intensity_data_ && this->intensity_integration_enabled_) {
                     result.resize_intensities(final_count);
                 }
             });
@@ -1491,6 +1543,8 @@ private:
     float occupancy_threshold_log_odds_ = probability_to_log_odds(0.5f);
     bool free_space_updates_enabled_ = true;
     bool voxel_pruning_enabled_ = true;
+    float intensity_ema_alpha_ = 0.2f;
+    bool intensity_integration_enabled_ = true;
 
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;

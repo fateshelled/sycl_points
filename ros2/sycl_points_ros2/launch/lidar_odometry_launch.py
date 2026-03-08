@@ -78,9 +78,14 @@ def generate_launch_description():
                 description='rosbag path',
             ),
             DeclareLaunchArgument(
+                'rosbag/rate',
+                default_value='1.0',
+                description='rosbag play rate',
+            ),
+            DeclareLaunchArgument(
                 'rosbag/start_offset/sec',
                 default_value='0',
-                description='rosbag path',
+                description='rosbag play start offset',
             ),
             DeclareLaunchArgument(
                 'use_sim_time',
@@ -156,7 +161,7 @@ def generate_launch_description():
                                 {
                                     'play.read_ahead_queue_size': 1000,
                                     'play.node_prefix': '',
-                                    'play.rate': 1.0,
+                                    'play.rate': LaunchConfiguration('rosbag/rate'),
                                     'play.loop': False,
                                     'play.start_paused': False,
                                     'play.start_offset.sec': LaunchConfiguration('rosbag/start_offset/sec'),

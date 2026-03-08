@@ -14,11 +14,20 @@ struct Parameters {
 
     std::string sycl_device_vendor = "intel";
     std::string sycl_device_type = "gpu";
+
+    bool input_convert_rgb = true;
+    bool input_convert_intensity = true;
+    bool input_use_reflectivity_as_intensity = true;
+
     bool scan_intensity_correction_enable = true;
+    bool scan_intensity_z_score_enable = true;
     float scan_intensity_correction_exp = 2.0f;
     float scan_intensity_correction_scale = 1e-3f;
+    float scan_intensity_correction_reference_distance = 1.0f;  // meters
     float scan_intensity_correction_min_intensity = 0.0f;
     float scan_intensity_correction_max_intensity = 1.0f;
+    bool scan_intensity_correction_use_normal = false;
+    float scan_intensity_correction_min_cos_theta = 0.17f;  // ~10 degrees
     bool scan_downsampling_voxel_enable = false;
     float scan_downsampling_voxel_size = 1.0f;
     bool scan_downsampling_polar_enable = true;
@@ -61,6 +70,7 @@ struct Parameters {
     bool occupancy_grid_map_enable_free_space_updates = true;
     bool occupancy_grid_map_enable_pruning = true;
     size_t occupancy_grid_map_stale_frame_threshold = 100U;
+    float occupancy_grid_map_intensity_ema_alpha = 0.2f;
 
     float motion_prediction_static_factor = 0.5f;
     bool motion_prediction_verbose = false;

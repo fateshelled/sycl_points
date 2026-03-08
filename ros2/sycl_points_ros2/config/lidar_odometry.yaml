@@ -17,6 +17,8 @@ lidar_odometry_node:
     input/convert_rgb: true
     input/convert_intensity: true
 
+    input/use_reflectivity_as_intensity: true
+
     scan/preprocess/box_filter/enable: true
     scan/preprocess/box_filter/max: 100.0
     scan/preprocess/box_filter/min: 0.4
@@ -25,11 +27,19 @@ lidar_odometry_node:
     scan/preprocess/angle_incidence_filter/max_angle: 1.396 # 80 degrees
     # scan/preprocess/angle_incidence_filter/max_angle: 1.570796 # 90 degrees (upper limit)
 
+    # Distance-only:  I' = clamp(scale * I * (dist/reference_distance)^exp, min, max)
+    # Normal-aware:   I' = clamp(scale * I * (dist/reference_distance)^exp / max(cos(theta), min_cos_theta), min, max)
+    #                 cos(theta) = |n . p| / dist  (angle of incidence correction)
     scan/intensity_correction/enable: false
     scan/intensity_correction/exp: 2.0
     scan/intensity_correction/scale: 1.0e-3
+    scan/intensity_correction/reference_distance: 1.0   # meters
     scan/intensity_correction/min_intensity: 0.0
-    scan/intensity_correction/max_intensity: 1.0
+    scan/intensity_correction/max_intensity: 100.0
+    scan/intensity_correction/use_normal: true       # If true, apply angle-of-incidence correction using surface normals
+    scan/intensity_correction/min_cos_theta: 0.01    # Minimum cos(theta) clamp to avoid amplification at grazing angles
+
+    scan/intensity_z_score/enable: true
 
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
@@ -41,7 +51,7 @@ lidar_odometry_node:
     scan/downsampling/random/enable: false
     scan/downsampling/random/num: 4096
 
-    covariance_estimation/neighbor_num: 15
+    covariance_estimation/neighbor_num: 16
     covariance_estimation/m_estimation/enable: false  # EXPERIMENTAL
     covariance_estimation/m_estimation/type: GEMAN_MCCLURE # HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     covariance_estimation/m_estimation/mad_scale: 2.0
@@ -64,6 +74,7 @@ lidar_odometry_node:
     submap/occupancy_grid_map/enable_free_space_update: true
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
+    submap/occupancy_grid_map/intensity_ema_alpha: 0.2
 
     motion_prediction/static_factor: 0.2
     motion_prediction/verbose: false
@@ -101,7 +112,7 @@ lidar_odometry_node:
     registration/photometric/weight: 0.2        # Scaling factor to balance photometric error with geometric error
     registration/photometric/robust_scale: 5.0  # Robust kernel is same as registration/robust/type
 
-    registration/rotation_constraint/enable: true            # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
+    registration/rotation_constraint/enable: false            # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
                                                              # If enable rotation_constraint, recommended optimization_method is LM
     registration/rotation_constraint/weight: 1.0             # Weight is scaling factor to balance constraint error with geometric error
     registration/rotation_constraint/robust/init_scale: 5.0  # Robust kernel is same as registration/robust/type

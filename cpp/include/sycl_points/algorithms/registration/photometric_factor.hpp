@@ -55,18 +55,25 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_color(
     // Offset between the projected point and the target point on the tangent plane.
     const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
 
-    // The color residual is the difference between the source and target colors,
-    // compensated by the geometric misalignment in the tangent plane.
-    // residual = (c_s - c_t) + G_t * (p_proj - p_t)
+    // The color residual is the source-target color difference after first-order warping
+    // of the target color field on the tangent plane:
+    // residual = (c_s - c_t) - G_t * (p_proj - p_t)
     const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
     const Eigen::Vector3f residual_color =
-        color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);  // G_t * offset
+        color_diff - eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);  // -G_t * offset
+
+    // Tangent-plane projection matrix (I - n n^T)
+    const Eigen::Vector3f n = target_normal.template head<3>();
+    const Eigen::Matrix3f tangent_proj =
+        eigen_utils::subtract<3, 3>(Eigen::Matrix3f::Identity(), eigen_utils::outer<3>(n, n));
 
     // SE(3) Jacobian of the source point
     const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
 
-    // Color Jacobian: gradient * J_geo
-    const Eigen::Matrix<float, 3, 6> J_color = eigen_utils::multiply<3, 3, 6>(target_rgb_grad, J_geo);
+    // Color Jacobian: -gradient * P_tangent * J_geo
+    // Optimization: Compute (gradient * P_tangent) first to reduce operations
+    const Eigen::Matrix<float, 3, 6> J_color = eigen_utils::multiply<3, 6>(
+        eigen_utils::multiply<3, 3, 6>(eigen_utils::multiply<3, 3, 3>(target_rgb_grad, tangent_proj), J_geo), -1.0f);
 
     LinearizedKernelResult ret;
     // H = J.T * J
@@ -100,16 +107,23 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_intensity(
     // Offset between the projected point and the target point on the tangent plane
     const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
 
-    // Intensity residual compensated by the spatial gradient on the tangent plane
+    // Intensity residual after first-order warping of target intensity on the tangent plane
     const float intensity_diff = source_intensity - target_intensity;
-    const float residual_intensity = intensity_diff + eigen_utils::dot<3>(target_intensity_grad, offset);
+    const float residual_intensity = intensity_diff - eigen_utils::dot<3>(target_intensity_grad, offset);
+
+    // Tangent-plane projection matrix (I - n n^T)
+    const Eigen::Vector3f n = target_normal.template head<3>();
+    const Eigen::Matrix3f tangent_proj =
+        eigen_utils::subtract<3, 3>(Eigen::Matrix3f::Identity(), eigen_utils::outer<3>(n, n));
 
     // SE(3) Jacobian of the source point
     const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
 
-    // Intensity Jacobian: gradient (row vector) * J_geo
+    // Intensity Jacobian: -gradient (row vector) * P_tangent * J_geo
     const Eigen::Matrix<float, 1, 3> grad_row = target_intensity_grad.transpose();
-    const Eigen::Matrix<float, 1, 6> J_intensity = eigen_utils::multiply<1, 3, 6>(grad_row, J_geo);
+    // Optimization: Compute (grad_row * P_tangent) first. (1x3)*(3x3) is cheaper than (3x3)*(3x6)
+    const Eigen::Matrix<float, 1, 6> J_intensity = eigen_utils::multiply<1, 6>(
+        eigen_utils::multiply<1, 3, 6>(eigen_utils::multiply<1, 3, 3>(grad_row, tangent_proj), J_geo), -1.0f);
     const Eigen::Matrix<float, 6, 1> J_intensity_T = eigen_utils::transpose<1, 6>(J_intensity);
 
     LinearizedKernelResult ret;
@@ -140,9 +154,9 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
                                                  const ColorGradient& target_rgb_grad) {  ///< Target RGB gradient
     const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
     const Eigen::Vector3f color_diff = (source_rgb - target_rgb).template head<3>();
-    const Eigen::Vector3f residual_color = color_diff + eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);
+    const Eigen::Vector3f residual_color = color_diff - eigen_utils::multiply<3, 3, 1>(target_rgb_grad, offset);
 
-    return 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
+    return eigen_utils::frobenius_norm_squared<3>(residual_color);
 }
 
 /// @brief Evaluate intensity photometric error including geometric correction
@@ -160,7 +174,7 @@ SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::floa
                                                      const IntensityGradient& target_intensity_grad) {
     const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
     const float intensity_diff = source_intensity - target_intensity;
-    const float residual_intensity = intensity_diff + eigen_utils::dot<3>(target_intensity_grad, offset);
+    const float residual_intensity = intensity_diff - eigen_utils::dot<3>(target_intensity_grad, offset);
 
     return residual_intensity * residual_intensity;
 }

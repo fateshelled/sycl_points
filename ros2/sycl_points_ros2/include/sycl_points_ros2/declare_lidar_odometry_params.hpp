@@ -16,18 +16,37 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         params.sycl_device_type = node->declare_parameter<std::string>("sycl/device_type", params.sycl_device_type);
     }
 
+    // input
+    {
+        params.input_convert_rgb = node->declare_parameter<bool>("input/convert_rgb", params.input_convert_rgb);
+        params.input_convert_intensity =
+            node->declare_parameter<bool>("input/convert_intensity", params.input_convert_intensity);
+
+        params.input_use_reflectivity_as_intensity = node->declare_parameter<bool>(
+            "input/use_reflectivity_as_intensity", params.input_use_reflectivity_as_intensity);
+    }
+
     // scan
     {
+        params.scan_intensity_z_score_enable =
+            node->declare_parameter<bool>("scan/intensity_z_score/enable", params.scan_intensity_z_score_enable);
+
         params.scan_intensity_correction_enable =
             node->declare_parameter<bool>("scan/intensity_correction/enable", params.scan_intensity_correction_enable);
         params.scan_intensity_correction_exp =
             node->declare_parameter<double>("scan/intensity_correction/exp", params.scan_intensity_correction_exp);
         params.scan_intensity_correction_scale =
             node->declare_parameter<double>("scan/intensity_correction/scale", params.scan_intensity_correction_scale);
+        params.scan_intensity_correction_reference_distance = node->declare_parameter<double>(
+            "scan/intensity_correction/reference_distance", params.scan_intensity_correction_reference_distance);
         params.scan_intensity_correction_min_intensity = node->declare_parameter<double>(
             "scan/intensity_correction/min_intensity", params.scan_intensity_correction_min_intensity);
         params.scan_intensity_correction_max_intensity = node->declare_parameter<double>(
             "scan/intensity_correction/max_intensity", params.scan_intensity_correction_max_intensity);
+        params.scan_intensity_correction_use_normal = node->declare_parameter<bool>(
+            "scan/intensity_correction/use_normal", params.scan_intensity_correction_use_normal);
+        params.scan_intensity_correction_min_cos_theta = node->declare_parameter<double>(
+            "scan/intensity_correction/min_cos_theta", params.scan_intensity_correction_min_cos_theta);
         params.scan_downsampling_voxel_enable =
             node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan_downsampling_voxel_enable);
         params.scan_downsampling_voxel_size =
@@ -100,6 +119,8 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             "submap/occupancy_grid_map/enable_pruning", params.occupancy_grid_map_enable_pruning);
         params.occupancy_grid_map_stale_frame_threshold = node->declare_parameter<int64_t>(
             "submap/occupancy_grid_map/stale_frame_threshold", params.occupancy_grid_map_stale_frame_threshold);
+        params.occupancy_grid_map_intensity_ema_alpha = node->declare_parameter<double>(
+            "submap/occupancy_grid_map/intensity_ema_alpha", params.occupancy_grid_map_intensity_ema_alpha);
     }
 
     // Covariances
