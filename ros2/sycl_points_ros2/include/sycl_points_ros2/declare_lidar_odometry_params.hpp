@@ -209,6 +209,8 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
                 "registration/velocity_update/enable", params.registration_velocity_update_enable);
             params.registration_velocity_update_iter = node->declare_parameter<int64_t>(
                 "registration/velocity_update/iter", params.registration_velocity_update_iter);
+            params.registration_deskew_recompute_features = node->declare_parameter<bool>(
+                "registration/velocity_update/recompute_features", params.registration_deskew_recompute_features);
         }
         // photometric
         {

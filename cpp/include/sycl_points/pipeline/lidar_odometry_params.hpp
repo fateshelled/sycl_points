@@ -78,6 +78,7 @@ struct Parameters {
     size_t registration_min_num_points = 100;
     bool registration_velocity_update_enable = true;
     size_t registration_velocity_update_iter = 1;
+    bool registration_deskew_recompute_features = true;
     bool registration_random_sampling_enable = true;
     size_t registration_random_sampling_num = 1000;
     algorithms::registration::RegistrationParams reg_params;

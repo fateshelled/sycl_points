@@ -90,6 +90,7 @@ lidar_odometry_node:
 
     registration/velocity_update/enable: true
     registration/velocity_update/iter: 2
+    registration/velocity_update/recompute_features: true
 
     registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     registration/robust/auto_scale: true    # If false, the robust scale is fixed to init_scale.

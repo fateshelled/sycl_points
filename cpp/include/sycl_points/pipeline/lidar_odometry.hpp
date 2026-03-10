@@ -4,7 +4,6 @@
 
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
-#include "sycl_points/algorithms/feature/photometric_gradient.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
@@ -12,7 +11,7 @@
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
-#include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
@@ -156,12 +155,11 @@ private:
     algorithms::mapping::OccupancyGridMap::Ptr occupancy_grid_ = nullptr;
     algorithms::knn::KDTree::Ptr submap_tree_ = nullptr;
     algorithms::knn::KNNResult knn_result_;
-    algorithms::knn::KNNResult knn_result_grad_;
 
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
     algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
     algorithms::filter::PolarGrid::Ptr polar_filter_ = nullptr;
-    algorithms::registration::Registration::Ptr registration_ = nullptr;
+    algorithms::registration::RegistrationPipeline::Ptr registration_ = nullptr;
 
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
@@ -290,8 +288,24 @@ private:
         }
         // Registration
         {
-            this->registration_ =
-                std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, this->params_.reg_params);
+            algorithms::registration::RegistrationPipeline::PipelineParams reg_pipeline_params;
+            reg_pipeline_params.random_sampling_enable = this->params_.registration_random_sampling_enable;
+            reg_pipeline_params.random_sampling_num = this->params_.registration_random_sampling_num;
+            reg_pipeline_params.covariance_estimation_neighbor_num = this->params_.covariance_estimation_neighbor_num;
+            reg_pipeline_params.covariance_estimation_m_estimation_enable =
+                this->params_.covariance_estimation_m_estimation_enable;
+            reg_pipeline_params.covariance_estimation_m_estimation_type =
+                this->params_.covariance_estimation_m_estimation_type;
+            reg_pipeline_params.covariance_estimation_m_estimation_mad_scale =
+                this->params_.covariance_estimation_m_estimation_mad_scale;
+            reg_pipeline_params.covariance_estimation_m_estimation_min_robust_scale =
+                this->params_.covariance_estimation_m_estimation_min_robust_scale;
+            reg_pipeline_params.covariance_estimation_m_estimation_max_iterations =
+                this->params_.covariance_estimation_m_estimation_max_iterations;
+            reg_pipeline_params.deskew_recompute_features = this->params_.registration_deskew_recompute_features;
+
+            this->registration_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
+                *this->queue_ptr_, this->params_.reg_params, reg_pipeline_params);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
             this->registrated_ = false;
         }
@@ -351,9 +365,8 @@ private:
     }
 
     void compute_covariances() {
-        if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-            this->params_.reg_params.rotation_constraint.enable ||
-            this->params_.scan_preprocess_angle_incidence_filter_enable) {
+        // Keep this path only for preprocessing filters that require source covariances.
+        if (this->params_.scan_preprocess_angle_incidence_filter_enable) {
             // build KDTree
             const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
             auto events = src_tree->knn_search_async(
@@ -445,12 +458,8 @@ private:
     algorithms::registration::RegistrationResult registration() {
         const Eigen::Isometry3f init_T = this->adaptive_motion_prediction();
 
-        if (this->params_.registration_random_sampling_enable) {
-            this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_,
-                                                      this->params_.registration_random_sampling_num);
-        } else {
-            *this->registration_input_pc_ = *this->preprocessed_pc_;
-        }
+        // RegistrationPipeline is responsible for registration-stage random sampling.
+        *this->registration_input_pc_ = *this->preprocessed_pc_;
 
         algorithms::registration::RegistrationResult result;
         if (this->params_.registration_velocity_update_enable) {
@@ -488,61 +497,8 @@ private:
             this->submap_pc_ptr_ = this->submap_pc_tmp_;
         }
 
-        // KNN search
+        // KNN search structure is built here, while feature preparation is handled in RegistrationPipeline.
         this->submap_tree_ = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->submap_pc_ptr_);
-        auto knn_events = this->submap_tree_->knn_search_async(
-            *this->submap_pc_ptr_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
-
-        // compute grad
-        sycl_utils::events grad_events;
-        if (this->params_.reg_params.photometric.enable) {
-            if (this->submap_pc_ptr_->has_rgb()) {
-                grad_events += algorithms::color_gradient::compute_color_gradients_async(
-                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
-            } else if (this->submap_pc_ptr_->has_intensity()) {
-                grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
-                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
-            }
-        }
-
-        // compute covariances and normals
-        sycl_utils::events cov_events;
-        {
-            bool compute_normal = false;
-            bool compute_cov = false;
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
-                compute_normal = true;
-                cov_events += algorithms::covariance::compute_normals_async(this->knn_result_, *this->submap_pc_ptr_,
-                                                                            knn_events.evs);
-            }
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-                this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
-                this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ ||
-                this->params_.reg_params.rotation_constraint.enable) {
-                compute_cov = true;
-                cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
-                                                                                *this->submap_pc_ptr_, knn_events.evs);
-            }
-
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
-                compute_normal = true;
-                cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                             cov_events.evs);
-            }
-
-            if (this->params_.reg_params.photometric.enable && !compute_normal) {
-                if (compute_cov) {
-                    cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                                 cov_events.evs);
-                } else {
-                    cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
-                                                                                *this->submap_pc_ptr_, knn_events.evs);
-                }
-            }
-        }
-        knn_events.wait_and_throw();
-        grad_events.wait_and_throw();
-        cov_events.wait_and_throw();
     }
 
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
