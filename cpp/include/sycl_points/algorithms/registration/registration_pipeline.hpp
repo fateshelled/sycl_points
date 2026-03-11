@@ -66,7 +66,6 @@ public:
         result.T.matrix() = initial_guess;
 
         this->prepare_input(source, *this->sampled_source_);
-        *this->deskewed_source_ = *this->sampled_source_;
 
         this->prepare_features(*this->sampled_source_, target, target_knn, true, false);
 
