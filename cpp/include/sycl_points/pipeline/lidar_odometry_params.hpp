@@ -2,7 +2,6 @@
 
 #include <Eigen/Geometry>
 
-#include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 #include "sycl_points/ros2/covariance_marker_publisher.hpp"
 
@@ -79,7 +78,6 @@ struct Parameters {
     size_t registration_min_num_points = 100;
     bool registration_random_sampling_enable = true;
     size_t registration_random_sampling_num = 1000;
-    algorithms::registration::RegistrationParams reg_params;
     algorithms::registration::RegistrationPipelineParams reg_pipeline_params;
 
     std::string odom_frame_id = "odom";

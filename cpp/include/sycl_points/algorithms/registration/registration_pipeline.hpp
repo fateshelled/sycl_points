@@ -29,13 +29,13 @@ class RobustPipeline {
 public:
     using Ptr = std::shared_ptr<RobustPipeline>;
 
-    RobustPipeline(RegistrationAligner aligner, const RegistrationParams& params,
-                   const RegistrationPipelineParams::Robust& pipeline_params)
-        : aligner_(std::move(aligner)), params_(params), pipeline_params_(pipeline_params) {}
+    RobustPipeline(RegistrationAligner aligner, const RegistrationPipelineParams& pipeline_params)
+        : aligner_(std::move(aligner)),
+          params_(pipeline_params.registration),
+          pipeline_params_(pipeline_params.robust) {}
 
-    RobustPipeline(const Registration::Ptr& registration, const RegistrationParams& params,
-                   const RegistrationPipelineParams::Robust& pipeline_params)
-        : RobustPipeline(make_registration_aligner(registration), params, pipeline_params) {}
+    RobustPipeline(const Registration::Ptr& registration, const RegistrationPipelineParams& pipeline_params)
+        : RobustPipeline(make_registration_aligner(registration), pipeline_params) {}
 
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,
@@ -183,26 +183,26 @@ class RegistrationPipeline {
 public:
     using Ptr = std::shared_ptr<RegistrationPipeline>;
 
-    RegistrationPipeline(const Registration::Ptr& registration, const RegistrationParams& params,
+    RegistrationPipeline(const Registration::Ptr& registration,
                          const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
         : registration_(registration) {
         this->aligner_ = make_registration_aligner(this->registration_);
 
         if (pipeline_params.velocity_update.enable) {
             this->velocity_update_pipeline_ = std::make_shared<VelocityUpdatePipeline>(
-                this->aligner_, pipeline_params.velocity_update.iter, params.verbose);
+                this->aligner_, pipeline_params.velocity_update.iter, pipeline_params.registration.verbose);
             this->aligner_ = this->velocity_update_pipeline_->make_aligner();
         }
 
         if (pipeline_params.robust.auto_scale) {
-            this->robust_pipeline_ = std::make_shared<RobustPipeline>(this->aligner_, params, pipeline_params.robust);
+            this->robust_pipeline_ = std::make_shared<RobustPipeline>(this->aligner_, pipeline_params);
             this->aligner_ = this->robust_pipeline_->make_aligner();
         }
     }
 
-    RegistrationPipeline(const sycl_utils::DeviceQueue& queue, const RegistrationParams& params,
+    RegistrationPipeline(const sycl_utils::DeviceQueue& queue,
                          const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
-        : RegistrationPipeline(std::make_shared<Registration>(queue, params), params, pipeline_params) {}
+        : RegistrationPipeline(std::make_shared<Registration>(queue, pipeline_params.registration), pipeline_params) {}
 
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,

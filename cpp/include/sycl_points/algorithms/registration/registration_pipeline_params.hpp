@@ -2,11 +2,15 @@
 
 #include <cstddef>
 
+#include "sycl_points/algorithms/registration/registration_params.hpp"
+
 namespace sycl_points {
 namespace algorithms {
 namespace registration {
 
 struct RegistrationPipelineParams {
+    RegistrationParams registration;
+
     struct Robust {
         bool auto_scale = false;  // If false, the robust scale is fixed to RegistrationParams::robust.init_scale.
         float min_scale = 0.5f;   // minimum scale for the ICP robust loss

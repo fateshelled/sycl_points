@@ -291,7 +291,7 @@ private:
         // Registration
         {
             this->registration_pipeline_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
-                *this->queue_ptr_, this->params_.reg_params, this->params_.reg_pipeline_params);
+                *this->queue_ptr_, this->params_.reg_pipeline_params);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
             this->registrated_ = false;
         }
@@ -351,8 +351,8 @@ private:
     }
 
     void compute_covariances() {
-        if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-            this->params_.reg_params.rotation_constraint.enable ||
+        if (this->params_.reg_pipeline_params.registration.reg_type == algorithms::registration::RegType::GICP ||
+            this->params_.reg_pipeline_params.registration.rotation_constraint.enable ||
             this->params_.scan_preprocess_angle_incidence_filter_enable) {
             // build KDTree
             const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
@@ -491,7 +491,7 @@ private:
 
         // compute grad
         sycl_utils::events grad_events;
-        if (this->params_.reg_params.photometric.enable) {
+        if (this->params_.reg_pipeline_params.registration.photometric.enable) {
             if (this->submap_pc_ptr_->has_rgb()) {
                 grad_events += algorithms::color_gradient::compute_color_gradients_async(
                     *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
@@ -506,27 +506,29 @@ private:
         {
             bool compute_normal = false;
             bool compute_cov = false;
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
+            if (this->params_.reg_pipeline_params.registration.reg_type ==
+                algorithms::registration::RegType::POINT_TO_PLANE) {
                 compute_normal = true;
                 cov_events += algorithms::covariance::compute_normals_async(this->knn_result_, *this->submap_pc_ptr_,
                                                                             knn_events.evs);
             }
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-                this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
-                this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ ||
-                this->params_.reg_params.rotation_constraint.enable) {
+            if (this->params_.reg_pipeline_params.registration.reg_type == algorithms::registration::RegType::GICP ||
+                this->params_.reg_pipeline_params.registration.reg_type ==
+                    algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
+                this->params_.reg_pipeline_params.registration.reg_type == algorithms::registration::RegType::GENZ ||
+                this->params_.reg_pipeline_params.registration.rotation_constraint.enable) {
                 compute_cov = true;
                 cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
             }
 
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
+            if (this->params_.reg_pipeline_params.registration.reg_type == algorithms::registration::RegType::GENZ) {
                 compute_normal = true;
                 cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
                                                                                              cov_events.evs);
             }
 
-            if (this->params_.reg_params.photometric.enable && !compute_normal) {
+            if (this->params_.reg_pipeline_params.registration.photometric.enable && !compute_normal) {
                 if (compute_cov) {
                     cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
                                                                                                  cov_events.evs);
