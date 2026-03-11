@@ -12,7 +12,7 @@
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
-#include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
@@ -161,7 +161,7 @@ private:
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
     algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
     algorithms::filter::PolarGrid::Ptr polar_filter_ = nullptr;
-    algorithms::registration::Registration::Ptr registration_ = nullptr;
+    algorithms::registration::RegistrationPipeline::Ptr registration_pipeline_ = nullptr;
 
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
@@ -290,8 +290,9 @@ private:
         }
         // Registration
         {
-            this->registration_ =
-                std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, this->params_.reg_params);
+            this->registration_pipeline_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
+                *this->queue_ptr_, this->params_.reg_params, this->params_.registration_velocity_update_enable,
+                this->params_.registration_velocity_update_iter);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
             this->registrated_ = false;
         }
@@ -452,16 +453,12 @@ private:
             *this->registration_input_pc_ = *this->preprocessed_pc_;
         }
 
-        algorithms::registration::RegistrationResult result;
-        if (this->params_.registration_velocity_update_enable) {
-            result = this->registration_->align_velocity_update(
-                *this->registration_input_pc_, *this->submap_pc_ptr_, *this->submap_tree_, init_T.matrix(), this->dt_,
-                this->params_.registration_velocity_update_iter, this->odom_.matrix());
-        } else {
-            result = this->registration_->align(*this->registration_input_pc_, *this->submap_pc_ptr_,
-                                                *this->submap_tree_, init_T.matrix());
-        }
-        return result;
+        algorithms::registration::Registration::ExecutionOptions options;
+        options.dt = this->dt_;
+        options.prev_pose = this->odom_.matrix();
+
+        return this->registration_pipeline_->align(*this->registration_input_pc_, *this->submap_pc_ptr_,
+                                                   *this->submap_tree_, init_T.matrix(), options);
     }
 
     void build_submap(const PointCloudShared::Ptr& pc, const Eigen::Isometry3f& current_pose) {

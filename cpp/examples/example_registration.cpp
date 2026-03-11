@@ -7,7 +7,7 @@
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
-#include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/io/point_cloud_reader.hpp"
 
 int main() {
@@ -40,7 +40,8 @@ int main() {
     param.robust.auto_scaling_iter = 3;
     param.reg_type = sycl_points::algorithms::registration::RegType::GICP;
 
-    const auto registration = std::make_shared<sycl_points::algorithms::registration::Registration>(queue, param);
+    const auto registration_pipeline =
+        std::make_shared<sycl_points::algorithms::registration::RegistrationPipeline>(queue, param);
     const auto voxel_grid = std::make_shared<sycl_points::algorithms::filter::VoxelGrid>(queue, voxel_size);
     const auto preprocess_filter = std::make_shared<sycl_points::algorithms::filter::PreprocessFilter>(queue);
 
@@ -115,7 +116,7 @@ int main() {
         // preprocess_filter->random_sampling(source_downsampled, 1000);
 
         sycl_points::TransformMatrix init_T = sycl_points::TransformMatrix::Identity();
-        const auto ret = registration->align(source_downsampled, target_downsampled, *target_tree, init_T);
+        const auto ret = registration_pipeline->align(source_downsampled, target_downsampled, *target_tree, init_T);
         const auto dt_registration =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();
