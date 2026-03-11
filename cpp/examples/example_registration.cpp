@@ -35,13 +35,14 @@ int main() {
     param.optimization_method = sycl_points::algorithms::registration::OptimizationMethod::POWELL_DOGLEG;
     param.robust.type = sycl_points::algorithms::robust::RobustLossType::GEMAN_MCCLURE;
     param.robust.init_scale = 10.0f;
-    param.robust.auto_scale = true;
-    param.robust.min_scale = 2.5f;
-    param.robust.auto_scaling_iter = 3;
     param.reg_type = sycl_points::algorithms::registration::RegType::GICP;
+    sycl_points::algorithms::registration::RegistrationPipelineParams pipeline_param;
+    pipeline_param.robust.auto_scale = true;
+    pipeline_param.robust.min_scale = 2.5f;
+    pipeline_param.robust.auto_scaling_iter = 3;
 
     const auto registration_pipeline =
-        std::make_shared<sycl_points::algorithms::registration::RegistrationPipeline>(queue, param);
+        std::make_shared<sycl_points::algorithms::registration::RegistrationPipeline>(queue, param, pipeline_param);
     const auto voxel_grid = std::make_shared<sycl_points::algorithms::filter::VoxelGrid>(queue, voxel_size);
     const auto preprocess_filter = std::make_shared<sycl_points::algorithms::filter::PreprocessFilter>(queue);
 

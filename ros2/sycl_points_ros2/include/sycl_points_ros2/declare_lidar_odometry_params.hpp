@@ -194,21 +194,21 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         {
             const std::string robust_loss = node->declare_parameter<std::string>("registration/robust/type", "NONE");
             params.reg_params.robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
-            params.reg_params.robust.auto_scale =
-                node->declare_parameter<bool>("registration/robust/auto_scale", params.reg_params.robust.auto_scale);
             params.reg_params.robust.init_scale =
                 node->declare_parameter<double>("registration/robust/init_scale", params.reg_params.robust.init_scale);
-            params.reg_params.robust.min_scale =
-                node->declare_parameter<double>("registration/robust/min_scale", params.reg_params.robust.min_scale);
-            params.reg_params.robust.auto_scaling_iter = node->declare_parameter<int64_t>(
-                "registration/robust/auto_scaling_iter", params.reg_params.robust.auto_scaling_iter);
+            params.reg_pipeline_params.robust.auto_scale = node->declare_parameter<bool>(
+                "registration/robust/auto_scale", params.reg_pipeline_params.robust.auto_scale);
+            params.reg_pipeline_params.robust.min_scale = node->declare_parameter<double>(
+                "registration/robust/min_scale", params.reg_pipeline_params.robust.min_scale);
+            params.reg_pipeline_params.robust.auto_scaling_iter = node->declare_parameter<int64_t>(
+                "registration/robust/auto_scaling_iter", params.reg_pipeline_params.robust.auto_scaling_iter);
         }
         // deskew
         {
-            params.registration_velocity_update_enable = node->declare_parameter<bool>(
-                "registration/velocity_update/enable", params.registration_velocity_update_enable);
-            params.registration_velocity_update_iter = node->declare_parameter<int64_t>(
-                "registration/velocity_update/iter", params.registration_velocity_update_iter);
+            params.reg_pipeline_params.velocity_update.enable = node->declare_parameter<bool>(
+                "registration/velocity_update/enable", params.reg_pipeline_params.velocity_update.enable);
+            params.reg_pipeline_params.velocity_update.iter = node->declare_parameter<int64_t>(
+                "registration/velocity_update/iter", params.reg_pipeline_params.velocity_update.iter);
         }
         // photometric
         {
@@ -233,9 +233,9 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             params.reg_params.rotation_constraint.robust_init_scale =
                 node->declare_parameter<double>("registration/rotation_constraint/robust/init_scale",
                                                 params.reg_params.rotation_constraint.robust_init_scale);
-            params.reg_params.rotation_constraint.robust_min_scale =
+            params.reg_pipeline_params.robust.rotation_min_scale =
                 node->declare_parameter<double>("registration/rotation_constraint/robust/min_scale",
-                                                params.reg_params.rotation_constraint.robust_min_scale);
+                                                params.reg_pipeline_params.robust.rotation_min_scale);
         }
 
         // Optimization

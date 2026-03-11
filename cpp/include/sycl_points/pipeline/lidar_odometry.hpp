@@ -291,8 +291,7 @@ private:
         // Registration
         {
             this->registration_pipeline_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
-                *this->queue_ptr_, this->params_.reg_params, this->params_.registration_velocity_update_enable,
-                this->params_.registration_velocity_update_iter);
+                *this->queue_ptr_, this->params_.reg_params, this->params_.reg_pipeline_params);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
             this->registrated_ = false;
         }
@@ -543,7 +542,7 @@ private:
     }
 
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
-        if (this->params_.registration_velocity_update_enable) {
+        if (this->params_.reg_pipeline_params.velocity_update.enable) {
             algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
                                                                      this->odom_, reg_result.T, this->dt_);
         }

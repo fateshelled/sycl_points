@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 
 namespace sycl_points {
 namespace algorithms {
@@ -28,11 +29,13 @@ class RobustPipeline {
 public:
     using Ptr = std::shared_ptr<RobustPipeline>;
 
-    RobustPipeline(RegistrationAligner aligner, const RegistrationParams& params)
-        : aligner_(std::move(aligner)), params_(params) {}
+    RobustPipeline(RegistrationAligner aligner, const RegistrationParams& params,
+                   const RegistrationPipelineParams::Robust& pipeline_params)
+        : aligner_(std::move(aligner)), params_(params), pipeline_params_(pipeline_params) {}
 
-    RobustPipeline(const Registration::Ptr& registration, const RegistrationParams& params)
-        : RobustPipeline(make_registration_aligner(registration), params) {}
+    RobustPipeline(const Registration::Ptr& registration, const RegistrationParams& params,
+                   const RegistrationPipelineParams::Robust& pipeline_params)
+        : RobustPipeline(make_registration_aligner(registration), params, pipeline_params) {}
 
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,
@@ -46,15 +49,35 @@ public:
         }
 
         const bool use_fixed_scales = options.robust_scale > 0.0f || options.rotation_robust_scale > 0.0f;
-        const bool enable_auto_scaling = !use_fixed_scales &&
-                                         this->params_.robust.type != robust::RobustLossType::NONE &&
-                                         this->params_.robust.auto_scale;
+        bool enable_auto_scaling = !use_fixed_scales && this->params_.robust.type != robust::RobustLossType::NONE &&
+                                   this->pipeline_params_.auto_scale;
+        if (enable_auto_scaling && (this->pipeline_params_.min_scale <= 0.0f ||
+                                    this->pipeline_params_.min_scale >= this->params_.robust.init_scale)) {
+            std::cout
+                << "[Caution] `pipeline.robust.min_scale` must be greater than zero and less than robust.init_scale."
+                << std::endl;
+            enable_auto_scaling = false;
+        }
+        if (enable_auto_scaling &&
+            (this->pipeline_params_.rotation_min_scale <= 0.0f ||
+             this->pipeline_params_.rotation_min_scale >= this->params_.rotation_constraint.robust_init_scale)) {
+            std::cout << "[Caution] `pipeline.robust.rotation_min_scale` must be greater than zero and less than "
+                         "rotation_constraint.robust_init_scale."
+                      << std::endl;
+            enable_auto_scaling = false;
+        }
+        if (enable_auto_scaling && this->pipeline_params_.auto_scaling_iter == 0) {
+            std::cout
+                << "[Caution] `pipeline.robust.auto_scaling_iter` must be greater than zero. Disable auto scaling."
+                << std::endl;
+            enable_auto_scaling = false;
+        }
         const size_t robust_levels =
-            enable_auto_scaling ? std::max<size_t>(1, this->params_.robust.auto_scaling_iter) : 1;
+            enable_auto_scaling ? std::max<size_t>(1, this->pipeline_params_.auto_scaling_iter) : 1;
 
         float robust_scale = options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
         const float robust_scaling_factor =
-            robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
+            robust_levels > 1 ? std::pow(this->pipeline_params_.min_scale / this->params_.robust.init_scale,
                                          1.0f / static_cast<float>(robust_levels - 1))
                               : 1.0f;
 
@@ -62,7 +85,7 @@ public:
                                           ? options.rotation_robust_scale
                                           : this->params_.rotation_constraint.robust_init_scale;
         const float rotation_robust_scaling_factor =
-            robust_levels > 1 ? std::pow(this->params_.rotation_constraint.robust_min_scale /
+            robust_levels > 1 ? std::pow(this->pipeline_params_.rotation_min_scale /
                                              this->params_.rotation_constraint.robust_init_scale,
                                          1.0f / static_cast<float>(robust_levels - 1))
                               : 1.0f;
@@ -94,6 +117,7 @@ public:
 private:
     RegistrationAligner aligner_;
     RegistrationParams params_;
+    RegistrationPipelineParams::Robust pipeline_params_;
 };
 
 class VelocityUpdatePipeline {
@@ -160,26 +184,25 @@ public:
     using Ptr = std::shared_ptr<RegistrationPipeline>;
 
     RegistrationPipeline(const Registration::Ptr& registration, const RegistrationParams& params,
-                         bool enable_velocity_update = false, size_t velocity_update_iter = 1)
+                         const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
         : registration_(registration) {
         this->aligner_ = make_registration_aligner(this->registration_);
 
-        if (enable_velocity_update) {
-            this->velocity_update_pipeline_ =
-                std::make_shared<VelocityUpdatePipeline>(this->aligner_, velocity_update_iter, params.verbose);
+        if (pipeline_params.velocity_update.enable) {
+            this->velocity_update_pipeline_ = std::make_shared<VelocityUpdatePipeline>(
+                this->aligner_, pipeline_params.velocity_update.iter, params.verbose);
             this->aligner_ = this->velocity_update_pipeline_->make_aligner();
         }
 
-        if (params.robust.auto_scale) {
-            this->robust_pipeline_ = std::make_shared<RobustPipeline>(this->aligner_, params);
+        if (pipeline_params.robust.auto_scale) {
+            this->robust_pipeline_ = std::make_shared<RobustPipeline>(this->aligner_, params, pipeline_params.robust);
             this->aligner_ = this->robust_pipeline_->make_aligner();
         }
     }
 
     RegistrationPipeline(const sycl_utils::DeviceQueue& queue, const RegistrationParams& params,
-                         bool enable_velocity_update = false, size_t velocity_update_iter = 1)
-        : RegistrationPipeline(std::make_shared<Registration>(queue, params), params, enable_velocity_update,
-                               velocity_update_iter) {}
+                         const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
+        : RegistrationPipeline(std::make_shared<Registration>(queue, params), params, pipeline_params) {}
 
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,

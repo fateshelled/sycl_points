@@ -3,6 +3,7 @@
 #include <Eigen/Geometry>
 
 #include "sycl_points/algorithms/registration/registration_params.hpp"
+#include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 #include "sycl_points/ros2/covariance_marker_publisher.hpp"
 
 namespace sycl_points {
@@ -76,11 +77,10 @@ struct Parameters {
     float motion_prediction_adaptive_trans_min_eigenvalue_high = 10.0f;
 
     size_t registration_min_num_points = 100;
-    bool registration_velocity_update_enable = true;
-    size_t registration_velocity_update_iter = 1;
     bool registration_random_sampling_enable = true;
     size_t registration_random_sampling_num = 1000;
     algorithms::registration::RegistrationParams reg_params;
+    algorithms::registration::RegistrationPipelineParams reg_pipeline_params;
 
     std::string odom_frame_id = "odom";
     std::string base_link_id = "base_link";

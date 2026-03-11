@@ -196,20 +196,6 @@ public:
                           << std::endl;
                 this->params_.robust.type = robust::RobustLossType::NONE;
             }
-            if (this->params_.robust.auto_scale) {
-                if (this->params_.robust.min_scale <= 0.0f ||
-                    this->params_.robust.min_scale >= this->params_.robust.init_scale) {
-                    std::cout
-                        << "[Caution] `robust.min_scale` must be greater than zero and less than robust.init_scale."
-                        << std::endl;
-                    this->params_.robust.auto_scale = false;
-                }
-                if (this->params_.robust.auto_scaling_iter <= 0) {
-                    std::cout << "[Caution] `robust.auto_scaling_iter` must be greater than zero. Disable auto scaling."
-                              << std::endl;
-                    this->params_.robust.auto_scale = false;
-                }
-            }
         }
     }
 
