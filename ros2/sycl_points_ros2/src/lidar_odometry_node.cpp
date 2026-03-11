@@ -49,7 +49,7 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options) : rclcp
             std::make_unique<tf2_ros::TransformBroadcaster>(*this, tf2_ros::DynamicBroadcasterQoS(1000));
 
         this->covariance_marker_publisher_ =
-            std::make_unique<CovarianceMarkerPublisher>(*this, this->params_.scan_cov_marker_config);
+            std::make_unique<CovarianceMarkerPublisher>(*this, this->params_.visualization.scan_covariance_markers);
     }
 
     RCLCPP_INFO(this->get_logger(), "Subscribe PointCloud: %s", this->sub_pc_->get_topic_name());
@@ -137,13 +137,13 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
                 }
             }
 
-            this->covariance_marker_publisher_->publish_if_subscribed(msg->header,
-                                                                      this->pipeline_->get_registration_input_point_cloud());
+            this->covariance_marker_publisher_->publish_if_subscribed(
+                msg->header, this->pipeline_->get_registration_input_point_cloud());
 
             if (this->pub_submap_->get_subscription_count() > 0) {
                 auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), msg->header);
                 if (submap_msg != nullptr) {
-                    submap_msg->header.frame_id = this->params_.odom_frame_id;
+                    submap_msg->header.frame_id = this->params_.frames.odom_frame_id;
                     this->pub_submap_->publish(*submap_msg);
                 }
             }
@@ -182,8 +182,8 @@ void LiDAROdometryNode::publish_odom(const std_msgs::msg::Header& header,
         geometry_msgs::msg::TransformStamped::SharedPtr tf;
         tf.reset(new geometry_msgs::msg::TransformStamped);
         tf->header.stamp = header.stamp;
-        tf->header.frame_id = this->params_.odom_frame_id;
-        tf->child_frame_id = this->params_.base_link_id;
+        tf->header.frame_id = this->params_.frames.odom_frame_id;
+        tf->child_frame_id = this->params_.frames.base_link_id;
 
         tf->transform.translation.x = odom_trans.x();
         tf->transform.translation.y = odom_trans.y();
@@ -197,7 +197,7 @@ void LiDAROdometryNode::publish_odom(const std_msgs::msg::Header& header,
 
     geometry_msgs::msg::PoseStamped pose;
     pose.header.stamp = header.stamp;
-    pose.header.frame_id = this->params_.odom_frame_id;
+    pose.header.frame_id = this->params_.frames.odom_frame_id;
     pose.pose.position.x = odom_trans.x();
     pose.pose.position.y = odom_trans.y();
     pose.pose.position.z = odom_trans.z();
@@ -209,8 +209,8 @@ void LiDAROdometryNode::publish_odom(const std_msgs::msg::Header& header,
 
     nav_msgs::msg::Odometry odom_msg;
     odom_msg.header.stamp = header.stamp;
-    odom_msg.header.frame_id = this->params_.odom_frame_id;
-    odom_msg.child_frame_id = this->params_.base_link_id;
+    odom_msg.header.frame_id = this->params_.frames.odom_frame_id;
+    odom_msg.child_frame_id = this->params_.frames.base_link_id;
     odom_msg.pose.pose.position = pose.pose.position;
     odom_msg.pose.pose.orientation = pose.pose.orientation;
     // convert Hessian to Covariance
@@ -237,8 +237,8 @@ void LiDAROdometryNode::publish_keyframe_pose(const std_msgs::msg::Header& heade
 
     nav_msgs::msg::Odometry odom_msg;
     odom_msg.header = header;
-    odom_msg.header.frame_id = this->params_.odom_frame_id;
-    odom_msg.child_frame_id = this->params_.base_link_id;
+    odom_msg.header.frame_id = this->params_.frames.odom_frame_id;
+    odom_msg.child_frame_id = this->params_.frames.base_link_id;
     odom_msg.pose.pose.position.x = odom_trans.x();
     odom_msg.pose.pose.position.y = odom_trans.y();
     odom_msg.pose.pose.position.z = odom_trans.z();
