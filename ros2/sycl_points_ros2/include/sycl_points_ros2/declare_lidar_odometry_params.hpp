@@ -163,152 +163,142 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
     // Registration
     {
+        auto& reg = params.registration;
+        auto& pipeline = reg.pipeline;
+        auto& solver = pipeline.registration;
+
         // common
         {
-            params.registration.min_num_points =
-                node->declare_parameter<int64_t>("registration/min_num_points", params.registration.min_num_points);
-            params.registration.random_sampling.enable = node->declare_parameter<bool>(
-                "registration/random_sampling/enable", params.registration.random_sampling.enable);
-            params.registration.random_sampling.num = node->declare_parameter<int64_t>(
-                "registration/random_sampling/num", params.registration.random_sampling.num);
+            auto& random_sampling = reg.random_sampling;
+
+            reg.min_num_points = node->declare_parameter<int64_t>("registration/min_num_points", reg.min_num_points);
+            random_sampling.enable =
+                node->declare_parameter<bool>("registration/random_sampling/enable", random_sampling.enable);
+            random_sampling.num =
+                node->declare_parameter<int64_t>("registration/random_sampling/num", random_sampling.num);
 
             const std::string reg_type = node->declare_parameter<std::string>("registration/type", "gicp");
-            params.registration.pipeline.registration.reg_type =
-                algorithms::registration::RegType_from_string(reg_type);
-            params.registration.pipeline.registration.max_iterations = node->declare_parameter<int64_t>(
-                "registration/max_iterations", params.registration.pipeline.registration.max_iterations);
-            params.registration.pipeline.registration.criteria.translation = node->declare_parameter<double>(
-                "registration/criteria/translation", params.registration.pipeline.registration.criteria.translation);
-            params.registration.pipeline.registration.criteria.rotation = node->declare_parameter<double>(
-                "registration/criteria/rotation", params.registration.pipeline.registration.criteria.rotation);
-
-            params.registration.pipeline.registration.verbose = node->declare_parameter<bool>(
-                "registration/verbose", params.registration.pipeline.registration.verbose);
+            solver.reg_type = algorithms::registration::RegType_from_string(reg_type);
+            solver.max_iterations =
+                node->declare_parameter<int64_t>("registration/max_iterations", solver.max_iterations);
+            solver.criteria.translation =
+                node->declare_parameter<double>("registration/criteria/translation", solver.criteria.translation);
+            solver.criteria.rotation =
+                node->declare_parameter<double>("registration/criteria/rotation", solver.criteria.rotation);
+            solver.verbose = node->declare_parameter<bool>("registration/verbose", solver.verbose);
         }
         // Outlier removal
         {
-            params.registration.pipeline.registration.max_correspondence_distance =
-                node->declare_parameter<double>("registration/max_correspondence_distance",
-                                                params.registration.pipeline.registration.max_correspondence_distance);
-            params.registration.pipeline.registration.mahalanobis_distance_threshold = node->declare_parameter<double>(
-                "registration/mahalanobis_distance_threshold",
-                params.registration.pipeline.registration.mahalanobis_distance_threshold);
+            solver.max_correspondence_distance = node->declare_parameter<double>(
+                "registration/max_correspondence_distance", solver.max_correspondence_distance);
+            solver.mahalanobis_distance_threshold = node->declare_parameter<double>(
+                "registration/mahalanobis_distance_threshold", solver.mahalanobis_distance_threshold);
         }
 
         // robust
         {
+            auto& robust = solver.robust;
+            auto& pipeline_robust = pipeline.robust;
+
             const std::string robust_loss = node->declare_parameter<std::string>("registration/robust/type", "NONE");
-            params.registration.pipeline.registration.robust.type =
-                algorithms::robust::RobustLossType_from_string(robust_loss);
-            params.registration.pipeline.registration.robust.init_scale = node->declare_parameter<double>(
-                "registration/robust/init_scale", params.registration.pipeline.registration.robust.init_scale);
-            params.registration.pipeline.robust.auto_scale = node->declare_parameter<bool>(
-                "registration/robust/auto_scale", params.registration.pipeline.robust.auto_scale);
-            params.registration.pipeline.robust.min_scale = node->declare_parameter<double>(
-                "registration/robust/min_scale", params.registration.pipeline.robust.min_scale);
-            params.registration.pipeline.robust.auto_scaling_iter = node->declare_parameter<int64_t>(
-                "registration/robust/auto_scaling_iter", params.registration.pipeline.robust.auto_scaling_iter);
+            robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
+            robust.init_scale = node->declare_parameter<double>("registration/robust/init_scale", robust.init_scale);
+            pipeline_robust.auto_scale =
+                node->declare_parameter<bool>("registration/robust/auto_scale", pipeline_robust.auto_scale);
+            pipeline_robust.min_scale =
+                node->declare_parameter<double>("registration/robust/min_scale", pipeline_robust.min_scale);
+            pipeline_robust.auto_scaling_iter = node->declare_parameter<int64_t>(
+                "registration/robust/auto_scaling_iter", pipeline_robust.auto_scaling_iter);
         }
         // deskew
         {
-            params.registration.pipeline.velocity_update.enable = node->declare_parameter<bool>(
-                "registration/velocity_update/enable", params.registration.pipeline.velocity_update.enable);
-            params.registration.pipeline.velocity_update.iter = node->declare_parameter<int64_t>(
-                "registration/velocity_update/iter", params.registration.pipeline.velocity_update.iter);
+            auto& velocity_update = pipeline.velocity_update;
+
+            velocity_update.enable =
+                node->declare_parameter<bool>("registration/velocity_update/enable", velocity_update.enable);
+            velocity_update.iter =
+                node->declare_parameter<int64_t>("registration/velocity_update/iter", velocity_update.iter);
         }
         // photometric
         {
-            params.registration.pipeline.registration.photometric.enable = node->declare_parameter<bool>(
-                "registration/photometric/enable", params.registration.pipeline.registration.photometric.enable);
-            params.registration.pipeline.registration.photometric.weight = node->declare_parameter<double>(
-                "registration/photometric/weight", params.registration.pipeline.registration.photometric.weight);
-            params.registration.pipeline.registration.photometric.robust_scale =
-                node->declare_parameter<double>("registration/photometric/robust_scale",
-                                                params.registration.pipeline.registration.photometric.robust_scale);
+            auto& photometric = solver.photometric;
+
+            photometric.enable = node->declare_parameter<bool>("registration/photometric/enable", photometric.enable);
+            photometric.weight = node->declare_parameter<double>("registration/photometric/weight", photometric.weight);
+            photometric.robust_scale =
+                node->declare_parameter<double>("registration/photometric/robust_scale", photometric.robust_scale);
         }
         // GenZ
         {
-            params.registration.pipeline.registration.genz.planarity_threshold =
-                node->declare_parameter<double>("registration/genz/planarity_threshold",
-                                                params.registration.pipeline.registration.genz.planarity_threshold);
+            auto& genz = solver.genz;
+
+            genz.planarity_threshold =
+                node->declare_parameter<double>("registration/genz/planarity_threshold", genz.planarity_threshold);
         }
         // Rotation Constraint
         {
-            params.registration.pipeline.registration.rotation_constraint.enable =
-                node->declare_parameter<bool>("registration/rotation_constraint/enable",
-                                              params.registration.pipeline.registration.rotation_constraint.enable);
-            params.registration.pipeline.registration.rotation_constraint.weight =
-                node->declare_parameter<double>("registration/rotation_constraint/weight",
-                                                params.registration.pipeline.registration.rotation_constraint.weight);
-            params.registration.pipeline.registration.rotation_constraint.robust.init_scale =
-                node->declare_parameter<double>(
-                    "registration/rotation_constraint/robust/init_scale",
-                    params.registration.pipeline.registration.rotation_constraint.robust.init_scale);
-            params.registration.pipeline.registration.rotation_constraint.robust.min_scale =
-                node->declare_parameter<double>(
-                    "registration/rotation_constraint/robust/min_scale",
-                    params.registration.pipeline.registration.rotation_constraint.robust.min_scale);
+            auto& rotation_constraint = solver.rotation_constraint;
+            auto& rotation_robust = rotation_constraint.robust;
+
+            rotation_constraint.enable =
+                node->declare_parameter<bool>("registration/rotation_constraint/enable", rotation_constraint.enable);
+            rotation_constraint.weight =
+                node->declare_parameter<double>("registration/rotation_constraint/weight", rotation_constraint.weight);
+            rotation_robust.init_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/init_scale", rotation_robust.init_scale);
+            rotation_robust.min_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/min_scale", rotation_robust.min_scale);
         }
 
         // Optimization
         {
+            auto& gn = solver.gn;
+            auto& lm = solver.lm;
+            auto& dogleg = solver.dogleg;
+
             const std::string optimization_method =
                 node->declare_parameter<std::string>("registration/optimization_method", "GN");
-            params.registration.pipeline.registration.optimization_method =
-                algorithms::registration::OptimizationMethod_from_string(optimization_method);
+            solver.optimization_method = algorithms::registration::OptimizationMethod_from_string(optimization_method);
 
-            params.registration.pipeline.registration.gn.lambda = node->declare_parameter<double>(
-                "registration/gn/lambda", params.registration.pipeline.registration.gn.lambda);
+            gn.lambda = node->declare_parameter<double>("registration/gn/lambda", gn.lambda);
 
-            params.registration.pipeline.registration.lm.max_inner_iterations =
-                node->declare_parameter<int64_t>("registration/lm/max_inner_iterations",
-                                                 params.registration.pipeline.registration.lm.max_inner_iterations);
-            params.registration.pipeline.registration.lm.lambda_factor = node->declare_parameter<double>(
-                "registration/lm/lambda_factor", params.registration.pipeline.registration.lm.lambda_factor);
-            params.registration.pipeline.registration.lm.init_lambda = node->declare_parameter<double>(
-                "registration/lm/init_lambda", params.registration.pipeline.registration.lm.init_lambda);
-            params.registration.pipeline.registration.lm.max_lambda = node->declare_parameter<double>(
-                "registration/lm/max_lambda", params.registration.pipeline.registration.lm.max_lambda);
-            params.registration.pipeline.registration.lm.min_lambda = node->declare_parameter<double>(
-                "registration/lm/min_lambda", params.registration.pipeline.registration.lm.min_lambda);
+            lm.max_inner_iterations =
+                node->declare_parameter<int64_t>("registration/lm/max_inner_iterations", lm.max_inner_iterations);
+            lm.lambda_factor = node->declare_parameter<double>("registration/lm/lambda_factor", lm.lambda_factor);
+            lm.init_lambda = node->declare_parameter<double>("registration/lm/init_lambda", lm.init_lambda);
+            lm.max_lambda = node->declare_parameter<double>("registration/lm/max_lambda", lm.max_lambda);
+            lm.min_lambda = node->declare_parameter<double>("registration/lm/min_lambda", lm.min_lambda);
 
-            params.registration.pipeline.registration.dogleg.initial_trust_region_radius =
-                node->declare_parameter<double>(
-                    "registration/dogleg/initial_trust_region_radius",
-                    params.registration.pipeline.registration.dogleg.initial_trust_region_radius);
-            params.registration.pipeline.registration.dogleg.max_trust_region_radius = node->declare_parameter<double>(
-                "registration/dogleg/max_trust_region_radius",
-                params.registration.pipeline.registration.dogleg.max_trust_region_radius);
-            params.registration.pipeline.registration.dogleg.min_trust_region_radius = node->declare_parameter<double>(
-                "registration/dogleg/min_trust_region_radius",
-                params.registration.pipeline.registration.dogleg.min_trust_region_radius);
-            params.registration.pipeline.registration.dogleg.eta1 = node->declare_parameter<double>(
-                "registration/dogleg/eta1", params.registration.pipeline.registration.dogleg.eta1);
-            params.registration.pipeline.registration.dogleg.eta2 = node->declare_parameter<double>(
-                "registration/dogleg/eta2", params.registration.pipeline.registration.dogleg.eta2);
-            params.registration.pipeline.registration.dogleg.gamma_decrease = node->declare_parameter<double>(
-                "registration/dogleg/gamma_decrease", params.registration.pipeline.registration.dogleg.gamma_decrease);
-            params.registration.pipeline.registration.dogleg.gamma_increase = node->declare_parameter<double>(
-                "registration/dogleg/gamma_increase", params.registration.pipeline.registration.dogleg.gamma_increase);
+            dogleg.initial_trust_region_radius = node->declare_parameter<double>(
+                "registration/dogleg/initial_trust_region_radius", dogleg.initial_trust_region_radius);
+            dogleg.max_trust_region_radius = node->declare_parameter<double>(
+                "registration/dogleg/max_trust_region_radius", dogleg.max_trust_region_radius);
+            dogleg.min_trust_region_radius = node->declare_parameter<double>(
+                "registration/dogleg/min_trust_region_radius", dogleg.min_trust_region_radius);
+            dogleg.eta1 = node->declare_parameter<double>("registration/dogleg/eta1", dogleg.eta1);
+            dogleg.eta2 = node->declare_parameter<double>("registration/dogleg/eta2", dogleg.eta2);
+            dogleg.gamma_decrease =
+                node->declare_parameter<double>("registration/dogleg/gamma_decrease", dogleg.gamma_decrease);
+            dogleg.gamma_increase =
+                node->declare_parameter<double>("registration/dogleg/gamma_increase", dogleg.gamma_increase);
         }
         // Degenerate Regularization
         {
+            auto& degenerate_reg = solver.degenerate_reg;
+
             const std::string degenerate_reg_type =
                 node->declare_parameter<std::string>("registration/degenerate_regularization/type", "NONE");
-            params.registration.pipeline.registration.degenerate_reg.type =
+            degenerate_reg.type =
                 algorithms::registration::DegenerateRegularizationType_from_string(degenerate_reg_type);
 
-            params.registration.pipeline.registration.degenerate_reg.base_factor =
-                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/base_factor",
-                                                params.registration.pipeline.registration.degenerate_reg.base_factor);
-            params.registration.pipeline.registration.degenerate_reg.trans_eigenvalue_threshold =
-                node->declare_parameter<double>(
-                    "registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold",
-                    params.registration.pipeline.registration.degenerate_reg.trans_eigenvalue_threshold);
-            params.registration.pipeline.registration.degenerate_reg.rot_eigenvalue_threshold =
-                node->declare_parameter<double>(
-                    "registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold",
-                    params.registration.pipeline.registration.degenerate_reg.rot_eigenvalue_threshold);
+            degenerate_reg.base_factor = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/base_factor", degenerate_reg.base_factor);
+            degenerate_reg.trans_eigenvalue_threshold = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold",
+                degenerate_reg.trans_eigenvalue_threshold);
+            degenerate_reg.rot_eigenvalue_threshold = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold",
+                degenerate_reg.rot_eigenvalue_threshold);
         }
     }
 
