@@ -639,6 +639,43 @@ SYCL_EXTERNAL void copy(const Eigen::Matrix<float, M, N>& src, Eigen::Matrix<flo
     }
 }
 
+/// @brief Matrix logarithm for 3x3 SPD matrices
+/// @param A Symmetric positive definite 3x3 matrix
+/// @param min_eigenvalue Lower clamp for numerical stability before taking log
+/// @return log(A)
+SYCL_EXTERNAL inline Eigen::Matrix3f log_spd_3x3(const Eigen::Matrix3f& A, const float min_eigenvalue = 1e-6f) {
+    Eigen::Vector3f eigenvalues;
+    Eigen::Matrix3f eigenvectors;
+    symmetric_eigen_decomposition_3x3(A, eigenvalues, eigenvectors);
+
+    Eigen::Vector3f log_eigenvalues;
+#pragma unroll
+    for (size_t i = 0; i < 3; ++i) {
+        log_eigenvalues(i) = sycl::log(sycl::fmax(eigenvalues(i), min_eigenvalue));
+    }
+
+    const auto diag = as_diagonal<3>(log_eigenvalues);
+    return ensure_symmetric<3>(multiply<3, 3, 3>(multiply<3, 3, 3>(eigenvectors, diag), transpose<3, 3>(eigenvectors)));
+}
+
+/// @brief Matrix exponential for 3x3 symmetric matrices
+/// @param A Symmetric 3x3 matrix in log-Euclidean space
+/// @return exp(A)
+SYCL_EXTERNAL inline Eigen::Matrix3f exp_spd_3x3(const Eigen::Matrix3f& A) {
+    Eigen::Vector3f eigenvalues;
+    Eigen::Matrix3f eigenvectors;
+    symmetric_eigen_decomposition_3x3(A, eigenvalues, eigenvectors);
+
+    Eigen::Vector3f exp_eigenvalues;
+#pragma unroll
+    for (size_t i = 0; i < 3; ++i) {
+        exp_eigenvalues(i) = sycl::exp(eigenvalues(i));
+    }
+
+    const auto diag = as_diagonal<3>(exp_eigenvalues);
+    return ensure_symmetric<3>(multiply<3, 3, 3>(multiply<3, 3, 3>(eigenvectors, diag), transpose<3, 3>(eigenvectors)));
+}
+
 template <size_t M, size_t N>
 /// @brief swap matrix
 /// @param src source matrix

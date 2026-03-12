@@ -13,7 +13,9 @@
 #include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/algorithms/common/workgroup_utils.hpp"
+#include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
@@ -121,6 +123,11 @@ public:
 
     /// @brief Set the frame-age threshold used to prune stale voxels.
     void set_stale_frame_threshold(const uint32_t threshold) { this->stale_frame_threshold_ = threshold; }
+
+    void set_covariance_aggregation_mode(const CovarianceAggregationMode mode) {
+        this->covariance_aggregation_mode_ = mode;
+    }
+    CovarianceAggregationMode get_covariance_aggregation_mode() const { return this->covariance_aggregation_mode_; }
 
     /// @brief Insert a point cloud captured at the given pose.
     /// @param cloud Point cloud in the sensor frame.
@@ -231,6 +238,7 @@ public:
             const bool has_cov = this->has_cov_data_;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
+            const auto covariance_mode = this->covariance_aggregation_mode_;
 
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
@@ -367,16 +375,7 @@ public:
 
                 if (has_cov && cov_ptr) {
                     const VoxelCovarianceData& covariance = covariance_ptr[i];
-                    cov_ptr[index].setZero();
-                    cov_ptr[index](0, 0) = covariance.sum_xx * inv_count;
-                    cov_ptr[index](0, 1) = covariance.sum_xy * inv_count;
-                    cov_ptr[index](1, 0) = covariance.sum_xy * inv_count;
-                    cov_ptr[index](0, 2) = covariance.sum_xz * inv_count;
-                    cov_ptr[index](2, 0) = covariance.sum_xz * inv_count;
-                    cov_ptr[index](1, 1) = covariance.sum_yy * inv_count;
-                    cov_ptr[index](1, 2) = covariance.sum_yz * inv_count;
-                    cov_ptr[index](2, 1) = covariance.sum_yz * inv_count;
-                    cov_ptr[index](2, 2) = covariance.sum_zz * inv_count;
+                    decode_covariance_average(covariance, inv_count, cov_ptr, index, covariance_mode);
                 }
 
                 if (has_rgb && rgb_ptr) {
@@ -632,8 +631,8 @@ private:
             std::make_shared<shared_vector<uint64_t>>(new_capacity, VoxelConstants::invalid_coord, *this->queue_.ptr);
         this->core_data_ptr_ =
             std::make_shared<shared_vector<VoxelCoreData>>(new_capacity, VoxelCoreData{}, *this->queue_.ptr);
-        this->covariance_data_ptr_ =
-            std::make_shared<shared_vector<VoxelCovarianceData>>(new_capacity, VoxelCovarianceData{}, *this->queue_.ptr);
+        this->covariance_data_ptr_ = std::make_shared<shared_vector<VoxelCovarianceData>>(
+            new_capacity, VoxelCovarianceData{}, *this->queue_.ptr);
         this->color_data_ptr_ =
             std::make_shared<shared_vector<VoxelColorData>>(new_capacity, VoxelColorData{}, *this->queue_.ptr);
         this->intensity_data_ptr_ =
@@ -1005,8 +1004,7 @@ private:
         }
     }
 
-    static void rotate_covariance_upper_triangle(const Covariance& cov,
-                                                 const std::array<sycl::vec<float, 4>, 4>& trans,
+    static void rotate_covariance_upper_triangle(const Covariance& cov, const std::array<sycl::vec<float, 4>, 4>& trans,
                                                  VoxelCovarianceAccumulator& output) {
         const float cxx = cov(0, 0);
         const float cxy = cov(0, 1);
@@ -1042,6 +1040,56 @@ private:
         output.sum_zz = sycl::fma(a22, r22, sycl::fma(a21, r21, a20 * r20));
     }
 
+    static void encode_covariance_for_aggregation(VoxelCovarianceAccumulator& covariance,
+                                                  const CovarianceAggregationMode mode) {
+        if (mode != CovarianceAggregationMode::LOG_EUCLIDEAN) {
+            return;
+        }
+
+        Eigen::Matrix3f cov3 = Eigen::Matrix3f::Zero();
+        cov3(0, 0) = covariance.sum_xx;
+        cov3(0, 1) = covariance.sum_xy;
+        cov3(1, 0) = covariance.sum_xy;
+        cov3(0, 2) = covariance.sum_xz;
+        cov3(2, 0) = covariance.sum_xz;
+        cov3(1, 1) = covariance.sum_yy;
+        cov3(1, 2) = covariance.sum_yz;
+        cov3(2, 1) = covariance.sum_yz;
+        cov3(2, 2) = covariance.sum_zz;
+
+        const Eigen::Matrix3f log_cov3 = eigen_utils::log_spd_3x3(cov3);
+        covariance.sum_xx = log_cov3(0, 0);
+        covariance.sum_xy = log_cov3(0, 1);
+        covariance.sum_xz = log_cov3(0, 2);
+        covariance.sum_yy = log_cov3(1, 1);
+        covariance.sum_yz = log_cov3(1, 2);
+        covariance.sum_zz = log_cov3(2, 2);
+    }
+
+    static void decode_covariance_average(const VoxelCovarianceData& covariance, const float inv_count,
+                                          Covariance* cov_output, const uint32_t index,
+                                          const CovarianceAggregationMode mode) {
+        if (!cov_output) {
+            return;
+        }
+
+        Eigen::Matrix3f cov3 = Eigen::Matrix3f::Zero();
+        cov3(0, 0) = covariance.sum_xx * inv_count;
+        cov3(0, 1) = covariance.sum_xy * inv_count;
+        cov3(1, 0) = cov3(0, 1);
+        cov3(0, 2) = covariance.sum_xz * inv_count;
+        cov3(2, 0) = cov3(0, 2);
+        cov3(1, 1) = covariance.sum_yy * inv_count;
+        cov3(1, 2) = covariance.sum_yz * inv_count;
+        cov3(2, 1) = cov3(1, 2);
+        cov3(2, 2) = covariance.sum_zz * inv_count;
+        if (mode == CovarianceAggregationMode::LOG_EUCLIDEAN) {
+            cov3 = eigen_utils::exp_spd_3x3(cov3);
+        }
+        cov_output[index].setZero();
+        cov_output[index].block<3, 3>(0, 0) = cov3;
+    }
+
     void integrate_points(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose, const bool has_cov,
                           const bool has_rgb, const bool has_intensity) {
         const size_t N = cloud.size();
@@ -1075,6 +1123,7 @@ private:
             const auto max_probe = this->max_probe_length_;
             const auto capacity = this->capacity_;
             const float log_odds_hit = this->log_odds_hit_;
+            const auto covariance_mode = this->covariance_aggregation_mode_;
 
             auto load_entry = [=](VoxelLocalData& entry, const size_t idx) {
                 const PointType local_point = point_ptr[idx];
@@ -1093,6 +1142,7 @@ private:
                 entry.covariance_acc = VoxelCovarianceAccumulator{};
                 if (has_cov && cov_ptr) {
                     rotate_covariance_upper_triangle(cov_ptr[idx], trans, entry.covariance_acc);
+                    encode_covariance_for_aggregation(entry.covariance_acc, covariance_mode);
                 }
 
                 if (has_rgb && rgb_ptr) {
@@ -1538,6 +1588,7 @@ private:
             const bool has_cov = this->has_cov_data_;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
+            const auto covariance_mode = this->covariance_aggregation_mode_;
             auto counter_ptr = counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
@@ -1571,16 +1622,7 @@ private:
 
                 if (has_cov && cov_ptr) {
                     const VoxelCovarianceData& covariance = covariance_ptr[i];
-                    cov_ptr[index].setZero();
-                    cov_ptr[index](0, 0) = covariance.sum_xx * inv_count;
-                    cov_ptr[index](0, 1) = covariance.sum_xy * inv_count;
-                    cov_ptr[index](1, 0) = covariance.sum_xy * inv_count;
-                    cov_ptr[index](0, 2) = covariance.sum_xz * inv_count;
-                    cov_ptr[index](2, 0) = covariance.sum_xz * inv_count;
-                    cov_ptr[index](1, 1) = covariance.sum_yy * inv_count;
-                    cov_ptr[index](1, 2) = covariance.sum_yz * inv_count;
-                    cov_ptr[index](2, 1) = covariance.sum_yz * inv_count;
-                    cov_ptr[index](2, 2) = covariance.sum_zz * inv_count;
+                    decode_covariance_average(covariance, inv_count, cov_ptr, index, covariance_mode);
                 }
 
                 if (has_rgb && rgb_ptr) {
@@ -1656,6 +1698,7 @@ private:
     bool has_cov_data_ = false;
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
+    CovarianceAggregationMode covariance_aggregation_mode_ = CovarianceAggregationMode::ARITHMETIC;
     uint32_t frame_index_ = 0U;
     uint32_t stale_frame_threshold_ = 100U;
 

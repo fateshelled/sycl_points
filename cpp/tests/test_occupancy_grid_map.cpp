@@ -324,6 +324,45 @@ TEST(OccupancyGridMapTest, RotatesCovariancesIntoMapFrame) {
     }
 }
 
+TEST(OccupancyGridMapTest, SupportsLogEuclideanCovarianceAggregation) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.5f);
+        map.set_covariance_aggregation_mode(
+            sycl_points::algorithms::mapping::CovarianceAggregationMode::LOG_EUCLIDEAN);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.0f, 0.0f, 0.0f},
+            {0.1f, 0.0f, 0.0f},
+        };
+        const std::vector<sycl_points::Covariance> covariances = {
+            MakeCovariance(1.0f, 0.0f, 0.0f, 4.0f, 0.0f, 9.0f),
+            MakeCovariance(9.0f, 0.0f, 0.0f, 16.0f, 0.0f, 25.0f),
+        };
+
+        auto cloud = MakePointCloud(queue, input_positions, &covariances);
+        map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        sycl_points::PointCloudShared result(queue);
+        map.extract_occupied_points(result, Eigen::Isometry3f::Identity(), 1.0f);
+
+        ASSERT_EQ(result.size(), 1U);
+        ASSERT_TRUE(result.has_cov());
+
+        const auto& cov = (*result.covs)[0];
+        EXPECT_NEAR(cov(0, 0), 3.0f, 1e-4f);
+        EXPECT_NEAR(cov(1, 1), 8.0f, 1e-4f);
+        EXPECT_NEAR(cov(2, 2), 15.0f, 1e-4f);
+        EXPECT_NEAR(cov(0, 1), 0.0f, 1e-4f);
+        EXPECT_NEAR(cov(0, 2), 0.0f, 1e-4f);
+        EXPECT_NEAR(cov(1, 2), 0.0f, 1e-4f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
 TEST(OccupancyGridMapTest, KeepsCovarianceOutputDisabledWithoutInputCovariances) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
