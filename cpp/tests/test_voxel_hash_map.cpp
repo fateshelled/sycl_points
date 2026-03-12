@@ -12,6 +12,7 @@ namespace {
 
 sycl_points::PointCloudShared MakePointCloud(const sycl_points::sycl_utils::DeviceQueue& queue,
                                              const std::vector<Eigen::Vector3f>& positions,
+                                             const std::vector<sycl_points::Covariance>* covariances = nullptr,
                                              const std::vector<sycl_points::RGBType>* colors = nullptr,
                                              const std::vector<float>* intensities = nullptr) {
     // Prepare a CPU point cloud to populate deterministic test data.
@@ -20,6 +21,12 @@ sycl_points::PointCloudShared MakePointCloud(const sycl_points::sycl_utils::Devi
     for (size_t i = 0; i < positions.size(); ++i) {
         const Eigen::Vector3f& pos = positions[i];
         (*cpu_cloud.points)[i] = sycl_points::PointType(pos.x(), pos.y(), pos.z(), 1.0f);
+    }
+
+    if (covariances) {
+        EXPECT_EQ(covariances->size(), positions.size());
+        cpu_cloud.covs->resize(positions.size());
+        std::copy(covariances->begin(), covariances->end(), cpu_cloud.covs->begin());
     }
 
     if (colors) {
@@ -45,6 +52,20 @@ std::vector<Eigen::Vector3f> ExtractPositions(const sycl_points::PointContainerS
         positions.emplace_back(point.x(), point.y(), point.z());
     }
     return positions;
+}
+
+sycl_points::Covariance MakeCovariance(float xx, float xy, float xz, float yy, float yz, float zz) {
+    sycl_points::Covariance cov = sycl_points::Covariance::Zero();
+    cov(0, 0) = xx;
+    cov(0, 1) = xy;
+    cov(1, 0) = xy;
+    cov(0, 2) = xz;
+    cov(2, 0) = xz;
+    cov(1, 1) = yy;
+    cov(1, 2) = yz;
+    cov(2, 1) = yz;
+    cov(2, 2) = zz;
+    return cov;
 }
 
 }  // namespace
@@ -126,7 +147,7 @@ TEST(VoxelHashMapTest, AggregatesRgbAndIntensityWithinVoxel) {
         };
         const std::vector<float> intensities = {10.0f, 20.0f};
 
-        auto cloud = MakePointCloud(queue, input_positions, &colors, &intensities);
+        auto cloud = MakePointCloud(queue, input_positions, nullptr, &colors, &intensities);
         voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
 
         sycl_points::PointCloudShared result(queue);
@@ -149,6 +170,123 @@ TEST(VoxelHashMapTest, AggregatesRgbAndIntensityWithinVoxel) {
 
         const float intensity = (*result.intensities)[0];
         EXPECT_NEAR(intensity, 15.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(VoxelHashMapTest, AggregatesCovariancesWithinVoxel) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.5f);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.0f, 0.0f, 0.0f},
+            {0.1f, 0.0f, 0.0f},
+        };
+        const std::vector<sycl_points::Covariance> covariances = {
+            MakeCovariance(1.0f, 0.2f, 0.3f, 2.0f, 0.4f, 3.0f),
+            MakeCovariance(3.0f, 0.6f, 0.9f, 4.0f, 0.8f, 5.0f),
+        };
+        const std::vector<sycl_points::RGBType> colors = {
+            sycl_points::RGBType(0.2f, 0.4f, 0.6f, 1.0f),
+            sycl_points::RGBType(0.6f, 0.2f, 0.0f, 1.0f),
+        };
+        const std::vector<float> intensities = {10.0f, 20.0f};
+
+        auto cloud = MakePointCloud(queue, input_positions, &covariances, &colors, &intensities);
+        voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        sycl_points::PointCloudShared result(queue);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
+
+        ASSERT_EQ(result.size(), 1U);
+        ASSERT_TRUE(result.has_cov());
+        ASSERT_TRUE(result.has_rgb());
+        ASSERT_TRUE(result.has_intensity());
+
+        const auto& cov = (*result.covs)[0];
+        EXPECT_NEAR(cov(0, 0), 2.0f, 1e-5f);
+        EXPECT_NEAR(cov(0, 1), 0.4f, 1e-5f);
+        EXPECT_NEAR(cov(1, 0), 0.4f, 1e-5f);
+        EXPECT_NEAR(cov(0, 2), 0.6f, 1e-5f);
+        EXPECT_NEAR(cov(2, 0), 0.6f, 1e-5f);
+        EXPECT_NEAR(cov(1, 1), 3.0f, 1e-5f);
+        EXPECT_NEAR(cov(1, 2), 0.6f, 1e-5f);
+        EXPECT_NEAR(cov(2, 1), 0.6f, 1e-5f);
+        EXPECT_NEAR(cov(2, 2), 4.0f, 1e-5f);
+        EXPECT_NEAR(cov.row(3).norm(), 0.0f, 1e-5f);
+        EXPECT_NEAR(cov.col(3).norm(), 0.0f, 1e-5f);
+
+        const auto color = (*result.rgb)[0];
+        EXPECT_NEAR(color.x(), 0.4f, 1e-5f);
+        EXPECT_NEAR(color.y(), 0.3f, 1e-5f);
+        EXPECT_NEAR(color.z(), 0.3f, 1e-5f);
+        EXPECT_NEAR(color.w(), 1.0f, 1e-5f);
+        EXPECT_NEAR((*result.intensities)[0], 15.0f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(VoxelHashMapTest, RotatesCovariancesIntoMapFrame) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.5f);
+
+        const std::vector<Eigen::Vector3f> input_positions = {
+            {0.0f, 0.0f, 0.0f},
+            {0.1f, 0.0f, 0.0f},
+        };
+        const std::vector<sycl_points::Covariance> covariances = {
+            MakeCovariance(1.0f, 0.0f, 0.0f, 4.0f, 0.0f, 9.0f),
+            MakeCovariance(9.0f, 0.0f, 0.0f, 16.0f, 0.0f, 25.0f),
+        };
+
+        auto cloud = MakePointCloud(queue, input_positions, &covariances);
+
+        Eigen::Isometry3f pose = Eigen::Isometry3f::Identity();
+        pose.linear() = Eigen::AngleAxisf(static_cast<float>(M_PI_2), Eigen::Vector3f::UnitZ()).toRotationMatrix();
+        pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+
+        voxel_map.add_point_cloud(cloud, pose);
+
+        sycl_points::PointCloudShared result(queue);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
+
+        ASSERT_EQ(result.size(), 1U);
+        ASSERT_TRUE(result.has_cov());
+
+        const auto& cov = (*result.covs)[0];
+        EXPECT_NEAR(cov(0, 0), 10.0f, 1e-4f);
+        EXPECT_NEAR(cov(1, 1), 5.0f, 1e-4f);
+        EXPECT_NEAR(cov(2, 2), 17.0f, 1e-4f);
+        EXPECT_NEAR(cov(0, 1), 0.0f, 1e-4f);
+        EXPECT_NEAR(cov(0, 2), 0.0f, 1e-4f);
+        EXPECT_NEAR(cov(1, 2), 0.0f, 1e-4f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(VoxelHashMapTest, KeepsCovarianceOutputDisabledWithoutInputCovariances) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.5f);
+        auto cloud = MakePointCloud(queue, {{0.0f, 0.0f, 0.0f}, {0.1f, 0.0f, 0.0f}});
+        voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        sycl_points::PointCloudShared result(queue);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
+
+        ASSERT_EQ(result.size(), 1U);
+        EXPECT_FALSE(result.has_cov());
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
