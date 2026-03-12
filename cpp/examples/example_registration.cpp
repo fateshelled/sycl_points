@@ -7,7 +7,7 @@
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
-#include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/io/point_cloud_reader.hpp"
 
 int main() {
@@ -29,18 +29,20 @@ int main() {
     const float voxel_size = 0.25f;
     const size_t num_neighbors = 10;
 
-    sycl_points::algorithms::registration::RegistrationParams param;
-    param.max_iterations = 10;
-    param.max_correspondence_distance = 1.0f;
-    param.optimization_method = sycl_points::algorithms::registration::OptimizationMethod::POWELL_DOGLEG;
-    param.robust.type = sycl_points::algorithms::robust::RobustLossType::GEMAN_MCCLURE;
-    param.robust.init_scale = 10.0f;
-    param.robust.auto_scale = true;
-    param.robust.min_scale = 2.5f;
-    param.robust.auto_scaling_iter = 3;
-    param.reg_type = sycl_points::algorithms::registration::RegType::GICP;
+    sycl_points::algorithms::registration::RegistrationPipelineParams pipeline_param;
+    pipeline_param.registration.max_iterations = 10;
+    pipeline_param.registration.max_correspondence_distance = 1.0f;
+    pipeline_param.registration.optimization_method =
+        sycl_points::algorithms::registration::OptimizationMethod::POWELL_DOGLEG;
+    pipeline_param.registration.robust.type = sycl_points::algorithms::robust::RobustLossType::GEMAN_MCCLURE;
+    pipeline_param.registration.robust.init_scale = 10.0f;
+    pipeline_param.registration.reg_type = sycl_points::algorithms::registration::RegType::GICP;
+    pipeline_param.robust.auto_scale = true;
+    pipeline_param.robust.min_scale = 2.5f;
+    pipeline_param.robust.auto_scaling_iter = 3;
 
-    const auto registration = std::make_shared<sycl_points::algorithms::registration::Registration>(queue, param);
+    const auto registration_pipeline =
+        std::make_shared<sycl_points::algorithms::registration::RegistrationPipeline>(queue, pipeline_param);
     const auto voxel_grid = std::make_shared<sycl_points::algorithms::filter::VoxelGrid>(queue, voxel_size);
     const auto preprocess_filter = std::make_shared<sycl_points::algorithms::filter::PreprocessFilter>(queue);
 
@@ -115,7 +117,7 @@ int main() {
         // preprocess_filter->random_sampling(source_downsampled, 1000);
 
         sycl_points::TransformMatrix init_T = sycl_points::TransformMatrix::Identity();
-        const auto ret = registration->align(source_downsampled, target_downsampled, *target_tree, init_T);
+        const auto ret = registration_pipeline->align(source_downsampled, target_downsampled, *target_tree, init_T);
         const auto dt_registration =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - t0)
                 .count();

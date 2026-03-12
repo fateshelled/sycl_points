@@ -14,6 +14,7 @@
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/algorithms/registration/photometric_factor.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
+#include "sycl_points/algorithms/registration/result.hpp"
 #include "sycl_points/algorithms/registration/rotation_constraint.hpp"
 #include "sycl_points/algorithms/robust/robust.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -90,6 +91,16 @@ struct LinearizedDevice {
 class Registration {
 public:
     using Ptr = std::shared_ptr<Registration>;
+
+    struct ExecutionOptions {
+        float robust_scale;
+        float rotation_robust_scale;
+        float dt;
+        TransformMatrix prev_pose;
+
+        ExecutionOptions()
+            : robust_scale(-1.0f), rotation_robust_scale(-1.0f), dt(0.1f), prev_pose(TransformMatrix::Identity()) {}
+    };
 
     /// @brief Constructor
     /// @param queue SYCL queue
@@ -185,20 +196,6 @@ public:
                           << std::endl;
                 this->params_.robust.type = robust::RobustLossType::NONE;
             }
-            if (this->params_.robust.auto_scale) {
-                if (this->params_.robust.min_scale <= 0.0f ||
-                    this->params_.robust.min_scale >= this->params_.robust.init_scale) {
-                    std::cout
-                        << "[Caution] `robust.min_scale` must be greater than zero and less than robust.init_scale."
-                        << std::endl;
-                    this->params_.robust.auto_scale = false;
-                }
-                if (this->params_.robust.auto_scaling_iter <= 0) {
-                    std::cout << "[Caution] `robust.auto_scaling_iter` must be greater than zero. Disable auto scaling."
-                              << std::endl;
-                    this->params_.robust.auto_scale = false;
-                }
-            }
         }
     }
 
@@ -210,9 +207,9 @@ public:
     /// @return Registration result
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,
-                             const TransformMatrix& initial_guess = TransformMatrix::Identity()) {
+                             const TransformMatrix& initial_guess = TransformMatrix::Identity(),
+                             const ExecutionOptions& options = ExecutionOptions()) {
         const size_t N = source.size();
-        const size_t TARGET_SIZE = target.size();
         RegistrationResult result;
         result.T.matrix() = initial_guess;
 
@@ -221,185 +218,47 @@ public:
         this->validate_params(source, target);
 
         {
-            const float max_corr_dist = this->params_.max_correspondence_distance;
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
-            float robust_scale = this->params_.robust.init_scale;
-            const bool enable_robust_auto_scaling =
-                this->params_.robust.type != robust::RobustLossType::NONE && this->params_.robust.auto_scale;
-            const size_t robust_levels =
-                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.auto_scaling_iter) : 1;
-            const float robust_scaling_factor =
-                robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
-                                             1.0f / static_cast<float>(robust_levels - 1))
-                                  : 1.0f;
+            const float robust_scale =
+                options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
+            const float rotation_robust_scale = options.rotation_robust_scale > 0.0f
+                                                    ? options.rotation_robust_scale
+                                                    : this->params_.rotation_constraint.robust.init_scale;
 
-            float rotation_robust_scale = this->params_.rotation_constraint.robust_init_scale;
-            const float rotation_robust_scaling_factor =
-                robust_levels > 1 ? std::pow(this->params_.rotation_constraint.robust_min_scale /
-                                                 this->params_.rotation_constraint.robust_init_scale,
-                                             1.0f / static_cast<float>(robust_levels - 1))
-                                  : 1.0f;
+            float lm_lambda = this->params_.lm.init_lambda;
+            for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
+                // Nearest neighbor search on device
+                auto knn_event =
+                    target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, result.T.matrix());
 
-            // Iterate over each configured robust loss scale and perform the standard ICP update cycle.
-            for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
-                float lm_lambda = this->params_.lm.init_lambda;
-                if (enable_robust_auto_scaling && this->params_.verbose) {
-                    std::cout << "Robust scale: " << robust_scale << std::endl;
-                }
-                for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
-                    // Nearest neighbor search on device
-                    auto knn_event =
-                        target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, result.T.matrix());
+                // Linearize on device for the current robust scale
+                const LinearizedResult linearized_result = this->linearize(
+                    source, target, result.T.matrix(), robust_scale, rotation_robust_scale, knn_event.evs);
 
-                    // Linearize on device for the current robust scale level
-                    const LinearizedResult linearized_result = this->linearize(
-                        source, target, result.T.matrix(), robust_scale, rotation_robust_scale, knn_event.evs);
+                result.H_raw = linearized_result.H;
+                result.b_raw = linearized_result.b;
 
-                    result.H_raw = linearized_result.H;
-                    result.b_raw = linearized_result.b;
+                // Regularization
+                const LinearizedResult regularized_result =
+                    this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
 
-                    // Regularization
-                    const LinearizedResult regularized_result =
-                        this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
-
-                    // Optimize on Host
-                    switch (this->params_.optimization_method) {
-                        case OptimizationMethod::LEVENBERG_MARQUARDT:
-                            this->optimize_levenberg_marquardt(source, target, result, regularized_result, lm_lambda,
-                                                               iter, robust_scale, rotation_robust_scale);
-                            break;
-                        case OptimizationMethod::POWELL_DOGLEG:
-                            this->optimize_powell_dogleg(source, target, result, regularized_result,
-                                                         trust_region_radius, iter, robust_scale,
-                                                         rotation_robust_scale);
-                            break;
-                        case OptimizationMethod::GAUSS_NEWTON:
-                            this->optimize_gauss_newton(result, regularized_result, iter);
-                            break;
-                    }
-                    if (result.converged) {
+                // Optimize on Host
+                switch (this->params_.optimization_method) {
+                    case OptimizationMethod::LEVENBERG_MARQUARDT:
+                        this->optimize_levenberg_marquardt(source, target, result, regularized_result, lm_lambda, iter,
+                                                           robust_scale, rotation_robust_scale);
                         break;
-                    }
+                    case OptimizationMethod::POWELL_DOGLEG:
+                        this->optimize_powell_dogleg(source, target, result, regularized_result, trust_region_radius,
+                                                     iter, robust_scale, rotation_robust_scale);
+                        break;
+                    case OptimizationMethod::GAUSS_NEWTON:
+                        this->optimize_gauss_newton(result, regularized_result, iter);
+                        break;
                 }
-
-                robust_scale *= robust_scaling_factor;
-                rotation_robust_scale *= rotation_robust_scaling_factor;
-            }
-        }
-
-        return result;
-    }
-
-    /// @brief do registration with point cloud deskew using Velocity updating ICP (VICP)
-    /// @param source Source point cloud
-    /// @param target Target point cloud
-    /// @param target_knn Target KNN search
-    /// @param initial_guess Initial transformation matrix
-    /// @param dt Initial transformation matrix
-    /// @param prev_pose Initial transformation matrix
-    /// @param initial_linear_vel Initial linear velocity
-    /// @param initial_angular_vel Initial angular velocity
-    /// @return Registration result
-    RegistrationResult align_velocity_update(const PointCloudShared& source, const PointCloudShared& target,
-                                             const knn::KNNBase& target_knn,
-                                             const TransformMatrix& initial_guess = TransformMatrix::Identity(),
-                                             float dt = 0.1f, size_t velocity_update_iter = 1,
-                                             const TransformMatrix& prev_pose = TransformMatrix::Identity()) {
-        const size_t N = source.size();
-        const size_t TARGET_SIZE = target.size();
-        RegistrationResult result;
-        result.T.matrix() = initial_guess;
-
-        if (N == 0) return result;
-
-        this->validate_params(source, target);
-
-        // copy
-        auto deskewed = source;
-
-        {
-            float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
-            float robust_scale = this->params_.robust.init_scale;
-            const bool enable_robust_auto_scaling =
-                this->params_.robust.type != robust::RobustLossType::NONE && this->params_.robust.auto_scale;
-            const size_t robust_levels =
-                enable_robust_auto_scaling ? std::max<size_t>(1, this->params_.robust.auto_scaling_iter) : 1;
-            const float robust_scaling_factor =
-                robust_levels > 1 ? std::pow(this->params_.robust.min_scale / this->params_.robust.init_scale,
-                                             1.0f / static_cast<float>(robust_levels - 1))
-                                  : 1.0f;
-
-            float rotation_robust_scale = this->params_.rotation_constraint.robust_init_scale;
-            const float rotation_robust_scaling_factor =
-                robust_levels > 1 ? std::pow(this->params_.rotation_constraint.robust_min_scale /
-                                                 this->params_.rotation_constraint.robust_init_scale,
-                                             1.0f / static_cast<float>(robust_levels - 1))
-                                  : 1.0f;
-
-            const bool has_timestamp = source.has_timestamps();
-            const size_t deskew_levels = std::max<size_t>(1, velocity_update_iter);
-
-            // Iterate over each configured robust loss scale and perform the standard ICP update cycle.
-            for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
-                if (enable_robust_auto_scaling && this->params_.verbose) {
-                    std::cout << "Robust scale: " << robust_scale << std::endl;
+                if (result.converged) {
+                    break;
                 }
-                for (size_t deskew_iter = 0; deskew_iter < deskew_levels; ++deskew_iter) {
-                    if (this->params_.verbose) {
-                        std::cout << "deskewed: " << deskew_iter << std::endl;
-                    }
-                    const Eigen::Isometry3f delta_pose = Eigen::Isometry3f(prev_pose).inverse() * result.T;
-                    const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(delta_pose);
-                    const float delta_angle = delta_twist.head<3>().norm();
-                    const float delta_dist = delta_twist.tail<3>().norm();
-                    if (this->params_.verbose) {
-                        std::cout << "deskewed[" << deskew_iter << "]: angle=" << delta_angle << ", dist=" << delta_dist
-                                  << std::endl;
-                    }
-                    deskew::deskew_point_cloud_constant_velocity(source, deskewed, Eigen::Isometry3f(prev_pose),
-                                                                 result.T, dt);
-
-                    float lm_lambda = this->params_.lm.init_lambda;
-                    for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
-                        // Nearest neighbor search on device
-                        auto knn_event = target_knn.nearest_neighbor_search_async(deskewed, (*this->neighbors_)[0], {},
-                                                                                  result.T.matrix());
-
-                        // Linearize on device for the current robust scale level
-                        const LinearizedResult linearized_result = this->linearize(
-                            deskewed, target, result.T.matrix(), robust_scale, rotation_robust_scale, knn_event.evs);
-
-                        result.H_raw = linearized_result.H;
-                        result.b_raw = linearized_result.b;
-
-                        // Regularization
-                        const LinearizedResult regularized_result = this->degenerate_reg_.regularize(
-                            linearized_result, result.T, Eigen::Isometry3f(initial_guess));
-
-                        // Optimize on Host
-                        switch (this->params_.optimization_method) {
-                            case OptimizationMethod::LEVENBERG_MARQUARDT:
-                                this->optimize_levenberg_marquardt(deskewed, target, result, regularized_result,
-                                                                   lm_lambda, iter, robust_scale,
-                                                                   rotation_robust_scale);
-                                break;
-                            case OptimizationMethod::POWELL_DOGLEG:
-                                this->optimize_powell_dogleg(deskewed, target, result, regularized_result,
-                                                             trust_region_radius, iter, robust_scale,
-                                                             rotation_robust_scale);
-                                break;
-                            case OptimizationMethod::GAUSS_NEWTON:
-                                this->optimize_gauss_newton(result, regularized_result, iter);
-                                break;
-                        }
-                        if (result.converged) {
-                            break;
-                        }
-                    }
-                }
-
-                robust_scale *= robust_scaling_factor;
-                rotation_robust_scale *= rotation_robust_scaling_factor;
             }
         }
 

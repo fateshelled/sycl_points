@@ -12,7 +12,7 @@
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
-#include "sycl_points/algorithms/registration/registration.hpp"
+#include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
@@ -94,14 +94,14 @@ public:
         }
 
         // check point cloud size
-        if (this->preprocessed_pc_->size() <= this->params_.registration_min_num_points) {
+        if (this->preprocessed_pc_->size() <= this->params_.registration.min_num_points) {
             this->error_message_ = "point cloud size is too small";
             return ResultType::small_number_of_points;
         }
 
         // first frame processing
         if (this->is_first_frame_) {
-            this->build_submap(this->preprocessed_pc_, this->params_.initial_pose);
+            this->build_submap(this->preprocessed_pc_, this->params_.pose.initial);
 
             this->is_first_frame_ = false;
             this->last_keyframe_time_ = timestamp;
@@ -161,7 +161,7 @@ private:
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
     algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
     algorithms::filter::PolarGrid::Ptr polar_filter_ = nullptr;
-    algorithms::registration::Registration::Ptr registration_ = nullptr;
+    algorithms::registration::RegistrationPipeline::Ptr registration_pipeline_ = nullptr;
 
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
@@ -220,8 +220,8 @@ private:
         {
             // const auto device_selector = sycl_utils::device_selector::default_selector_v;
             // sycl::device dev(device_selector);
-            const auto dev = sycl_utils::device_selector::select_device(this->params_.sycl_device_vendor,
-                                                                        this->params_.sycl_device_type);
+            const auto dev =
+                sycl_utils::device_selector::select_device(this->params_.device.vendor, this->params_.device.type);
             this->queue_ptr_ = std::make_shared<sycl_utils::DeviceQueue>(dev);
         }
 
@@ -235,8 +235,8 @@ private:
 
         // set Initial pose
         {
-            this->odom_ = this->params_.initial_pose;
-            this->prev_odom_ = this->params_.initial_pose;
+            this->odom_ = this->params_.pose.initial;
+            this->prev_odom_ = this->params_.pose.initial;
 
             this->linear_velocity_ = Eigen::Vector3f::Zero();
             this->angular_velocity_ = Eigen::AngleAxisf::Identity();
@@ -244,7 +244,7 @@ private:
 
         // initialize keyframe
         {
-            this->last_keyframe_pose_ = this->params_.initial_pose;
+            this->last_keyframe_pose_ = this->params_.pose.initial;
             this->last_keyframe_time_ = -1.0;
             this->keyframe_poses_.clear();
             this->keyframe_poses_.push_back(this->last_keyframe_pose_);
@@ -253,45 +253,47 @@ private:
         // Point cloud processor
         {
             this->preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(*this->queue_ptr_);
-            if (this->params_.scan_downsampling_voxel_enable) {
+            if (this->params_.scan.downsampling.voxel.enable) {
                 this->voxel_filter_ = std::make_shared<algorithms::filter::VoxelGrid>(
-                    *this->queue_ptr_, this->params_.scan_downsampling_voxel_size);
+                    *this->queue_ptr_, this->params_.scan.downsampling.voxel.size);
             }
-            if (this->params_.scan_downsampling_polar_enable) {
+            if (this->params_.scan.downsampling.polar.enable) {
                 const auto coord_system =
-                    algorithms::coordinate_system_from_string(this->params_.scan_downsampling_polar_coord_system);
+                    algorithms::coordinate_system_from_string(this->params_.scan.downsampling.polar.coord_system);
                 this->polar_filter_ = std::make_shared<algorithms::filter::PolarGrid>(
-                    *this->queue_ptr_, this->params_.scan_downsampling_polar_distance_size,
-                    this->params_.scan_downsampling_polar_elevation_size,
-                    this->params_.scan_downsampling_polar_azimuth_size, coord_system);
+                    *this->queue_ptr_, this->params_.scan.downsampling.polar.distance_size,
+                    this->params_.scan.downsampling.polar.elevation_size,
+                    this->params_.scan.downsampling.polar.azimuth_size, coord_system);
             }
         }
 
         // Submapping
         {
-            if (this->params_.occupancy_grid_map_enable) {
+            if (this->params_.submap.occupancy_grid_map.enable) {
                 this->occupancy_grid_ = std::make_shared<algorithms::mapping::OccupancyGridMap>(
-                    *this->queue_ptr_, this->params_.submap_voxel_size);
+                    *this->queue_ptr_, this->params_.submap.voxel_size);
 
-                this->occupancy_grid_->set_log_odds_hit(this->params_.occupancy_grid_map_log_odds_hit);
-                this->occupancy_grid_->set_log_odds_miss(this->params_.occupancy_grid_map_log_odds_miss);
-                this->occupancy_grid_->set_log_odds_limits(this->params_.occupancy_grid_map_log_odds_limits_min,
-                                                           this->params_.occupancy_grid_map_log_odds_limits_max);
-                this->occupancy_grid_->set_occupancy_threshold(this->params_.occupancy_grid_map_occupied_threshold);
+                this->occupancy_grid_->set_log_odds_hit(this->params_.submap.occupancy_grid_map.log_odds_hit);
+                this->occupancy_grid_->set_log_odds_miss(this->params_.submap.occupancy_grid_map.log_odds_miss);
+                this->occupancy_grid_->set_log_odds_limits(this->params_.submap.occupancy_grid_map.log_odds_limits_min,
+                                                           this->params_.submap.occupancy_grid_map.log_odds_limits_max);
+                this->occupancy_grid_->set_occupancy_threshold(
+                    this->params_.submap.occupancy_grid_map.occupied_threshold);
                 this->occupancy_grid_->set_free_space_updates_enabled(
-                    this->params_.occupancy_grid_map_enable_free_space_updates);
-                this->occupancy_grid_->set_voxel_pruning_enabled(this->params_.occupancy_grid_map_enable_pruning);
+                    this->params_.submap.occupancy_grid_map.enable_free_space_updates);
+                this->occupancy_grid_->set_voxel_pruning_enabled(
+                    this->params_.submap.occupancy_grid_map.enable_pruning);
                 this->occupancy_grid_->set_stale_frame_threshold(
-                    this->params_.occupancy_grid_map_stale_frame_threshold);
+                    this->params_.submap.occupancy_grid_map.stale_frame_threshold);
             } else {
                 this->submap_voxel_ = std::make_shared<algorithms::mapping::VoxelHashMap>(
-                    *this->queue_ptr_, this->params_.submap_voxel_size);
+                    *this->queue_ptr_, this->params_.submap.voxel_size);
             }
         }
         // Registration
         {
-            this->registration_ =
-                std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, this->params_.reg_params);
+            this->registration_pipeline_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
+                *this->queue_ptr_, this->params_.registration.pipeline);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
             this->registrated_ = false;
         }
@@ -303,22 +305,22 @@ private:
 
     void preprocess(const PointCloudShared::Ptr scan) {
         // box filter -> polar grid -> voxel grid
-        if (this->params_.scan_preprocess_box_filter_enable) {
-            this->preprocess_filter_->box_filter(*scan, this->params_.scan_preprocess_box_filter_min,
-                                                 this->params_.scan_preprocess_box_filter_max);
+        if (this->params_.scan.preprocess.box_filter.enable) {
+            this->preprocess_filter_->box_filter(*scan, this->params_.scan.preprocess.box_filter.min,
+                                                 this->params_.scan.preprocess.box_filter.max);
         }
 
         {
             auto input_ptr = scan;
             auto output_ptr = this->preprocessed_pc_;
             bool grid_downsampling = false;
-            if (this->params_.scan_downsampling_polar_enable) {
+            if (this->params_.scan.downsampling.polar.enable) {
                 grid_downsampling = true;
                 this->polar_filter_->downsampling(*input_ptr, *output_ptr);
                 input_ptr = this->preprocessed_pc_;
                 output_ptr = this->preprocessed_pc_;
             }
-            if (this->params_.scan_downsampling_voxel_enable) {
+            if (this->params_.scan.downsampling.voxel.enable) {
                 grid_downsampling = true;
                 this->voxel_filter_->downsampling(*input_ptr, *output_ptr);
                 input_ptr = this->preprocessed_pc_;
@@ -329,41 +331,41 @@ private:
             }
         }
 
-        if (this->params_.scan_downsampling_random_enable) {
+        if (this->params_.scan.downsampling.random.enable) {
             this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->preprocessed_pc_,
-                                                      this->params_.scan_downsampling_random_num);
+                                                      this->params_.scan.downsampling.random.num);
         }
 
-        if (this->params_.scan_intensity_correction_enable && this->preprocessed_pc_->has_intensity()) {
+        if (this->params_.scan.intensity_correction.enable && this->preprocessed_pc_->has_intensity()) {
             algorithms::intensity_correction::correct_intensity(
-                *this->preprocessed_pc_, this->params_.scan_intensity_correction_exp,
-                this->params_.scan_intensity_correction_scale, this->params_.scan_intensity_correction_min_intensity,
-                this->params_.scan_intensity_correction_max_intensity);
+                *this->preprocessed_pc_, this->params_.scan.intensity_correction.exp,
+                this->params_.scan.intensity_correction.scale, this->params_.scan.intensity_correction.min_intensity,
+                this->params_.scan.intensity_correction.max_intensity);
         }
     }
 
     void angle_incidence_filter(const PointCloudShared::Ptr scan) {
-        if (this->params_.scan_preprocess_angle_incidence_filter_enable) {
+        if (this->params_.scan.preprocess.angle_incidence_filter.enable) {
             this->preprocess_filter_->angle_incidence_filter(
-                *scan, this->params_.scan_preprocess_angle_incidence_filter_min_angle,
-                this->params_.scan_preprocess_angle_incidence_filter_max_angle);
+                *scan, this->params_.scan.preprocess.angle_incidence_filter.min_angle,
+                this->params_.scan.preprocess.angle_incidence_filter.max_angle);
         }
     }
 
     void compute_covariances() {
-        if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-            this->params_.reg_params.rotation_constraint.enable ||
-            this->params_.scan_preprocess_angle_incidence_filter_enable) {
+        if (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GICP ||
+            this->params_.registration.pipeline.registration.rotation_constraint.enable ||
+            this->params_.scan.preprocess.angle_incidence_filter.enable) {
             // build KDTree
             const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
             auto events = src_tree->knn_search_async(
-                *this->preprocessed_pc_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
-            if (this->params_.covariance_estimation_m_estimation_enable) {
+                *this->preprocessed_pc_, this->params_.covariance_estimation.neighbor_num, this->knn_result_);
+            if (this->params_.covariance_estimation.m_estimation.enable) {
                 events += algorithms::covariance::compute_covariances_with_m_estimation_async(
-                    this->knn_result_, *this->preprocessed_pc_, this->params_.covariance_estimation_m_estimation_type,
-                    this->params_.covariance_estimation_m_estimation_mad_scale,
-                    this->params_.covariance_estimation_m_estimation_min_robust_scale,
-                    this->params_.covariance_estimation_m_estimation_max_iterations, events.evs);
+                    this->knn_result_, *this->preprocessed_pc_, this->params_.covariance_estimation.m_estimation.type,
+                    this->params_.covariance_estimation.m_estimation.mad_scale,
+                    this->params_.covariance_estimation.m_estimation.min_robust_scale,
+                    this->params_.covariance_estimation.m_estimation.max_iterations, events.evs);
 
             } else {
                 events += algorithms::covariance::compute_covariances_async(this->knn_result_, *this->preprocessed_pc_,
@@ -375,19 +377,19 @@ private:
 
     /// Predict initial pose by applying the previous motion model
     Eigen::Isometry3f adaptive_motion_prediction() {
-        float rot_factor = this->params_.motion_prediction_static_factor;
-        float trans_factor = this->params_.motion_prediction_static_factor;
+        float rot_factor = this->params_.motion_prediction.static_factor;
+        float trans_factor = this->params_.motion_prediction.static_factor;
 
         if (this->registrated_ && this->reg_result_->inlier > 0) {
-            if (this->params_.motion_prediction_adaptive_rot_enable) {
+            if (this->params_.motion_prediction.adaptive.rotation.enable) {
                 // Calculates the degeneracy score from the minimum eigenvalue of the Hessian in the registration result
                 // of the previous frame.
                 Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(this->reg_result_->H_raw.block<3, 3>(0, 0));
                 if (solver_rot.info() == Eigen::Success) {
-                    const float low = this->params_.motion_prediction_adaptive_rot_min_eigenvalue_low;
-                    const float high = this->params_.motion_prediction_adaptive_rot_min_eigenvalue_high;
-                    const float max_factor = this->params_.motion_prediction_adaptive_rot_factor_max;
-                    const float min_factor = this->params_.motion_prediction_adaptive_rot_factor_min;
+                    const float low = this->params_.motion_prediction.adaptive.rotation.min_eigenvalue_low;
+                    const float high = this->params_.motion_prediction.adaptive.rotation.min_eigenvalue_high;
+                    const float max_factor = this->params_.motion_prediction.adaptive.rotation.factor_max;
+                    const float min_factor = this->params_.motion_prediction.adaptive.rotation.factor_min;
 
                     const float min_eig_ratio = solver_rot.eigenvalues().minCoeff() / this->reg_result_->inlier;
 
@@ -397,7 +399,7 @@ private:
                     // Derive the coefficient from the degeneracy score.
                     rot_factor = max_factor * (1.0f - score) + min_factor * score;
 
-                    if (this->params_.motion_prediction_verbose) {
+                    if (this->params_.motion_prediction.verbose) {
                         std::cout << "[motion predictor] rot: factor=" << rot_factor << ", eigen value=["
                                   << solver_rot.eigenvalues().transpose() / this->reg_result_->inlier << "]"
                                   << std::endl;
@@ -405,19 +407,19 @@ private:
                 }
             }
 
-            if (this->params_.motion_prediction_adaptive_trans_enable) {
+            if (this->params_.motion_prediction.adaptive.translation.enable) {
                 Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(this->reg_result_->H_raw.block<3, 3>(3, 3));
                 if (solver_trans.info() == Eigen::Success) {
-                    const float low = this->params_.motion_prediction_adaptive_trans_min_eigenvalue_low;
-                    const float high = this->params_.motion_prediction_adaptive_trans_min_eigenvalue_high;
-                    const float max_factor = this->params_.motion_prediction_adaptive_trans_factor_max;
-                    const float min_factor = this->params_.motion_prediction_adaptive_trans_factor_min;
+                    const float low = this->params_.motion_prediction.adaptive.translation.min_eigenvalue_low;
+                    const float high = this->params_.motion_prediction.adaptive.translation.min_eigenvalue_high;
+                    const float max_factor = this->params_.motion_prediction.adaptive.translation.factor_max;
+                    const float min_factor = this->params_.motion_prediction.adaptive.translation.factor_min;
 
                     const float min_eig_ratio = solver_trans.eigenvalues().minCoeff() / this->reg_result_->inlier;
                     const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
                     trans_factor = max_factor * (1.0f - score) + min_factor * score;
                 }
-                if (this->params_.motion_prediction_verbose) {
+                if (this->params_.motion_prediction.verbose) {
                     std::cout << "[motion predictor] trans: factor=" << trans_factor << ", eigen value=["
                               << solver_trans.eigenvalues().transpose() / this->reg_result_->inlier << "]" << std::endl;
                 }
@@ -445,45 +447,41 @@ private:
     algorithms::registration::RegistrationResult registration() {
         const Eigen::Isometry3f init_T = this->adaptive_motion_prediction();
 
-        if (this->params_.registration_random_sampling_enable) {
+        if (this->params_.registration.random_sampling.enable) {
             this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_,
-                                                      this->params_.registration_random_sampling_num);
+                                                      this->params_.registration.random_sampling.num);
         } else {
             *this->registration_input_pc_ = *this->preprocessed_pc_;
         }
 
-        algorithms::registration::RegistrationResult result;
-        if (this->params_.registration_velocity_update_enable) {
-            result = this->registration_->align_velocity_update(
-                *this->registration_input_pc_, *this->submap_pc_ptr_, *this->submap_tree_, init_T.matrix(), this->dt_,
-                this->params_.registration_velocity_update_iter, this->odom_.matrix());
-        } else {
-            result = this->registration_->align(*this->registration_input_pc_, *this->submap_pc_ptr_,
-                                                *this->submap_tree_, init_T.matrix());
-        }
-        return result;
+        algorithms::registration::Registration::ExecutionOptions options;
+        options.dt = this->dt_;
+        options.prev_pose = this->odom_.matrix();
+
+        return this->registration_pipeline_->align(*this->registration_input_pc_, *this->submap_pc_ptr_,
+                                                   *this->submap_tree_, init_T.matrix(), options);
     }
 
     void build_submap(const PointCloudShared::Ptr& pc, const Eigen::Isometry3f& current_pose) {
         // random sampling
         this->preprocess_filter_->random_sampling(*pc, *this->keyframe_pc_,
-                                                  this->params_.submap_point_random_sampling_num);
+                                                  this->params_.submap.point_random_sampling_num);
 
         // add to grid map
-        if (this->params_.occupancy_grid_map_enable) {
+        if (this->params_.submap.occupancy_grid_map.enable) {
             this->occupancy_grid_->add_point_cloud(*this->keyframe_pc_, current_pose);
             this->occupancy_grid_->extract_occupied_points(*this->submap_pc_tmp_, current_pose,
-                                                           this->params_.submap_max_distance_range);
+                                                           this->params_.submap.max_distance_range);
         } else {
             this->submap_voxel_->add_point_cloud(*this->keyframe_pc_, current_pose);
             this->submap_voxel_->downsampling(*this->submap_pc_tmp_, current_pose.translation(),
-                                              this->params_.submap_max_distance_range);
+                                              this->params_.submap.max_distance_range);
         }
 
         if (this->is_first_frame_) {
             // deep copy
             this->submap_pc_ptr_.reset(new PointCloudShared(*this->queue_ptr_, *pc));
-        } else if (this->submap_pc_tmp_->size() >= this->params_.registration_min_num_points) {
+        } else if (this->submap_pc_tmp_->size() >= this->params_.registration.min_num_points) {
             // copy pointer
             this->submap_pc_ptr_ = this->submap_pc_tmp_;
         }
@@ -491,11 +489,11 @@ private:
         // KNN search
         this->submap_tree_ = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->submap_pc_ptr_);
         auto knn_events = this->submap_tree_->knn_search_async(
-            *this->submap_pc_ptr_, this->params_.covariance_estimation_neighbor_num, this->knn_result_);
+            *this->submap_pc_ptr_, this->params_.covariance_estimation.neighbor_num, this->knn_result_);
 
         // compute grad
         sycl_utils::events grad_events;
-        if (this->params_.reg_params.photometric.enable) {
+        if (this->params_.registration.pipeline.registration.photometric.enable) {
             if (this->submap_pc_ptr_->has_rgb()) {
                 grad_events += algorithms::color_gradient::compute_color_gradients_async(
                     *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
@@ -510,27 +508,29 @@ private:
         {
             bool compute_normal = false;
             bool compute_cov = false;
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
+            if (this->params_.registration.pipeline.registration.reg_type ==
+                algorithms::registration::RegType::POINT_TO_PLANE) {
                 compute_normal = true;
                 cov_events += algorithms::covariance::compute_normals_async(this->knn_result_, *this->submap_pc_ptr_,
                                                                             knn_events.evs);
             }
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GICP ||
-                this->params_.reg_params.reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
-                this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ ||
-                this->params_.reg_params.rotation_constraint.enable) {
+            if (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GICP ||
+                this->params_.registration.pipeline.registration.reg_type ==
+                    algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
+                this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GENZ ||
+                this->params_.registration.pipeline.registration.rotation_constraint.enable) {
                 compute_cov = true;
                 cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
             }
 
-            if (this->params_.reg_params.reg_type == algorithms::registration::RegType::GENZ) {
+            if (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GENZ) {
                 compute_normal = true;
                 cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
                                                                                              cov_events.evs);
             }
 
-            if (this->params_.reg_params.photometric.enable && !compute_normal) {
+            if (this->params_.registration.pipeline.registration.photometric.enable && !compute_normal) {
                 if (compute_cov) {
                     cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
                                                                                                  cov_events.evs);
@@ -546,7 +546,7 @@ private:
     }
 
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
-        if (this->params_.registration_velocity_update_enable) {
+        if (this->params_.registration.pipeline.velocity_update.enable) {
             algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
                                                                      this->odom_, reg_result.T, this->dt_);
         }
@@ -557,12 +557,12 @@ private:
         }
         const float inlier_ratio =
             static_cast<float>(reg_result.inlier) / static_cast<float>(this->registration_input_pc_->size());
-        if (inlier_ratio <= this->params_.keyframe_inlier_ratio_threshold) {
+        if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
             return false;
         }
 
         // for occupancy grid map
-        if (this->params_.occupancy_grid_map_enable) {
+        if (this->params_.submap.occupancy_grid_map.enable) {
             // add point every frame
             build_submap(this->preprocessed_pc_, reg_result.T);
             return true;
@@ -582,9 +582,9 @@ private:
                                                                     : std::numeric_limits<double>::max();
 
             // update submap
-            if (distance >= this->params_.keyframe_distance_threshold ||
-                angle >= this->params_.keyframe_angle_threshold_degrees ||
-                delta_time >= this->params_.keyframe_time_threshold_seconds) {
+            if (distance >= this->params_.submap.keyframe.distance_threshold ||
+                angle >= this->params_.submap.keyframe.angle_threshold_degrees ||
+                delta_time >= this->params_.submap.keyframe.time_threshold_seconds) {
                 this->last_keyframe_pose_ = reg_result.T;
                 this->last_keyframe_time_ = timestamp;
                 this->keyframe_poses_.push_back(reg_result.T);

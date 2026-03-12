@@ -2,7 +2,7 @@
 
 #include <Eigen/Geometry>
 
-#include "sycl_points/algorithms/registration/registration_params.hpp"
+#include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 #include "sycl_points/ros2/covariance_marker_publisher.hpp"
 
 namespace sycl_points {
@@ -12,86 +12,164 @@ namespace lidar_odometry {
 struct Parameters {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    std::string sycl_device_vendor = "intel";
-    std::string sycl_device_type = "gpu";
-    bool scan_intensity_correction_enable = true;
-    float scan_intensity_correction_exp = 2.0f;
-    float scan_intensity_correction_scale = 1e-3f;
-    float scan_intensity_correction_min_intensity = 0.0f;
-    float scan_intensity_correction_max_intensity = 1.0f;
-    bool scan_downsampling_voxel_enable = false;
-    float scan_downsampling_voxel_size = 1.0f;
-    bool scan_downsampling_polar_enable = true;
-    float scan_downsampling_polar_distance_size = 1.0f;
-    float scan_downsampling_polar_elevation_size = 3.0f * M_PIf / 180.0f;
-    float scan_downsampling_polar_azimuth_size = 3.0f * M_PIf / 180.0f;
-    std::string scan_downsampling_polar_coord_system = "CAMERA";
-    bool scan_downsampling_random_enable = true;
-    size_t scan_downsampling_random_num = 5000;
+    struct Device {
+        std::string vendor = "intel";
+        std::string type = "gpu";
+    };
 
-    bool scan_preprocess_box_filter_enable = true;
-    float scan_preprocess_box_filter_min = 2.0f;
-    float scan_preprocess_box_filter_max = 50.0f;
-    bool scan_preprocess_angle_incidence_filter_enable = true;
-    float scan_preprocess_angle_incidence_filter_min_angle = 0.0f;                    // 0.0 degrees
-    float scan_preprocess_angle_incidence_filter_max_angle = 80.0f * M_PIf / 180.0f;  // 80.0 degrees
+    struct Scan {
+        struct IntensityCorrection {
+            bool enable = true;
+            float exp = 2.0f;
+            float scale = 1e-3f;
+            float min_intensity = 0.0f;
+            float max_intensity = 1.0f;
+        };
 
-    float submap_voxel_size = 1.0f;
-    float submap_max_distance_range = 30.0f;
-    size_t submap_point_random_sampling_num = 2000;
-    float keyframe_inlier_ratio_threshold = 0.7f;
-    float keyframe_distance_threshold = 2.0f;
-    float keyframe_angle_threshold_degrees = 20.0f;
-    float keyframe_time_threshold_seconds = 1.0f;
+        struct Downsampling {
+            struct Voxel {
+                bool enable = false;
+                float size = 1.0f;
+            };
 
-    size_t covariance_estimation_neighbor_num = 10;
-    bool covariance_estimation_m_estimation_enable = true;
-    algorithms::robust::RobustLossType covariance_estimation_m_estimation_type =
-        algorithms::robust::RobustLossType::GEMAN_MCCLURE;
-    float covariance_estimation_m_estimation_mad_scale = 1.0f;
-    float covariance_estimation_m_estimation_min_robust_scale = 5.0f;
-    size_t covariance_estimation_m_estimation_max_iterations = 1;
+            struct Polar {
+                bool enable = true;
+                float distance_size = 1.0f;
+                float elevation_size = 3.0f * M_PIf / 180.0f;
+                float azimuth_size = 3.0f * M_PIf / 180.0f;
+                std::string coord_system = "CAMERA";
+            };
 
-    bool occupancy_grid_map_enable = true;
-    float occupancy_grid_map_log_odds_hit = 0.8f;
-    float occupancy_grid_map_log_odds_miss = -0.05f;
-    float occupancy_grid_map_log_odds_limits_min = -1.0f;
-    float occupancy_grid_map_log_odds_limits_max = 4.0f;
-    float occupancy_grid_map_occupied_threshold = 0.5f;
-    bool occupancy_grid_map_enable_free_space_updates = true;
-    bool occupancy_grid_map_enable_pruning = true;
-    size_t occupancy_grid_map_stale_frame_threshold = 100U;
+            struct Random {
+                bool enable = true;
+                size_t num = 5000;
+            };
 
-    float motion_prediction_static_factor = 0.5f;
-    bool motion_prediction_verbose = false;
-    bool motion_prediction_adaptive_rot_enable = true;
-    float motion_prediction_adaptive_rot_factor_min = 0.2f;
-    float motion_prediction_adaptive_rot_factor_max = 1.0f;
-    float motion_prediction_adaptive_rot_min_eigenvalue_low = 5.0f;
-    float motion_prediction_adaptive_rot_min_eigenvalue_high = 10.0f;
-    bool motion_prediction_adaptive_trans_enable = true;
-    float motion_prediction_adaptive_trans_factor_min = 0.2f;
-    float motion_prediction_adaptive_trans_factor_max = 1.0f;
-    float motion_prediction_adaptive_trans_min_eigenvalue_low = 1.0f;
-    float motion_prediction_adaptive_trans_min_eigenvalue_high = 10.0f;
+            Voxel voxel;
+            Polar polar;
+            Random random;
+        };
 
-    size_t registration_min_num_points = 100;
-    bool registration_velocity_update_enable = true;
-    size_t registration_velocity_update_iter = 1;
-    bool registration_random_sampling_enable = true;
-    size_t registration_random_sampling_num = 1000;
-    algorithms::registration::RegistrationParams reg_params;
+        struct Preprocess {
+            struct BoxFilter {
+                bool enable = true;
+                float min = 2.0f;
+                float max = 50.0f;
+            };
 
-    std::string odom_frame_id = "odom";
-    std::string base_link_id = "base_link";
+            struct AngleIncidenceFilter {
+                bool enable = true;
+                float min_angle = 0.0f;
+                float max_angle = 80.0f * M_PIf / 180.0f;
+            };
 
-    Eigen::Isometry3f T_base_link_to_lidar = Eigen::Isometry3f::Identity();
-    Eigen::Isometry3f T_lidar_to_base_link = Eigen::Isometry3f::Identity();
+            BoxFilter box_filter;
+            AngleIncidenceFilter angle_incidence_filter;
+        };
 
-    Eigen::Isometry3f initial_pose = Eigen::Isometry3f::Identity();  // map to base_link
+        IntensityCorrection intensity_correction;
+        Downsampling downsampling;
+        Preprocess preprocess;
+    };
 
-    // Visualizer
-    ros2::CovarianceMarkerConfig scan_cov_marker_config;
+    struct Submap {
+        struct Keyframe {
+            float inlier_ratio_threshold = 0.7f;
+            float distance_threshold = 2.0f;
+            float angle_threshold_degrees = 20.0f;
+            float time_threshold_seconds = 1.0f;
+        };
+
+        struct OccupancyGridMap {
+            bool enable = true;
+            float log_odds_hit = 0.8f;
+            float log_odds_miss = -0.05f;
+            float log_odds_limits_min = -1.0f;
+            float log_odds_limits_max = 4.0f;
+            float occupied_threshold = 0.5f;
+            bool enable_free_space_updates = true;
+            bool enable_pruning = true;
+            size_t stale_frame_threshold = 100U;
+        };
+
+        float voxel_size = 1.0f;
+        float max_distance_range = 30.0f;
+        size_t point_random_sampling_num = 2000;
+        Keyframe keyframe;
+        OccupancyGridMap occupancy_grid_map;
+    };
+
+    struct CovarianceEstimation {
+        struct MEstimation {
+            bool enable = true;
+            algorithms::robust::RobustLossType type = algorithms::robust::RobustLossType::GEMAN_MCCLURE;
+            float mad_scale = 1.0f;
+            float min_robust_scale = 5.0f;
+            size_t max_iterations = 1;
+        };
+
+        size_t neighbor_num = 10;
+        MEstimation m_estimation;
+    };
+
+    struct MotionPrediction {
+        struct AdaptiveAxis {
+            bool enable = true;
+            float factor_min = 0.2f;
+            float factor_max = 1.0f;
+            float min_eigenvalue_low = 1.0f;
+            float min_eigenvalue_high = 10.0f;
+        };
+
+        struct Adaptive {
+            AdaptiveAxis rotation = {.enable = true,
+                                     .factor_min = 0.2f,
+                                     .factor_max = 1.0f,
+                                     .min_eigenvalue_low = 5.0f,
+                                     .min_eigenvalue_high = 10.0f};
+            AdaptiveAxis translation;
+        };
+
+        float static_factor = 0.5f;
+        bool verbose = false;
+        Adaptive adaptive;
+    };
+
+    struct Registration {
+        struct RandomSampling {
+            bool enable = true;
+            size_t num = 1000;
+        };
+
+        size_t min_num_points = 100;
+        RandomSampling random_sampling;
+        algorithms::registration::RegistrationPipelineParams pipeline;
+    };
+
+    struct Frames {
+        std::string odom_frame_id = "odom";
+        std::string base_link_id = "base_link";
+        Eigen::Isometry3f T_base_link_to_lidar = Eigen::Isometry3f::Identity();
+        Eigen::Isometry3f T_lidar_to_base_link = Eigen::Isometry3f::Identity();
+    };
+
+    struct Pose {
+        Eigen::Isometry3f initial = Eigen::Isometry3f::Identity();
+    };
+
+    struct Visualization {
+        ros2::CovarianceMarkerConfig scan_covariance_markers;
+    };
+
+    Device device;
+    Scan scan;
+    Submap submap;
+    CovarianceEstimation covariance_estimation;
+    MotionPrediction motion_prediction;
+    Registration registration;
+    Frames frames;
+    Pose pose;
+    Visualization visualization;
 };
 
 }  // namespace lidar_odometry

@@ -44,10 +44,7 @@ struct RegistrationParams {
     };
     struct Robust {
         robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
-        bool auto_scale = false;       // If false, the robust scale is fixed to init_scale.
-        float init_scale = 10.0f;      // scale for robust loss function
-        float min_scale = 0.5f;        // minimum scale
-        size_t auto_scaling_iter = 4;  // auto scaling iterations
+        float init_scale = 10.0f;                                    // scale for robust loss function
     };
     struct PhotometricTerm {
         bool enable = false;  // If true, use photometric term.
@@ -58,10 +55,14 @@ struct RegistrationParams {
         float planarity_threshold = 0.2f;
     };
     struct RotationConstraint {
+        struct Robust {
+            float init_scale = 10.0f;  // scale for robust loss function
+            float min_scale = 0.5f;    // minimum scale for the rotation constraint robust loss
+        };
+
         bool enable = false;
-        float weight = 1.0f;              // Scaling factor to balance constraint error with geometric error
-        float robust_init_scale = 10.0f;  // scale for robust loss function
-        float robust_min_scale = 0.5f;    // minimum scale
+        float weight = 1.0f;  // Scaling factor to balance constraint error with geometric error
+        Robust robust;
     };
 
     struct GaussNewton {

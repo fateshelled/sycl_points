@@ -11,293 +11,301 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
     // SYCL
     {
-        params.sycl_device_vendor =
-            node->declare_parameter<std::string>("sycl/device_vendor", params.sycl_device_vendor);
-        params.sycl_device_type = node->declare_parameter<std::string>("sycl/device_type", params.sycl_device_type);
+        params.device.vendor = node->declare_parameter<std::string>("sycl/device_vendor", params.device.vendor);
+        params.device.type = node->declare_parameter<std::string>("sycl/device_type", params.device.type);
     }
 
     // scan
     {
-        params.scan_intensity_correction_enable =
-            node->declare_parameter<bool>("scan/intensity_correction/enable", params.scan_intensity_correction_enable);
-        params.scan_intensity_correction_exp =
-            node->declare_parameter<double>("scan/intensity_correction/exp", params.scan_intensity_correction_exp);
-        params.scan_intensity_correction_scale =
-            node->declare_parameter<double>("scan/intensity_correction/scale", params.scan_intensity_correction_scale);
-        params.scan_intensity_correction_min_intensity = node->declare_parameter<double>(
-            "scan/intensity_correction/min_intensity", params.scan_intensity_correction_min_intensity);
-        params.scan_intensity_correction_max_intensity = node->declare_parameter<double>(
-            "scan/intensity_correction/max_intensity", params.scan_intensity_correction_max_intensity);
-        params.scan_downsampling_voxel_enable =
-            node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan_downsampling_voxel_enable);
-        params.scan_downsampling_voxel_size =
-            node->declare_parameter<double>("scan/downsampling/voxel/voxel_size", params.scan_downsampling_voxel_size);
+        params.scan.intensity_correction.enable =
+            node->declare_parameter<bool>("scan/intensity_correction/enable", params.scan.intensity_correction.enable);
+        params.scan.intensity_correction.exp =
+            node->declare_parameter<double>("scan/intensity_correction/exp", params.scan.intensity_correction.exp);
+        params.scan.intensity_correction.scale =
+            node->declare_parameter<double>("scan/intensity_correction/scale", params.scan.intensity_correction.scale);
+        params.scan.intensity_correction.min_intensity = node->declare_parameter<double>(
+            "scan/intensity_correction/min_intensity", params.scan.intensity_correction.min_intensity);
+        params.scan.intensity_correction.max_intensity = node->declare_parameter<double>(
+            "scan/intensity_correction/max_intensity", params.scan.intensity_correction.max_intensity);
+        params.scan.downsampling.voxel.enable =
+            node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan.downsampling.voxel.enable);
+        params.scan.downsampling.voxel.size =
+            node->declare_parameter<double>("scan/downsampling/voxel/voxel_size", params.scan.downsampling.voxel.size);
 
-        params.scan_downsampling_polar_enable =
-            node->declare_parameter<bool>("scan/downsampling/polar/enable", params.scan_downsampling_polar_enable);
-        params.scan_downsampling_polar_distance_size = node->declare_parameter<double>(
-            "scan/downsampling/polar/distance_size", params.scan_downsampling_polar_distance_size);
-        params.scan_downsampling_polar_elevation_size = node->declare_parameter<double>(
-            "scan/downsampling/polar/elevation_size", params.scan_downsampling_polar_elevation_size);
-        params.scan_downsampling_polar_azimuth_size = node->declare_parameter<double>(
-            "scan/downsampling/polar/azimuth_size", params.scan_downsampling_polar_azimuth_size);
-        params.scan_downsampling_polar_coord_system = node->declare_parameter<std::string>(
-            "scan/downsampling/polar/coord_system", params.scan_downsampling_polar_coord_system);
-        params.scan_downsampling_random_enable =
-            node->declare_parameter<bool>("scan/downsampling/random/enable", params.scan_downsampling_random_enable);
-        params.scan_downsampling_random_num =
-            node->declare_parameter<int64_t>("scan/downsampling/random/num", params.scan_downsampling_random_num);
+        params.scan.downsampling.polar.enable =
+            node->declare_parameter<bool>("scan/downsampling/polar/enable", params.scan.downsampling.polar.enable);
+        params.scan.downsampling.polar.distance_size = node->declare_parameter<double>(
+            "scan/downsampling/polar/distance_size", params.scan.downsampling.polar.distance_size);
+        params.scan.downsampling.polar.elevation_size = node->declare_parameter<double>(
+            "scan/downsampling/polar/elevation_size", params.scan.downsampling.polar.elevation_size);
+        params.scan.downsampling.polar.azimuth_size = node->declare_parameter<double>(
+            "scan/downsampling/polar/azimuth_size", params.scan.downsampling.polar.azimuth_size);
+        params.scan.downsampling.polar.coord_system = node->declare_parameter<std::string>(
+            "scan/downsampling/polar/coord_system", params.scan.downsampling.polar.coord_system);
+        params.scan.downsampling.random.enable =
+            node->declare_parameter<bool>("scan/downsampling/random/enable", params.scan.downsampling.random.enable);
+        params.scan.downsampling.random.num =
+            node->declare_parameter<int64_t>("scan/downsampling/random/num", params.scan.downsampling.random.num);
 
-        params.scan_preprocess_box_filter_enable = node->declare_parameter<bool>(
-            "scan/preprocess/box_filter/enable", params.scan_preprocess_box_filter_enable);
-        params.scan_preprocess_box_filter_min =
-            node->declare_parameter<double>("scan/preprocess/box_filter/min", params.scan_preprocess_box_filter_min);
-        params.scan_preprocess_box_filter_max =
-            node->declare_parameter<double>("scan/preprocess/box_filter/max", params.scan_preprocess_box_filter_max);
+        params.scan.preprocess.box_filter.enable = node->declare_parameter<bool>(
+            "scan/preprocess/box_filter/enable", params.scan.preprocess.box_filter.enable);
+        params.scan.preprocess.box_filter.min =
+            node->declare_parameter<double>("scan/preprocess/box_filter/min", params.scan.preprocess.box_filter.min);
+        params.scan.preprocess.box_filter.max =
+            node->declare_parameter<double>("scan/preprocess/box_filter/max", params.scan.preprocess.box_filter.max);
 
-        params.scan_preprocess_angle_incidence_filter_enable = node->declare_parameter<bool>(
-            "scan/preprocess/angle_incidence_filter/enable", params.scan_preprocess_angle_incidence_filter_enable);
-        params.scan_preprocess_angle_incidence_filter_min_angle =
+        params.scan.preprocess.angle_incidence_filter.enable = node->declare_parameter<bool>(
+            "scan/preprocess/angle_incidence_filter/enable", params.scan.preprocess.angle_incidence_filter.enable);
+        params.scan.preprocess.angle_incidence_filter.min_angle =
             node->declare_parameter<double>("scan/preprocess/angle_incidence_filter/min_angle",
-                                            params.scan_preprocess_angle_incidence_filter_min_angle);
-        params.scan_preprocess_angle_incidence_filter_max_angle =
+                                            params.scan.preprocess.angle_incidence_filter.min_angle);
+        params.scan.preprocess.angle_incidence_filter.max_angle =
             node->declare_parameter<double>("scan/preprocess/angle_incidence_filter/max_angle",
-                                            params.scan_preprocess_angle_incidence_filter_max_angle);
+                                            params.scan.preprocess.angle_incidence_filter.max_angle);
     }
 
     // submapping
     {
-        params.submap_voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap_voxel_size);
-        params.submap_max_distance_range =
-            node->declare_parameter<double>("submap/max_distance_range", params.submap_max_distance_range);
-        params.submap_point_random_sampling_num = node->declare_parameter<int64_t>(
-            "submap/point_random_sampling_num", params.submap_point_random_sampling_num);
+        params.submap.voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap.voxel_size);
+        params.submap.max_distance_range =
+            node->declare_parameter<double>("submap/max_distance_range", params.submap.max_distance_range);
+        params.submap.point_random_sampling_num = node->declare_parameter<int64_t>(
+            "submap/point_random_sampling_num", params.submap.point_random_sampling_num);
 
-        params.keyframe_inlier_ratio_threshold = node->declare_parameter<double>(
-            "submap/keyframe/inlier_ratio_threshold", params.keyframe_inlier_ratio_threshold);
-        params.keyframe_distance_threshold =
-            node->declare_parameter<double>("submap/keyframe/distance_threshold", params.keyframe_distance_threshold);
-        params.keyframe_angle_threshold_degrees = node->declare_parameter<double>(
-            "submap/keyframe/angle_threshold_degrees", params.keyframe_angle_threshold_degrees);
-        params.keyframe_time_threshold_seconds = node->declare_parameter<double>(
-            "submap/keyframe/time_threshold_seconds", params.keyframe_time_threshold_seconds);
+        params.submap.keyframe.inlier_ratio_threshold = node->declare_parameter<double>(
+            "submap/keyframe/inlier_ratio_threshold", params.submap.keyframe.inlier_ratio_threshold);
+        params.submap.keyframe.distance_threshold = node->declare_parameter<double>(
+            "submap/keyframe/distance_threshold", params.submap.keyframe.distance_threshold);
+        params.submap.keyframe.angle_threshold_degrees = node->declare_parameter<double>(
+            "submap/keyframe/angle_threshold_degrees", params.submap.keyframe.angle_threshold_degrees);
+        params.submap.keyframe.time_threshold_seconds = node->declare_parameter<double>(
+            "submap/keyframe/time_threshold_seconds", params.submap.keyframe.time_threshold_seconds);
 
-        params.occupancy_grid_map_enable =
-            node->declare_parameter<bool>("submap/occupancy_grid_map/enable", params.occupancy_grid_map_enable);
-        params.occupancy_grid_map_log_odds_hit = node->declare_parameter<double>(
-            "submap/occupancy_grid_map/log_odds_hit", params.occupancy_grid_map_log_odds_hit);
-        params.occupancy_grid_map_log_odds_miss = node->declare_parameter<double>(
-            "submap/occupancy_grid_map/log_odds_miss", params.occupancy_grid_map_log_odds_miss);
-        params.occupancy_grid_map_log_odds_limits_min = node->declare_parameter<double>(
-            "submap/occupancy_grid_map/log_odds_limits/min", params.occupancy_grid_map_log_odds_limits_min);
-        params.occupancy_grid_map_log_odds_limits_max = node->declare_parameter<double>(
-            "submap/occupancy_grid_map/log_odds_limits/max", params.occupancy_grid_map_log_odds_limits_max);
-        params.occupancy_grid_map_occupied_threshold = node->declare_parameter<double>(
-            "submap/occupancy_grid_map/occupied_threshold", params.occupancy_grid_map_occupied_threshold);
-        params.occupancy_grid_map_enable_free_space_updates = node->declare_parameter<bool>(
-            "submap/occupancy_grid_map/enable_free_space_update", params.occupancy_grid_map_enable_free_space_updates);
-        params.occupancy_grid_map_enable_pruning = node->declare_parameter<bool>(
-            "submap/occupancy_grid_map/enable_pruning", params.occupancy_grid_map_enable_pruning);
-        params.occupancy_grid_map_stale_frame_threshold = node->declare_parameter<int64_t>(
-            "submap/occupancy_grid_map/stale_frame_threshold", params.occupancy_grid_map_stale_frame_threshold);
+        params.submap.occupancy_grid_map.enable =
+            node->declare_parameter<bool>("submap/occupancy_grid_map/enable", params.submap.occupancy_grid_map.enable);
+        params.submap.occupancy_grid_map.log_odds_hit = node->declare_parameter<double>(
+            "submap/occupancy_grid_map/log_odds_hit", params.submap.occupancy_grid_map.log_odds_hit);
+        params.submap.occupancy_grid_map.log_odds_miss = node->declare_parameter<double>(
+            "submap/occupancy_grid_map/log_odds_miss", params.submap.occupancy_grid_map.log_odds_miss);
+        params.submap.occupancy_grid_map.log_odds_limits_min = node->declare_parameter<double>(
+            "submap/occupancy_grid_map/log_odds_limits/min", params.submap.occupancy_grid_map.log_odds_limits_min);
+        params.submap.occupancy_grid_map.log_odds_limits_max = node->declare_parameter<double>(
+            "submap/occupancy_grid_map/log_odds_limits/max", params.submap.occupancy_grid_map.log_odds_limits_max);
+        params.submap.occupancy_grid_map.occupied_threshold = node->declare_parameter<double>(
+            "submap/occupancy_grid_map/occupied_threshold", params.submap.occupancy_grid_map.occupied_threshold);
+        params.submap.occupancy_grid_map.enable_free_space_updates =
+            node->declare_parameter<bool>("submap/occupancy_grid_map/enable_free_space_update",
+                                          params.submap.occupancy_grid_map.enable_free_space_updates);
+        params.submap.occupancy_grid_map.enable_pruning = node->declare_parameter<bool>(
+            "submap/occupancy_grid_map/enable_pruning", params.submap.occupancy_grid_map.enable_pruning);
+        params.submap.occupancy_grid_map.stale_frame_threshold = node->declare_parameter<int64_t>(
+            "submap/occupancy_grid_map/stale_frame_threshold", params.submap.occupancy_grid_map.stale_frame_threshold);
     }
 
     // Covariances
     {
-        params.covariance_estimation_neighbor_num = node->declare_parameter<int64_t>(
-            "covariance_estimation/neighbor_num", params.covariance_estimation_neighbor_num);
+        params.covariance_estimation.neighbor_num = node->declare_parameter<int64_t>(
+            "covariance_estimation/neighbor_num", params.covariance_estimation.neighbor_num);
 
-        params.covariance_estimation_m_estimation_enable = node->declare_parameter<bool>(
-            "covariance_estimation/m_estimation/enable", params.covariance_estimation_m_estimation_enable);
+        params.covariance_estimation.m_estimation.enable = node->declare_parameter<bool>(
+            "covariance_estimation/m_estimation/enable", params.covariance_estimation.m_estimation.enable);
         const std::string robust_loss =
             node->declare_parameter<std::string>("covariance_estimation/m_estimation/type", "HUBER");
-        params.covariance_estimation_m_estimation_type = algorithms::robust::RobustLossType_from_string(robust_loss);
-        if (params.covariance_estimation_m_estimation_type == algorithms::robust::RobustLossType::NONE) {
-            params.covariance_estimation_m_estimation_enable = false;
+        params.covariance_estimation.m_estimation.type = algorithms::robust::RobustLossType_from_string(robust_loss);
+        if (params.covariance_estimation.m_estimation.type == algorithms::robust::RobustLossType::NONE) {
+            params.covariance_estimation.m_estimation.enable = false;
         }
-        params.covariance_estimation_m_estimation_mad_scale = node->declare_parameter<double>(
-            "covariance_estimation/m_estimation/mad_scale", params.covariance_estimation_m_estimation_mad_scale);
-        params.covariance_estimation_m_estimation_min_robust_scale =
+        params.covariance_estimation.m_estimation.mad_scale = node->declare_parameter<double>(
+            "covariance_estimation/m_estimation/mad_scale", params.covariance_estimation.m_estimation.mad_scale);
+        params.covariance_estimation.m_estimation.min_robust_scale =
             node->declare_parameter<double>("covariance_estimation/m_estimation/min_robust_scale",
-                                            params.covariance_estimation_m_estimation_min_robust_scale);
-        params.covariance_estimation_m_estimation_max_iterations =
+                                            params.covariance_estimation.m_estimation.min_robust_scale);
+        params.covariance_estimation.m_estimation.max_iterations =
             node->declare_parameter<int64_t>("covariance_estimation/m_estimation/max_iterations",
-                                             params.covariance_estimation_m_estimation_max_iterations);
+                                             params.covariance_estimation.m_estimation.max_iterations);
     }
 
     // motion predictor
     {
-        params.motion_prediction_static_factor =
-            node->declare_parameter<double>("motion_prediction/static_factor", params.motion_prediction_static_factor);
-        params.motion_prediction_verbose =
-            node->declare_parameter<bool>("motion_prediction/verbose", params.motion_prediction_verbose);
+        params.motion_prediction.static_factor =
+            node->declare_parameter<double>("motion_prediction/static_factor", params.motion_prediction.static_factor);
+        params.motion_prediction.verbose =
+            node->declare_parameter<bool>("motion_prediction/verbose", params.motion_prediction.verbose);
 
-        params.motion_prediction_adaptive_rot_enable = node->declare_parameter<bool>(
-            "motion_prediction/adaptive/rotation/enable", params.motion_prediction_adaptive_rot_enable);
-        params.motion_prediction_adaptive_rot_factor_min = node->declare_parameter<double>(
-            "motion_prediction/adaptive/rotation/factor/min", params.motion_prediction_adaptive_rot_factor_min);
-        params.motion_prediction_adaptive_rot_factor_max = node->declare_parameter<double>(
-            "motion_prediction/adaptive/rotation/factor/max", params.motion_prediction_adaptive_rot_factor_max);
-        params.motion_prediction_adaptive_rot_min_eigenvalue_low =
+        params.motion_prediction.adaptive.rotation.enable = node->declare_parameter<bool>(
+            "motion_prediction/adaptive/rotation/enable", params.motion_prediction.adaptive.rotation.enable);
+        params.motion_prediction.adaptive.rotation.factor_min = node->declare_parameter<double>(
+            "motion_prediction/adaptive/rotation/factor/min", params.motion_prediction.adaptive.rotation.factor_min);
+        params.motion_prediction.adaptive.rotation.factor_max = node->declare_parameter<double>(
+            "motion_prediction/adaptive/rotation/factor/max", params.motion_prediction.adaptive.rotation.factor_max);
+        params.motion_prediction.adaptive.rotation.min_eigenvalue_low =
             node->declare_parameter<double>("motion_prediction/adaptive/rotation/min_eigenvalue/low",
-                                            params.motion_prediction_adaptive_rot_min_eigenvalue_low);
-        params.motion_prediction_adaptive_rot_min_eigenvalue_high =
+                                            params.motion_prediction.adaptive.rotation.min_eigenvalue_low);
+        params.motion_prediction.adaptive.rotation.min_eigenvalue_high =
             node->declare_parameter<double>("motion_prediction/adaptive/rotation/min_eigenvalue/high",
-                                            params.motion_prediction_adaptive_rot_min_eigenvalue_high);
+                                            params.motion_prediction.adaptive.rotation.min_eigenvalue_high);
 
-        params.motion_prediction_adaptive_trans_enable = node->declare_parameter<bool>(
-            "motion_prediction/adaptive/translation/enable", params.motion_prediction_adaptive_trans_enable);
-        params.motion_prediction_adaptive_trans_factor_min = node->declare_parameter<double>(
-            "motion_prediction/adaptive/translation/factor/min", params.motion_prediction_adaptive_trans_factor_min);
-        params.motion_prediction_adaptive_trans_factor_max = node->declare_parameter<double>(
-            "motion_prediction/adaptive/translation/factor/max", params.motion_prediction_adaptive_trans_factor_max);
-        params.motion_prediction_adaptive_trans_min_eigenvalue_low =
+        params.motion_prediction.adaptive.translation.enable = node->declare_parameter<bool>(
+            "motion_prediction/adaptive/translation/enable", params.motion_prediction.adaptive.translation.enable);
+        params.motion_prediction.adaptive.translation.factor_min =
+            node->declare_parameter<double>("motion_prediction/adaptive/translation/factor/min",
+                                            params.motion_prediction.adaptive.translation.factor_min);
+        params.motion_prediction.adaptive.translation.factor_max =
+            node->declare_parameter<double>("motion_prediction/adaptive/translation/factor/max",
+                                            params.motion_prediction.adaptive.translation.factor_max);
+        params.motion_prediction.adaptive.translation.min_eigenvalue_low =
             node->declare_parameter<double>("motion_prediction/adaptive/translation/min_eigenvalue/low",
-                                            params.motion_prediction_adaptive_trans_min_eigenvalue_low);
-        params.motion_prediction_adaptive_trans_min_eigenvalue_high =
+                                            params.motion_prediction.adaptive.translation.min_eigenvalue_low);
+        params.motion_prediction.adaptive.translation.min_eigenvalue_high =
             node->declare_parameter<double>("motion_prediction/adaptive/translation/min_eigenvalue/high",
-                                            params.motion_prediction_adaptive_trans_min_eigenvalue_high);
+                                            params.motion_prediction.adaptive.translation.min_eigenvalue_high);
     }
 
     // Registration
     {
+        auto& reg = params.registration;
+        auto& pipeline = reg.pipeline;
+        auto& solver = pipeline.registration;
+
         // common
         {
-            params.registration_min_num_points =
-                node->declare_parameter<int64_t>("registration/min_num_points", params.registration_min_num_points);
-            params.registration_random_sampling_enable = node->declare_parameter<bool>(
-                "registration/random_sampling/enable", params.registration_random_sampling_enable);
-            params.registration_random_sampling_num = node->declare_parameter<int64_t>(
-                "registration/random_sampling/num", params.registration_random_sampling_num);
+            auto& random_sampling = reg.random_sampling;
+
+            reg.min_num_points = node->declare_parameter<int64_t>("registration/min_num_points", reg.min_num_points);
+            random_sampling.enable =
+                node->declare_parameter<bool>("registration/random_sampling/enable", random_sampling.enable);
+            random_sampling.num =
+                node->declare_parameter<int64_t>("registration/random_sampling/num", random_sampling.num);
 
             const std::string reg_type = node->declare_parameter<std::string>("registration/type", "gicp");
-            params.reg_params.reg_type = algorithms::registration::RegType_from_string(reg_type);
-            params.reg_params.max_iterations =
-                node->declare_parameter<int64_t>("registration/max_iterations", params.reg_params.max_iterations);
-            params.reg_params.criteria.translation = node->declare_parameter<double>(
-                "registration/criteria/translation", params.reg_params.criteria.translation);
-            params.reg_params.criteria.rotation =
-                node->declare_parameter<double>("registration/criteria/rotation", params.reg_params.criteria.rotation);
-
-            params.reg_params.verbose =
-                node->declare_parameter<bool>("registration/verbose", params.reg_params.verbose);
+            solver.reg_type = algorithms::registration::RegType_from_string(reg_type);
+            solver.max_iterations =
+                node->declare_parameter<int64_t>("registration/max_iterations", solver.max_iterations);
+            solver.criteria.translation =
+                node->declare_parameter<double>("registration/criteria/translation", solver.criteria.translation);
+            solver.criteria.rotation =
+                node->declare_parameter<double>("registration/criteria/rotation", solver.criteria.rotation);
+            solver.verbose = node->declare_parameter<bool>("registration/verbose", solver.verbose);
         }
         // Outlier removal
         {
-            params.reg_params.max_correspondence_distance = node->declare_parameter<double>(
-                "registration/max_correspondence_distance", params.reg_params.max_correspondence_distance);
-            params.reg_params.mahalanobis_distance_threshold = node->declare_parameter<double>(
-                "registration/mahalanobis_distance_threshold", params.reg_params.mahalanobis_distance_threshold);
+            solver.max_correspondence_distance = node->declare_parameter<double>(
+                "registration/max_correspondence_distance", solver.max_correspondence_distance);
+            solver.mahalanobis_distance_threshold = node->declare_parameter<double>(
+                "registration/mahalanobis_distance_threshold", solver.mahalanobis_distance_threshold);
         }
 
         // robust
         {
+            auto& robust = solver.robust;
+            auto& pipeline_robust = pipeline.robust;
+
             const std::string robust_loss = node->declare_parameter<std::string>("registration/robust/type", "NONE");
-            params.reg_params.robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
-            params.reg_params.robust.auto_scale =
-                node->declare_parameter<bool>("registration/robust/auto_scale", params.reg_params.robust.auto_scale);
-            params.reg_params.robust.init_scale =
-                node->declare_parameter<double>("registration/robust/init_scale", params.reg_params.robust.init_scale);
-            params.reg_params.robust.min_scale =
-                node->declare_parameter<double>("registration/robust/min_scale", params.reg_params.robust.min_scale);
-            params.reg_params.robust.auto_scaling_iter = node->declare_parameter<int64_t>(
-                "registration/robust/auto_scaling_iter", params.reg_params.robust.auto_scaling_iter);
+            robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
+            robust.init_scale = node->declare_parameter<double>("registration/robust/init_scale", robust.init_scale);
+            pipeline_robust.auto_scale =
+                node->declare_parameter<bool>("registration/robust/auto_scale", pipeline_robust.auto_scale);
+            pipeline_robust.min_scale =
+                node->declare_parameter<double>("registration/robust/min_scale", pipeline_robust.min_scale);
+            pipeline_robust.auto_scaling_iter = node->declare_parameter<int64_t>(
+                "registration/robust/auto_scaling_iter", pipeline_robust.auto_scaling_iter);
         }
         // deskew
         {
-            params.registration_velocity_update_enable = node->declare_parameter<bool>(
-                "registration/velocity_update/enable", params.registration_velocity_update_enable);
-            params.registration_velocity_update_iter = node->declare_parameter<int64_t>(
-                "registration/velocity_update/iter", params.registration_velocity_update_iter);
+            auto& velocity_update = pipeline.velocity_update;
+
+            velocity_update.enable =
+                node->declare_parameter<bool>("registration/velocity_update/enable", velocity_update.enable);
+            velocity_update.iter =
+                node->declare_parameter<int64_t>("registration/velocity_update/iter", velocity_update.iter);
         }
         // photometric
         {
-            params.reg_params.photometric.enable =
-                node->declare_parameter<bool>("registration/photometric/enable", params.reg_params.photometric.enable);
-            params.reg_params.photometric.weight = node->declare_parameter<double>(
-                "registration/photometric/weight", params.reg_params.photometric.weight);
-            params.reg_params.photometric.robust_scale = node->declare_parameter<double>(
-                "registration/photometric/robust_scale", params.reg_params.photometric.robust_scale);
+            auto& photometric = solver.photometric;
+
+            photometric.enable = node->declare_parameter<bool>("registration/photometric/enable", photometric.enable);
+            photometric.weight = node->declare_parameter<double>("registration/photometric/weight", photometric.weight);
+            photometric.robust_scale =
+                node->declare_parameter<double>("registration/photometric/robust_scale", photometric.robust_scale);
         }
         // GenZ
         {
-            params.reg_params.genz.planarity_threshold = node->declare_parameter<double>(
-                "registration/genz/planarity_threshold", params.reg_params.genz.planarity_threshold);
+            auto& genz = solver.genz;
+
+            genz.planarity_threshold =
+                node->declare_parameter<double>("registration/genz/planarity_threshold", genz.planarity_threshold);
         }
         // Rotation Constraint
         {
-            params.reg_params.rotation_constraint.enable = node->declare_parameter<bool>(
-                "registration/rotation_constraint/enable", params.reg_params.rotation_constraint.enable);
-            params.reg_params.rotation_constraint.weight = node->declare_parameter<double>(
-                "registration/rotation_constraint/weight", params.reg_params.rotation_constraint.weight);
-            params.reg_params.rotation_constraint.robust_init_scale =
-                node->declare_parameter<double>("registration/rotation_constraint/robust/init_scale",
-                                                params.reg_params.rotation_constraint.robust_init_scale);
-            params.reg_params.rotation_constraint.robust_min_scale =
-                node->declare_parameter<double>("registration/rotation_constraint/robust/min_scale",
-                                                params.reg_params.rotation_constraint.robust_min_scale);
+            auto& rotation_constraint = solver.rotation_constraint;
+            auto& rotation_robust = rotation_constraint.robust;
+
+            rotation_constraint.enable =
+                node->declare_parameter<bool>("registration/rotation_constraint/enable", rotation_constraint.enable);
+            rotation_constraint.weight =
+                node->declare_parameter<double>("registration/rotation_constraint/weight", rotation_constraint.weight);
+            rotation_robust.init_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/init_scale", rotation_robust.init_scale);
+            rotation_robust.min_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/min_scale", rotation_robust.min_scale);
         }
 
         // Optimization
         {
+            auto& gn = solver.gn;
+            auto& lm = solver.lm;
+            auto& dogleg = solver.dogleg;
+
             const std::string optimization_method =
                 node->declare_parameter<std::string>("registration/optimization_method", "GN");
-            params.reg_params.optimization_method =
-                algorithms::registration::OptimizationMethod_from_string(optimization_method);
+            solver.optimization_method = algorithms::registration::OptimizationMethod_from_string(optimization_method);
 
-            params.reg_params.gn.lambda =
-                node->declare_parameter<double>("registration/gn/lambda", params.reg_params.gn.lambda);
+            gn.lambda = node->declare_parameter<double>("registration/gn/lambda", gn.lambda);
 
-            params.reg_params.lm.max_inner_iterations = node->declare_parameter<int64_t>(
-                "registration/lm/max_inner_iterations", params.reg_params.lm.max_inner_iterations);
-            params.reg_params.lm.lambda_factor =
-                node->declare_parameter<double>("registration/lm/lambda_factor", params.reg_params.lm.lambda_factor);
-            params.reg_params.lm.init_lambda =
-                node->declare_parameter<double>("registration/lm/init_lambda", params.reg_params.lm.init_lambda);
-            params.reg_params.lm.max_lambda =
-                node->declare_parameter<double>("registration/lm/max_lambda", params.reg_params.lm.max_lambda);
-            params.reg_params.lm.min_lambda =
-                node->declare_parameter<double>("registration/lm/min_lambda", params.reg_params.lm.min_lambda);
+            lm.max_inner_iterations =
+                node->declare_parameter<int64_t>("registration/lm/max_inner_iterations", lm.max_inner_iterations);
+            lm.lambda_factor = node->declare_parameter<double>("registration/lm/lambda_factor", lm.lambda_factor);
+            lm.init_lambda = node->declare_parameter<double>("registration/lm/init_lambda", lm.init_lambda);
+            lm.max_lambda = node->declare_parameter<double>("registration/lm/max_lambda", lm.max_lambda);
+            lm.min_lambda = node->declare_parameter<double>("registration/lm/min_lambda", lm.min_lambda);
 
-            params.reg_params.dogleg.initial_trust_region_radius =
-                node->declare_parameter<double>("registration/dogleg/initial_trust_region_radius",
-                                                params.reg_params.dogleg.initial_trust_region_radius);
-            params.reg_params.dogleg.max_trust_region_radius = node->declare_parameter<double>(
-                "registration/dogleg/max_trust_region_radius", params.reg_params.dogleg.max_trust_region_radius);
-            params.reg_params.dogleg.min_trust_region_radius = node->declare_parameter<double>(
-                "registration/dogleg/min_trust_region_radius", params.reg_params.dogleg.min_trust_region_radius);
-            params.reg_params.dogleg.eta1 =
-                node->declare_parameter<double>("registration/dogleg/eta1", params.reg_params.dogleg.eta1);
-            params.reg_params.dogleg.eta2 =
-                node->declare_parameter<double>("registration/dogleg/eta2", params.reg_params.dogleg.eta2);
-            params.reg_params.dogleg.gamma_decrease = node->declare_parameter<double>(
-                "registration/dogleg/gamma_decrease", params.reg_params.dogleg.gamma_decrease);
-            params.reg_params.dogleg.gamma_increase = node->declare_parameter<double>(
-                "registration/dogleg/gamma_increase", params.reg_params.dogleg.gamma_increase);
+            dogleg.initial_trust_region_radius = node->declare_parameter<double>(
+                "registration/dogleg/initial_trust_region_radius", dogleg.initial_trust_region_radius);
+            dogleg.max_trust_region_radius = node->declare_parameter<double>(
+                "registration/dogleg/max_trust_region_radius", dogleg.max_trust_region_radius);
+            dogleg.min_trust_region_radius = node->declare_parameter<double>(
+                "registration/dogleg/min_trust_region_radius", dogleg.min_trust_region_radius);
+            dogleg.eta1 = node->declare_parameter<double>("registration/dogleg/eta1", dogleg.eta1);
+            dogleg.eta2 = node->declare_parameter<double>("registration/dogleg/eta2", dogleg.eta2);
+            dogleg.gamma_decrease =
+                node->declare_parameter<double>("registration/dogleg/gamma_decrease", dogleg.gamma_decrease);
+            dogleg.gamma_increase =
+                node->declare_parameter<double>("registration/dogleg/gamma_increase", dogleg.gamma_increase);
         }
         // Degenerate Regularization
         {
+            auto& degenerate_reg = solver.degenerate_reg;
+
             const std::string degenerate_reg_type =
                 node->declare_parameter<std::string>("registration/degenerate_regularization/type", "NONE");
-            params.reg_params.degenerate_reg.type =
+            degenerate_reg.type =
                 algorithms::registration::DegenerateRegularizationType_from_string(degenerate_reg_type);
 
-            params.reg_params.degenerate_reg.base_factor =
-                node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/base_factor",
-                                                params.reg_params.degenerate_reg.base_factor);
-            params.reg_params.degenerate_reg.trans_eigenvalue_threshold = node->declare_parameter<double>(
+            degenerate_reg.base_factor = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/base_factor", degenerate_reg.base_factor);
+            degenerate_reg.trans_eigenvalue_threshold = node->declare_parameter<double>(
                 "registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold",
-                params.reg_params.degenerate_reg.trans_eigenvalue_threshold);
-            params.reg_params.degenerate_reg.rot_eigenvalue_threshold = node->declare_parameter<double>(
+                degenerate_reg.trans_eigenvalue_threshold);
+            degenerate_reg.rot_eigenvalue_threshold = node->declare_parameter<double>(
                 "registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold",
-                params.reg_params.degenerate_reg.rot_eigenvalue_threshold);
+                degenerate_reg.rot_eigenvalue_threshold);
         }
     }
 
     // tf and pose
     {
-        params.odom_frame_id = node->declare_parameter<std::string>("odom_frame_id", "odom");
-        params.base_link_id = node->declare_parameter<std::string>("base_link_id", "base_link");
+        params.frames.odom_frame_id = node->declare_parameter<std::string>("odom_frame_id", "odom");
+        params.frames.base_link_id = node->declare_parameter<std::string>("base_link_id", "base_link");
         {
             // x, y, z, qx, qy, qz, qw
             const auto x = node->declare_parameter<double>("T_base_link_to_lidar/x", 0.0);
@@ -307,12 +315,12 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             const auto qy = node->declare_parameter<double>("T_base_link_to_lidar/qy", 0.0);
             const auto qz = node->declare_parameter<double>("T_base_link_to_lidar/qz", 0.0);
             const auto qw = node->declare_parameter<double>("T_base_link_to_lidar/qw", 1.0);
-            params.T_base_link_to_lidar.setIdentity();
-            params.T_base_link_to_lidar.translation() << x, y, z;
+            params.frames.T_base_link_to_lidar.setIdentity();
+            params.frames.T_base_link_to_lidar.translation() << x, y, z;
             const Eigen::Quaternionf quat(qw, qx, qy, qz);
-            params.T_base_link_to_lidar.matrix().block<3, 3>(0, 0) = quat.matrix();
+            params.frames.T_base_link_to_lidar.matrix().block<3, 3>(0, 0) = quat.matrix();
 
-            params.T_lidar_to_base_link = params.T_base_link_to_lidar.inverse();
+            params.frames.T_lidar_to_base_link = params.frames.T_base_link_to_lidar.inverse();
         }
 
         {
@@ -320,36 +328,37 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             const auto T =
                 node->declare_parameter<std::vector<double>>("initial_pose", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0});
             if (T.size() != 7) throw std::runtime_error("invalid initial_pose");
-            params.initial_pose.setIdentity();
-            params.initial_pose.translation() << T[0], T[1], T[2];
+            params.pose.initial.setIdentity();
+            params.pose.initial.translation() << T[0], T[1], T[2];
             const Eigen::Quaternionf quat(T[6], T[3], T[4], T[5]);
-            params.initial_pose.matrix().block<3, 3>(0, 0) = quat.matrix();
+            params.pose.initial.matrix().block<3, 3>(0, 0) = quat.matrix();
         }
     }
 
     // Visualizer
     {
         // Preprocessed Scan Covariances
-        params.scan_cov_marker_config.topic_name = node->declare_parameter<std::string>(
-            "vis/covariance_markers/scan/topic_name", params.scan_cov_marker_config.topic_name);
-        params.scan_cov_marker_config.marker_ns = node->declare_parameter<std::string>(
-            "vis/covariance_markers/scan/marker_ns", params.scan_cov_marker_config.marker_ns);
-        params.scan_cov_marker_config.scale_factor = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/scale_factor", params.scan_cov_marker_config.scale_factor);
-        params.scan_cov_marker_config.min_scale = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/min_scale", params.scan_cov_marker_config.min_scale);
-        params.scan_cov_marker_config.max_scale = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/max_scale", params.scan_cov_marker_config.max_scale);
-        params.scan_cov_marker_config.alpha =
-            node->declare_parameter<double>("vis/covariance_markers/scan/alpha", params.scan_cov_marker_config.alpha);
-        params.scan_cov_marker_config.color_by_planarity = node->declare_parameter<bool>(
-            "vis/covariance_markers/scan/color_by_planarity", params.scan_cov_marker_config.color_by_planarity);
-        params.scan_cov_marker_config.default_r = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_r", params.scan_cov_marker_config.default_r);
-        params.scan_cov_marker_config.default_g = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_g", params.scan_cov_marker_config.default_g);
-        params.scan_cov_marker_config.default_b = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_b", params.scan_cov_marker_config.default_b);
+        params.visualization.scan_covariance_markers.topic_name = node->declare_parameter<std::string>(
+            "vis/covariance_markers/scan/topic_name", params.visualization.scan_covariance_markers.topic_name);
+        params.visualization.scan_covariance_markers.marker_ns = node->declare_parameter<std::string>(
+            "vis/covariance_markers/scan/marker_ns", params.visualization.scan_covariance_markers.marker_ns);
+        params.visualization.scan_covariance_markers.scale_factor = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/scale_factor", params.visualization.scan_covariance_markers.scale_factor);
+        params.visualization.scan_covariance_markers.min_scale = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/min_scale", params.visualization.scan_covariance_markers.min_scale);
+        params.visualization.scan_covariance_markers.max_scale = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/max_scale", params.visualization.scan_covariance_markers.max_scale);
+        params.visualization.scan_covariance_markers.alpha = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/alpha", params.visualization.scan_covariance_markers.alpha);
+        params.visualization.scan_covariance_markers.color_by_planarity =
+            node->declare_parameter<bool>("vis/covariance_markers/scan/color_by_planarity",
+                                          params.visualization.scan_covariance_markers.color_by_planarity);
+        params.visualization.scan_covariance_markers.default_r = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/default_r", params.visualization.scan_covariance_markers.default_r);
+        params.visualization.scan_covariance_markers.default_g = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/default_g", params.visualization.scan_covariance_markers.default_g);
+        params.visualization.scan_covariance_markers.default_b = node->declare_parameter<double>(
+            "vis/covariance_markers/scan/default_b", params.visualization.scan_covariance_markers.default_b);
     }
     return params;
 }
