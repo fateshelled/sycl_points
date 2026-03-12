@@ -18,9 +18,9 @@ namespace deskew {
 ///
 /// Points are transformed from the sensor frame at their sampling time into the
 /// frame of @p previous_relative_pose, compensating both rotation and
-/// translation. Normals and covariances are rotated using the angular velocity
-/// model to keep them roughly aligned with the deskewed points, while color and
-/// intensity gradients are cleared.
+/// translation. Normals, covariances, and photometric gradients are rotated
+/// using the angular velocity model to keep them aligned with the deskewed
+/// points.
 /// @param input_cloud Point cloud with timestamps. The data in this cloud is modified during in-place operation (i.e.
 /// `&input_cloud == &output_cloud`).
 /// @param output_cloud Point cloud receiving the deskewed data. Containers will be resized as needed.
@@ -70,12 +70,18 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
         } else {
             output_cloud.intensities->clear();
         }
-    }
-    if (output_cloud.has_color_gradient()) {
-        output_cloud.color_gradients->clear();
-    }
-    if (output_cloud.has_intensity_gradient()) {
-        output_cloud.intensity_gradients->clear();
+        if (input_cloud.has_color_gradient()) {
+            output_cloud.color_gradients->assign(input_cloud.color_gradients->begin(),
+                                                 input_cloud.color_gradients->end());
+        } else {
+            output_cloud.color_gradients->clear();
+        }
+        if (input_cloud.has_intensity_gradient()) {
+            output_cloud.intensity_gradients->assign(input_cloud.intensity_gradients->begin(),
+                                                     input_cloud.intensity_gradients->end());
+        } else {
+            output_cloud.intensity_gradients->clear();
+        }
     }
 
     // Compute motion between the two poses and map it to the twist vector.
@@ -95,10 +101,18 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
     auto* normals_out = output_cloud.has_normal() ? output_cloud.normals->data() : nullptr;
     auto* covs_in = input_cloud.has_cov() ? input_cloud.covs->data() : nullptr;
     auto* covs_out = output_cloud.has_cov() ? output_cloud.covs->data() : nullptr;
+    auto* color_gradients_in = input_cloud.has_color_gradient() ? input_cloud.color_gradients->data() : nullptr;
+    auto* color_gradients_out = output_cloud.has_color_gradient() ? output_cloud.color_gradients->data() : nullptr;
+    auto* intensity_gradients_in =
+        input_cloud.has_intensity_gradient() ? input_cloud.intensity_gradients->data() : nullptr;
+    auto* intensity_gradients_out =
+        output_cloud.has_intensity_gradient() ? output_cloud.intensity_gradients->data() : nullptr;
     auto* timestamps = output_cloud.timestamp_offsets->data();
 
     const bool process_normals = normals_in != nullptr && normals_out != nullptr;
     const bool process_covs = covs_in != nullptr && covs_out != nullptr;
+    const bool process_color_gradients = color_gradients_in != nullptr && color_gradients_out != nullptr;
+    const bool process_intensity_gradients = intensity_gradients_in != nullptr && intensity_gradients_out != nullptr;
 
     // Launch device kernel to deskew each point independently.
     sycl::event deskew_event = input_cloud.queue.ptr->submit([&](sycl::handler& cgh) {
@@ -130,7 +144,7 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
             const Eigen::Vector3f rotated_point = eigen_utils::multiply<3, 3>(rotation, point_in);
             points_out[idx].template head<3>() = eigen_utils::add<3, 1>(rotated_point, translation);
 
-            // Rotate normals and covariances using the integrated angular velocity.
+            // Rotate frame-dependent attributes using the integrated angular velocity.
             const Eigen::Vector3f integrated_omega = scaled_twist.template head<3>();
             const Eigen::Matrix3f rotation_omega =
                 eigen_utils::geometry::quaternion_to_rotation_matrix(eigen_utils::lie::so3_exp(integrated_omega));
@@ -144,6 +158,13 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
                 const Eigen::Matrix3f rotated_cov = eigen_utils::multiply<3, 3, 3>(
                     rotation_omega, eigen_utils::multiply<3, 3, 3>(cov_in, rotation_omega_t));
                 covs_out[idx].topLeftCorner<3, 3>() = rotated_cov;
+            }
+            if (process_color_gradients) {
+                color_gradients_out[idx] = eigen_utils::multiply<3, 3, 3>(color_gradients_in[idx],
+                                                                          eigen_utils::transpose<3, 3>(rotation_omega));
+            }
+            if (process_intensity_gradients) {
+                intensity_gradients_out[idx] = eigen_utils::multiply<3, 3>(rotation_omega, intensity_gradients_in[idx]);
             }
         });
     });
