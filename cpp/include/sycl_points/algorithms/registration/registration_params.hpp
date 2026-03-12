@@ -55,9 +55,14 @@ struct RegistrationParams {
         float planarity_threshold = 0.2f;
     };
     struct RotationConstraint {
+        struct Robust {
+            float init_scale = 10.0f;  // scale for robust loss function
+            float min_scale = 0.5f;    // minimum scale for the rotation constraint robust loss
+        };
+
         bool enable = false;
-        float weight = 1.0f;              // Scaling factor to balance constraint error with geometric error
-        float robust_init_scale = 10.0f;  // scale for robust loss function
+        float weight = 1.0f;  // Scaling factor to balance constraint error with geometric error
+        Robust robust;
     };
 
     struct GaussNewton {

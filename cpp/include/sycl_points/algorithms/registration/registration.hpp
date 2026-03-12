@@ -223,7 +223,7 @@ public:
                 options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
             const float rotation_robust_scale = options.rotation_robust_scale > 0.0f
                                                     ? options.rotation_robust_scale
-                                                    : this->params_.rotation_constraint.robust_init_scale;
+                                                    : this->params_.rotation_constraint.robust.init_scale;
 
             float lm_lambda = this->params_.lm.init_lambda;
             for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
