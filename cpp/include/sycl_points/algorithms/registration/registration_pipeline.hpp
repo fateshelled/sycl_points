@@ -265,6 +265,12 @@ public:
 
 private:
     void wrap_aligner() {
+        // Execution order:
+        //   RobustPipeline -> VelocityUpdatePipeline -> base aligner
+        // Loop nesting:
+        //   for each robust scale:
+        //     for each deskew update:
+        //       align(...)
         if (this->pipeline_params_.velocity_update.enable) {
             this->velocity_update_pipeline_ = std::make_shared<VelocityUpdatePipeline>(
                 this->aligner_, this->pipeline_params_.velocity_update.iter, this->pipeline_params_.registration.verbose);
