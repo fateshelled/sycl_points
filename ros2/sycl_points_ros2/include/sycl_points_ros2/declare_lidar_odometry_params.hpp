@@ -173,7 +173,7 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
         // common
         {
-            auto& random_sampling = reg.random_sampling;
+            auto& random_sampling = pipeline.random_sampling;
 
             reg.min_num_points = node->declare_parameter<int64_t>("registration/min_num_points", reg.min_num_points);
             random_sampling.enable =

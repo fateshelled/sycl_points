@@ -53,7 +53,9 @@ public:
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
-    const PointCloudShared& get_registration_input_point_cloud() const { return *this->registration_input_pc_; }
+    const PointCloudShared& get_registration_input_point_cloud() const {
+        return this->registration_pipeline_->get_registration_input_point_cloud();
+    }
 
     const auto& get_registration_result() const { return *this->reg_result_; }
 
@@ -145,11 +147,10 @@ public:
 private:
     sycl_utils::DeviceQueue::Ptr queue_ptr_ = nullptr;
 
-    PointCloudShared::Ptr preprocessed_pc_ = nullptr;        // Sensor coordinate
-    PointCloudShared::Ptr registration_input_pc_ = nullptr;  // Sensor coordinate
-    PointCloudShared::Ptr keyframe_pc_ = nullptr;            // Sensor coordinate
-    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;          // World coordinate
-    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;          // World coordinate
+    PointCloudShared::Ptr preprocessed_pc_ = nullptr;  // Sensor coordinate
+    PointCloudShared::Ptr keyframe_pc_ = nullptr;      // Sensor coordinate
+    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;    // World coordinate
+    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;    // World coordinate
     bool is_first_frame_ = true;
 
     algorithms::mapping::VoxelHashMap::Ptr submap_voxel_ = nullptr;
@@ -228,7 +229,6 @@ private:
         // initialize buffer
         {
             this->preprocessed_pc_.reset(new PointCloudShared(*this->queue_ptr_));
-            this->registration_input_pc_.reset(new PointCloudShared(*this->queue_ptr_));
             this->keyframe_pc_.reset(new PointCloudShared(*this->queue_ptr_));
             this->submap_pc_tmp_.reset(new PointCloudShared(*this->queue_ptr_));
         }
@@ -450,19 +450,12 @@ private:
     algorithms::registration::RegistrationResult registration() {
         const Eigen::Isometry3f init_T = this->adaptive_motion_prediction();
 
-        if (this->params_.registration.random_sampling.enable) {
-            this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_,
-                                                      this->params_.registration.random_sampling.num);
-        } else {
-            *this->registration_input_pc_ = *this->preprocessed_pc_;
-        }
-
         algorithms::registration::Registration::ExecutionOptions options;
         options.dt = this->dt_;
         options.prev_pose = this->odom_.matrix();
 
-        return this->registration_pipeline_->align(*this->registration_input_pc_, *this->submap_pc_ptr_,
-                                                   *this->submap_tree_, init_T.matrix(), options);
+        return this->registration_pipeline_->align(*this->preprocessed_pc_, *this->submap_pc_ptr_, *this->submap_tree_,
+                                                   init_T.matrix(), options);
     }
 
     void build_submap(const PointCloudShared::Ptr& pc, const Eigen::Isometry3f& current_pose) {
@@ -563,11 +556,11 @@ private:
         }
 
         // check inlier ratio for registration success or not.
-        if (this->registration_input_pc_->size() == 0) {
+        const auto& registration_input_pc = this->registration_pipeline_->get_registration_input_point_cloud();
+        if (registration_input_pc.size() == 0) {
             return false;
         }
-        const float inlier_ratio =
-            static_cast<float>(reg_result.inlier) / static_cast<float>(this->registration_input_pc_->size());
+        const float inlier_ratio = static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc.size());
         if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
             return false;
         }
