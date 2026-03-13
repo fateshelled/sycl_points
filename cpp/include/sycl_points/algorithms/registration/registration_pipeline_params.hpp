@@ -12,6 +12,11 @@ namespace registration {
 struct RegistrationPipelineParams {
     RegistrationParams registration;  // Base registration solver parameters
 
+    struct RandomSampling {
+        bool enable = true;
+        size_t num = 1000;
+    };
+
     /// @brief Parameters for multi-stage robust scale annealing
     struct Robust {
         bool auto_scale = false;  // If false, keep the robust scale fixed at RegistrationParams::robust.init_scale.
@@ -25,6 +30,7 @@ struct RegistrationPipelineParams {
         size_t iter = 1;      // Number of deskew and re-alignment iterations
     };
 
+    RandomSampling random_sampling;   // Optional source random sampling before registration
     Robust robust;                   // Robust scale scheduling parameters
     VelocityUpdate velocity_update;  // Constant-velocity deskew refinement parameters
 };

@@ -53,7 +53,9 @@ public:
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
-    const PointCloudShared& get_registration_input_point_cloud() const { return *this->registration_input_pc_; }
+    const PointCloudShared& get_registration_input_point_cloud() const {
+        return this->registration_pipeline_->get_registration_input_point_cloud();
+    }
 
     const auto& get_registration_result() const { return *this->reg_result_; }
 
@@ -145,11 +147,10 @@ public:
 private:
     sycl_utils::DeviceQueue::Ptr queue_ptr_ = nullptr;
 
-    PointCloudShared::Ptr preprocessed_pc_ = nullptr;        // Sensor coordinate
-    PointCloudShared::Ptr registration_input_pc_ = nullptr;  // Sensor coordinate
-    PointCloudShared::Ptr keyframe_pc_ = nullptr;            // Sensor coordinate
-    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;          // World coordinate
-    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;          // World coordinate
+    PointCloudShared::Ptr preprocessed_pc_ = nullptr;  // Sensor coordinate
+    PointCloudShared::Ptr keyframe_pc_ = nullptr;      // Sensor coordinate
+    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;    // World coordinate
+    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;    // World coordinate
     bool is_first_frame_ = true;
 
     algorithms::mapping::VoxelHashMap::Ptr submap_voxel_ = nullptr;
@@ -228,7 +229,6 @@ private:
         // initialize buffer
         {
             this->preprocessed_pc_.reset(new PointCloudShared(*this->queue_ptr_));
-            this->registration_input_pc_.reset(new PointCloudShared(*this->queue_ptr_));
             this->keyframe_pc_.reset(new PointCloudShared(*this->queue_ptr_));
             this->submap_pc_tmp_.reset(new PointCloudShared(*this->queue_ptr_));
         }
@@ -450,19 +450,12 @@ private:
     algorithms::registration::RegistrationResult registration() {
         const Eigen::Isometry3f init_T = this->adaptive_motion_prediction();
 
-        if (this->params_.registration.random_sampling.enable) {
-            this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_,
-                                                      this->params_.registration.random_sampling.num);
-        } else {
-            *this->registration_input_pc_ = *this->preprocessed_pc_;
-        }
-
         algorithms::registration::Registration::ExecutionOptions options;
         options.dt = this->dt_;
         options.prev_pose = this->odom_.matrix();
 
-        return this->registration_pipeline_->align(*this->registration_input_pc_, *this->submap_pc_ptr_,
-                                                   *this->submap_tree_, init_T.matrix(), options);
+        return this->registration_pipeline_->align(*this->preprocessed_pc_, *this->submap_pc_ptr_, *this->submap_tree_,
+                                                   init_T.matrix(), options);
     }
 
     void build_submap(const PointCloudShared::Ptr& pc, const Eigen::Isometry3f& current_pose) {
@@ -489,18 +482,30 @@ private:
             this->submap_pc_ptr_ = this->submap_pc_tmp_;
         }
 
-        // KNN search
+        // Build target search structure for registration. Neighbor queries are launched lazily only when needed.
         this->submap_tree_ = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->submap_pc_ptr_);
-        auto knn_events = this->submap_tree_->knn_search_async(
-            *this->submap_pc_ptr_, this->params_.covariance_estimation.neighbor_num, this->knn_result_);
+
+        const auto reg_type = this->params_.registration.pipeline.registration.reg_type;
+        const bool photometric_enabled = this->params_.registration.pipeline.registration.photometric.enable;
+        sycl_utils::events knn_events;
+        bool knn_ready = false;
+        auto ensure_knn = [&]() {
+            if (!knn_ready) {
+                knn_events = this->submap_tree_->knn_search_async(
+                    *this->submap_pc_ptr_, this->params_.covariance_estimation.neighbor_num, this->knn_result_);
+                knn_ready = true;
+            }
+        };
 
         // compute grad
         sycl_utils::events grad_events;
-        if (this->params_.registration.pipeline.registration.photometric.enable) {
+        if (photometric_enabled) {
             if (this->submap_pc_ptr_->has_rgb()) {
+                ensure_knn();
                 grad_events += algorithms::color_gradient::compute_color_gradients_async(
                     *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             } else if (this->submap_pc_ptr_->has_intensity()) {
+                ensure_knn();
                 grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
                     *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             }
@@ -512,46 +517,50 @@ private:
             const bool submap_has_cov = this->submap_pc_ptr_->has_cov();
             bool normals_are_ready = false;
             bool covariances_are_ready = submap_has_cov;
-            if (this->params_.registration.pipeline.registration.reg_type ==
-                algorithms::registration::RegType::POINT_TO_PLANE) {
+            if (reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
                 normals_are_ready = true;
                 if (submap_has_cov) {
+                    ensure_knn();
                     cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
                                                                                                  knn_events.evs);
                 } else {
+                    ensure_knn();
                     cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
                 }
             }
-            if (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GICP ||
-                this->params_.registration.pipeline.registration.reg_type ==
-                    algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
-                this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GENZ ||
+            if (reg_type == algorithms::registration::RegType::GICP ||
+                reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
+                reg_type == algorithms::registration::RegType::GENZ ||
                 this->params_.registration.pipeline.registration.rotation_constraint.enable) {
                 if (!submap_has_cov) {
                     covariances_are_ready = true;
+                    ensure_knn();
                     cov_events += algorithms::covariance::compute_covariances_async(
                         this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
                 }
             }
 
-            if (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GENZ) {
+            if (reg_type == algorithms::registration::RegType::GENZ) {
                 normals_are_ready = true;
                 cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
                                                                                              cov_events.evs);
             }
 
-            if (this->params_.registration.pipeline.registration.photometric.enable && !normals_are_ready) {
+            if (photometric_enabled && !normals_are_ready) {
                 if (covariances_are_ready) {
                     cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
                                                                                                  cov_events.evs);
                 } else {
+                    ensure_knn();
                     cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
                 }
             }
         }
-        knn_events.wait_and_throw();
+        if (knn_ready) {
+            knn_events.wait_and_throw();
+        }
         grad_events.wait_and_throw();
         cov_events.wait_and_throw();
     }
@@ -563,11 +572,12 @@ private:
         }
 
         // check inlier ratio for registration success or not.
-        if (this->registration_input_pc_->size() == 0) {
+        const auto& registration_input_pc = this->registration_pipeline_->get_registration_input_point_cloud();
+        if (registration_input_pc.size() == 0) {
             return false;
         }
         const float inlier_ratio =
-            static_cast<float>(reg_result.inlier) / static_cast<float>(this->registration_input_pc_->size());
+            static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc.size());
         if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
             return false;
         }

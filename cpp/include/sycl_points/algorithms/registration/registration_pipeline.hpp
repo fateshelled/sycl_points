@@ -6,6 +6,7 @@
 #include <iostream>
 #include <memory>
 
+#include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 
@@ -219,24 +220,20 @@ public:
     using Ptr = std::shared_ptr<RegistrationPipeline>;
 
     /// @brief Constructor
+    /// @param aligner Registration callable
+    /// @param pipeline_params Parameters for the solver and optional wrappers
+    RegistrationPipeline(RegistrationAligner aligner,
+                         const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
+        : pipeline_params_(pipeline_params), aligner_(std::move(aligner)) {
+        this->wrap_aligner();
+    }
+
+    /// @brief Constructor
     /// @param registration Registration backend
     /// @param pipeline_params Parameters for the solver and optional wrappers
     RegistrationPipeline(const Registration::Ptr& registration,
                          const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
-        : registration_(registration) {
-        this->aligner_ = make_registration_aligner(this->registration_);
-
-        if (pipeline_params.velocity_update.enable) {
-            this->velocity_update_pipeline_ = std::make_shared<VelocityUpdatePipeline>(
-                this->aligner_, pipeline_params.velocity_update.iter, pipeline_params.registration.verbose);
-            this->aligner_ = this->velocity_update_pipeline_->make_aligner();
-        }
-
-        if (pipeline_params.robust.auto_scale) {
-            this->robust_pipeline_ = std::make_shared<RobustPipeline>(this->aligner_, pipeline_params);
-            this->aligner_ = this->robust_pipeline_->make_aligner();
-        }
-    }
+        : RegistrationPipeline(make_registration_aligner(registration), pipeline_params) { this->registration_ = registration; }
 
     /// @brief Constructor
     /// @param queue SYCL queue used to construct the registration backend
@@ -256,17 +253,61 @@ public:
                              const knn::KNNBase& target_knn,
                              const TransformMatrix& initial_guess = TransformMatrix::Identity(),
                              const Registration::ExecutionOptions& options = Registration::ExecutionOptions()) const {
-        return this->aligner_(source, target, target_knn, initial_guess, options);
+        this->update_registration_input(source);
+        return this->aligner_(*this->registration_input_pc_, target, target_knn, initial_guess, options);
     }
 
     /// @brief Returns the underlying Registration backend
     const Registration::Ptr& registration() const { return this->registration_; }
 
+    /// @brief Returns the source point cloud used by the most recent align() call
+    const PointCloudShared& get_registration_input_point_cloud() const { return *this->registration_input_pc_; }
+
 private:
+    void wrap_aligner() {
+        // Execution order:
+        //   RobustPipeline -> VelocityUpdatePipeline -> base aligner
+        // Loop nesting:
+        //   for each robust scale:
+        //     for each deskew update:
+        //       align(...)
+        if (this->pipeline_params_.velocity_update.enable) {
+            this->velocity_update_pipeline_ = std::make_shared<VelocityUpdatePipeline>(
+                this->aligner_, this->pipeline_params_.velocity_update.iter, this->pipeline_params_.registration.verbose);
+            this->aligner_ = this->velocity_update_pipeline_->make_aligner();
+        }
+
+        if (this->pipeline_params_.robust.auto_scale) {
+            this->robust_pipeline_ = std::make_shared<RobustPipeline>(this->aligner_, this->pipeline_params_);
+            this->aligner_ = this->robust_pipeline_->make_aligner();
+        }
+    }
+
+    void initialize_runtime_state(const sycl_utils::DeviceQueue& queue) const {
+        if (this->preprocess_filter_ != nullptr && this->registration_input_pc_ != nullptr) {
+            return;
+        }
+        this->preprocess_filter_ = std::make_shared<filter::PreprocessFilter>(queue);
+        this->registration_input_pc_ = std::make_shared<PointCloudShared>(queue);
+    }
+
+    void update_registration_input(const PointCloudShared& source) const {
+        this->initialize_runtime_state(source.queue);
+        if (this->pipeline_params_.random_sampling.enable && source.size() > this->pipeline_params_.random_sampling.num) {
+            this->preprocess_filter_->random_sampling(source, *this->registration_input_pc_,
+                                                      this->pipeline_params_.random_sampling.num);
+        } else {
+            *this->registration_input_pc_ = source;
+        }
+    }
+
     Registration::Ptr registration_;
+    RegistrationPipelineParams pipeline_params_;
     RobustPipeline::Ptr robust_pipeline_ = nullptr;
     VelocityUpdatePipeline::Ptr velocity_update_pipeline_ = nullptr;
     RegistrationAligner aligner_;
+    mutable filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
+    mutable PointCloudShared::Ptr registration_input_pc_ = nullptr;
 };
 
 }  // namespace registration

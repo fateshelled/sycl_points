@@ -139,13 +139,7 @@ struct Parameters {
     };
 
     struct Registration {
-        struct RandomSampling {
-            bool enable = true;
-            size_t num = 1000;
-        };
-
         size_t min_num_points = 100;
-        RandomSampling random_sampling;
         algorithms::registration::RegistrationPipelineParams pipeline;
     };
 
