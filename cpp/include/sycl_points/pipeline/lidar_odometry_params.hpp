@@ -2,6 +2,7 @@
 
 #include <Eigen/Geometry>
 
+#include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 #include "sycl_points/ros2/covariance_marker_publisher.hpp"
 
@@ -95,6 +96,8 @@ struct Parameters {
         float voxel_size = 1.0f;
         float max_distance_range = 30.0f;
         size_t point_random_sampling_num = 2000;
+        algorithms::mapping::CovarianceAggregationMode covariance_aggregation_mode =
+            algorithms::mapping::CovarianceAggregationMode::ARITHMETIC;
         Keyframe keyframe;
         OccupancyGridMap occupancy_grid_map;
     };

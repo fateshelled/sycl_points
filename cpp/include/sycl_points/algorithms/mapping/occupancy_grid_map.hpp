@@ -13,7 +13,9 @@
 #include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/algorithms/common/workgroup_utils.hpp"
+#include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
@@ -41,12 +43,14 @@ public:
     void clear() {
         this->capacity_ = kCapacityCandidates[0];
         this->voxel_num_ = 0;
+        this->has_cov_data_ = false;
         this->has_rgb_data_ = false;
         this->has_intensity_data_ = false;
         this->frame_index_ = 0;
 
         this->key_ptr_->resize(this->capacity_);
         this->core_data_ptr_->resize(this->capacity_);
+        this->covariance_data_ptr_->resize(this->capacity_);
         this->color_data_ptr_->resize(this->capacity_);
         this->intensity_data_ptr_->resize(this->capacity_);
 
@@ -56,6 +60,8 @@ public:
                                                 this->key_ptr_->size());
         evs += this->queue_.ptr->fill<VoxelCoreData>(this->core_data_ptr_->data(), VoxelCoreData{},
                                                      this->core_data_ptr_->size());
+        evs += this->queue_.ptr->fill<VoxelCovarianceData>(this->covariance_data_ptr_->data(), VoxelCovarianceData{},
+                                                           this->covariance_data_ptr_->size());
         evs += this->queue_.ptr->fill<VoxelColorData>(this->color_data_ptr_->data(), VoxelColorData{},
                                                       this->color_data_ptr_->size());
         evs += this->queue_.ptr->fill<VoxelIntensityData>(this->intensity_data_ptr_->data(), VoxelIntensityData{},
@@ -118,6 +124,11 @@ public:
     /// @brief Set the frame-age threshold used to prune stale voxels.
     void set_stale_frame_threshold(const uint32_t threshold) { this->stale_frame_threshold_ = threshold; }
 
+    void set_covariance_aggregation_mode(const CovarianceAggregationMode mode) {
+        this->covariance_aggregation_mode_ = mode;
+    }
+    CovarianceAggregationMode get_covariance_aggregation_mode() const { return this->covariance_aggregation_mode_; }
+
     /// @brief Insert a point cloud captured at the given pose.
     /// @param cloud Point cloud in the sensor frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
@@ -133,11 +144,13 @@ public:
 
         const bool has_rgb = cloud.has_rgb();
         const bool has_intensity = cloud.has_intensity();
+        const bool has_cov = cloud.has_cov();
+        this->has_cov_data_ = this->has_cov_data_ || has_cov;
         this->has_rgb_data_ = this->has_rgb_data_ || has_rgb;
         this->has_intensity_data_ = this->has_intensity_data_ || has_intensity;
 
         // Integrate hits: transform to world frame, hash, and accumulate statistics.
-        this->integrate_points(cloud, sensor_pose, has_rgb, has_intensity);
+        this->integrate_points(cloud, sensor_pose, has_cov, has_rgb, has_intensity);
 
         if (this->free_space_updates_enabled_ && this->log_odds_miss_ != 0.0f) {
             // Traverse rays and record free-space updates before applying log-odds.
@@ -162,6 +175,7 @@ public:
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
                                  const float max_distance = 100.0f) const {
         result.resize_points(0);
+        result.resize_covs(0);
         result.resize_rgb(0);
         result.resize_intensities(0);
 
@@ -181,6 +195,7 @@ public:
     void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
                                 float horizontal_fov, float vertical_fov) const {
         result.resize_points(0);
+        result.resize_covs(0);
         if (this->voxel_num_ == 0) {
             return;
         }
@@ -192,6 +207,9 @@ public:
 
         // Allocate the worst-case storage before the filtering pass and shrink once visibility is known.
         result.resize_points(this->voxel_num_);
+        if (this->has_cov_data_) {
+            result.resize_covs(this->voxel_num_);
+        }
         if (this->has_rgb_data_) {
             result.resize_rgb(this->voxel_num_);
         }
@@ -202,10 +220,12 @@ public:
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
+            auto covariance_ptr = this->covariance_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
             auto intensity_data_ptr = this->intensity_data_ptr_->data();
 
             auto points_ptr = result.points_ptr();
+            auto cov_ptr = this->has_cov_data_ ? result.covs_ptr() : static_cast<Covariance*>(nullptr);
             auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
             auto intensity_ptr = this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
 
@@ -215,8 +235,10 @@ public:
             const float voxel_size = this->voxel_size_;
             const float inv_voxel_size = this->inv_voxel_size_;
 
+            const bool has_cov = this->has_cov_data_;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
+            const auto covariance_mode = this->covariance_aggregation_mode_;
 
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
@@ -351,6 +373,11 @@ public:
                 points_ptr[index].z() = cz;
                 points_ptr[index].w() = 1.0f;
 
+                if (has_cov && cov_ptr) {
+                    const VoxelCovarianceData& covariance = covariance_ptr[i];
+                    decode_covariance_average(covariance, inv_count, cov_ptr, index, covariance_mode);
+                }
+
                 if (has_rgb && rgb_ptr) {
                     const VoxelColorData& color = color_ptr[i];
                     if (core.hit_count > 0U) {
@@ -379,6 +406,9 @@ public:
             h.host_task([&]() {
                 const uint32_t final_count = counter.at(0);
                 result.resize_points(final_count);
+                if (this->has_cov_data_) {
+                    result.resize_covs(final_count);
+                }
                 if (this->has_rgb_data_) {
                     result.resize_rgb(final_count);
                 }
@@ -479,6 +509,16 @@ private:
         float sum_a = 0.0f;
     };
 
+    /// @brief Covariance data stored as the upper triangular 3x3 block.
+    struct VoxelCovarianceData {
+        float sum_xx = 0.0f;
+        float sum_xy = 0.0f;
+        float sum_xz = 0.0f;
+        float sum_yy = 0.0f;
+        float sum_yz = 0.0f;
+        float sum_zz = 0.0f;
+    };
+
     /// @brief Intensity data for reflectivity information (4 bytes)
     struct VoxelIntensityData {
         float sum_intensity = 0.0f;
@@ -502,6 +542,16 @@ private:
         float sum_a = 0.0f;
     };
 
+    /// @brief Covariance accumulator for upper triangular 3x3 covariance terms
+    struct VoxelCovarianceAccumulator {
+        float sum_xx = 0.0f;
+        float sum_xy = 0.0f;
+        float sum_xz = 0.0f;
+        float sum_yy = 0.0f;
+        float sum_yz = 0.0f;
+        float sum_zz = 0.0f;
+    };
+
     /// @brief Intensity accumulator for reflectivity information
     struct VoxelIntensityAccumulator {
         float sum_intensity = 0.0f;
@@ -511,6 +561,7 @@ private:
     struct VoxelLocalData {
         uint64_t voxel_idx = VoxelConstants::invalid_coord;
         VoxelCoreAccumulator core_acc;
+        VoxelCovarianceAccumulator covariance_acc;
         VoxelColorAccumulator color_acc;
         VoxelIntensityAccumulator intensity_acc;
     };
@@ -580,6 +631,8 @@ private:
             std::make_shared<shared_vector<uint64_t>>(new_capacity, VoxelConstants::invalid_coord, *this->queue_.ptr);
         this->core_data_ptr_ =
             std::make_shared<shared_vector<VoxelCoreData>>(new_capacity, VoxelCoreData{}, *this->queue_.ptr);
+        this->covariance_data_ptr_ = std::make_shared<shared_vector<VoxelCovarianceData>>(
+            new_capacity, VoxelCovarianceData{}, *this->queue_.ptr);
         this->color_data_ptr_ =
             std::make_shared<shared_vector<VoxelColorData>>(new_capacity, VoxelColorData{}, *this->queue_.ptr);
         this->intensity_data_ptr_ =
@@ -610,6 +663,7 @@ private:
         const auto old_capacity = this->capacity_;
         auto old_keys = this->key_ptr_;
         auto old_core_data = this->core_data_ptr_;
+        auto old_covariance_data = this->covariance_data_ptr_;
         auto old_color_data = this->color_data_ptr_;
         auto old_intensity_data = this->intensity_data_ptr_;
 
@@ -625,10 +679,12 @@ private:
 
             const auto old_key_ptr = old_keys->data();
             const auto old_core_ptr = old_core_data->data();
+            const auto old_covariance_ptr = old_covariance_data->data();
             const auto old_color_ptr = old_color_data->data();
             const auto old_intensity_ptr = old_intensity_data->data();
             auto new_key_ptr = this->key_ptr_->data();
             auto new_core_ptr = this->core_data_ptr_->data();
+            auto new_covariance_ptr = this->covariance_data_ptr_->data();
             auto new_color_ptr = this->color_data_ptr_->data();
             auto new_intensity_ptr = this->intensity_data_ptr_->data();
             const size_t new_capacity_local = this->capacity_;
@@ -637,6 +693,7 @@ private:
             auto failure_ptr = failure_flag.data();
             auto range = sycl::nd_range<1>(global_size, work_group_size);
 
+            const auto has_cov = this->has_cov_data_;
             const auto has_rgb = this->has_rgb_data_;
             const auto has_intensity = this->has_intensity_data_;
 
@@ -652,6 +709,7 @@ private:
                     if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
                     const VoxelCoreData core_data = old_core_ptr[i];
+                    const VoxelCovarianceData covariance_data = old_covariance_ptr[i];
                     const VoxelColorData color_data = old_color_ptr[i];
                     const VoxelIntensityData intensity_data = old_intensity_ptr[i];
                     bool inserted = false;
@@ -662,6 +720,9 @@ private:
 
                         if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
                             new_core_ptr[slot] = core_data;
+                            if (has_cov) {
+                                new_covariance_ptr[slot] = covariance_data;
+                            }
                             if (has_rgb) {
                                 new_color_ptr[slot] = color_data;
                             }
@@ -687,6 +748,7 @@ private:
                     if (key == VoxelConstants::invalid_coord || key == VoxelConstants::deleted_coord) return;
 
                     const VoxelCoreData core_data = old_core_ptr[i];
+                    const VoxelCovarianceData covariance_data = old_covariance_ptr[i];
                     const VoxelColorData color_data = old_color_ptr[i];
                     const VoxelIntensityData intensity_data = old_intensity_ptr[i];
                     bool inserted = false;
@@ -697,6 +759,9 @@ private:
 
                         if (atomic_ref_uint64_t(new_key_ptr[slot]).compare_exchange_strong(expected, key)) {
                             new_core_ptr[slot] = core_data;
+                            if (has_cov) {
+                                new_covariance_ptr[slot] = covariance_data;
+                            }
                             if (has_rgb) {
                                 new_color_ptr[slot] = color_data;
                             }
@@ -731,9 +796,10 @@ private:
 
     template <typename CounterFunc>
     static void global_reduction(const VoxelLocalData& data, uint64_t* key_ptr, VoxelCoreData* core_ptr,
-                                 VoxelColorData* color_ptr, VoxelIntensityData* intensity_ptr,
-                                 const uint32_t current_frame, const size_t max_probe, const size_t capacity,
-                                 CounterFunc counter, bool has_rgb, bool has_intensity) {
+                                 VoxelCovarianceData* covariance_ptr, VoxelColorData* color_ptr,
+                                 VoxelIntensityData* intensity_ptr, const uint32_t current_frame,
+                                 const size_t max_probe, const size_t capacity, CounterFunc counter, bool has_cov,
+                                 bool has_rgb, bool has_intensity) {
         const uint64_t voxel_hash = data.voxel_idx;
         if (voxel_hash == VoxelConstants::invalid_coord) {
             return;
@@ -747,16 +813,18 @@ private:
                 // Attempt to insert. On CAS failure, `expected` is updated, and we fall through.
                 if (key_ref.compare_exchange_strong(expected, voxel_hash)) {
                     counter(1U);
-                    atomic_add_voxel_data(data.core_acc, data.color_acc, data.intensity_acc, core_ptr[slot_idx],
-                                          color_ptr[slot_idx], intensity_ptr[slot_idx], has_rgb, has_intensity);
+                    atomic_add_voxel_data(data.core_acc, data.covariance_acc, data.color_acc, data.intensity_acc,
+                                          core_ptr[slot_idx], covariance_ptr[slot_idx], color_ptr[slot_idx],
+                                          intensity_ptr[slot_idx], has_cov, has_rgb, has_intensity);
                     atomic_ref_uint32_t(core_ptr[slot_idx].last_updated).store(current_frame);
                     break;
                 }
             }
             // If the slot was already occupied, or if another thread just inserted our key, update it.
             if (expected == voxel_hash) {
-                atomic_add_voxel_data(data.core_acc, data.color_acc, data.intensity_acc, core_ptr[slot_idx],
-                                      color_ptr[slot_idx], intensity_ptr[slot_idx], has_rgb, has_intensity);
+                atomic_add_voxel_data(data.core_acc, data.covariance_acc, data.color_acc, data.intensity_acc,
+                                      core_ptr[slot_idx], covariance_ptr[slot_idx], color_ptr[slot_idx],
+                                      intensity_ptr[slot_idx], has_cov, has_rgb, has_intensity);
                 atomic_ref_uint32_t(core_ptr[slot_idx].last_updated).store(current_frame);
                 break;
             }
@@ -899,9 +967,12 @@ private:
         return grid_to_key_device(x, y, z, key);
     }
 
-    static void atomic_add_voxel_data(const VoxelCoreAccumulator& core_src, const VoxelColorAccumulator& color_src,
+    static void atomic_add_voxel_data(const VoxelCoreAccumulator& core_src,
+                                      const VoxelCovarianceAccumulator& covariance_src,
+                                      const VoxelColorAccumulator& color_src,
                                       const VoxelIntensityAccumulator& intensity_src, VoxelCoreData& core_dst,
-                                      VoxelColorData& color_dst, VoxelIntensityData& intensity_dst, bool has_rgb,
+                                      VoxelCovarianceData& covariance_dst, VoxelColorData& color_dst,
+                                      VoxelIntensityData& intensity_dst, bool has_cov, bool has_rgb,
                                       bool has_intensity) {
         // Core data
         atomic_ref_float(core_dst.sum_x).fetch_add(core_src.sum_x);
@@ -909,6 +980,15 @@ private:
         atomic_ref_float(core_dst.sum_z).fetch_add(core_src.sum_z);
         atomic_ref_uint32_t(core_dst.hit_count).fetch_add(core_src.hit_increment);
         atomic_ref_float(core_dst.pending_log_odds).fetch_add(core_src.log_odds_delta);
+
+        if (has_cov) {
+            atomic_ref_float(covariance_dst.sum_xx).fetch_add(covariance_src.sum_xx);
+            atomic_ref_float(covariance_dst.sum_xy).fetch_add(covariance_src.sum_xy);
+            atomic_ref_float(covariance_dst.sum_xz).fetch_add(covariance_src.sum_xz);
+            atomic_ref_float(covariance_dst.sum_yy).fetch_add(covariance_src.sum_yy);
+            atomic_ref_float(covariance_dst.sum_yz).fetch_add(covariance_src.sum_yz);
+            atomic_ref_float(covariance_dst.sum_zz).fetch_add(covariance_src.sum_zz);
+        }
 
         // Color data (only if present)
         if (has_rgb) {
@@ -924,8 +1004,94 @@ private:
         }
     }
 
-    void integrate_points(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose, const bool has_rgb,
-                          const bool has_intensity) {
+    static void rotate_covariance_upper_triangle(const Covariance& cov, const std::array<sycl::vec<float, 4>, 4>& trans,
+                                                 VoxelCovarianceAccumulator& output) {
+        const float cxx = cov(0, 0);
+        const float cxy = cov(0, 1);
+        const float cxz = cov(0, 2);
+        const float cyy = cov(1, 1);
+        const float cyz = cov(1, 2);
+        const float czz = cov(2, 2);
+        const float r00 = trans[0].x();
+        const float r01 = trans[0].y();
+        const float r02 = trans[0].z();
+        const float r10 = trans[1].x();
+        const float r11 = trans[1].y();
+        const float r12 = trans[1].z();
+        const float r20 = trans[2].x();
+        const float r21 = trans[2].y();
+        const float r22 = trans[2].z();
+
+        const float a00 = sycl::fma(r02, cxz, sycl::fma(r01, cxy, r00 * cxx));
+        const float a01 = sycl::fma(r02, cyz, sycl::fma(r01, cyy, r00 * cxy));
+        const float a02 = sycl::fma(r02, czz, sycl::fma(r01, cyz, r00 * cxz));
+        const float a10 = sycl::fma(r12, cxz, sycl::fma(r11, cxy, r10 * cxx));
+        const float a11 = sycl::fma(r12, cyz, sycl::fma(r11, cyy, r10 * cxy));
+        const float a12 = sycl::fma(r12, czz, sycl::fma(r11, cyz, r10 * cxz));
+        const float a20 = sycl::fma(r22, cxz, sycl::fma(r21, cxy, r20 * cxx));
+        const float a21 = sycl::fma(r22, cyz, sycl::fma(r21, cyy, r20 * cxy));
+        const float a22 = sycl::fma(r22, czz, sycl::fma(r21, cyz, r20 * cxz));
+
+        output.sum_xx = sycl::fma(a02, r02, sycl::fma(a01, r01, a00 * r00));
+        output.sum_xy = sycl::fma(a02, r12, sycl::fma(a01, r11, a00 * r10));
+        output.sum_xz = sycl::fma(a02, r22, sycl::fma(a01, r21, a00 * r20));
+        output.sum_yy = sycl::fma(a12, r12, sycl::fma(a11, r11, a10 * r10));
+        output.sum_yz = sycl::fma(a12, r22, sycl::fma(a11, r21, a10 * r20));
+        output.sum_zz = sycl::fma(a22, r22, sycl::fma(a21, r21, a20 * r20));
+    }
+
+    static void encode_covariance_for_aggregation(VoxelCovarianceAccumulator& covariance,
+                                                  const CovarianceAggregationMode mode) {
+        if (mode != CovarianceAggregationMode::LOG_EUCLIDEAN) {
+            return;
+        }
+
+        Eigen::Matrix3f cov3 = Eigen::Matrix3f::Zero();
+        cov3(0, 0) = covariance.sum_xx;
+        cov3(0, 1) = covariance.sum_xy;
+        cov3(1, 0) = covariance.sum_xy;
+        cov3(0, 2) = covariance.sum_xz;
+        cov3(2, 0) = covariance.sum_xz;
+        cov3(1, 1) = covariance.sum_yy;
+        cov3(1, 2) = covariance.sum_yz;
+        cov3(2, 1) = covariance.sum_yz;
+        cov3(2, 2) = covariance.sum_zz;
+
+        const Eigen::Matrix3f log_cov3 = eigen_utils::log_spd_3x3(cov3);
+        covariance.sum_xx = log_cov3(0, 0);
+        covariance.sum_xy = log_cov3(0, 1);
+        covariance.sum_xz = log_cov3(0, 2);
+        covariance.sum_yy = log_cov3(1, 1);
+        covariance.sum_yz = log_cov3(1, 2);
+        covariance.sum_zz = log_cov3(2, 2);
+    }
+
+    static void decode_covariance_average(const VoxelCovarianceData& covariance, const float inv_count,
+                                          Covariance* cov_output, const uint32_t index,
+                                          const CovarianceAggregationMode mode) {
+        if (!cov_output) {
+            return;
+        }
+
+        Eigen::Matrix3f cov3 = Eigen::Matrix3f::Zero();
+        cov3(0, 0) = covariance.sum_xx * inv_count;
+        cov3(0, 1) = covariance.sum_xy * inv_count;
+        cov3(1, 0) = cov3(0, 1);
+        cov3(0, 2) = covariance.sum_xz * inv_count;
+        cov3(2, 0) = cov3(0, 2);
+        cov3(1, 1) = covariance.sum_yy * inv_count;
+        cov3(1, 2) = covariance.sum_yz * inv_count;
+        cov3(2, 1) = cov3(1, 2);
+        cov3(2, 2) = covariance.sum_zz * inv_count;
+        if (mode == CovarianceAggregationMode::LOG_EUCLIDEAN) {
+            cov3 = eigen_utils::exp_spd_3x3(cov3);
+        }
+        cov_output[index].setZero();
+        cov_output[index].block<3, 3>(0, 0) = cov3;
+    }
+
+    void integrate_points(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose, const bool has_cov,
+                          const bool has_rgb, const bool has_intensity) {
         const size_t N = cloud.size();
         shared_vector<uint32_t> voxel_counter(1, this->voxel_num_, *this->queue_.ptr);
 
@@ -944,10 +1110,12 @@ private:
             }
 
             const auto point_ptr = cloud.points_ptr();
+            const auto cov_ptr = has_cov ? cloud.covs_ptr() : static_cast<Covariance*>(nullptr);
             const auto rgb_ptr = has_rgb ? cloud.rgb_ptr() : static_cast<RGBType*>(nullptr);
             const auto intensity_ptr = has_intensity ? cloud.intensities_ptr() : static_cast<float*>(nullptr);
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
+            auto covariance_ptr = this->covariance_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
             auto intensity_data_ptr = this->intensity_data_ptr_->data();
             const auto voxel_size_inv = this->inv_voxel_size_;
@@ -955,6 +1123,7 @@ private:
             const auto max_probe = this->max_probe_length_;
             const auto capacity = this->capacity_;
             const float log_odds_hit = this->log_odds_hit_;
+            const auto covariance_mode = this->covariance_aggregation_mode_;
 
             auto load_entry = [=](VoxelLocalData& entry, const size_t idx) {
                 const PointType local_point = point_ptr[idx];
@@ -969,6 +1138,12 @@ private:
                 entry.core_acc.sum_z = world_point.z();
                 entry.core_acc.hit_increment = 1U;
                 entry.core_acc.log_odds_delta = log_odds_hit;
+
+                entry.covariance_acc = VoxelCovarianceAccumulator{};
+                if (has_cov && cov_ptr) {
+                    rotate_covariance_upper_triangle(cov_ptr[idx], trans, entry.covariance_acc);
+                    encode_covariance_for_aggregation(entry.covariance_acc, covariance_mode);
+                }
 
                 if (has_rgb && rgb_ptr) {
                     const auto color = rgb_ptr[idx];
@@ -990,12 +1165,20 @@ private:
                 }
             };
 
-            auto combine_entry = [has_rgb, has_intensity](VoxelLocalData& dst, const VoxelLocalData& src) {
+            auto combine_entry = [has_cov, has_rgb, has_intensity](VoxelLocalData& dst, const VoxelLocalData& src) {
                 dst.core_acc.sum_x += src.core_acc.sum_x;
                 dst.core_acc.sum_y += src.core_acc.sum_y;
                 dst.core_acc.sum_z += src.core_acc.sum_z;
                 dst.core_acc.hit_increment += src.core_acc.hit_increment;
                 dst.core_acc.log_odds_delta += src.core_acc.log_odds_delta;
+                if (has_cov) {
+                    dst.covariance_acc.sum_xx += src.covariance_acc.sum_xx;
+                    dst.covariance_acc.sum_xy += src.covariance_acc.sum_xy;
+                    dst.covariance_acc.sum_xz += src.covariance_acc.sum_xz;
+                    dst.covariance_acc.sum_yy += src.covariance_acc.sum_yy;
+                    dst.covariance_acc.sum_yz += src.covariance_acc.sum_yz;
+                    dst.covariance_acc.sum_zz += src.covariance_acc.sum_zz;
+                }
                 if (has_rgb) {
                     dst.color_acc.sum_r += src.color_acc.sum_r;
                     dst.color_acc.sum_g += src.color_acc.sum_g;
@@ -1010,6 +1193,7 @@ private:
             auto reset_entry = [](VoxelLocalData& entry) {
                 entry.voxel_idx = VoxelConstants::invalid_coord;
                 entry.core_acc = VoxelCoreAccumulator{};
+                entry.covariance_acc = VoxelCovarianceAccumulator{};
                 entry.color_acc = VoxelColorAccumulator{};
                 entry.intensity_acc = VoxelIntensityAccumulator{};
             };
@@ -1036,8 +1220,9 @@ private:
 
                         const VoxelLocalData local = local_voxel_data[lid];
                         global_reduction(
-                            local, key_ptr, core_ptr, color_ptr, intensity_data_ptr, current_frame, max_probe, capacity,
-                            [&](uint32_t add) { voxel_num_arg += add; }, has_rgb, has_intensity);
+                            local, key_ptr, core_ptr, covariance_ptr, color_ptr, intensity_data_ptr, current_frame,
+                            max_probe, capacity, [&](uint32_t add) { voxel_num_arg += add; }, has_cov, has_rgb,
+                            has_intensity);
                     });
             } else {
                 auto voxel_ptr_counter = voxel_counter.data();
@@ -1055,9 +1240,10 @@ private:
 
                         const VoxelLocalData local = local_voxel_data[lid];
                         global_reduction(
-                            local, key_ptr, core_ptr, color_ptr, intensity_data_ptr, current_frame, max_probe, capacity,
-                            [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); }, has_rgb,
-                            has_intensity);
+                            local, key_ptr, core_ptr, covariance_ptr, color_ptr, intensity_data_ptr, current_frame,
+                            max_probe, capacity,
+                            [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); }, has_cov,
+                            has_rgb, has_intensity);
                     });
             }
         });
@@ -1203,6 +1389,7 @@ private:
 
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
+            auto covariance_ptr = this->covariance_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
             auto intensity_ptr = this->intensity_data_ptr_->data();
             auto counter_ptr = voxel_counter.data();
@@ -1215,6 +1402,7 @@ private:
             const size_t capacity = this->capacity_;
             const uint32_t current_frame = this->frame_index_;
 
+            const auto has_cov = this->has_cov_data_;
             const auto has_rgb = this->has_rgb_data_;
             const auto has_intensity = this->has_intensity_data_;
 
@@ -1255,9 +1443,9 @@ private:
                     local.core_acc.log_odds_delta = log_miss;
 
                     global_reduction(
-                        local, key_ptr, core_ptr, color_ptr, intensity_ptr, current_frame, max_probe, capacity,
-                        [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); }, has_rgb,
-                        has_intensity);
+                        local, key_ptr, core_ptr, covariance_ptr, color_ptr, intensity_ptr, current_frame, max_probe,
+                        capacity, [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); }, has_cov,
+                        has_rgb, has_intensity);
                 };
 
                 const bool skip_origin_miss = has_origin_key ? origin_hit_ptr[0] != 0U : false;
@@ -1370,6 +1558,9 @@ private:
         shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
 
         result.resize_points(this->voxel_num_);
+        if (this->has_cov_data_) {
+            result.resize_covs(this->voxel_num_);
+        }
         if (this->has_rgb_data_) {
             result.resize_rgb(this->voxel_num_);
         }
@@ -1380,10 +1571,12 @@ private:
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_->data();
             auto core_ptr = this->core_data_ptr_->data();
+            auto covariance_ptr = this->covariance_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
             auto intensity_data_ptr = this->intensity_data_ptr_->data();
 
             auto points_ptr = result.points_ptr();
+            auto cov_ptr = this->has_cov_data_ ? result.covs_ptr() : static_cast<Covariance*>(nullptr);
             auto rgb_ptr = this->has_rgb_data_ ? result.rgb_ptr() : static_cast<RGBType*>(nullptr);
             auto intensity_ptr = this->has_intensity_data_ ? result.intensities_ptr() : static_cast<float*>(nullptr);
 
@@ -1392,8 +1585,10 @@ private:
             const float sensor_y = sensor_position.y();
             const float sensor_z = sensor_position.z();
             const float max_dist = max_distance;
+            const bool has_cov = this->has_cov_data_;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
+            const auto covariance_mode = this->covariance_aggregation_mode_;
             auto counter_ptr = counter.data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
@@ -1425,6 +1620,11 @@ private:
                 points_ptr[index].z() = cz;
                 points_ptr[index].w() = 1.0f;
 
+                if (has_cov && cov_ptr) {
+                    const VoxelCovarianceData& covariance = covariance_ptr[i];
+                    decode_covariance_average(covariance, inv_count, cov_ptr, index, covariance_mode);
+                }
+
                 if (has_rgb && rgb_ptr) {
                     const VoxelColorData& color = color_ptr[i];
                     if (core.hit_count > 0U) {
@@ -1454,6 +1654,9 @@ private:
             h.host_task([&]() {
                 const uint32_t final_count = counter.at(0);
                 result.resize_points(final_count);
+                if (this->has_cov_data_) {
+                    result.resize_covs(final_count);
+                }
                 if (this->has_rgb_data_) {
                     result.resize_rgb(final_count);
                 }
@@ -1492,8 +1695,10 @@ private:
     bool free_space_updates_enabled_ = true;
     bool voxel_pruning_enabled_ = true;
 
+    bool has_cov_data_ = false;
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
+    CovarianceAggregationMode covariance_aggregation_mode_ = CovarianceAggregationMode::ARITHMETIC;
     uint32_t frame_index_ = 0U;
     uint32_t stale_frame_threshold_ = 100U;
 
@@ -1507,6 +1712,7 @@ private:
 
     shared_vector_ptr<uint64_t> key_ptr_ = nullptr;
     shared_vector_ptr<VoxelCoreData> core_data_ptr_ = nullptr;
+    shared_vector_ptr<VoxelCovarianceData> covariance_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelColorData> color_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
 };

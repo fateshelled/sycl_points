@@ -13,10 +13,12 @@ namespace sycl_points {
 namespace algorithms {
 namespace registration {
 
+/// @brief Callable registration interface used by pipeline wrappers
 using RegistrationAligner =
     std::function<RegistrationResult(const PointCloudShared&, const PointCloudShared&, const knn::KNNBase&,
                                      const TransformMatrix&, const Registration::ExecutionOptions&)>;
 
+/// @brief Creates a callable aligner from a Registration instance
 inline RegistrationAligner make_registration_aligner(const Registration::Ptr& registration) {
     return
         [registration](const PointCloudShared& source, const PointCloudShared& target, const knn::KNNBase& target_knn,
@@ -25,18 +27,32 @@ inline RegistrationAligner make_registration_aligner(const Registration::Ptr& re
         };
 }
 
+/// @brief Adds robust-scale annealing around a registration aligner
 class RobustPipeline {
 public:
     using Ptr = std::shared_ptr<RobustPipeline>;
 
+    /// @brief Constructor
+    /// @param aligner Wrapped aligner to execute at each robust-scale level
+    /// @param pipeline_params Registration and pipeline parameters
     RobustPipeline(RegistrationAligner aligner, const RegistrationPipelineParams& pipeline_params)
         : aligner_(std::move(aligner)),
           params_(pipeline_params.registration),
           pipeline_params_(pipeline_params.robust) {}
 
+    /// @brief Constructor
+    /// @param registration Registration backend to wrap
+    /// @param pipeline_params Registration and pipeline parameters
     RobustPipeline(const Registration::Ptr& registration, const RegistrationPipelineParams& pipeline_params)
         : RobustPipeline(make_registration_aligner(registration), pipeline_params) {}
 
+    /// @brief Aligns point clouds while optionally shrinking the robust loss scales over multiple passes
+    /// @param source Source point cloud
+    /// @param target Target point cloud
+    /// @param target_knn KNN structure built on the target point cloud
+    /// @param initial_guess Initial transformation matrix
+    /// @param options Per-call execution overrides
+    /// @return Registration result from the final robust-scale level
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,
                              const TransformMatrix& initial_guess = TransformMatrix::Identity(),
@@ -107,6 +123,7 @@ public:
         return result;
     }
 
+    /// @brief Exposes this pipeline as a RegistrationAligner
     RegistrationAligner make_aligner() const {
         return [this](const PointCloudShared& source, const PointCloudShared& target, const knn::KNNBase& target_knn,
                       const TransformMatrix& initial_guess, const Registration::ExecutionOptions& options) {
@@ -120,16 +137,32 @@ private:
     RegistrationPipelineParams::Robust pipeline_params_;
 };
 
+/// @brief Repeats deskew and registration assuming constant sensor velocity
 class VelocityUpdatePipeline {
 public:
     using Ptr = std::shared_ptr<VelocityUpdatePipeline>;
 
+    /// @brief Constructor
+    /// @param aligner Wrapped aligner to execute after each deskew update
+    /// @param velocity_update_iter Number of deskew and re-alignment iterations
+    /// @param verbose If true, print deskew progress
     VelocityUpdatePipeline(RegistrationAligner aligner, size_t velocity_update_iter, bool verbose = false)
         : aligner_(std::move(aligner)), velocity_update_iter_(velocity_update_iter), verbose_(verbose) {}
 
+    /// @brief Constructor
+    /// @param registration Registration backend to wrap
+    /// @param velocity_update_iter Number of deskew and re-alignment iterations
+    /// @param verbose If true, print deskew progress
     VelocityUpdatePipeline(const Registration::Ptr& registration, size_t velocity_update_iter, bool verbose = false)
         : VelocityUpdatePipeline(make_registration_aligner(registration), velocity_update_iter, verbose) {}
 
+    /// @brief Aligns point clouds while iteratively updating the deskewed source cloud
+    /// @param source Source point cloud
+    /// @param target Target point cloud
+    /// @param target_knn KNN structure built on the target point cloud
+    /// @param initial_guess Initial transformation matrix
+    /// @param options Per-call execution options including previous pose and time delta
+    /// @return Registration result from the final deskew iteration
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,
                              const TransformMatrix& initial_guess = TransformMatrix::Identity(),
@@ -166,6 +199,7 @@ public:
         return result;
     }
 
+    /// @brief Exposes this pipeline as a RegistrationAligner
     RegistrationAligner make_aligner() const {
         return [this](const PointCloudShared& source, const PointCloudShared& target, const knn::KNNBase& target_knn,
                       const TransformMatrix& initial_guess, const Registration::ExecutionOptions& options) {
@@ -179,10 +213,14 @@ private:
     bool verbose_ = false;
 };
 
+/// @brief Composes optional registration wrappers around the core Registration solver
 class RegistrationPipeline {
 public:
     using Ptr = std::shared_ptr<RegistrationPipeline>;
 
+    /// @brief Constructor
+    /// @param registration Registration backend
+    /// @param pipeline_params Parameters for the solver and optional wrappers
     RegistrationPipeline(const Registration::Ptr& registration,
                          const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
         : registration_(registration) {
@@ -200,10 +238,20 @@ public:
         }
     }
 
+    /// @brief Constructor
+    /// @param queue SYCL queue used to construct the registration backend
+    /// @param pipeline_params Parameters for the solver and optional wrappers
     RegistrationPipeline(const sycl_utils::DeviceQueue& queue,
                          const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
         : RegistrationPipeline(std::make_shared<Registration>(queue, pipeline_params.registration), pipeline_params) {}
 
+    /// @brief Aligns point clouds using the configured wrapper chain
+    /// @param source Source point cloud
+    /// @param target Target point cloud
+    /// @param target_knn KNN structure built on the target point cloud
+    /// @param initial_guess Initial transformation matrix
+    /// @param options Per-call execution overrides
+    /// @return Registration result
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,
                              const TransformMatrix& initial_guess = TransformMatrix::Identity(),
@@ -211,6 +259,7 @@ public:
         return this->aligner_(source, target, target_knn, initial_guess, options);
     }
 
+    /// @brief Returns the underlying Registration backend
     const Registration::Ptr& registration() const { return this->registration_; }
 
 private:

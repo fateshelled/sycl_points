@@ -51,6 +51,7 @@ lidar_odometry_node:
     submap/voxel_size: 0.4
     submap/max_distance_range: 50.0
     submap/point_random_sampling_num: 512
+    submap/covariance_aggregation_mode: ARITHMETIC  # ARITHMETIC, LOG_EUCLIDEAN
     submap/keyframe/inlier_ratio_threshold: 0.7
     submap/keyframe/distance_threshold: 2.0
     submap/keyframe/angle_threshold_degrees: 20.0
