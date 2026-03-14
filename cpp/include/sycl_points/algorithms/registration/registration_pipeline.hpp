@@ -268,6 +268,15 @@ public:
     /// @brief Returns the underlying Registration backend
     const Registration::Ptr& registration() const { return this->registration_; }
 
+    /// @brief Returns geometry ICP robust weights from the underlying Registration backend
+    const shared_vector<float>& get_icp_robust_weights() const {
+        if (this->registration_ == nullptr) {
+            throw std::runtime_error(
+                "[RegistrationPipeline::get_icp_robust_weights] Registration backend is not available.");
+        }
+        return this->registration_->get_icp_robust_weights();
+    }
+
     /// @brief Returns the source point cloud used by the most recent align() call
     const PointCloudShared* get_registration_input_point_cloud() const { return this->registration_input_pc_.get(); }
 

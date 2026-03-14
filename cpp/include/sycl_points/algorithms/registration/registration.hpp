@@ -109,6 +109,7 @@ public:
         : params_(params), queue_(queue) {
         this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(1, knn::KNNResult(), *this->queue_.ptr);
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
+        this->icp_robust_weights_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
 
         this->linearized_on_device_ = std::make_shared<LinearizedDevice>(this->queue_);
 
@@ -210,6 +211,7 @@ public:
                              const TransformMatrix& initial_guess = TransformMatrix::Identity(),
                              const ExecutionOptions& options = ExecutionOptions()) {
         const size_t N = source.size();
+        this->icp_robust_weights_->assign(N, 0.0f);
         RegistrationResult result;
         result.T.matrix() = initial_guess;
 
@@ -265,11 +267,15 @@ public:
         return result;
     }
 
+    /// @brief Returns geometry ICP robust weights from the most recent align() call in source-point order
+    const shared_vector<float>& get_icp_robust_weights() const { return *this->icp_robust_weights_; }
+
 private:
     RegistrationParams params_;
     sycl_utils::DeviceQueue queue_;
 
     shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
+    shared_vector_ptr<float> icp_robust_weights_ = nullptr;
     std::shared_ptr<LinearizedDevice> linearized_on_device_ = nullptr;
 
     DegenerateRegularization degenerate_reg_;
@@ -404,6 +410,7 @@ private:
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+            auto icp_robust_weights_ptr = this->icp_robust_weights_->data();
 
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
@@ -491,12 +498,15 @@ private:
                                                             residual_norm, genz_alpha);
 
                         if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
-                            if (residual_norm > mahalanobis_dist_threshold) return;
+                            if (residual_norm > mahalanobis_dist_threshold) {
+                                return;
+                            }
                         }
 
                         // Apply robust kernel
                         const float robust_weight =
                             robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                        icp_robust_weights_ptr[index] = robust_weight;
                         const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
                         const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
                         total_H0 = robust_weight * H0;
