@@ -9,6 +9,7 @@
 #include "sycl_points/algorithms/filter/preprocess_operator/box_filter_operator.hpp"
 #include "sycl_points/algorithms/filter/preprocess_operator/farthest_point_sampling_operator.hpp"
 #include "sycl_points/algorithms/filter/preprocess_operator/random_sampling_operator.hpp"
+#include "sycl_points/algorithms/filter/preprocess_operator/weighted_sampling_operator.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
@@ -34,6 +35,7 @@ public:
 
         this->box_filter_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
         this->random_sampling_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
+        this->weighted_random_sampling_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
         this->farthest_point_sampling_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
         this->angle_incidence_filter_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
     }
@@ -42,6 +44,7 @@ public:
     /// @param seed Seed value to initialize the Mersenne Twister random generator
     void set_random_seed(uint_fast32_t seed) {
         this->random_sampling_op_->set_random_seed(seed);
+        this->weighted_random_sampling_op_->set_random_seed(seed);
         this->farthest_point_sampling_op_->set_random_seed(seed);
     }
 
@@ -77,6 +80,24 @@ public:
     /// @param sampling_num Number of points to retain after sampling
     void random_sampling(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
         this->random_sampling_apply(source, output, sampling_num);
+    }
+
+    /// @brief Randomly samples a specified number of points from the point cloud using weights
+    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param weights Per-point weights used for weighted sampling without replacement
+    /// @param sampling_num Number of points to retain after sampling
+    void weighted_random_sampling(PointCloudShared& data, const shared_vector<float>& weights, size_t sampling_num) {
+        this->weighted_random_sampling_apply(data, data, weights, sampling_num);
+    }
+
+    /// @brief Randomly samples a specified number of points from the point cloud using weights
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param weights Per-point weights used for weighted sampling without replacement
+    /// @param sampling_num Number of points to retain after sampling
+    void weighted_random_sampling(const PointCloudShared& source, PointCloudShared& output,
+                                  const shared_vector<float>& weights, size_t sampling_num) {
+        this->weighted_random_sampling_apply(source, output, weights, sampling_num);
     }
 
     /// @brief Farthest Point Sampling (FPS)
@@ -132,6 +153,7 @@ private:
     shared_vector_ptr<uint8_t> flags_;
     std::optional<preprocess_operator::BoxFilterOperator> box_filter_op_;
     std::optional<preprocess_operator::RandomSamplingOperator> random_sampling_op_;
+    std::optional<preprocess_operator::WeightedSamplingOperator> weighted_random_sampling_op_;
     std::optional<preprocess_operator::FarthestPointSamplingOperator> farthest_point_sampling_op_;
     std::optional<preprocess_operator::AngleIncidenceFilterOperator> angle_incidence_filter_op_;
 
@@ -184,6 +206,16 @@ private:
     /// @param sampling_num Number of points to retain after sampling
     void random_sampling_apply(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
         this->random_sampling_op_->apply(source, output, sampling_num);
+    }
+
+    /// @brief Randomly samples a specified number of points from the point cloud using weights
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param weights Per-point weights used for weighted sampling without replacement
+    /// @param sampling_num Number of points to retain after sampling
+    void weighted_random_sampling_apply(const PointCloudShared& source, PointCloudShared& output,
+                                        const shared_vector<float>& weights, size_t sampling_num) {
+        this->weighted_random_sampling_op_->apply(source, output, weights, sampling_num);
     }
 
     /// @brief Farthest Point Sampling (FPS)
