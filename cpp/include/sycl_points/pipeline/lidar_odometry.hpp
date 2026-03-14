@@ -459,9 +459,17 @@ private:
                                                    init_T.matrix(), options);
     }
 
-    void build_submap(const PointCloudShared::Ptr& pc, const Eigen::Isometry3f& current_pose) {
+    void build_submap(const PointCloudShared::Ptr& cloud, const Eigen::Isometry3f& current_pose) {
+        const PointCloudShared* sampling_target_ptr = cloud.get();
+        {
+            // If velocity update is disabled, get the registration input point cloud.
+            auto reg_pc = this->registration_pipeline_->get_deskewed_point_cloud();
+            if (reg_pc) {
+                sampling_target_ptr = reg_pc;
+            }
+        }
         // random sampling
-        this->preprocess_filter_->random_sampling(*pc, *this->keyframe_pc_,
+        this->preprocess_filter_->random_sampling(*sampling_target_ptr, *this->keyframe_pc_,
                                                   this->params_.submap.point_random_sampling_num);
 
         // add to grid map
@@ -478,7 +486,7 @@ private:
 
         if (this->is_first_frame_) {
             // deep copy
-            this->submap_pc_ptr_.reset(new PointCloudShared(*this->queue_ptr_, *pc));
+            this->submap_pc_ptr_.reset(new PointCloudShared(*cloud));
         } else if (this->submap_pc_tmp_->size() >= this->params_.registration.min_num_points) {
             // copy pointer
             this->submap_pc_ptr_ = this->submap_pc_tmp_;
