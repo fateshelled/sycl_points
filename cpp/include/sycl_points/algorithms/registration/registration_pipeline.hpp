@@ -175,7 +175,9 @@ public:
             return result;
         }
 
-        PointCloudShared deskewed(source);
+        // Keep a dedicated working buffer so deskew never aliases the caller's source buffers.
+        this->deskewed_pc_ = std::make_shared<PointCloudShared>(source);
+
         const size_t deskew_levels = std::max<size_t>(1, this->velocity_update_iter_);
 
         for (size_t deskew_iter = 0; deskew_iter < deskew_levels; ++deskew_iter) {
@@ -192,13 +194,16 @@ public:
                           << std::endl;
             }
 
-            deskew::deskew_point_cloud_constant_velocity(source, deskewed, Eigen::Isometry3f(options.prev_pose),
-                                                         result.T, options.dt);
-            result = this->aligner_(deskewed, target, target_knn, result.T.matrix(), options);
+            deskew::deskew_point_cloud_constant_velocity(source, *this->deskewed_pc_,
+                                                         Eigen::Isometry3f(options.prev_pose), result.T, options.dt);
+            result = this->aligner_(*this->deskewed_pc_, target, target_knn, result.T.matrix(), options);
         }
 
         return result;
     }
+
+    /// @brief Returns the deskewed source point cloud used by the most recent align() call
+    const PointCloudShared* get_deskewed_point_cloud() const { return this->deskewed_pc_.get(); }
 
     /// @brief Exposes this pipeline as a RegistrationAligner
     RegistrationAligner make_aligner() const {
@@ -212,6 +217,7 @@ private:
     RegistrationAligner aligner_;
     size_t velocity_update_iter_ = 1;
     bool verbose_ = false;
+    mutable PointCloudShared::Ptr deskewed_pc_ = nullptr;
 };
 
 /// @brief Composes optional registration wrappers around the core Registration solver
@@ -233,7 +239,9 @@ public:
     /// @param pipeline_params Parameters for the solver and optional wrappers
     RegistrationPipeline(const Registration::Ptr& registration,
                          const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
-        : RegistrationPipeline(make_registration_aligner(registration), pipeline_params) { this->registration_ = registration; }
+        : RegistrationPipeline(make_registration_aligner(registration), pipeline_params) {
+        this->registration_ = registration;
+    }
 
     /// @brief Constructor
     /// @param queue SYCL queue used to construct the registration backend
@@ -261,7 +269,16 @@ public:
     const Registration::Ptr& registration() const { return this->registration_; }
 
     /// @brief Returns the source point cloud used by the most recent align() call
-    const PointCloudShared& get_registration_input_point_cloud() const { return *this->registration_input_pc_; }
+    const PointCloudShared* get_registration_input_point_cloud() const { return this->registration_input_pc_.get(); }
+
+    /// @brief Returns the deskewed source point cloud from the most recent align() call
+    /// @note If velocity update is disabled, this returns the registration input point cloud.
+    const PointCloudShared* get_deskewed_point_cloud() const {
+        if (this->velocity_update_pipeline_ != nullptr) {
+            return this->velocity_update_pipeline_->get_deskewed_point_cloud();
+        }
+        return this->registration_input_pc_.get();
+    }
 
 private:
     void wrap_aligner() {
@@ -272,8 +289,9 @@ private:
         //     for each deskew update:
         //       align(...)
         if (this->pipeline_params_.velocity_update.enable) {
-            this->velocity_update_pipeline_ = std::make_shared<VelocityUpdatePipeline>(
-                this->aligner_, this->pipeline_params_.velocity_update.iter, this->pipeline_params_.registration.verbose);
+            this->velocity_update_pipeline_ =
+                std::make_shared<VelocityUpdatePipeline>(this->aligner_, this->pipeline_params_.velocity_update.iter,
+                                                         this->pipeline_params_.registration.verbose);
             this->aligner_ = this->velocity_update_pipeline_->make_aligner();
         }
 
@@ -293,7 +311,8 @@ private:
 
     void update_registration_input(const PointCloudShared& source) const {
         this->initialize_runtime_state(source.queue);
-        if (this->pipeline_params_.random_sampling.enable && source.size() > this->pipeline_params_.random_sampling.num) {
+        if (this->pipeline_params_.random_sampling.enable &&
+            source.size() > this->pipeline_params_.random_sampling.num) {
             this->preprocess_filter_->random_sampling(source, *this->registration_input_pc_,
                                                       this->pipeline_params_.random_sampling.num);
         } else {

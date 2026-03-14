@@ -137,8 +137,10 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
                 }
             }
 
-            this->covariance_marker_publisher_->publish_if_subscribed(
-                msg->header, this->pipeline_->get_registration_input_point_cloud());
+            if (const auto* registration_input_pc = this->pipeline_->get_registration_input_point_cloud();
+                registration_input_pc != nullptr) {
+                this->covariance_marker_publisher_->publish_if_subscribed(msg->header, *registration_input_pc);
+            }
 
             if (this->pub_submap_->get_subscription_count() > 0) {
                 auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), msg->header);

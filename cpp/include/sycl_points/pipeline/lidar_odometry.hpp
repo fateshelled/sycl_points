@@ -53,7 +53,7 @@ public:
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
-    const PointCloudShared& get_registration_input_point_cloud() const {
+    const PointCloudShared* get_registration_input_point_cloud() const {
         return this->registration_pipeline_->get_registration_input_point_cloud();
     }
 
@@ -575,12 +575,12 @@ private:
         }
 
         // check inlier ratio for registration success or not.
-        const auto& registration_input_pc = this->registration_pipeline_->get_registration_input_point_cloud();
-        if (registration_input_pc.size() == 0) {
+        const auto* registration_input_pc = this->registration_pipeline_->get_registration_input_point_cloud();
+        if (registration_input_pc == nullptr || registration_input_pc->size() == 0) {
             return false;
         }
         const float inlier_ratio =
-            static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc.size());
+            static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc->size());
         if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
             // registration is failed
             return false;
