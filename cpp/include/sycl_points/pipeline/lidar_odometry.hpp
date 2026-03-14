@@ -53,7 +53,7 @@ public:
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
-    const PointCloudShared& get_registration_input_point_cloud() const {
+    const PointCloudShared* get_registration_input_point_cloud() const {
         return this->registration_pipeline_->get_registration_input_point_cloud();
     }
 
@@ -269,7 +269,8 @@ private:
 
         // Submapping
         {
-            if (this->params_.submap.occupancy_grid_map.enable) {
+            const auto submap_type = this->params_.submap.map_type;
+            if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
                 this->occupancy_grid_ = std::make_shared<algorithms::mapping::OccupancyGridMap>(
                     *this->queue_ptr_, this->params_.submap.voxel_size);
 
@@ -458,13 +459,26 @@ private:
                                                    init_T.matrix(), options);
     }
 
-    void build_submap(const PointCloudShared::Ptr& pc, const Eigen::Isometry3f& current_pose) {
-        // random sampling
-        this->preprocess_filter_->random_sampling(*pc, *this->keyframe_pc_,
-                                                  this->params_.submap.point_random_sampling_num);
+    void build_submap(const PointCloudShared::Ptr& cloud, const Eigen::Isometry3f& current_pose) {
+        // sampling
+        {
+            // If velocity update is disabled, get the registration input point cloud.
+            auto reg_pc = this->registration_pipeline_->get_deskewed_point_cloud();
+            if (reg_pc) {
+                // weighted random sampling
+                const auto icp_weights = this->registration_pipeline_->get_icp_robust_weights();
+                this->preprocess_filter_->weighted_random_sampling(*reg_pc, *this->keyframe_pc_, icp_weights,
+                                                                   this->params_.submap.point_random_sampling_num);
+            } else {
+                // uniform random sampling
+                this->preprocess_filter_->random_sampling(*cloud, *this->keyframe_pc_,
+                                                          this->params_.submap.point_random_sampling_num);
+            }
+        }
 
         // add to grid map
-        if (this->params_.submap.occupancy_grid_map.enable) {
+        const auto submap_type = this->params_.submap.map_type;
+        if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
             this->occupancy_grid_->add_point_cloud(*this->keyframe_pc_, current_pose);
             this->occupancy_grid_->extract_occupied_points(*this->submap_pc_tmp_, current_pose,
                                                            this->params_.submap.max_distance_range);
@@ -476,7 +490,7 @@ private:
 
         if (this->is_first_frame_) {
             // deep copy
-            this->submap_pc_ptr_.reset(new PointCloudShared(*this->queue_ptr_, *pc));
+            this->submap_pc_ptr_.reset(new PointCloudShared(*cloud));
         } else if (this->submap_pc_tmp_->size() >= this->params_.registration.min_num_points) {
             // copy pointer
             this->submap_pc_ptr_ = this->submap_pc_tmp_;
@@ -514,10 +528,16 @@ private:
         // compute covariances and normals
         sycl_utils::events cov_events;
         {
+            const bool need_covariances = reg_type == algorithms::registration::RegType::GICP ||
+                                          reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
+                                          reg_type == algorithms::registration::RegType::GENZ ||
+                                          this->params_.registration.pipeline.registration.rotation_constraint.enable;
+            const bool need_normals = reg_type == algorithms::registration::RegType::POINT_TO_PLANE;
+
             const bool submap_has_cov = this->submap_pc_ptr_->has_cov();
             bool normals_are_ready = false;
             bool covariances_are_ready = submap_has_cov;
-            if (reg_type == algorithms::registration::RegType::POINT_TO_PLANE) {
+            if (need_normals) {
                 normals_are_ready = true;
                 if (submap_has_cov) {
                     ensure_knn();
@@ -529,16 +549,11 @@ private:
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
                 }
             }
-            if (reg_type == algorithms::registration::RegType::GICP ||
-                reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
-                reg_type == algorithms::registration::RegType::GENZ ||
-                this->params_.registration.pipeline.registration.rotation_constraint.enable) {
-                if (!submap_has_cov) {
-                    covariances_are_ready = true;
-                    ensure_knn();
-                    cov_events += algorithms::covariance::compute_covariances_async(
-                        this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
-                }
+            if (need_covariances && !submap_has_cov) {
+                covariances_are_ready = true;
+                ensure_knn();
+                cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
+                                                                                *this->submap_pc_ptr_, knn_events.evs);
             }
 
             if (reg_type == algorithms::registration::RegType::GENZ) {
@@ -572,25 +587,25 @@ private:
         }
 
         // check inlier ratio for registration success or not.
-        const auto& registration_input_pc = this->registration_pipeline_->get_registration_input_point_cloud();
-        if (registration_input_pc.size() == 0) {
+        const auto* registration_input_pc = this->registration_pipeline_->get_registration_input_point_cloud();
+        if (registration_input_pc == nullptr || registration_input_pc->size() == 0) {
             return false;
         }
         const float inlier_ratio =
-            static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc.size());
+            static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc->size());
         if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
+            // registration is failed
             return false;
         }
 
-        // for occupancy grid map
-        if (this->params_.submap.occupancy_grid_map.enable) {
+        const auto submap_type = this->params_.submap.map_type;
+        if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
+            /* for occupancy grid map */
             // add point every frame
             build_submap(this->preprocessed_pc_, reg_result.T);
             return true;
-        }
-
-        // for voxel grid map (keyframe base)
-        {
+        } else {
+            /* for voxel grid map (keyframe base) */
             // calculate delta pose
             const auto delta_pose = this->last_keyframe_pose_.inverse() * reg_result.T;
 
@@ -602,10 +617,11 @@ private:
             const auto delta_time = this->last_keyframe_time_ > 0.0 ? timestamp - this->last_keyframe_time_
                                                                     : std::numeric_limits<double>::max();
 
+            const bool is_keyframe = distance >= this->params_.submap.keyframe.distance_threshold ||
+                                     angle >= this->params_.submap.keyframe.angle_threshold_degrees ||
+                                     delta_time >= this->params_.submap.keyframe.time_threshold_seconds;
             // update submap
-            if (distance >= this->params_.submap.keyframe.distance_threshold ||
-                angle >= this->params_.submap.keyframe.angle_threshold_degrees ||
-                delta_time >= this->params_.submap.keyframe.time_threshold_seconds) {
+            if (is_keyframe) {
                 this->last_keyframe_pose_ = reg_result.T;
                 this->last_keyframe_time_ = timestamp;
                 this->keyframe_poses_.push_back(reg_result.T);

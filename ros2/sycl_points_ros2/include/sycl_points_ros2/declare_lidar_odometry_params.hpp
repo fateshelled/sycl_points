@@ -66,6 +66,9 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
     // submapping
     {
+        params.submap.map_type =
+            pipeline::lidar_odometry::SubmapMapType_from_string(node->declare_parameter<std::string>(
+                "submap/map_type", pipeline::lidar_odometry::SubmapMapType_to_string(params.submap.map_type)));
         params.submap.voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap.voxel_size);
         params.submap.max_distance_range =
             node->declare_parameter<double>("submap/max_distance_range", params.submap.max_distance_range);
@@ -85,8 +88,6 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         params.submap.keyframe.time_threshold_seconds = node->declare_parameter<double>(
             "submap/keyframe/time_threshold_seconds", params.submap.keyframe.time_threshold_seconds);
 
-        params.submap.occupancy_grid_map.enable =
-            node->declare_parameter<bool>("submap/occupancy_grid_map/enable", params.submap.occupancy_grid_map.enable);
         params.submap.occupancy_grid_map.log_odds_hit = node->declare_parameter<double>(
             "submap/occupancy_grid_map/log_odds_hit", params.submap.occupancy_grid_map.log_odds_hit);
         params.submap.occupancy_grid_map.log_odds_miss = node->declare_parameter<double>(

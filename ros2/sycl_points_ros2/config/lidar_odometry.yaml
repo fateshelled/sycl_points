@@ -15,7 +15,7 @@ lidar_odometry_node:
 
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
-    input/convert_intensity: true
+    input/convert_intensity: false
 
     scan/preprocess/box_filter/enable: true
     scan/preprocess/box_filter/max: 100.0
@@ -51,12 +51,12 @@ lidar_odometry_node:
     submap/voxel_size: 0.4
     submap/max_distance_range: 50.0
     submap/point_random_sampling_num: 512
-    submap/covariance_aggregation_mode: ARITHMETIC  # ARITHMETIC, LOG_EUCLIDEAN
+    submap/map_type: OCCUPANCY_GRID_MAP  # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
+    submap/covariance_aggregation_mode: LOG_EUCLIDEAN  # ARITHMETIC, LOG_EUCLIDEAN
     submap/keyframe/inlier_ratio_threshold: 0.7
     submap/keyframe/distance_threshold: 2.0
     submap/keyframe/angle_threshold_degrees: 20.0
     submap/keyframe/time_threshold_seconds: 1.0
-    submap/occupancy_grid_map/enable: true
     submap/occupancy_grid_map/log_odds_hit: 0.5
     submap/occupancy_grid_map/log_odds_miss: -0.03
     submap/occupancy_grid_map/log_odds_limits/min: -10.0
