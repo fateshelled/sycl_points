@@ -29,8 +29,11 @@ public:
     void apply(const PointCloudShared& source, PointCloudShared& output, const shared_vector<float>& weights,
                size_t sampling_num) {
         const size_t N = source.size();
-        if (N == 0) return;
-        if (N <= sampling_num) return;
+        if (N <= sampling_num) {
+            // Keep all points when the requested sample count covers the full input, including empty input.
+            this->copy_source_to_output(source, output);
+            return;
+        }
 
         if (weights.size() != N) {
             throw std::invalid_argument("[PreprocessFilter::weighted_random_sampling] weights size must match points");

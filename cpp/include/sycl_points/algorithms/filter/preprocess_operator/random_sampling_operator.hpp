@@ -23,8 +23,11 @@ public:
 
     void apply(const PointCloudShared& source, PointCloudShared& output, size_t sampling_num) {
         const size_t N = source.size();
-        if (N == 0) return;
-        if (N <= sampling_num) return;
+        if (N <= sampling_num) {
+            // Keep all points when the requested sample count covers the full input, including empty input.
+            this->copy_source_to_output(source, output);
+            return;
+        }
 
         this->initialize_flags_(N, REMOVE_FLAG).wait_and_throw();
 

@@ -23,6 +23,10 @@ protected:
           initialize_flags_(std::move(initialize_flags)),
           filter_by_flags_(std::move(filter_by_flags)) {}
 
+    void copy_source_to_output(const PointCloudShared& source, PointCloudShared& output) const {
+        output = source;
+    }
+
     sycl_utils::DeviceQueue queue_;
     shared_vector_ptr<uint8_t> flags_;
     InitializeFlagsFn initialize_flags_;
