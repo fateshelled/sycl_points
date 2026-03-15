@@ -466,7 +466,8 @@ private:
             auto reg_pc = this->registration_pipeline_->get_deskewed_point_cloud();
             if (reg_pc) {
                 // weighted random sampling
-                const auto icp_weights = this->registration_pipeline_->get_icp_robust_weights();
+                const auto icp_weights = this->registration_pipeline_->compute_icp_robust_weights(
+                    *this->submap_pc_ptr_, *this->submap_tree_, current_pose.matrix());
                 this->preprocess_filter_->weighted_random_sampling(*reg_pc, *this->keyframe_pc_, icp_weights,
                                                                    this->params_.submap.point_random_sampling_num);
             } else {

@@ -211,11 +211,15 @@ public:
                              const TransformMatrix& initial_guess = TransformMatrix::Identity(),
                              const ExecutionOptions& options = ExecutionOptions()) {
         const size_t N = source.size();
-        this->icp_robust_weights_->assign(N, 0.0f);
+        this->last_icp_robust_scale_ =
+            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
         RegistrationResult result;
         result.T.matrix() = initial_guess;
 
-        if (N == 0) return result;
+        if (N == 0) {
+            this->icp_robust_weights_->assign(0, 0.0f);
+            return result;
+        }
 
         this->validate_params(source, target);
 
@@ -263,26 +267,35 @@ public:
                 }
             }
         }
+        this->last_icp_robust_scale_ =
+            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
 
         return result;
     }
 
-    /// @brief Returns geometry ICP robust weights from the most recent align() call in source-point order
-    const shared_vector<float>& get_icp_robust_weights() const { return *this->icp_robust_weights_; }
+    /// @brief Computes geometry ICP robust weights in source-point order for the provided alignment state
+    const shared_vector<float>& compute_icp_robust_weights(const PointCloudShared& source,
+                                                           const PointCloudShared& target,
+                                                           const knn::KNNBase& target_knn,
+                                                           const TransformMatrix& pose) const {
+        this->update_icp_robust_weights(source, target, target_knn, pose);
+        return *this->icp_robust_weights_;
+    }
 
 private:
     RegistrationParams params_;
     sycl_utils::DeviceQueue queue_;
 
-    shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
-    shared_vector_ptr<float> icp_robust_weights_ = nullptr;
+    mutable shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
+    mutable shared_vector_ptr<float> icp_robust_weights_ = nullptr;
     std::shared_ptr<LinearizedDevice> linearized_on_device_ = nullptr;
+    mutable float last_icp_robust_scale_ = 0.0f;
 
     DegenerateRegularization degenerate_reg_;
     float genz_alpha_ = 1.0f;
 
     template <typename Func>
-    sycl_utils::events dispatch(Func&& exec) {
+    sycl_utils::events dispatch(Func&& exec) const {
         sycl_utils::events events;
         auto dispatch_inner = [&]<RegType reg, typename RobustLossTypeTags, size_t... Js>(robust::RobustLossType loss,
                                                                                           std::index_sequence<Js...>) {
@@ -319,6 +332,78 @@ private:
     bool is_converged(const Eigen::Vector<float, 6>& delta) const {
         return delta.template head<3>().norm() < this->params_.criteria.rotation &&
                delta.template tail<3>().norm() < this->params_.criteria.translation;
+    }
+
+    template <RegType reg, robust::RobustLossType loss>
+    sycl_utils::events compute_icp_robust_weights_async(const PointCloudShared& source, const PointCloudShared& target,
+                                                        const Eigen::Matrix4f transT, float robust_scale,
+                                                        const std::vector<sycl::event>& depends) const {
+        sycl_utils::events events;
+        events += this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = source.size();
+            const auto cur_T = eigen_utils::to_sycl_vec(transT);
+
+            const auto source_ptr = source.points_ptr();
+            const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
+
+            const auto target_ptr = target.points_ptr();
+            const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
+            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+
+            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+
+            const float max_corr_dist_squared =
+                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
+            const float genz_alpha = this->genz_alpha_;
+            auto weights_ptr = this->icp_robust_weights_->data();
+
+            h.depends_on(depends);
+            h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> id) {
+                const size_t index = id[0];
+                float weight = 0.0f;
+
+                if (neighbors_distances_ptr[index] <= max_corr_dist_squared) {
+                    const auto target_idx = neighbors_index_ptr[index];
+                    const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
+                    const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
+                    const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+
+                    const float squared_error = kernel::calculate_geometry_error<reg>(
+                        cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
+                        genz_alpha);
+                    const float residual_norm = sycl::sqrt(squared_error);
+
+                    if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
+                        if (residual_norm <= mahalanobis_dist_threshold) {
+                            weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                        }
+                    } else {
+                        weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                    }
+                }
+
+                weights_ptr[index] = weight;
+            });
+        });
+        return events;
+    }
+
+    void update_icp_robust_weights(const PointCloudShared& source, const PointCloudShared& target,
+                                   const knn::KNNBase& target_knn, const TransformMatrix& pose) const {
+        const size_t N = source.size();
+        this->icp_robust_weights_->assign(N, 0.0f);
+        if (N == 0) {
+            return;
+        }
+
+        auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, pose);
+        auto events = this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
+            return this->compute_icp_robust_weights_async<reg, loss>(source, target, pose, this->last_icp_robust_scale_,
+                                                                     knn_event.evs);
+        });
+        events.wait_and_throw();
     }
 
     float compute_genz_alpha(const PointCloudShared& source,  //

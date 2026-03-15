@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "sycl_points/algorithms/knn/knn.hpp"
+#include "sycl_points/algorithms/robust/robust.hpp"
+#include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
@@ -18,6 +20,44 @@ public:
     }
 };
 
+class CountingNearestKNN : public knn::KNNBase {
+public:
+    mutable size_t call_count = 0;
+
+    sycl_utils::events knn_search_async(const PointCloudShared& queries, const size_t k, knn::KNNResult& result,
+                                        const std::vector<sycl::event>& = std::vector<sycl::event>(),
+                                        const TransformMatrix& transT = TransformMatrix::Identity()) const override {
+        ++call_count;
+        result.allocate(queries.queue, queries.size(), k);
+
+        const auto T = transT;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            PointType transformed = T * queries.points->at(i);
+            float best_distance = std::numeric_limits<float>::max();
+            int32_t best_index = -1;
+            for (size_t j = 0; j < target_->size(); ++j) {
+                const auto& target_point = target_->points->at(j);
+                const float dx = transformed.x() - target_point.x();
+                const float dy = transformed.y() - target_point.y();
+                const float dz = transformed.z() - target_point.z();
+                const float squared_distance = dx * dx + dy * dy + dz * dz;
+                if (squared_distance < best_distance) {
+                    best_distance = squared_distance;
+                    best_index = static_cast<int32_t>(j);
+                }
+            }
+            result.indices->at(i) = best_index;
+            result.distances->at(i) = best_distance;
+        }
+        return sycl_utils::events();
+    }
+
+    void set_target(const PointCloudShared& target) { target_ = &target; }
+
+private:
+    const PointCloudShared* target_ = nullptr;
+};
+
 PointCloudShared make_cloud(const sycl_utils::DeviceQueue& queue, size_t size) {
     PointCloudShared cloud(queue);
     cloud.points->resize(size);
@@ -31,6 +71,29 @@ PointCloudShared make_cloud(const sycl_utils::DeviceQueue& queue, size_t size) {
     }
     cloud.start_time_ms = 1.0;
     cloud.end_time_ms = 2.0;
+    return cloud;
+}
+
+PointCloudShared make_registration_source(const sycl_utils::DeviceQueue& queue) {
+    PointCloudShared cloud(queue);
+    cloud.points->resize(3);
+    cloud.timestamp_offsets->resize(3);
+    cloud.points->at(0) = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    cloud.points->at(1) = PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    cloud.points->at(2) = PointType(5.0f, 0.0f, 0.0f, 1.0f);
+    cloud.timestamp_offsets->at(0) = 0.0f;
+    cloud.timestamp_offsets->at(1) = 0.5f;
+    cloud.timestamp_offsets->at(2) = 1.0f;
+    cloud.start_time_ms = 0.0;
+    cloud.end_time_ms = 1.0;
+    return cloud;
+}
+
+PointCloudShared make_registration_target(const sycl_utils::DeviceQueue& queue) {
+    PointCloudShared cloud(queue);
+    cloud.points->resize(2);
+    cloud.points->at(0) = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    cloud.points->at(1) = PointType(1.0f, 0.0f, 0.0f, 1.0f);
     return cloud;
 }
 
@@ -253,6 +316,98 @@ TEST(RegistrationPipelineTest, DeskewedAccessorFallsBackToRegistrationInputWitho
     EXPECT_EQ(pipeline.get_deskewed_point_cloud(), pipeline.get_registration_input_point_cloud());
     ASSERT_NE(pipeline.get_deskewed_point_cloud(), nullptr);
     EXPECT_EQ(pipeline.get_deskewed_point_cloud()->size(), 2U);
+}
+
+TEST(RegistrationPipelineTest, RegistrationComputeWeightsUseZeroOneForNoneLoss) {
+    sycl::device device(sycl_utils::device_selector::default_selector_v);
+    sycl_utils::DeviceQueue queue(device);
+
+    RegistrationParams params;
+    params.reg_type = RegType::POINT_TO_POINT;
+    params.robust.type = robust::RobustLossType::NONE;
+    params.max_iterations = 1;
+    params.max_correspondence_distance = 1.5f;
+
+    Registration registration(queue, params);
+    const auto source = make_registration_source(queue);
+    const auto target = make_registration_target(queue);
+    CountingNearestKNN knn;
+    knn.set_target(target);
+
+    registration.align(source, target, knn);
+    const size_t calls_after_align = knn.call_count;
+    const auto& weights = registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity());
+    EXPECT_EQ(weights.size(), source.size());
+    EXPECT_FLOAT_EQ(weights[0], 1.0f);
+    EXPECT_FLOAT_EQ(weights[1], 1.0f);
+    EXPECT_FLOAT_EQ(weights[2], 0.0f);
+    EXPECT_EQ(knn.call_count, calls_after_align + 1);
+}
+
+TEST(RegistrationPipelineTest, RegistrationComputeWeightsFollowsProvidedSource) {
+    sycl::device device(sycl_utils::device_selector::default_selector_v);
+    sycl_utils::DeviceQueue queue(device);
+
+    RegistrationParams params;
+    params.reg_type = RegType::POINT_TO_POINT;
+    params.robust.type = robust::RobustLossType::NONE;
+    params.max_iterations = 1;
+    params.max_correspondence_distance = 1.5f;
+
+    Registration registration(queue, params);
+    const auto target = make_registration_target(queue);
+    CountingNearestKNN knn;
+    knn.set_target(target);
+
+    auto source = make_registration_source(queue);
+    registration.align(source, target, knn);
+    const auto& first_weights = registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity());
+    ASSERT_EQ(first_weights.size(), 3U);
+    EXPECT_FLOAT_EQ(first_weights[2], 0.0f);
+
+    PointCloudShared updated_source(queue);
+    updated_source.points->resize(2);
+    updated_source.points->at(0) = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    updated_source.points->at(1) = PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    registration.align(updated_source, target, knn);
+
+    const size_t calls_before_refresh = knn.call_count;
+    const auto& refreshed_weights =
+        registration.compute_icp_robust_weights(updated_source, target, knn, TransformMatrix::Identity());
+    EXPECT_EQ(knn.call_count, calls_before_refresh + 1);
+    ASSERT_EQ(refreshed_weights.size(), 2U);
+    EXPECT_FLOAT_EQ(refreshed_weights[0], 1.0f);
+    EXPECT_FLOAT_EQ(refreshed_weights[1], 1.0f);
+}
+
+TEST(RegistrationPipelineTest, PipelineLazyWeightsMatchDeskewedPointCloudSize) {
+    sycl::device device(sycl_utils::device_selector::default_selector_v);
+    sycl_utils::DeviceQueue queue(device);
+
+    RegistrationPipelineParams params;
+    params.registration.reg_type = RegType::POINT_TO_POINT;
+    params.registration.robust.type = robust::RobustLossType::NONE;
+    params.registration.max_iterations = 1;
+    params.registration.max_correspondence_distance = 1.5f;
+    params.velocity_update.enable = true;
+    params.velocity_update.iter = 1;
+
+    RegistrationPipeline pipeline(queue, params);
+    const auto source = make_registration_source(queue);
+    const auto target = make_registration_target(queue);
+    CountingNearestKNN knn;
+    knn.set_target(target);
+
+    Registration::ExecutionOptions options;
+    options.dt = 1.0f;
+    options.prev_pose = TransformMatrix::Identity();
+
+    pipeline.align(source, target, knn, TransformMatrix::Identity(), options);
+
+    const auto* deskewed = pipeline.get_deskewed_point_cloud();
+    ASSERT_NE(deskewed, nullptr);
+    const auto& weights = pipeline.compute_icp_robust_weights(target, knn, TransformMatrix::Identity());
+    EXPECT_EQ(weights.size(), deskewed->size());
 }
 
 }  // namespace
