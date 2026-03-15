@@ -207,7 +207,10 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
             const std::string robust_loss = node->declare_parameter<std::string>("registration/robust/type", "NONE");
             robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
-            robust.init_scale = node->declare_parameter<double>("registration/robust/init_scale", robust.init_scale);
+            robust.default_scale =
+                node->declare_parameter<double>("registration/robust/default_scale", robust.default_scale);
+            pipeline_robust.init_scale =
+                node->declare_parameter<double>("registration/robust/init_scale", pipeline_robust.init_scale);
             pipeline_robust.auto_scale =
                 node->declare_parameter<bool>("registration/robust/auto_scale", pipeline_robust.auto_scale);
             pipeline_robust.min_scale =
@@ -244,15 +247,18 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         {
             auto& rotation_constraint = solver.rotation_constraint;
             auto& rotation_robust = rotation_constraint.robust;
+            auto& pipeline_robust = pipeline.robust;
 
             rotation_constraint.enable =
                 node->declare_parameter<bool>("registration/rotation_constraint/enable", rotation_constraint.enable);
             rotation_constraint.weight =
                 node->declare_parameter<double>("registration/rotation_constraint/weight", rotation_constraint.weight);
-            rotation_robust.init_scale = node->declare_parameter<double>(
-                "registration/rotation_constraint/robust/init_scale", rotation_robust.init_scale);
-            rotation_robust.min_scale = node->declare_parameter<double>(
-                "registration/rotation_constraint/robust/min_scale", rotation_robust.min_scale);
+            rotation_robust.default_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/default_scale", rotation_robust.default_scale);
+            pipeline_robust.rotation_init_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/init_scale", pipeline_robust.rotation_init_scale);
+            pipeline_robust.rotation_min_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/min_scale", pipeline_robust.rotation_min_scale);
         }
 
         // Optimization

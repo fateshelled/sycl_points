@@ -19,9 +19,13 @@ struct RegistrationPipelineParams {
 
     /// @brief Parameters for multi-stage robust scale annealing
     struct Robust {
-        bool auto_scale = false;  // If false, keep the robust scale fixed at RegistrationParams::robust.init_scale.
-        float min_scale = 0.5f;   // Minimum scale reached by the ICP robust loss schedule
-        size_t auto_scaling_iter = 4;  // Number of robust-scale refinement levels
+        bool auto_scale = false;   // If false, keep the robust scale fixed at RegistrationParams::robust.default_scale.
+        float init_scale = 10.0f;  // Initial scale used by the ICP robust loss schedule when auto scaling is enabled
+        float min_scale = 0.5f;    // Minimum scale reached by the ICP robust loss schedule
+        float rotation_init_scale =
+            10.0f;  // Initial scale used by the rotation constraint robust loss schedule when auto scaling is enabled
+        float rotation_min_scale = 0.5f;  // Minimum scale reached by the rotation constraint robust loss schedule
+        size_t auto_scaling_iter = 4;     // Number of robust-scale refinement levels
     };
 
     /// @brief Parameters for repeated deskew and re-alignment
@@ -30,7 +34,7 @@ struct RegistrationPipelineParams {
         size_t iter = 1;      // Number of deskew and re-alignment iterations
     };
 
-    RandomSampling random_sampling;   // Optional source random sampling before registration
+    RandomSampling random_sampling;  // Optional source random sampling before registration
     Robust robust;                   // Robust scale scheduling parameters
     VelocityUpdate velocity_update;  // Constant-velocity deskew refinement parameters
 };

@@ -44,7 +44,7 @@ struct RegistrationParams {
     };
     struct Robust {
         robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
-        float init_scale = 10.0f;                                    // scale for robust loss function
+        float default_scale = 10.0f;                                 // default scale for robust loss function
     };
     struct PhotometricTerm {
         bool enable = false;  // If true, use photometric term.
@@ -56,8 +56,7 @@ struct RegistrationParams {
     };
     struct RotationConstraint {
         struct Robust {
-            float init_scale = 10.0f;  // scale for robust loss function
-            float min_scale = 0.5f;    // minimum scale for the rotation constraint robust loss
+            float default_scale = 10.0f;  // default scale for robust loss function
         };
 
         bool enable = false;

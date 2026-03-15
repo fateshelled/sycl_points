@@ -93,10 +93,11 @@ lidar_odometry_node:
     registration/velocity_update/iter: 2
 
     registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
-    registration/robust/auto_scale: true    # If false, the robust scale is fixed to init_scale.
+    registration/robust/auto_scale: true    # If false, the robust scale is fixed to default_scale.
     registration/robust/auto_scaling_iter: 4
     registration/robust/init_scale: 10.0
     registration/robust/min_scale: 1.25
+    registration/robust/default_scale: 10.0
 
     registration/photometric/enable: false
     registration/photometric/weight: 0.2        # Scaling factor to balance photometric error with geometric error
@@ -105,8 +106,9 @@ lidar_odometry_node:
     registration/rotation_constraint/enable: true            # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
                                                              # If enable rotation_constraint, recommended optimization_method is LM
     registration/rotation_constraint/weight: 1.0             # Weight is scaling factor to balance constraint error with geometric error
-    registration/rotation_constraint/robust/init_scale: 5.0  # Robust kernel is same as registration/robust/type
+    registration/rotation_constraint/robust/init_scale: 5.0  # Initial scale used only by pipeline auto scaling
     registration/rotation_constraint/robust/min_scale:  2.5
+    registration/rotation_constraint/robust/default_scale: 5.0  # Robust kernel is same as registration/robust/type
 
     registration/genz/planarity_threshold: 0.2
 

@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 #include "sycl_points/algorithms/knn/knn.hpp"
-#include "sycl_points/algorithms/robust/robust.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
+#include "sycl_points/algorithms/robust/robust.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
@@ -318,6 +320,57 @@ TEST(RegistrationPipelineTest, DeskewedAccessorFallsBackToRegistrationInputWitho
     EXPECT_EQ(pipeline.get_deskewed_point_cloud()->size(), 2U);
 }
 
+TEST(RegistrationPipelineTest, RobustPipelineUsesDefaultScaleAsFixedAndInitialScale) {
+    sycl::device device(sycl_utils::device_selector::default_selector_v);
+    sycl_utils::DeviceQueue queue(device);
+
+    RegistrationPipelineParams params;
+    params.registration.robust.type = robust::RobustLossType::HUBER;
+    params.registration.robust.default_scale = 8.0f;
+
+    std::vector<float> fixed_scales;
+    auto fixed_aligner = [&](const PointCloudShared&, const PointCloudShared&, const knn::KNNBase&,
+                             const TransformMatrix&, const Registration::ExecutionOptions& options) {
+        fixed_scales.push_back(options.robust_scale);
+        return RegistrationResult{};
+    };
+
+    RegistrationPipeline fixed_pipeline(fixed_aligner, params);
+    DummyKNN knn;
+    fixed_pipeline.align(make_cloud(queue, 3), make_cloud(queue, 3), knn);
+
+    ASSERT_EQ(fixed_scales.size(), 1U);
+    EXPECT_FLOAT_EQ(fixed_scales.front(), 8.0f);
+
+    params.robust.auto_scale = true;
+    params.robust.init_scale = 6.0f;
+    params.robust.min_scale = 2.0f;
+    params.robust.rotation_init_scale = 9.0f;
+    params.robust.rotation_min_scale = 3.0f;
+    params.robust.auto_scaling_iter = 3;
+
+    std::vector<float> annealed_scales;
+    std::vector<float> annealed_rotation_scales;
+    auto annealed_aligner = [&](const PointCloudShared&, const PointCloudShared&, const knn::KNNBase&,
+                                const TransformMatrix&, const Registration::ExecutionOptions& options) {
+        annealed_scales.push_back(options.robust_scale);
+        annealed_rotation_scales.push_back(options.rotation_robust_scale);
+        return RegistrationResult{};
+    };
+
+    RegistrationPipeline annealed_pipeline(annealed_aligner, params);
+    annealed_pipeline.align(make_cloud(queue, 3), make_cloud(queue, 3), knn);
+
+    ASSERT_EQ(annealed_scales.size(), 3U);
+    EXPECT_FLOAT_EQ(annealed_scales[0], 6.0f);
+    EXPECT_NEAR(annealed_scales[1], std::sqrt(12.0f), 1e-5f);
+    EXPECT_NEAR(annealed_scales[2], 2.0f, 1e-5f);
+    ASSERT_EQ(annealed_rotation_scales.size(), 3U);
+    EXPECT_FLOAT_EQ(annealed_rotation_scales[0], 9.0f);
+    EXPECT_NEAR(annealed_rotation_scales[1], std::sqrt(27.0f), 1e-5f);
+    EXPECT_NEAR(annealed_rotation_scales[2], 3.0f, 1e-5f);
+}
+
 TEST(RegistrationPipelineTest, RegistrationComputeWeightsUseZeroOneForNoneLoss) {
     sycl::device device(sycl_utils::device_selector::default_selector_v);
     sycl_utils::DeviceQueue queue(device);
@@ -361,7 +414,8 @@ TEST(RegistrationPipelineTest, RegistrationComputeWeightsFollowsProvidedSource) 
 
     auto source = make_registration_source(queue);
     registration.align(source, target, knn);
-    const auto& first_weights = registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity());
+    const auto& first_weights =
+        registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity());
     ASSERT_EQ(first_weights.size(), 3U);
     EXPECT_FLOAT_EQ(first_weights[2], 0.0f);
 

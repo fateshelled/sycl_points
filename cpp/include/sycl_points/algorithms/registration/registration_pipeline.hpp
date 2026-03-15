@@ -68,18 +68,19 @@ public:
         const bool use_fixed_scales = options.robust_scale > 0.0f || options.rotation_robust_scale > 0.0f;
         bool enable_auto_scaling = !use_fixed_scales && this->params_.robust.type != robust::RobustLossType::NONE &&
                                    this->pipeline_params_.auto_scale;
-        if (enable_auto_scaling && (this->pipeline_params_.min_scale <= 0.0f ||
-                                    this->pipeline_params_.min_scale >= this->params_.robust.init_scale)) {
-            std::cout
-                << "[Caution] `pipeline.robust.min_scale` must be greater than zero and less than robust.init_scale."
-                << std::endl;
+        const float robust_init_scale = this->pipeline_params_.init_scale;
+        const float rotation_robust_init_scale = this->pipeline_params_.rotation_init_scale;
+        if (enable_auto_scaling &&
+            (this->pipeline_params_.min_scale <= 0.0f || this->pipeline_params_.min_scale >= robust_init_scale)) {
+            std::cout << "[Caution] `pipeline.robust.min_scale` must be greater than zero and less than "
+                         "`pipeline.robust.init_scale`."
+                      << std::endl;
             enable_auto_scaling = false;
         }
-        if (enable_auto_scaling && (this->params_.rotation_constraint.robust.min_scale <= 0.0f ||
-                                    this->params_.rotation_constraint.robust.min_scale >=
-                                        this->params_.rotation_constraint.robust.init_scale)) {
-            std::cout << "[Caution] `rotation_constraint.robust.min_scale` must be greater than zero and less than "
-                         "rotation_constraint.robust.init_scale."
+        if (enable_auto_scaling && (this->pipeline_params_.rotation_min_scale <= 0.0f ||
+                                    this->pipeline_params_.rotation_min_scale >= rotation_robust_init_scale)) {
+            std::cout << "[Caution] `pipeline.robust.rotation_min_scale` must be greater than zero and less than "
+                         "`pipeline.robust.rotation_init_scale`."
                       << std::endl;
             enable_auto_scaling = false;
         }
@@ -92,18 +93,21 @@ public:
         const size_t robust_levels =
             enable_auto_scaling ? std::max<size_t>(1, this->pipeline_params_.auto_scaling_iter) : 1;
 
-        float robust_scale = options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
-        const float robust_scaling_factor =
-            robust_levels > 1 ? std::pow(this->pipeline_params_.min_scale / this->params_.robust.init_scale,
-                                         1.0f / static_cast<float>(robust_levels - 1))
-                              : 1.0f;
+        float robust_scale = options.robust_scale > 0.0f
+                                 ? options.robust_scale
+                                 : (enable_auto_scaling ? robust_init_scale : this->params_.robust.default_scale);
+        const float robust_scaling_factor = robust_levels > 1
+                                                ? std::pow(this->pipeline_params_.min_scale / robust_init_scale,
+                                                           1.0f / static_cast<float>(robust_levels - 1))
+                                                : 1.0f;
 
-        float rotation_robust_scale = options.rotation_robust_scale > 0.0f
-                                          ? options.rotation_robust_scale
-                                          : this->params_.rotation_constraint.robust.init_scale;
+        float rotation_robust_scale =
+            options.rotation_robust_scale > 0.0f
+                ? options.rotation_robust_scale
+                : (enable_auto_scaling ? rotation_robust_init_scale
+                                       : this->params_.rotation_constraint.robust.default_scale);
         const float rotation_robust_scaling_factor =
-            robust_levels > 1 ? std::pow(this->params_.rotation_constraint.robust.min_scale /
-                                             this->params_.rotation_constraint.robust.init_scale,
+            robust_levels > 1 ? std::pow(this->pipeline_params_.rotation_min_scale / rotation_robust_init_scale,
                                          1.0f / static_cast<float>(robust_levels - 1))
                               : 1.0f;
 

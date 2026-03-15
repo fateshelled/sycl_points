@@ -35,10 +35,13 @@ int main() {
     pipeline_param.registration.optimization_method =
         sycl_points::algorithms::registration::OptimizationMethod::POWELL_DOGLEG;
     pipeline_param.registration.robust.type = sycl_points::algorithms::robust::RobustLossType::GEMAN_MCCLURE;
-    pipeline_param.registration.robust.init_scale = 10.0f;
+    pipeline_param.registration.robust.default_scale = 10.0f;
     pipeline_param.registration.reg_type = sycl_points::algorithms::registration::RegType::GICP;
     pipeline_param.robust.auto_scale = true;
+    pipeline_param.robust.init_scale = 10.0f;
     pipeline_param.robust.min_scale = 2.5f;
+    pipeline_param.robust.rotation_init_scale = 5.0f;
+    pipeline_param.robust.rotation_min_scale = 2.5f;
     pipeline_param.robust.auto_scaling_iter = 3;
 
     const auto registration_pipeline =

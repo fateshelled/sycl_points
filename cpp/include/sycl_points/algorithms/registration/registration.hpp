@@ -192,8 +192,8 @@ public:
             }
         }
         if (this->params_.robust.type != robust::RobustLossType::NONE) {
-            if (this->params_.robust.init_scale <= 0.0f) {
-                std::cout << "[Caution] `robust.init_scale` must be greater than zero. Disable robust loss."
+            if (this->params_.robust.default_scale <= 0.0f) {
+                std::cout << "[Caution] `robust.default_scale` must be greater than zero. Disable robust loss."
                           << std::endl;
                 this->params_.robust.type = robust::RobustLossType::NONE;
             }
@@ -212,7 +212,7 @@ public:
                              const ExecutionOptions& options = ExecutionOptions()) {
         const size_t N = source.size();
         this->last_icp_robust_scale_ =
-            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
+            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
         RegistrationResult result;
         result.T.matrix() = initial_guess;
 
@@ -226,10 +226,10 @@ public:
         {
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
             const float robust_scale =
-                options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
+                options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
             const float rotation_robust_scale = options.rotation_robust_scale > 0.0f
                                                     ? options.rotation_robust_scale
-                                                    : this->params_.rotation_constraint.robust.init_scale;
+                                                    : this->params_.rotation_constraint.robust.default_scale;
 
             float lm_lambda = this->params_.lm.init_lambda;
             for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
@@ -268,7 +268,7 @@ public:
             }
         }
         this->last_icp_robust_scale_ =
-            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
+            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
 
         return result;
     }
