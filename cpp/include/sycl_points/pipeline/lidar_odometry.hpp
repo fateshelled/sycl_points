@@ -536,7 +536,9 @@ private:
                                           reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
                                           reg_type == algorithms::registration::RegType::GENZ ||
                                           this->params_.registration.pipeline.registration.rotation_constraint.enable;
-            const bool need_normals = reg_type == algorithms::registration::RegType::POINT_TO_PLANE;
+            const bool need_normals = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
+                                       reg_type == algorithms::registration::RegType::GENZ ||  //
+                                       photometric_enabled);
 
             const bool submap_has_cov = this->submap_pc_ptr_->has_cov();
             bool normals_are_ready = false;
@@ -558,12 +560,6 @@ private:
                 ensure_knn();
                 cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
                                                                                 *this->submap_pc_ptr_, knn_events.evs);
-            }
-
-            if (reg_type == algorithms::registration::RegType::GENZ) {
-                normals_are_ready = true;
-                cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                             cov_events.evs);
             }
 
             if (photometric_enabled && !normals_are_ready) {
