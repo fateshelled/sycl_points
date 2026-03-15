@@ -179,8 +179,8 @@ public:
             return result;
         }
 
-        // Keep a dedicated working buffer so deskew never aliases the caller's source buffers.
-        this->deskewed_pc_ = std::make_shared<PointCloudShared>(source);
+        // Use a dedicated working buffer so deskew writes into a non-aliased output cloud.
+        this->deskewed_pc_ = std::make_shared<PointCloudShared>(source.queue);
 
         const size_t deskew_levels = std::max<size_t>(1, this->velocity_update_iter_);
 
