@@ -66,6 +66,9 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
     // submapping
     {
+        params.submap.map_type =
+            pipeline::lidar_odometry::SubmapMapType_from_string(node->declare_parameter<std::string>(
+                "submap/map_type", pipeline::lidar_odometry::SubmapMapType_to_string(params.submap.map_type)));
         params.submap.voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap.voxel_size);
         params.submap.max_distance_range =
             node->declare_parameter<double>("submap/max_distance_range", params.submap.max_distance_range);
@@ -85,8 +88,6 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         params.submap.keyframe.time_threshold_seconds = node->declare_parameter<double>(
             "submap/keyframe/time_threshold_seconds", params.submap.keyframe.time_threshold_seconds);
 
-        params.submap.occupancy_grid_map.enable =
-            node->declare_parameter<bool>("submap/occupancy_grid_map/enable", params.submap.occupancy_grid_map.enable);
         params.submap.occupancy_grid_map.log_odds_hit = node->declare_parameter<double>(
             "submap/occupancy_grid_map/log_odds_hit", params.submap.occupancy_grid_map.log_odds_hit);
         params.submap.occupancy_grid_map.log_odds_miss = node->declare_parameter<double>(
@@ -206,7 +207,10 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
 
             const std::string robust_loss = node->declare_parameter<std::string>("registration/robust/type", "NONE");
             robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
-            robust.init_scale = node->declare_parameter<double>("registration/robust/init_scale", robust.init_scale);
+            robust.default_scale =
+                node->declare_parameter<double>("registration/robust/default_scale", robust.default_scale);
+            pipeline_robust.init_scale =
+                node->declare_parameter<double>("registration/robust/init_scale", pipeline_robust.init_scale);
             pipeline_robust.auto_scale =
                 node->declare_parameter<bool>("registration/robust/auto_scale", pipeline_robust.auto_scale);
             pipeline_robust.min_scale =
@@ -243,15 +247,18 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         {
             auto& rotation_constraint = solver.rotation_constraint;
             auto& rotation_robust = rotation_constraint.robust;
+            auto& pipeline_robust = pipeline.robust;
 
             rotation_constraint.enable =
                 node->declare_parameter<bool>("registration/rotation_constraint/enable", rotation_constraint.enable);
             rotation_constraint.weight =
                 node->declare_parameter<double>("registration/rotation_constraint/weight", rotation_constraint.weight);
-            rotation_robust.init_scale = node->declare_parameter<double>(
-                "registration/rotation_constraint/robust/init_scale", rotation_robust.init_scale);
-            rotation_robust.min_scale = node->declare_parameter<double>(
-                "registration/rotation_constraint/robust/min_scale", rotation_robust.min_scale);
+            rotation_robust.default_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/default_scale", rotation_robust.default_scale);
+            pipeline_robust.rotation_init_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/init_scale", pipeline_robust.rotation_init_scale);
+            pipeline_robust.rotation_min_scale = node->declare_parameter<double>(
+                "registration/rotation_constraint/robust/min_scale", pipeline_robust.rotation_min_scale);
         }
 
         // Optimization

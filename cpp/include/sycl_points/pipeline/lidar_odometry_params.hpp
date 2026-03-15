@@ -1,5 +1,10 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
+#include <stdexcept>
+#include <string>
+
 #include <Eigen/Geometry>
 
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
@@ -9,6 +14,33 @@
 namespace sycl_points {
 namespace pipeline {
 namespace lidar_odometry {
+
+enum class SubmapMapType {
+    OCCUPANCY_GRID_MAP = 0,
+    VOXEL_HASH_MAP,
+};
+
+inline SubmapMapType SubmapMapType_from_string(const std::string& str) {
+    std::string upper = str;
+    std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char c) { return std::toupper(c); });
+    if (upper == "OCCUPANCY_GRID_MAP") {
+        return SubmapMapType::OCCUPANCY_GRID_MAP;
+    }
+    if (upper == "VOXEL_HASH_MAP") {
+        return SubmapMapType::VOXEL_HASH_MAP;
+    }
+    throw std::runtime_error("[SubmapMapType_from_string] Invalid submap map type '" + str + "'");
+}
+
+inline std::string SubmapMapType_to_string(const SubmapMapType type) {
+    switch (type) {
+        case SubmapMapType::OCCUPANCY_GRID_MAP:
+            return "OCCUPANCY_GRID_MAP";
+        case SubmapMapType::VOXEL_HASH_MAP:
+            return "VOXEL_HASH_MAP";
+    }
+    throw std::runtime_error("[SubmapMapType_to_string] Invalid submap map type");
+}
 
 struct Parameters {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -82,7 +114,6 @@ struct Parameters {
         };
 
         struct OccupancyGridMap {
-            bool enable = true;
             float log_odds_hit = 0.8f;
             float log_odds_miss = -0.05f;
             float log_odds_limits_min = -1.0f;
@@ -93,6 +124,7 @@ struct Parameters {
             size_t stale_frame_threshold = 100U;
         };
 
+        SubmapMapType map_type = SubmapMapType::OCCUPANCY_GRID_MAP;
         float voxel_size = 1.0f;
         float max_distance_range = 30.0f;
         size_t point_random_sampling_num = 2000;

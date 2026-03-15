@@ -15,7 +15,7 @@ lidar_odometry_node:
 
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
-    input/convert_intensity: true
+    input/convert_intensity: false
 
     scan/preprocess/box_filter/enable: true
     scan/preprocess/box_filter/max: 100.0
@@ -51,12 +51,12 @@ lidar_odometry_node:
     submap/voxel_size: 0.4
     submap/max_distance_range: 50.0
     submap/point_random_sampling_num: 512
-    submap/covariance_aggregation_mode: ARITHMETIC  # ARITHMETIC, LOG_EUCLIDEAN
+    submap/map_type: OCCUPANCY_GRID_MAP  # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
+    submap/covariance_aggregation_mode: LOG_EUCLIDEAN  # ARITHMETIC, LOG_EUCLIDEAN
     submap/keyframe/inlier_ratio_threshold: 0.7
     submap/keyframe/distance_threshold: 2.0
     submap/keyframe/angle_threshold_degrees: 20.0
     submap/keyframe/time_threshold_seconds: 1.0
-    submap/occupancy_grid_map/enable: true
     submap/occupancy_grid_map/log_odds_hit: 0.5
     submap/occupancy_grid_map/log_odds_miss: -0.03
     submap/occupancy_grid_map/log_odds_limits/min: -10.0
@@ -93,10 +93,11 @@ lidar_odometry_node:
     registration/velocity_update/iter: 2
 
     registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
-    registration/robust/auto_scale: true    # If false, the robust scale is fixed to init_scale.
+    registration/robust/auto_scale: true    # If false, the robust scale is fixed to default_scale.
     registration/robust/auto_scaling_iter: 4
     registration/robust/init_scale: 10.0
     registration/robust/min_scale: 1.25
+    registration/robust/default_scale: 10.0
 
     registration/photometric/enable: false
     registration/photometric/weight: 0.2        # Scaling factor to balance photometric error with geometric error
@@ -105,8 +106,9 @@ lidar_odometry_node:
     registration/rotation_constraint/enable: true            # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
                                                              # If enable rotation_constraint, recommended optimization_method is LM
     registration/rotation_constraint/weight: 1.0             # Weight is scaling factor to balance constraint error with geometric error
-    registration/rotation_constraint/robust/init_scale: 5.0  # Robust kernel is same as registration/robust/type
+    registration/rotation_constraint/robust/init_scale: 5.0  # Initial scale used only by pipeline auto scaling
     registration/rotation_constraint/robust/min_scale:  2.5
+    registration/rotation_constraint/robust/default_scale: 5.0  # Robust kernel is same as registration/robust/type
 
     registration/genz/planarity_threshold: 0.2
 

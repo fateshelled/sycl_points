@@ -16,7 +16,7 @@ namespace sycl_points {
 namespace {
 
 class PreprocessFilterTest : public ::testing::Test {
-  protected:
+protected:
     void SetUp() override {
         device_ = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
         queue_ = std::make_unique<sycl_points::sycl_utils::DeviceQueue>(device_);
@@ -27,14 +27,13 @@ class PreprocessFilterTest : public ::testing::Test {
 };
 
 TEST_F(PreprocessFilterTest, BoxFilterRemovesOutOfRangeAndKeepsAttributes) {
-
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(4);
     cpu_cloud.intensities->resize(4);
 
-    (*cpu_cloud.points)[0] = PointType(0.5f, 0.0f, 0.0f, 1.0f);  // too close
-    (*cpu_cloud.points)[1] = PointType(2.0f, 0.0f, 0.0f, 1.0f);  // kept
-    (*cpu_cloud.points)[2] = PointType(0.0f, 0.0f, 4.0f, 1.0f);  // too far
+    (*cpu_cloud.points)[0] = PointType(0.5f, 0.0f, 0.0f, 1.0f);                                     // too close
+    (*cpu_cloud.points)[1] = PointType(2.0f, 0.0f, 0.0f, 1.0f);                                     // kept
+    (*cpu_cloud.points)[2] = PointType(0.0f, 0.0f, 4.0f, 1.0f);                                     // too far
     (*cpu_cloud.points)[3] = PointType(std::numeric_limits<float>::quiet_NaN(), 1.0f, 0.0f, 1.0f);  // invalid
 
     (*cpu_cloud.intensities)[0] = 1.0f;
@@ -54,7 +53,6 @@ TEST_F(PreprocessFilterTest, BoxFilterRemovesOutOfRangeAndKeepsAttributes) {
 }
 
 TEST_F(PreprocessFilterTest, RandomSamplingIsDeterministicWithSeed) {
-
     PointCloudCPU cpu_cloud;
     const size_t num_points = 5;
     cpu_cloud.points->resize(num_points);
@@ -85,9 +83,8 @@ TEST_F(PreprocessFilterTest, RandomSamplingIsDeterministicWithSeed) {
         for (size_t i = 0; i < cloud.size(); ++i) {
             paired_data.emplace_back((*cloud.points)[i], (*cloud.intensities)[i]);
         }
-        std::sort(paired_data.begin(), paired_data.end(), [](const auto& a, const auto& b) {
-            return a.first.x() < b.first.x();
-        });
+        std::sort(paired_data.begin(), paired_data.end(),
+                  [](const auto& a, const auto& b) { return a.first.x() < b.first.x(); });
         return paired_data;
     };
 
@@ -102,7 +99,6 @@ TEST_F(PreprocessFilterTest, RandomSamplingIsDeterministicWithSeed) {
 }
 
 TEST_F(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountTooLarge) {
-
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(3);
     (*cpu_cloud.points)[0] = PointType(0.0f, 0.0f, 0.0f, 1.0f);
@@ -121,7 +117,6 @@ TEST_F(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountTooLarge) {
 }
 
 TEST_F(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountEqualsSize) {
-
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(3);
     cpu_cloud.intensities->resize(3);
@@ -147,8 +142,254 @@ TEST_F(PreprocessFilterTest, RandomSamplingNoOpWhenSamplingCountEqualsSize) {
     EXPECT_FLOAT_EQ((*shared_cloud.intensities)[2], 2.5f);
 }
 
-TEST_F(PreprocessFilterTest, EmptyPointCloudIsNoOpForAllFilters) {
+TEST_F(PreprocessFilterTest, RandomSamplingCopiesOutputWhenSamplingCountCoversInput) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.intensities->resize(3);
+    (*cpu_cloud.points)[0] = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[1] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[2] = PointType(2.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.intensities)[0] = 0.5f;
+    (*cpu_cloud.intensities)[1] = 1.5f;
+    (*cpu_cloud.intensities)[2] = 2.5f;
 
+    PointCloudShared source(*queue_, cpu_cloud);
+    PointCloudShared output(*queue_);
+    output.points->resize(1);
+    output.points->at(0) = PointType(99.0f, 0.0f, 0.0f, 1.0f);
+
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.random_sampling(source, output, 10);
+
+    ASSERT_EQ(output.size(), 3U);
+    ASSERT_TRUE(output.has_intensity());
+    EXPECT_FLOAT_EQ((*output.points)[0].x(), 0.0f);
+    EXPECT_FLOAT_EQ((*output.points)[1].x(), 1.0f);
+    EXPECT_FLOAT_EQ((*output.points)[2].x(), 2.0f);
+    EXPECT_FLOAT_EQ((*output.intensities)[0], 0.5f);
+    EXPECT_FLOAT_EQ((*output.intensities)[1], 1.5f);
+    EXPECT_FLOAT_EQ((*output.intensities)[2], 2.5f);
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingIsDeterministicWithSeed) {
+    PointCloudCPU cpu_cloud;
+    const size_t num_points = 5;
+    cpu_cloud.points->resize(num_points);
+    cpu_cloud.intensities->resize(num_points);
+    for (size_t i = 0; i < num_points; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.intensities)[i] = static_cast<float>(i + 10);
+    }
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights = {0.1f, 0.2f, 0.5f, 1.0f, 2.0f};
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    PointCloudShared shared_cloud_repeat(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    algorithms::filter::PreprocessFilter filter_repeat(*queue_);
+    filter.set_random_seed(7);
+    filter_repeat.set_random_seed(7);
+
+    filter.weighted_random_sampling(shared_cloud, weights, 3);
+    filter_repeat.weighted_random_sampling(shared_cloud_repeat, weights, 3);
+
+    ASSERT_EQ(shared_cloud.size(), 3U);
+    ASSERT_EQ(shared_cloud_repeat.size(), 3U);
+    ASSERT_TRUE(shared_cloud.has_intensity());
+    ASSERT_TRUE(shared_cloud_repeat.has_intensity());
+
+    auto build_sorted_pairs = [](const PointCloudShared& cloud) {
+        std::vector<std::pair<PointType, float>> paired_data;
+        paired_data.reserve(cloud.size());
+        for (size_t i = 0; i < cloud.size(); ++i) {
+            paired_data.emplace_back((*cloud.points)[i], (*cloud.intensities)[i]);
+        }
+        std::sort(paired_data.begin(), paired_data.end(),
+                  [](const auto& a, const auto& b) { return a.first.x() < b.first.x(); });
+        return paired_data;
+    };
+
+    const auto paired_data = build_sorted_pairs(shared_cloud);
+    const auto paired_data_repeat = build_sorted_pairs(shared_cloud_repeat);
+
+    ASSERT_EQ(paired_data.size(), paired_data_repeat.size());
+    for (size_t i = 0; i < paired_data.size(); ++i) {
+        EXPECT_FLOAT_EQ(paired_data[i].first.x(), paired_data_repeat[i].first.x());
+        EXPECT_FLOAT_EQ(paired_data[i].second, paired_data_repeat[i].second);
+    }
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingNoOpWhenSamplingCountEqualsSize) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.intensities->resize(3);
+    (*cpu_cloud.points)[0] = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[1] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[2] = PointType(2.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.intensities)[0] = 0.5f;
+    (*cpu_cloud.intensities)[1] = 1.5f;
+    (*cpu_cloud.intensities)[2] = 2.5f;
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights = {1.0f, 0.0f, 2.0f};
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.weighted_random_sampling(shared_cloud, weights, 3);
+
+    ASSERT_EQ(shared_cloud.size(), 3U);
+    ASSERT_TRUE(shared_cloud.has_intensity());
+    EXPECT_FLOAT_EQ((*shared_cloud.points)[0].x(), 0.0f);
+    EXPECT_FLOAT_EQ((*shared_cloud.points)[1].x(), 1.0f);
+    EXPECT_FLOAT_EQ((*shared_cloud.points)[2].x(), 2.0f);
+    EXPECT_FLOAT_EQ((*shared_cloud.intensities)[0], 0.5f);
+    EXPECT_FLOAT_EQ((*shared_cloud.intensities)[1], 1.5f);
+    EXPECT_FLOAT_EQ((*shared_cloud.intensities)[2], 2.5f);
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingCopiesOutputWhenSamplingCountCoversInput) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.intensities->resize(3);
+    (*cpu_cloud.points)[0] = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[1] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[2] = PointType(2.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.intensities)[0] = 0.5f;
+    (*cpu_cloud.intensities)[1] = 1.5f;
+    (*cpu_cloud.intensities)[2] = 2.5f;
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights = {1.0f, 0.0f, 2.0f};
+
+    PointCloudShared source(*queue_, cpu_cloud);
+    PointCloudShared output(*queue_);
+    output.points->resize(1);
+    output.points->at(0) = PointType(99.0f, 0.0f, 0.0f, 1.0f);
+
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.weighted_random_sampling(source, output, weights, 10);
+
+    ASSERT_EQ(output.size(), 3U);
+    ASSERT_TRUE(output.has_intensity());
+    EXPECT_FLOAT_EQ((*output.points)[0].x(), 0.0f);
+    EXPECT_FLOAT_EQ((*output.points)[1].x(), 1.0f);
+    EXPECT_FLOAT_EQ((*output.points)[2].x(), 2.0f);
+    EXPECT_FLOAT_EQ((*output.intensities)[0], 0.5f);
+    EXPECT_FLOAT_EQ((*output.intensities)[1], 1.5f);
+    EXPECT_FLOAT_EQ((*output.intensities)[2], 2.5f);
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingSkipsZeroWeightPoints) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(4);
+    cpu_cloud.intensities->resize(4);
+    for (size_t i = 0; i < 4; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+        (*cpu_cloud.intensities)[i] = static_cast<float>(i);
+    }
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights = {0.0f, 0.0f, 1.0f, 2.0f};
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.set_random_seed(11);
+
+    filter.weighted_random_sampling(shared_cloud, weights, 2);
+
+    ASSERT_EQ(shared_cloud.size(), 2U);
+    for (const auto& point : *shared_cloud.points) {
+        EXPECT_GE(point.x(), 2.0f);
+    }
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingThrowsWhenSamplingCountExceedsPositiveWeights) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(4);
+    for (size_t i = 0; i < 4; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+    }
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights = {0.0f, 0.0f, 1.0f, 2.0f};
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(filter.weighted_random_sampling(shared_cloud, weights, 3), std::invalid_argument);
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingThrowsWhenWeightSizeMismatches) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+    }
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights = {1.0f, 2.0f};
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(filter.weighted_random_sampling(shared_cloud, weights, 2), std::invalid_argument);
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingThrowsWhenWeightsContainNegativeValue) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+    }
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights = {1.0f, -1.0f, 2.0f};
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(filter.weighted_random_sampling(shared_cloud, weights, 2), std::invalid_argument);
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingThrowsWhenWeightsContainNaNOrInf) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+    }
+
+    PointCloudShared shared_cloud_nan(*queue_, cpu_cloud);
+    PointCloudShared shared_cloud_inf(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    shared_vector<float> nan_weights(*queue_->ptr);
+    nan_weights = {1.0f, std::numeric_limits<float>::quiet_NaN(), 2.0f};
+    EXPECT_THROW(filter.weighted_random_sampling(shared_cloud_nan, nan_weights, 2), std::invalid_argument);
+
+    shared_vector<float> inf_weights(*queue_->ptr);
+    inf_weights = {1.0f, std::numeric_limits<float>::infinity(), 2.0f};
+    EXPECT_THROW(filter.weighted_random_sampling(shared_cloud_inf, inf_weights, 2), std::invalid_argument);
+}
+
+TEST_F(PreprocessFilterTest, WeightedRandomSamplingThrowsWhenAllWeightsAreZero) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    for (size_t i = 0; i < 3; ++i) {
+        (*cpu_cloud.points)[i] = PointType(static_cast<float>(i), 0.0f, 0.0f, 1.0f);
+    }
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights = {0.0f, 0.0f, 0.0f};
+
+    PointCloudShared shared_cloud(*queue_, cpu_cloud);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    EXPECT_THROW(filter.weighted_random_sampling(shared_cloud, weights, 2), std::invalid_argument);
+}
+
+TEST_F(PreprocessFilterTest, EmptyPointCloudIsNoOpForAllFilters) {
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->clear();
     PointCloudShared shared_cloud(*queue_, cpu_cloud);
@@ -160,6 +401,11 @@ TEST_F(PreprocessFilterTest, EmptyPointCloudIsNoOpForAllFilters) {
     filter.random_sampling(shared_cloud, 2);
     ASSERT_EQ(shared_cloud.size(), 0U);
 
+    shared_vector<float> weights(*queue_->ptr);
+    weights.clear();
+    EXPECT_NO_THROW(filter.weighted_random_sampling(shared_cloud, weights, 2));
+    ASSERT_EQ(shared_cloud.size(), 0U);
+
     filter.farthest_point_sampling(shared_cloud, 2);
     ASSERT_EQ(shared_cloud.size(), 0U);
 
@@ -167,8 +413,33 @@ TEST_F(PreprocessFilterTest, EmptyPointCloudIsNoOpForAllFilters) {
     ASSERT_EQ(shared_cloud.size(), 0U);
 }
 
-TEST_F(PreprocessFilterTest, FarthestPointSamplingSelectsSpreadPoints) {
+TEST_F(PreprocessFilterTest, EmptyPointCloudClearsOutputForSamplingOperators) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->clear();
+    PointCloudShared source(*queue_, cpu_cloud);
 
+    PointCloudCPU stale_cpu_cloud;
+    stale_cpu_cloud.points->resize(1);
+    stale_cpu_cloud.intensities->resize(1);
+    (*stale_cpu_cloud.points)[0] = PointType(99.0f, 0.0f, 0.0f, 1.0f);
+    (*stale_cpu_cloud.intensities)[0] = 42.0f;
+    PointCloudShared output(*queue_, stale_cpu_cloud);
+
+    algorithms::filter::PreprocessFilter filter(*queue_);
+
+    filter.random_sampling(source, output, 2);
+    ASSERT_EQ(output.size(), 0U);
+
+    shared_vector<float> weights(*queue_->ptr);
+    weights.clear();
+    filter.weighted_random_sampling(source, output, weights, 2);
+    ASSERT_EQ(output.size(), 0U);
+
+    filter.farthest_point_sampling(source, output, 2);
+    ASSERT_EQ(output.size(), 0U);
+}
+
+TEST_F(PreprocessFilterTest, FarthestPointSamplingSelectsSpreadPoints) {
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(4);
     (*cpu_cloud.points)[0] = PointType(0.0f, 0.0f, 0.0f, 1.0f);
@@ -215,8 +486,36 @@ TEST_F(PreprocessFilterTest, FarthestPointSamplingSelectsSpreadPoints) {
     EXPECT_FLOAT_EQ(max_distance, std::sqrt(2.0f));
 }
 
-TEST_F(PreprocessFilterTest, AngleIncidenceFilterKeepsPointsWithinRange) {
+TEST_F(PreprocessFilterTest, FarthestPointSamplingCopiesOutputWhenSamplingCountCoversInput) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(3);
+    cpu_cloud.intensities->resize(3);
+    (*cpu_cloud.points)[0] = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[1] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[2] = PointType(2.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.intensities)[0] = 0.5f;
+    (*cpu_cloud.intensities)[1] = 1.5f;
+    (*cpu_cloud.intensities)[2] = 2.5f;
 
+    PointCloudShared source(*queue_, cpu_cloud);
+    PointCloudShared output(*queue_);
+    output.points->resize(1);
+    output.points->at(0) = PointType(99.0f, 0.0f, 0.0f, 1.0f);
+
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.farthest_point_sampling(source, output, 10);
+
+    ASSERT_EQ(output.size(), 3U);
+    ASSERT_TRUE(output.has_intensity());
+    EXPECT_FLOAT_EQ((*output.points)[0].x(), 0.0f);
+    EXPECT_FLOAT_EQ((*output.points)[1].x(), 1.0f);
+    EXPECT_FLOAT_EQ((*output.points)[2].x(), 2.0f);
+    EXPECT_FLOAT_EQ((*output.intensities)[0], 0.5f);
+    EXPECT_FLOAT_EQ((*output.intensities)[1], 1.5f);
+    EXPECT_FLOAT_EQ((*output.intensities)[2], 2.5f);
+}
+
+TEST_F(PreprocessFilterTest, AngleIncidenceFilterKeepsPointsWithinRange) {
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(3);
     cpu_cloud.normals->resize(3);
@@ -244,7 +543,6 @@ TEST_F(PreprocessFilterTest, AngleIncidenceFilterKeepsPointsWithinRange) {
 }
 
 TEST_F(PreprocessFilterTest, AngleIncidenceFilterThrowsWithoutNormalsOrCovs) {
-
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(1);
     (*cpu_cloud.points)[0] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
@@ -256,7 +554,6 @@ TEST_F(PreprocessFilterTest, AngleIncidenceFilterThrowsWithoutNormalsOrCovs) {
 }
 
 TEST_F(PreprocessFilterTest, AngleIncidenceFilterValidatesAngles) {
-
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(1);
     cpu_cloud.normals->resize(1);

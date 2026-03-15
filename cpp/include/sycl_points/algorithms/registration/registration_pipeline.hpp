@@ -68,18 +68,19 @@ public:
         const bool use_fixed_scales = options.robust_scale > 0.0f || options.rotation_robust_scale > 0.0f;
         bool enable_auto_scaling = !use_fixed_scales && this->params_.robust.type != robust::RobustLossType::NONE &&
                                    this->pipeline_params_.auto_scale;
-        if (enable_auto_scaling && (this->pipeline_params_.min_scale <= 0.0f ||
-                                    this->pipeline_params_.min_scale >= this->params_.robust.init_scale)) {
-            std::cout
-                << "[Caution] `pipeline.robust.min_scale` must be greater than zero and less than robust.init_scale."
-                << std::endl;
+        const float robust_init_scale = this->pipeline_params_.init_scale;
+        const float rotation_robust_init_scale = this->pipeline_params_.rotation_init_scale;
+        if (enable_auto_scaling &&
+            (this->pipeline_params_.min_scale <= 0.0f || this->pipeline_params_.min_scale >= robust_init_scale)) {
+            std::cout << "[Caution] `pipeline.robust.min_scale` must be greater than zero and less than "
+                         "`pipeline.robust.init_scale`."
+                      << std::endl;
             enable_auto_scaling = false;
         }
-        if (enable_auto_scaling && (this->params_.rotation_constraint.robust.min_scale <= 0.0f ||
-                                    this->params_.rotation_constraint.robust.min_scale >=
-                                        this->params_.rotation_constraint.robust.init_scale)) {
-            std::cout << "[Caution] `rotation_constraint.robust.min_scale` must be greater than zero and less than "
-                         "rotation_constraint.robust.init_scale."
+        if (enable_auto_scaling && (this->pipeline_params_.rotation_min_scale <= 0.0f ||
+                                    this->pipeline_params_.rotation_min_scale >= rotation_robust_init_scale)) {
+            std::cout << "[Caution] `pipeline.robust.rotation_min_scale` must be greater than zero and less than "
+                         "`pipeline.robust.rotation_init_scale`."
                       << std::endl;
             enable_auto_scaling = false;
         }
@@ -92,18 +93,21 @@ public:
         const size_t robust_levels =
             enable_auto_scaling ? std::max<size_t>(1, this->pipeline_params_.auto_scaling_iter) : 1;
 
-        float robust_scale = options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.init_scale;
-        const float robust_scaling_factor =
-            robust_levels > 1 ? std::pow(this->pipeline_params_.min_scale / this->params_.robust.init_scale,
-                                         1.0f / static_cast<float>(robust_levels - 1))
-                              : 1.0f;
+        float robust_scale = options.robust_scale > 0.0f
+                                 ? options.robust_scale
+                                 : (enable_auto_scaling ? robust_init_scale : this->params_.robust.default_scale);
+        const float robust_scaling_factor = robust_levels > 1
+                                                ? std::pow(this->pipeline_params_.min_scale / robust_init_scale,
+                                                           1.0f / static_cast<float>(robust_levels - 1))
+                                                : 1.0f;
 
-        float rotation_robust_scale = options.rotation_robust_scale > 0.0f
-                                          ? options.rotation_robust_scale
-                                          : this->params_.rotation_constraint.robust.init_scale;
+        float rotation_robust_scale =
+            options.rotation_robust_scale > 0.0f
+                ? options.rotation_robust_scale
+                : (enable_auto_scaling ? rotation_robust_init_scale
+                                       : this->params_.rotation_constraint.robust.default_scale);
         const float rotation_robust_scaling_factor =
-            robust_levels > 1 ? std::pow(this->params_.rotation_constraint.robust.min_scale /
-                                             this->params_.rotation_constraint.robust.init_scale,
+            robust_levels > 1 ? std::pow(this->pipeline_params_.rotation_min_scale / rotation_robust_init_scale,
                                          1.0f / static_cast<float>(robust_levels - 1))
                               : 1.0f;
 
@@ -175,7 +179,9 @@ public:
             return result;
         }
 
-        PointCloudShared deskewed(source);
+        // Use a dedicated working buffer so deskew writes into a non-aliased output cloud.
+        this->deskewed_pc_ = std::make_shared<PointCloudShared>(source.queue);
+
         const size_t deskew_levels = std::max<size_t>(1, this->velocity_update_iter_);
 
         for (size_t deskew_iter = 0; deskew_iter < deskew_levels; ++deskew_iter) {
@@ -192,13 +198,16 @@ public:
                           << std::endl;
             }
 
-            deskew::deskew_point_cloud_constant_velocity(source, deskewed, Eigen::Isometry3f(options.prev_pose),
-                                                         result.T, options.dt);
-            result = this->aligner_(deskewed, target, target_knn, result.T.matrix(), options);
+            deskew::deskew_point_cloud_constant_velocity(source, *this->deskewed_pc_,
+                                                         Eigen::Isometry3f(options.prev_pose), result.T, options.dt);
+            result = this->aligner_(*this->deskewed_pc_, target, target_knn, result.T.matrix(), options);
         }
 
         return result;
     }
+
+    /// @brief Returns the deskewed source point cloud used by the most recent align() call
+    const PointCloudShared* get_deskewed_point_cloud() const { return this->deskewed_pc_.get(); }
 
     /// @brief Exposes this pipeline as a RegistrationAligner
     RegistrationAligner make_aligner() const {
@@ -212,6 +221,7 @@ private:
     RegistrationAligner aligner_;
     size_t velocity_update_iter_ = 1;
     bool verbose_ = false;
+    mutable PointCloudShared::Ptr deskewed_pc_ = nullptr;
 };
 
 /// @brief Composes optional registration wrappers around the core Registration solver
@@ -233,7 +243,9 @@ public:
     /// @param pipeline_params Parameters for the solver and optional wrappers
     RegistrationPipeline(const Registration::Ptr& registration,
                          const RegistrationPipelineParams& pipeline_params = RegistrationPipelineParams())
-        : RegistrationPipeline(make_registration_aligner(registration), pipeline_params) { this->registration_ = registration; }
+        : RegistrationPipeline(make_registration_aligner(registration), pipeline_params) {
+        this->registration_ = registration;
+    }
 
     /// @brief Constructor
     /// @param queue SYCL queue used to construct the registration backend
@@ -260,8 +272,32 @@ public:
     /// @brief Returns the underlying Registration backend
     const Registration::Ptr& registration() const { return this->registration_; }
 
+    /// @brief Computes geometry ICP robust weights using the latest registration input point cloud
+    void compute_icp_robust_weights(const PointCloudShared& target, const knn::KNNBase& target_knn,
+                                    const TransformMatrix& pose, float robust_scale, shared_vector<float>& out) const {
+        if (this->registration_ == nullptr) {
+            throw std::runtime_error(
+                "[RegistrationPipeline::compute_icp_robust_weights] Registration backend is not available.");
+        }
+        const auto* source = this->get_deskewed_point_cloud();
+        if (source == nullptr) {
+            throw std::runtime_error(
+                "[RegistrationPipeline::compute_icp_robust_weights] Registration input point cloud is not available.");
+        }
+        this->registration_->compute_icp_robust_weights(*source, target, target_knn, pose, robust_scale, out);
+    }
+
     /// @brief Returns the source point cloud used by the most recent align() call
-    const PointCloudShared& get_registration_input_point_cloud() const { return *this->registration_input_pc_; }
+    const PointCloudShared* get_registration_input_point_cloud() const { return this->registration_input_pc_.get(); }
+
+    /// @brief Returns the deskewed source point cloud from the most recent align() call
+    /// @note If velocity update is disabled, this returns the registration input point cloud.
+    const PointCloudShared* get_deskewed_point_cloud() const {
+        if (this->velocity_update_pipeline_ != nullptr) {
+            return this->velocity_update_pipeline_->get_deskewed_point_cloud();
+        }
+        return this->registration_input_pc_.get();
+    }
 
 private:
     void wrap_aligner() {
@@ -272,8 +308,9 @@ private:
         //     for each deskew update:
         //       align(...)
         if (this->pipeline_params_.velocity_update.enable) {
-            this->velocity_update_pipeline_ = std::make_shared<VelocityUpdatePipeline>(
-                this->aligner_, this->pipeline_params_.velocity_update.iter, this->pipeline_params_.registration.verbose);
+            this->velocity_update_pipeline_ =
+                std::make_shared<VelocityUpdatePipeline>(this->aligner_, this->pipeline_params_.velocity_update.iter,
+                                                         this->pipeline_params_.registration.verbose);
             this->aligner_ = this->velocity_update_pipeline_->make_aligner();
         }
 
@@ -293,7 +330,8 @@ private:
 
     void update_registration_input(const PointCloudShared& source) const {
         this->initialize_runtime_state(source.queue);
-        if (this->pipeline_params_.random_sampling.enable && source.size() > this->pipeline_params_.random_sampling.num) {
+        if (this->pipeline_params_.random_sampling.enable &&
+            source.size() > this->pipeline_params_.random_sampling.num) {
             this->preprocess_filter_->random_sampling(source, *this->registration_input_pc_,
                                                       this->pipeline_params_.random_sampling.num);
         } else {
