@@ -109,7 +109,6 @@ public:
         : params_(params), queue_(queue) {
         this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(1, knn::KNNResult(), *this->queue_.ptr);
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
-        this->icp_robust_weights_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
 
         this->linearized_on_device_ = std::make_shared<LinearizedDevice>(this->queue_);
 
@@ -211,13 +210,10 @@ public:
                              const TransformMatrix& initial_guess = TransformMatrix::Identity(),
                              const ExecutionOptions& options = ExecutionOptions()) {
         const size_t N = source.size();
-        this->last_icp_robust_scale_ =
-            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
         RegistrationResult result;
         result.T.matrix() = initial_guess;
 
         if (N == 0) {
-            this->icp_robust_weights_->assign(0, 0.0f);
             return result;
         }
 
@@ -267,19 +263,26 @@ public:
                 }
             }
         }
-        this->last_icp_robust_scale_ =
-            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
 
         return result;
     }
 
     /// @brief Computes geometry ICP robust weights in source-point order for the provided alignment state
-    const shared_vector<float>& compute_icp_robust_weights(const PointCloudShared& source,
-                                                           const PointCloudShared& target,
-                                                           const knn::KNNBase& target_knn,
-                                                           const TransformMatrix& pose) const {
-        this->update_icp_robust_weights(source, target, target_knn, pose);
-        return *this->icp_robust_weights_;
+    void compute_icp_robust_weights(const PointCloudShared& source, const PointCloudShared& target,
+                                    const knn::KNNBase& target_knn, const TransformMatrix& pose, float robust_scale,
+                                    shared_vector<float>& out) const {
+        const size_t N = source.size();
+        out.assign(N, 0.0f);
+        if (N == 0) {
+            return;
+        }
+
+        auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, pose);
+        auto events = this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
+            return this->compute_icp_robust_weights_async<reg, loss>(source, target, pose, robust_scale, out,
+                                                                     knn_event.evs);
+        });
+        events.wait_and_throw();
     }
 
 private:
@@ -287,9 +290,7 @@ private:
     sycl_utils::DeviceQueue queue_;
 
     mutable shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
-    mutable shared_vector_ptr<float> icp_robust_weights_ = nullptr;
     std::shared_ptr<LinearizedDevice> linearized_on_device_ = nullptr;
-    mutable float last_icp_robust_scale_ = 0.0f;
 
     DegenerateRegularization degenerate_reg_;
     float genz_alpha_ = 1.0f;
@@ -337,6 +338,7 @@ private:
     template <RegType reg, robust::RobustLossType loss>
     sycl_utils::events compute_icp_robust_weights_async(const PointCloudShared& source, const PointCloudShared& target,
                                                         const Eigen::Matrix4f transT, float robust_scale,
+                                                        shared_vector<float>& out,
                                                         const std::vector<sycl::event>& depends) const {
         sycl_utils::events events;
         events += this->queue_.ptr->submit([&](sycl::handler& h) {
@@ -357,7 +359,7 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
-            auto weights_ptr = this->icp_robust_weights_->data();
+            auto weights_ptr = out.data();
 
             h.depends_on(depends);
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> id) {
@@ -388,22 +390,6 @@ private:
             });
         });
         return events;
-    }
-
-    void update_icp_robust_weights(const PointCloudShared& source, const PointCloudShared& target,
-                                   const knn::KNNBase& target_knn, const TransformMatrix& pose) const {
-        const size_t N = source.size();
-        this->icp_robust_weights_->assign(N, 0.0f);
-        if (N == 0) {
-            return;
-        }
-
-        auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, pose);
-        auto events = this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
-            return this->compute_icp_robust_weights_async<reg, loss>(source, target, pose, this->last_icp_robust_scale_,
-                                                                     knn_event.evs);
-        });
-        events.wait_and_throw();
     }
 
     float compute_genz_alpha(const PointCloudShared& source,  //
@@ -495,7 +481,6 @@ private:
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
-            auto icp_robust_weights_ptr = this->icp_robust_weights_->data();
 
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
@@ -591,7 +576,6 @@ private:
                         // Apply robust kernel
                         const float robust_weight =
                             robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
-                        icp_robust_weights_ptr[index] = robust_weight;
                         const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
                         const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
                         total_H0 = robust_weight * H0;

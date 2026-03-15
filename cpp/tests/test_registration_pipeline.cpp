@@ -386,10 +386,12 @@ TEST(RegistrationPipelineTest, RegistrationComputeWeightsUseZeroOneForNoneLoss) 
     const auto target = make_registration_target(queue);
     CountingNearestKNN knn;
     knn.set_target(target);
+    shared_vector<float> weights(*queue.ptr);
 
     registration.align(source, target, knn);
     const size_t calls_after_align = knn.call_count;
-    const auto& weights = registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity());
+    registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity(),
+                                            params.robust.default_scale, weights);
     EXPECT_EQ(weights.size(), source.size());
     EXPECT_FLOAT_EQ(weights[0], 1.0f);
     EXPECT_FLOAT_EQ(weights[1], 1.0f);
@@ -411,11 +413,13 @@ TEST(RegistrationPipelineTest, RegistrationComputeWeightsFollowsProvidedSource) 
     const auto target = make_registration_target(queue);
     CountingNearestKNN knn;
     knn.set_target(target);
+    shared_vector<float> first_weights(*queue.ptr);
+    shared_vector<float> refreshed_weights(*queue.ptr);
 
     auto source = make_registration_source(queue);
     registration.align(source, target, knn);
-    const auto& first_weights =
-        registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity());
+    registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity(),
+                                            params.robust.default_scale, first_weights);
     ASSERT_EQ(first_weights.size(), 3U);
     EXPECT_FLOAT_EQ(first_weights[2], 0.0f);
 
@@ -426,12 +430,44 @@ TEST(RegistrationPipelineTest, RegistrationComputeWeightsFollowsProvidedSource) 
     registration.align(updated_source, target, knn);
 
     const size_t calls_before_refresh = knn.call_count;
-    const auto& refreshed_weights =
-        registration.compute_icp_robust_weights(updated_source, target, knn, TransformMatrix::Identity());
+    registration.compute_icp_robust_weights(updated_source, target, knn, TransformMatrix::Identity(),
+                                            params.robust.default_scale, refreshed_weights);
     EXPECT_EQ(knn.call_count, calls_before_refresh + 1);
     ASSERT_EQ(refreshed_weights.size(), 2U);
     EXPECT_FLOAT_EQ(refreshed_weights[0], 1.0f);
     EXPECT_FLOAT_EQ(refreshed_weights[1], 1.0f);
+}
+
+TEST(RegistrationPipelineTest, RegistrationComputeWeightsUsesProvidedRobustScale) {
+    sycl::device device(sycl_utils::device_selector::default_selector_v);
+    sycl_utils::DeviceQueue queue(device);
+
+    RegistrationParams params;
+    params.reg_type = RegType::POINT_TO_POINT;
+    params.robust.type = robust::RobustLossType::HUBER;
+    params.robust.default_scale = 10.0f;
+    params.max_iterations = 1;
+    params.max_correspondence_distance = 10.0f;
+
+    Registration registration(queue, params);
+    PointCloudShared source(queue);
+    source.points->resize(1);
+    source.points->at(0) = PointType(3.0f, 0.0f, 0.0f, 1.0f);
+    PointCloudShared target(queue);
+    target.points->resize(1);
+    target.points->at(0) = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    CountingNearestKNN knn;
+    knn.set_target(target);
+
+    shared_vector<float> weights(*queue.ptr);
+    registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity(), 1.0f, weights);
+    ASSERT_EQ(weights.size(), 1U);
+    EXPECT_NEAR(weights[0], 1.0f / 3.0f, 1e-5f);
+
+    registration.align(source, target, knn);
+    registration.compute_icp_robust_weights(source, target, knn, TransformMatrix::Identity(), 2.0f, weights);
+    ASSERT_EQ(weights.size(), 1U);
+    EXPECT_NEAR(weights[0], 2.0f / 3.0f, 1e-5f);
 }
 
 TEST(RegistrationPipelineTest, PipelineLazyWeightsMatchDeskewedPointCloudSize) {
@@ -460,7 +496,9 @@ TEST(RegistrationPipelineTest, PipelineLazyWeightsMatchDeskewedPointCloudSize) {
 
     const auto* deskewed = pipeline.get_deskewed_point_cloud();
     ASSERT_NE(deskewed, nullptr);
-    const auto& weights = pipeline.compute_icp_robust_weights(target, knn, TransformMatrix::Identity());
+    shared_vector<float> weights(*queue.ptr);
+    pipeline.compute_icp_robust_weights(target, knn, TransformMatrix::Identity(),
+                                        params.registration.robust.default_scale, weights);
     EXPECT_EQ(weights.size(), deskewed->size());
 }
 

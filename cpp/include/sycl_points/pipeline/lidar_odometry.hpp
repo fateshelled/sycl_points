@@ -158,6 +158,7 @@ private:
     algorithms::knn::KDTree::Ptr submap_tree_ = nullptr;
     algorithms::knn::KNNResult knn_result_;
     algorithms::knn::KNNResult knn_result_grad_;
+    shared_vector_ptr<float> icp_weights_ = nullptr;
 
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
     algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
@@ -224,6 +225,7 @@ private:
             const auto dev =
                 sycl_utils::device_selector::select_device(this->params_.device.vendor, this->params_.device.type);
             this->queue_ptr_ = std::make_shared<sycl_utils::DeviceQueue>(dev);
+            this->icp_weights_ = std::make_shared<shared_vector<float>>(*this->queue_ptr_->ptr);
         }
 
         // initialize buffer
@@ -466,9 +468,10 @@ private:
             auto reg_pc = this->registration_pipeline_->get_deskewed_point_cloud();
             if (reg_pc) {
                 // weighted random sampling
-                const auto icp_weights = this->registration_pipeline_->compute_icp_robust_weights(
-                    *this->submap_pc_ptr_, *this->submap_tree_, current_pose.matrix());
-                this->preprocess_filter_->weighted_random_sampling(*reg_pc, *this->keyframe_pc_, icp_weights,
+                this->registration_pipeline_->compute_icp_robust_weights(
+                    *this->submap_pc_ptr_, *this->submap_tree_, current_pose.matrix(),
+                    this->params_.registration.pipeline.registration.robust.default_scale, *this->icp_weights_);
+                this->preprocess_filter_->weighted_random_sampling(*reg_pc, *this->keyframe_pc_, *this->icp_weights_,
                                                                    this->params_.submap.point_random_sampling_num);
             } else {
                 // uniform random sampling
