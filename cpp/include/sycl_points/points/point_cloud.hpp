@@ -11,7 +11,7 @@ namespace sycl_points {
 /// @brief CPU point cloud class with point and covariance container.
 struct PointCloudCPU {
     using Ptr = std::shared_ptr<PointCloudCPU>;
-    using ConstPtr = std::shared_ptr<PointCloudCPU>;
+    using ConstPtr = std::shared_ptr<const PointCloudCPU>;
 
     /// @brief point container
     std::shared_ptr<PointContainerCPU> points = nullptr;
@@ -86,7 +86,7 @@ struct PointCloudCPU {
 /// @brief Shared memory point cloud class with point and covariance container.
 struct PointCloudShared {
     using Ptr = std::shared_ptr<PointCloudShared>;
-    using ConstPtr = std::shared_ptr<PointCloudShared>;
+    using ConstPtr = std::shared_ptr<const PointCloudShared>;
 
     /// @brief SYCL queue
     sycl_utils::DeviceQueue queue;
