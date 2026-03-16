@@ -226,14 +226,14 @@ TEST(RegistrationPipelineTest, AccessorsReturnNullBeforeAlign) {
     EXPECT_EQ(pipeline.get_registration_input_point_cloud(), nullptr);
     EXPECT_EQ(pipeline.get_deskewed_point_cloud(), nullptr);
 
-    VelocityUpdatePipeline velocity_pipeline(
+    pipeline::VelocityUpdateAligner velocity_pipeline(
         [](const PointCloudShared&, const PointCloudShared&, const knn::KNNBase&, const TransformMatrix&,
            const Registration::ExecutionOptions&) { return RegistrationResult{}; },
         1, false);
     EXPECT_EQ(velocity_pipeline.get_deskewed_point_cloud(), nullptr);
 }
 
-TEST(RegistrationPipelineTest, VelocityUpdatePipelineExposesMostRecentDeskewedPointCloud) {
+TEST(RegistrationPipelineTest, VelocityUpdateAlignerExposesMostRecentDeskewedPointCloud) {
     sycl::device device(sycl_utils::device_selector::default_selector_v);
     sycl_utils::DeviceQueue queue(device);
     const auto source = make_cloud(queue, 4);
@@ -248,7 +248,7 @@ TEST(RegistrationPipelineTest, VelocityUpdatePipelineExposesMostRecentDeskewedPo
         return result;
     };
 
-    VelocityUpdatePipeline pipeline(aligner, 1, false);
+    pipeline::VelocityUpdateAligner pipeline(aligner, 1, false);
     Registration::ExecutionOptions options;
     options.dt = 1.0f;
     options.prev_pose = TransformMatrix::Identity();
@@ -320,7 +320,7 @@ TEST(RegistrationPipelineTest, DeskewedAccessorFallsBackToRegistrationInputWitho
     EXPECT_EQ(pipeline.get_deskewed_point_cloud()->size(), 2U);
 }
 
-TEST(RegistrationPipelineTest, RobustPipelineUsesDefaultScaleAsFixedAndInitialScale) {
+TEST(RegistrationPipelineTest, RobustAlignerUsesDefaultScaleAsFixedAndInitialScale) {
     sycl::device device(sycl_utils::device_selector::default_selector_v);
     sycl_utils::DeviceQueue queue(device);
 
