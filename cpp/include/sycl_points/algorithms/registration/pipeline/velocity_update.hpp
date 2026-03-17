@@ -77,7 +77,7 @@ public:
             }
 
             deskew::deskew_point_cloud_constant_velocity(source, *this->deskewed_pc_,
-                                                         Eigen::Isometry3f(options.prev_pose), result.T, options.dt);
+                                                         Eigen::Isometry3f(options.prev_pose), result.T);
             result = this->aligner_(*this->deskewed_pc_, target, target_knn, result.T.matrix(), options);
         }
 

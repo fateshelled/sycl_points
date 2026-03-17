@@ -27,12 +27,10 @@ namespace deskew {
 /// @param output_cloud Point cloud receiving the deskewed data. Containers will be resized as needed.
 /// @param previous_relative_pose Relative pose at the start of the scan interval.
 /// @param current_relative_pose Relative pose at the end of the scan interval.
-/// @param delta_time_seconds Time difference between the two poses in seconds (float precision).
 /// @return true when deskewing succeeds, false if prerequisites are not met.
 inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
                                                  const Eigen::Transform<float, 3, 1>& previous_relative_pose,
-                                                 const Eigen::Transform<float, 3, 1>& current_relative_pose,
-                                                 float delta_time_seconds) {
+                                                 const Eigen::Transform<float, 3, 1>& current_relative_pose) {
     if (!input_cloud.queue.ptr || !output_cloud.queue.ptr) {
         throw std::runtime_error("[deskew_point_cloud_constant_velocity] SYCL queue is not initialized");
     }
@@ -44,10 +42,6 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
 
     const size_t cloud_size = input_cloud.size();
     if (cloud_size == 0 || !input_cloud.has_timestamps()) {
-        return false;
-    }
-
-    if (delta_time_seconds <= 0.0f) {
         return false;
     }
 

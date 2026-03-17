@@ -586,7 +586,7 @@ private:
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
         if (this->params_.registration.pipeline.velocity_update.enable) {
             algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
-                                                                     this->odom_, reg_result.T, this->dt_);
+                                                                     this->odom_, reg_result.T);
         }
 
         // check inlier ratio for registration success or not.

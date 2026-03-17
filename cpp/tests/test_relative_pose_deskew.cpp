@@ -56,7 +56,7 @@ TEST(RelativePoseDeskewTest, DeskewsPointsWithConstantVelocity) {
     ASSERT_TRUE(cloud.has_cov());
 
     PointCloudShared deskewed_cloud(queue);
-    const bool success = deskew_point_cloud_constant_velocity(cloud, deskewed_cloud, start_pose, end_pose, 1.0f);
+    const bool success = deskew_point_cloud_constant_velocity(cloud, deskewed_cloud, start_pose, end_pose);
     ASSERT_TRUE(success);
 
     for (size_t idx = 0; idx < deskewed_cloud.size(); ++idx) {
@@ -115,7 +115,7 @@ TEST(RelativePoseDeskewTest, PreservesAndRotatesPhotometricGradients) {
     ASSERT_TRUE(cloud.has_intensity_gradient());
 
     PointCloudShared deskewed_cloud(queue);
-    const bool success = deskew_point_cloud_constant_velocity(cloud, deskewed_cloud, start_pose, end_pose, 1.0f);
+    const bool success = deskew_point_cloud_constant_velocity(cloud, deskewed_cloud, start_pose, end_pose);
     ASSERT_TRUE(success);
     ASSERT_TRUE(deskewed_cloud.has_color_gradient());
     ASSERT_TRUE(deskewed_cloud.has_intensity_gradient());
@@ -129,7 +129,7 @@ TEST(RelativePoseDeskewTest, PreservesAndRotatesPhotometricGradients) {
     }
 }
 
-TEST(RelativePoseDeskewTest, HandlesNonPositiveDuration) {
+TEST(RelativePoseDeskewTest, HandlesNonPositiveScanDuration) {
     const Eigen::Transform<float, 3, 1> start_pose = Eigen::Transform<float, 3, 1>::Identity();
     const Eigen::Transform<float, 3, 1> end_pose = Eigen::Transform<float, 3, 1>::Identity();
 
@@ -145,7 +145,7 @@ TEST(RelativePoseDeskewTest, HandlesNonPositiveDuration) {
     cloud.end_time_ms = cloud.start_time_ms;
 
     PointCloudShared deskewed_cloud(queue);
-    EXPECT_FALSE(deskew_point_cloud_constant_velocity(cloud, deskewed_cloud, start_pose, end_pose, 0.0f));
+    EXPECT_FALSE(deskew_point_cloud_constant_velocity(cloud, deskewed_cloud, start_pose, end_pose));
 }
 
 }  // namespace
