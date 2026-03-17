@@ -594,11 +594,13 @@ private:
         if (registration_input_pc == nullptr || registration_input_pc->size() == 0) {
             return false;
         }
-        const float inlier_ratio =
-            static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc->size());
-        if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
-            // registration is failed
-            return false;
+        if (this->params_.submap.keyframe.inlier_ratio_threshold > 0.0f) {
+            const float inlier_ratio =
+                static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc->size());
+            if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
+                // registration is failed
+                return false;
+            }
         }
 
         const auto submap_type = this->params_.submap.map_type;
