@@ -3,6 +3,7 @@
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -32,6 +33,15 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
                                                  const Eigen::Transform<float, 3, 1>& previous_relative_pose,
                                                  const Eigen::Transform<float, 3, 1>& current_relative_pose,
                                                  float delta_time_seconds) {
+    if (!input_cloud.queue.ptr || !output_cloud.queue.ptr) {
+        throw std::runtime_error("[deskew_point_cloud_constant_velocity] SYCL queue is not initialized");
+    }
+
+    if (input_cloud.queue.ptr->get_context() != output_cloud.queue.ptr->get_context()) {
+        throw std::runtime_error(
+            "[deskew_point_cloud_constant_velocity] input_cloud and output_cloud must share the same SYCL context");
+    }
+
     const size_t cloud_size = input_cloud.size();
     if (cloud_size == 0 || !input_cloud.has_timestamps()) {
         return false;
