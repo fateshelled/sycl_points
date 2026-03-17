@@ -53,7 +53,7 @@ lidar_odometry_node:
     submap/point_random_sampling_num: 512
     submap/map_type: OCCUPANCY_GRID_MAP  # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
     submap/covariance_aggregation_mode: LOG_EUCLIDEAN  # ARITHMETIC, LOG_EUCLIDEAN
-    submap/keyframe/inlier_ratio_threshold: 0.7
+    submap/keyframe/inlier_ratio_threshold: 0.3
     submap/keyframe/distance_threshold: 2.0
     submap/keyframe/angle_threshold_degrees: 20.0
     submap/keyframe/time_threshold_seconds: 1.0
