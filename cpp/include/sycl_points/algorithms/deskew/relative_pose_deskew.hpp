@@ -51,6 +51,12 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
         return false;
     }
 
+    const float scan_duration_seconds =
+        static_cast<float>((input_cloud.end_time_ms - input_cloud.start_time_ms) * 1e-3);
+    if (scan_duration_seconds <= 0.0f) {
+        return false;
+    }
+
     if (&input_cloud != &output_cloud) {
         // Copy metadata so the output stays synchronized with the input timing information.
         output_cloud.start_time_ms = input_cloud.start_time_ms;
@@ -157,8 +163,8 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
                     return;
                 }
 
-                // Normalize with respect to the scan duration using timestamp offsets directly.
-                const float normalized_time = sycl::clamp(timestamp_seconds / delta_time_seconds, 0.0f, 1.0f);
+                // Normalize with respect to the scan duration derived from the point cloud timestamps.
+                const float normalized_time = sycl::clamp(timestamp_seconds / scan_duration_seconds, 0.0f, 1.0f);
 
                 Eigen::Vector<float, 6> scaled_twist;
                 for (size_t i = 0; i < delta_twist_array.size(); ++i) {
