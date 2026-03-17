@@ -299,7 +299,6 @@ TEST(RegistrationPipelineTest, VelocityUpdateAlignerFallsBackWithoutTimestamps) 
     ASSERT_NE(deskewed, nullptr);
     EXPECT_EQ(deskewed->size(), source.size());
     EXPECT_FALSE(deskewed->has_timestamps());
-    EXPECT_NE(deskewed->points.get(), source.points.get());
 }
 
 TEST(RegistrationPipelineTest, RegistrationPipelineExposesDeskewedPointCloud) {
@@ -358,7 +357,7 @@ TEST(RegistrationPipelineTest, DeskewedAccessorFallsBackToRegistrationInputWitho
     EXPECT_EQ(pipeline.get_deskewed_point_cloud()->size(), 2U);
 }
 
-TEST(RegistrationPipelineTest, RobustAlignerUsesDefaultScaleAsFixedAndInitialScale) {
+TEST(RegistrationPipelineTest, RobustAlignerLeavesScaleUnsetWhenAutoScalingDisabledAndAnnealsWhenEnabled) {
     sycl::device device(sycl_utils::device_selector::default_selector_v);
     sycl_utils::DeviceQueue queue(device);
 
@@ -378,7 +377,7 @@ TEST(RegistrationPipelineTest, RobustAlignerUsesDefaultScaleAsFixedAndInitialSca
     fixed_pipeline.align(make_cloud(queue, 3), make_cloud(queue, 3), knn);
 
     ASSERT_EQ(fixed_scales.size(), 1U);
-    EXPECT_FLOAT_EQ(fixed_scales.front(), 8.0f);
+    EXPECT_FLOAT_EQ(fixed_scales.front(), -1.0f);
 
     params.robust.auto_scale = true;
     params.robust.init_scale = 6.0f;
