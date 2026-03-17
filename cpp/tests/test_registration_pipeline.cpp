@@ -264,6 +264,44 @@ TEST(RegistrationPipelineTest, VelocityUpdateAlignerExposesMostRecentDeskewedPoi
     EXPECT_NE(deskewed->timestamp_offsets.get(), source.timestamp_offsets.get());
 }
 
+TEST(RegistrationPipelineTest, VelocityUpdateAlignerFallsBackWithoutTimestamps) {
+    sycl::device device(sycl_utils::device_selector::default_selector_v);
+    sycl_utils::DeviceQueue queue(device);
+    auto source = make_cloud(queue, 4);
+    source.timestamp_offsets->clear();
+    source.start_time_ms = 0.0;
+    source.end_time_ms = 0.0;
+    const auto target = make_cloud(queue, 3);
+    DummyKNN knn;
+
+    bool aligned_source_has_timestamps = true;
+    size_t aligned_source_size = 0;
+    auto aligner = [&](const PointCloudShared& source_arg, const PointCloudShared&, const knn::KNNBase&,
+                       const TransformMatrix&, const Registration::ExecutionOptions&) {
+        aligned_source_has_timestamps = source_arg.has_timestamps();
+        aligned_source_size = source_arg.size();
+        RegistrationResult result;
+        result.inlier = static_cast<uint32_t>(source_arg.size());
+        return result;
+    };
+
+    pipeline::VelocityUpdateAligner pipeline(aligner, 2, false);
+    Registration::ExecutionOptions options;
+    options.dt = 1.0f;
+    options.prev_pose = TransformMatrix::Identity();
+
+    const auto result = pipeline.align(source, target, knn, TransformMatrix::Identity(), options);
+
+    EXPECT_EQ(result.inlier, source.size());
+    EXPECT_EQ(aligned_source_size, source.size());
+    EXPECT_FALSE(aligned_source_has_timestamps);
+    const auto* deskewed = pipeline.get_deskewed_point_cloud();
+    ASSERT_NE(deskewed, nullptr);
+    EXPECT_EQ(deskewed->size(), source.size());
+    EXPECT_FALSE(deskewed->has_timestamps());
+    EXPECT_NE(deskewed->points.get(), source.points.get());
+}
+
 TEST(RegistrationPipelineTest, RegistrationPipelineExposesDeskewedPointCloud) {
     sycl::device device(sycl_utils::device_selector::default_selector_v);
     sycl_utils::DeviceQueue queue(device);

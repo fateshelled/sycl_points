@@ -36,6 +36,7 @@ public:
     /// @param target_knn KNN structure built on the target point cloud
     /// @param initial_guess Initial transformation matrix
     /// @param options Per-call execution options including previous pose and time delta
+    /// @note If the source has no timestamps, deskew is skipped and the original source cloud is forwarded instead.
     /// @return Registration result from the final deskew iteration
     RegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                              const knn::KNNBase& target_knn,
@@ -50,6 +51,14 @@ public:
 
         // Use a dedicated working buffer so deskew writes into a non-aliased output cloud.
         this->deskewed_pc_ = std::make_shared<PointCloudShared>(source.queue);
+
+        if (!source.has_timestamps()) {
+            if (this->verbose_) {
+                std::cout << "deskew skipped: source has no timestamps" << std::endl;
+            }
+            *this->deskewed_pc_ = source;
+            return this->aligner_(*this->deskewed_pc_, target, target_knn, result.T.matrix(), options);
+        }
 
         const size_t deskew_levels = std::max<size_t>(1, this->velocity_update_iter_);
 
