@@ -186,6 +186,18 @@ private:
         }
         if (source.has_timestamps()) {
             this->filter_->filter_by_flags(*source.timestamp_offsets, *output.timestamp_offsets, *this->flags_);
+            output.start_time_ms = source.start_time_ms;
+            if (output.timestamp_offsets->empty()) {
+                output.end_time_ms = output.start_time_ms;
+            } else {
+                const auto max_offset =
+                    *std::max_element(output.timestamp_offsets->begin(), output.timestamp_offsets->end());
+                output.end_time_ms = output.start_time_ms + static_cast<double>(max_offset);
+            }
+        } else {
+            output.timestamp_offsets->clear();
+            output.start_time_ms = 0.0;
+            output.end_time_ms = 0.0;
         }
         this->filter_->filter_by_flags(*source.points, *output.points, *this->flags_);
     }
