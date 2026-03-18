@@ -335,14 +335,19 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
         }
 
         {
-            // x, y, z, qx, qy, qz, qw
-            const auto T =
-                node->declare_parameter<std::vector<double>>("initial_pose", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0});
-            if (T.size() != 7) throw std::runtime_error("invalid initial_pose");
-            params.pose.initial.setIdentity();
-            params.pose.initial.translation() << T[0], T[1], T[2];
-            const Eigen::Quaternionf quat(T[6], T[3], T[4], T[5]);
-            params.pose.initial.matrix().block<3, 3>(0, 0) = quat.matrix();
+            const auto x = node->declare_parameter<double>("initial_base_link_pose/x", 0.0);
+            const auto y = node->declare_parameter<double>("initial_base_link_pose/y", 0.0);
+            const auto z = node->declare_parameter<double>("initial_base_link_pose/z", 0.0);
+            const auto qx = node->declare_parameter<double>("initial_base_link_pose/qx", 0.0);
+            const auto qy = node->declare_parameter<double>("initial_base_link_pose/qy", 0.0);
+            const auto qz = node->declare_parameter<double>("initial_base_link_pose/qz", 0.0);
+            const auto qw = node->declare_parameter<double>("initial_base_link_pose/qw", 1.0);
+            Eigen::Isometry3f initial_base_link = Eigen::Isometry3f::Identity();
+            initial_base_link.translation() << x, y, z;
+            const Eigen::Quaternionf quat(qw, qx, qy, qz);
+            initial_base_link.matrix().block<3, 3>(0, 0) = quat.matrix();
+
+            params.pose.initial = initial_base_link * params.frames.T_base_link_to_lidar;
         }
     }
 

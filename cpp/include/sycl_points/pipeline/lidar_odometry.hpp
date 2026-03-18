@@ -149,8 +149,8 @@ private:
 
     PointCloudShared::Ptr preprocessed_pc_ = nullptr;  // Sensor coordinate
     PointCloudShared::Ptr keyframe_pc_ = nullptr;      // Sensor coordinate
-    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;    // World coordinate
-    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;    // World coordinate
+    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;    // Odom/World coordinate
+    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;    // Odom/World coordinate
     bool is_first_frame_ = true;
 
     algorithms::mapping::VoxelHashMap::Ptr submap_voxel_ = nullptr;
@@ -168,11 +168,11 @@ private:
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
-    Eigen::Vector3f linear_velocity_;     // [m/s]
-    Eigen::AngleAxisf angular_velocity_;  // [rad/s]
-    Eigen::Isometry3f prev_odom_;
-    Eigen::Isometry3f odom_;
-    Eigen::Isometry3f last_keyframe_pose_;
+    Eigen::Vector3f linear_velocity_;       // [m/s]
+    Eigen::AngleAxisf angular_velocity_;    // [rad/s]
+    Eigen::Isometry3f prev_odom_;           // prev T_odom_to_lidar
+    Eigen::Isometry3f odom_;                // current T_odom_to_lidar
+    Eigen::Isometry3f last_keyframe_pose_;  // keyframe T_odom_to_lidar
     std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> keyframe_poses_;
 
     double last_keyframe_time_;      // [s]
@@ -232,6 +232,7 @@ private:
         {
             this->preprocessed_pc_.reset(new PointCloudShared(*this->queue_ptr_));
             this->keyframe_pc_.reset(new PointCloudShared(*this->queue_ptr_));
+            this->submap_pc_ptr_.reset(new PointCloudShared(*this->queue_ptr_));
             this->submap_pc_tmp_.reset(new PointCloudShared(*this->queue_ptr_));
         }
 
@@ -496,8 +497,8 @@ private:
         }
 
         if (this->is_first_frame_) {
-            // deep copy
-            this->submap_pc_ptr_.reset(new PointCloudShared(*cloud));
+            // transform
+            *this->submap_pc_ptr_ = sycl_points::algorithms::transform::transform_copy(*cloud, current_pose.matrix());
         } else if (this->submap_pc_tmp_->size() >= this->params_.registration.min_num_points) {
             // copy pointer
             this->submap_pc_ptr_ = this->submap_pc_tmp_;
@@ -586,7 +587,7 @@ private:
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
         if (this->params_.registration.pipeline.velocity_update.enable) {
             algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
-                                                                     this->odom_, reg_result.T, this->dt_);
+                                                                     this->odom_, reg_result.T);
         }
 
         // check inlier ratio for registration success or not.
@@ -594,11 +595,13 @@ private:
         if (registration_input_pc == nullptr || registration_input_pc->size() == 0) {
             return false;
         }
-        const float inlier_ratio =
-            static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc->size());
-        if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
-            // registration is failed
-            return false;
+        if (this->params_.submap.keyframe.inlier_ratio_threshold > 0.0f) {
+            const float inlier_ratio =
+                static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc->size());
+            if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
+                // registration is failed
+                return false;
+            }
         }
 
         const auto submap_type = this->params_.submap.map_type;

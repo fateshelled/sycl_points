@@ -178,8 +178,9 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
 
 void LiDAROdometryNode::publish_odom(const std_msgs::msg::Header& header,
                                      const algorithms::registration::RegistrationResult& reg_result) {
-    const auto odom_trans = reg_result.T.translation();
-    const Eigen::Quaternionf odom_quat(reg_result.T.rotation());
+    const Eigen::Isometry3f odom_to_base_link = reg_result.T * this->params_.frames.T_lidar_to_base_link;
+    const auto odom_trans = odom_to_base_link.translation();
+    const Eigen::Quaternionf odom_quat(odom_to_base_link.rotation());
     {
         geometry_msgs::msg::TransformStamped::SharedPtr tf;
         tf.reset(new geometry_msgs::msg::TransformStamped);
@@ -234,8 +235,9 @@ void LiDAROdometryNode::publish_odom(const std_msgs::msg::Header& header,
 }
 
 void LiDAROdometryNode::publish_keyframe_pose(const std_msgs::msg::Header& header, const Eigen::Isometry3f& odom) {
-    const auto odom_trans = odom.translation();
-    const Eigen::Quaternionf odom_quat(odom.rotation());
+    const Eigen::Isometry3f odom_to_base_link = odom * this->params_.frames.T_lidar_to_base_link;
+    const auto odom_trans = odom_to_base_link.translation();
+    const Eigen::Quaternionf odom_quat(odom_to_base_link.rotation());
 
     nav_msgs::msg::Odometry odom_msg;
     odom_msg.header = header;

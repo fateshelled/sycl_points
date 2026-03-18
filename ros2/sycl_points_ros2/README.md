@@ -76,11 +76,11 @@ This is a composable node that performs LiDAR odometry estimation.
 - **`sycl_lo/submap`** (`sensor_msgs/msg/PointCloud2`)
   - The local map point cloud used for registration.
 - **`sycl_lo/odom`** (`nav_msgs/msg/Odometry`)
-  - The estimated odometry of the sensor.
+  - The estimated odometry of the base link.
 - **`sycl_lo/keyframe/pose`** (`nav_msgs/msg/Odometry`)
-  - The keyframe pose of the sensor.
+  - The keyframe pose of the base link.
 - **`sycl_lo/pose`** (`geometry_msgs::msg::PoseStamped`)
-  - The estimated odometry pose of the sensor.
+  - The estimated odometry pose of the base link.
 
 ## Parameters tuning
 

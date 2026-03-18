@@ -171,6 +171,34 @@ TEST_F(PreprocessFilterTest, RandomSamplingCopiesOutputWhenSamplingCountCoversIn
     EXPECT_FLOAT_EQ((*output.intensities)[2], 2.5f);
 }
 
+TEST_F(PreprocessFilterTest, RandomSamplingPreservesTimestampMetadataForSeparateOutput) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(4);
+    cpu_cloud.timestamp_offsets->resize(4);
+    cpu_cloud.start_time_ms = 1000.0;
+    (*cpu_cloud.points)[0] = PointType(0.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[1] = PointType(1.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[2] = PointType(2.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.points)[3] = PointType(3.0f, 0.0f, 0.0f, 1.0f);
+    (*cpu_cloud.timestamp_offsets)[0] = 0.0f;
+    (*cpu_cloud.timestamp_offsets)[1] = 10.0f;
+    (*cpu_cloud.timestamp_offsets)[2] = 20.0f;
+    (*cpu_cloud.timestamp_offsets)[3] = 30.0f;
+    cpu_cloud.update_end_time();
+
+    PointCloudShared source(*queue_, cpu_cloud);
+    PointCloudShared output(*queue_);
+    algorithms::filter::PreprocessFilter filter(*queue_);
+    filter.set_random_seed(42);
+
+    filter.random_sampling(source, output, 2);
+
+    ASSERT_TRUE(output.has_timestamps());
+    EXPECT_DOUBLE_EQ(output.start_time_ms, source.start_time_ms);
+    const auto max_offset = *std::max_element(output.timestamp_offsets->begin(), output.timestamp_offsets->end());
+    EXPECT_DOUBLE_EQ(output.end_time_ms, output.start_time_ms + static_cast<double>(max_offset));
+}
+
 TEST_F(PreprocessFilterTest, WeightedRandomSamplingIsDeterministicWithSeed) {
     PointCloudCPU cpu_cloud;
     const size_t num_points = 5;

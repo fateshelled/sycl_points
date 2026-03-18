@@ -226,14 +226,14 @@ TEST(RegistrationPipelineTest, AccessorsReturnNullBeforeAlign) {
     EXPECT_EQ(pipeline.get_registration_input_point_cloud(), nullptr);
     EXPECT_EQ(pipeline.get_deskewed_point_cloud(), nullptr);
 
-    VelocityUpdatePipeline velocity_pipeline(
+    pipeline::VelocityUpdateAligner velocity_pipeline(
         [](const PointCloudShared&, const PointCloudShared&, const knn::KNNBase&, const TransformMatrix&,
            const Registration::ExecutionOptions&) { return RegistrationResult{}; },
         1, false);
     EXPECT_EQ(velocity_pipeline.get_deskewed_point_cloud(), nullptr);
 }
 
-TEST(RegistrationPipelineTest, VelocityUpdatePipelineExposesMostRecentDeskewedPointCloud) {
+TEST(RegistrationPipelineTest, VelocityUpdateAlignerExposesMostRecentDeskewedPointCloud) {
     sycl::device device(sycl_utils::device_selector::default_selector_v);
     sycl_utils::DeviceQueue queue(device);
     const auto source = make_cloud(queue, 4);
@@ -248,7 +248,7 @@ TEST(RegistrationPipelineTest, VelocityUpdatePipelineExposesMostRecentDeskewedPo
         return result;
     };
 
-    VelocityUpdatePipeline pipeline(aligner, 1, false);
+    pipeline::VelocityUpdateAligner pipeline(aligner, 1, false);
     Registration::ExecutionOptions options;
     options.dt = 1.0f;
     options.prev_pose = TransformMatrix::Identity();
@@ -262,6 +262,43 @@ TEST(RegistrationPipelineTest, VelocityUpdatePipelineExposesMostRecentDeskewedPo
     EXPECT_NE(deskewed->points.get(), source.points.get());
     EXPECT_NE(deskewed->intensities.get(), source.intensities.get());
     EXPECT_NE(deskewed->timestamp_offsets.get(), source.timestamp_offsets.get());
+}
+
+TEST(RegistrationPipelineTest, VelocityUpdateAlignerFallsBackWithoutTimestamps) {
+    sycl::device device(sycl_utils::device_selector::default_selector_v);
+    sycl_utils::DeviceQueue queue(device);
+    auto source = make_cloud(queue, 4);
+    source.timestamp_offsets->clear();
+    source.start_time_ms = 0.0;
+    source.end_time_ms = 0.0;
+    const auto target = make_cloud(queue, 3);
+    DummyKNN knn;
+
+    bool aligned_source_has_timestamps = true;
+    size_t aligned_source_size = 0;
+    auto aligner = [&](const PointCloudShared& source_arg, const PointCloudShared&, const knn::KNNBase&,
+                       const TransformMatrix&, const Registration::ExecutionOptions&) {
+        aligned_source_has_timestamps = source_arg.has_timestamps();
+        aligned_source_size = source_arg.size();
+        RegistrationResult result;
+        result.inlier = static_cast<uint32_t>(source_arg.size());
+        return result;
+    };
+
+    pipeline::VelocityUpdateAligner pipeline(aligner, 2, false);
+    Registration::ExecutionOptions options;
+    options.dt = 1.0f;
+    options.prev_pose = TransformMatrix::Identity();
+
+    const auto result = pipeline.align(source, target, knn, TransformMatrix::Identity(), options);
+
+    EXPECT_EQ(result.inlier, source.size());
+    EXPECT_EQ(aligned_source_size, source.size());
+    EXPECT_FALSE(aligned_source_has_timestamps);
+    const auto* deskewed = pipeline.get_deskewed_point_cloud();
+    ASSERT_NE(deskewed, nullptr);
+    EXPECT_EQ(deskewed->size(), source.size());
+    EXPECT_FALSE(deskewed->has_timestamps());
 }
 
 TEST(RegistrationPipelineTest, RegistrationPipelineExposesDeskewedPointCloud) {
@@ -320,7 +357,7 @@ TEST(RegistrationPipelineTest, DeskewedAccessorFallsBackToRegistrationInputWitho
     EXPECT_EQ(pipeline.get_deskewed_point_cloud()->size(), 2U);
 }
 
-TEST(RegistrationPipelineTest, RobustPipelineUsesDefaultScaleAsFixedAndInitialScale) {
+TEST(RegistrationPipelineTest, RobustAlignerLeavesScaleUnsetWhenAutoScalingDisabledAndAnnealsWhenEnabled) {
     sycl::device device(sycl_utils::device_selector::default_selector_v);
     sycl_utils::DeviceQueue queue(device);
 
@@ -340,7 +377,7 @@ TEST(RegistrationPipelineTest, RobustPipelineUsesDefaultScaleAsFixedAndInitialSc
     fixed_pipeline.align(make_cloud(queue, 3), make_cloud(queue, 3), knn);
 
     ASSERT_EQ(fixed_scales.size(), 1U);
-    EXPECT_FLOAT_EQ(fixed_scales.front(), 8.0f);
+    EXPECT_FLOAT_EQ(fixed_scales.front(), -1.0f);
 
     params.robust.auto_scale = true;
     params.robust.init_scale = 6.0f;
