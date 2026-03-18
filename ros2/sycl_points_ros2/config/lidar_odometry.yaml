@@ -5,6 +5,13 @@ lidar_odometry_node:
     # intel or nvidia or amd
     sycl/device_vendor: intel
 
+    initial_base_link_pose/x: 0.0
+    initial_base_link_pose/y: 0.0
+    initial_base_link_pose/z: 0.0
+    initial_base_link_pose/qx: 0.0
+    initial_base_link_pose/qy: 0.0
+    initial_base_link_pose/qz: 0.0
+    initial_base_link_pose/qw: 1.0
     T_base_link_to_lidar/x: 0.0
     T_base_link_to_lidar/y: 0.0
     T_base_link_to_lidar/z: 0.0
