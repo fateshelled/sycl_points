@@ -1,11 +1,10 @@
 #pragma once
 
+#include <Eigen/Geometry>
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
 #include <string>
-
-#include <Eigen/Geometry>
 
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
@@ -127,7 +126,8 @@ struct Parameters {
         SubmapMapType map_type = SubmapMapType::OCCUPANCY_GRID_MAP;
         float voxel_size = 1.0f;
         float max_distance_range = 30.0f;
-        size_t point_random_sampling_num = 2000;
+        size_t point_random_sampling_num = 512;
+        float weighted_sampling_ratio = 0.8f;
         algorithms::mapping::CovarianceAggregationMode covariance_aggregation_mode =
             algorithms::mapping::CovarianceAggregationMode::ARITHMETIC;
         Keyframe keyframe;

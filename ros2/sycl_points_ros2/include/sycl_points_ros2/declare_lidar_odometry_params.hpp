@@ -74,6 +74,13 @@ pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::N
             node->declare_parameter<double>("submap/max_distance_range", params.submap.max_distance_range);
         params.submap.point_random_sampling_num = node->declare_parameter<int64_t>(
             "submap/point_random_sampling_num", params.submap.point_random_sampling_num);
+        params.submap.weighted_sampling_ratio =
+            node->declare_parameter<double>("submap/weighted_sampling_ratio", params.submap.weighted_sampling_ratio);
+        if (params.submap.weighted_sampling_ratio < 0.0f || params.submap.weighted_sampling_ratio > 1.0f) {
+            throw std::invalid_argument(
+                "[declare_lidar_odometry_params] `submap/weighted_sampling_ratio` must be "
+                "within [0.0, 1.0]");
+        }
         params.submap.covariance_aggregation_mode =
             algorithms::mapping::CovarianceAggregationMode_from_string(node->declare_parameter<std::string>(
                 "submap/covariance_aggregation_mode",

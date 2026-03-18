@@ -58,6 +58,7 @@ lidar_odometry_node:
     submap/voxel_size: 0.4
     submap/max_distance_range: 50.0
     submap/point_random_sampling_num: 512
+    submap/weighted_sampling_ratio: 0.8  # 1.0 = all weighted, 0.0 = all uniform, 0.8 = 80% weighted + 20% uniform
     submap/map_type: OCCUPANCY_GRID_MAP  # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
     submap/covariance_aggregation_mode: LOG_EUCLIDEAN  # ARITHMETIC, LOG_EUCLIDEAN
     submap/keyframe/inlier_ratio_threshold: 0.3
