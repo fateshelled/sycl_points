@@ -232,6 +232,7 @@ private:
         {
             this->preprocessed_pc_.reset(new PointCloudShared(*this->queue_ptr_));
             this->keyframe_pc_.reset(new PointCloudShared(*this->queue_ptr_));
+            this->submap_pc_ptr_.reset(new PointCloudShared(*this->queue_ptr_));
             this->submap_pc_tmp_.reset(new PointCloudShared(*this->queue_ptr_));
         }
 
@@ -496,8 +497,8 @@ private:
         }
 
         if (this->is_first_frame_) {
-            // deep copy
-            this->submap_pc_ptr_.reset(new PointCloudShared(*cloud));
+            // transform
+            *this->submap_pc_ptr_ = sycl_points::algorithms::transform::transform_copy(*cloud, current_pose.matrix());
         } else if (this->submap_pc_tmp_->size() >= this->params_.registration.min_num_points) {
             // copy pointer
             this->submap_pc_ptr_ = this->submap_pc_tmp_;
