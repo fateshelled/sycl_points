@@ -58,6 +58,37 @@ ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
     use_sim_time:=true
 ```
 
+## Offline bag evaluation
+
+Instead of using `ros2 bag play`, you can sequentially read the bag in C++ and evaluate LiDAR odometry directly.
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+source ~/ros2_ws/install/setup.bash
+
+# Set own parameters
+BAG_URI=/path/to/your/rosbag
+POINT_TOPIC=/your/pointcloud/topic
+FRAME_ID=/your/lidar/frame
+OUTPUT_TUM=lidar_odometry.tum
+
+ros2 launch sycl_points_ros2 lidar_odometry_bag_eval_launch.py \
+    bag_uri:=${BAG_URI} \
+    point_topic:=${POINT_TOPIC} \
+    lidar_frame_id:=${FRAME_ID} \
+    output_tum:=${OUTPUT_TUM}
+```
+
+Main additional parameters:
+
+- `bag/uri`: input bag path
+- `bag/topic`: `PointCloud2` topic to read
+- `bag/start_offset_sec`: starting offset in seconds to skip
+- `bag/max_frames`: maximum number of frames to process (`0` for unlimited)
+- `eval/output_tum`: output `.tum` path
+- `eval/write_first_frame`: whether to write the initial frame
+- `eval/exit_on_end`: whether to exit automatically after evaluation completes
+
 ## Node Details
 
 ### `lidar_odometry_node`
