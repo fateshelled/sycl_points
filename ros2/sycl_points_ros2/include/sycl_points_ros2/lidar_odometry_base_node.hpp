@@ -72,6 +72,7 @@ protected:
     PointCloudShared::Ptr scan_pc_ = nullptr;
     pipeline::lidar_odometry::Parameters params_;
 
+    std::string points_topic_ = "points";
     bool input_convert_rgb_ = true;
     bool input_convert_intensity_ = true;
 

@@ -18,7 +18,6 @@ namespace ros2 {
 
 LiDAROdometryBagEvalNode::LiDAROdometryBagEvalNode(const rclcpp::NodeOptions& options)
     : LiDAROdometryBaseNode("lidar_odometry_bag_eval", options) {
-
     this->bag_uri_ = this->declare_parameter<std::string>("rosbag/uri", "");
     this->start_offset_sec_ = this->declare_parameter<double>("rosbag/start_offset/sec", 0.0);
     this->output_tum_ = this->declare_parameter<std::string>("eval/output_tum", "sycl_lo_odom.tum");
@@ -43,11 +42,11 @@ void LiDAROdometryBagEvalNode::run() {
     }
 
     try {
+        if (this->points_topic_.empty()) {
+            throw std::runtime_error("`points_topic` must not be empty");
+        }
         if (this->bag_uri_.empty()) {
             throw std::runtime_error("`rosbag/uri` must not be empty");
-        }
-        if (this->bag_topic_.empty()) {
-            throw std::runtime_error("`rosbag/topic` must not be empty");
         }
         if (this->output_tum_.empty()) {
             throw std::runtime_error("`eval/output_tum` must not be empty");
@@ -84,7 +83,7 @@ void LiDAROdometryBagEvalNode::run() {
 
         while (rclcpp::ok() && reader->has_next()) {
             auto bag_message = reader->read_next();
-            if (bag_message == nullptr || bag_message->topic_name != this->bag_topic_) {
+            if (bag_message == nullptr || bag_message->topic_name != this->points_topic_) {
                 continue;
             }
 
@@ -108,7 +107,7 @@ void LiDAROdometryBagEvalNode::run() {
 
         RCLCPP_INFO(this->get_logger(),
                     "Bag evaluation finished. topic=%s handled_frames=%ld written_frames=%ld tum=%s",
-                    this->bag_topic_.c_str(), handled_frames, written_frames, this->output_tum_.c_str());
+                    this->points_topic_.c_str(), handled_frames, written_frames, this->output_tum_.c_str());
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "bag evaluation failed: %s", e.what());
     }

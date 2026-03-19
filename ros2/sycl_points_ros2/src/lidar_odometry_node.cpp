@@ -13,7 +13,7 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options)
     this->initialize_publishers({});
 
     this->sub_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "points", rclcpp::QoS(10), std::bind(&LiDAROdometryNode::point_cloud_callback, this, std::placeholders::_1));
+        this->points_topic_, rclcpp::QoS(10), std::bind(&LiDAROdometryNode::point_cloud_callback, this, std::placeholders::_1));
     RCLCPP_INFO(this->get_logger(), "Subscribe PointCloud: %s", this->sub_pc_->get_topic_name());
 }
 

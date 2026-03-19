@@ -23,7 +23,6 @@ private:
     std::ofstream tum_stream_;
 
     std::string bag_uri_;
-    std::string bag_topic_;
     std::string output_tum_;
     double start_offset_sec_ = 0.0;
     bool write_first_frame_ = true;
