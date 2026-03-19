@@ -42,13 +42,13 @@ source /opt/intel/oneapi/setvars.sh
 source ~/ros2_ws/install/setup.bash
 
 # Set own parameters
-POINT_TOPIC=/your/pointcloud/topic
+POINTS_TOPIC=/your/pointcloud/topic
 FRAME_ID=/your/lidar/frame
 ROSBAG=/path/to/your/rosbag
 
 # Launch
 ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
-    point_topic:=${POINT_TOPIC} \
+    points_topic:=${POINTS_TOPIC} \
     lidar_frame_id:=${FRAME_ID} \
     sycl/device_type:=gpu \
     sycl/device_vendor:=intel \
@@ -69,12 +69,12 @@ source ~/ros2_ws/install/setup.bash
 # Set own parameters
 BAG_URI=/path/to/your/rosbag
 OUTPUT_TUM=lidar_odometry.tum
-POINT_TOPIC=/your/pointcloud/topic
+POINTS_TOPIC=/your/pointcloud/topic
 
 ros2 launch sycl_points_ros2 lidar_odometry_bag_eval_launch.py \
     rosbag/uri:=${BAG_URI} \
     eval/output_tum:=${OUTPUT_TUM} \
-    point_topic:=${POINT_TOPIC}
+    points_topic:=${POINTS_TOPIC}
 ```
 
 Main additional parameters:
@@ -94,7 +94,7 @@ This is a composable node that performs LiDAR odometry estimation.
 #### Subscribed Topics
 
 - **`points`** (`sensor_msgs/msg/PointCloud2`)
-  - The input point cloud. The topic name can be remapped via the `point_topic` launch argument.
+  - The input point cloud. The topic name can be remapped via the `points_topic` launch argument.
 
 #### Published Topics
 
@@ -130,7 +130,7 @@ DESKEW=true # e.g. Ouster, Velodyne
 # DESKEW=false # e.g. Livox, Solid state
 
 ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
-    point_topic:=${POINT_TOPIC} \
+    points_topic:=${POINTS_TOPIC} \
     lidar_frame_id:=${FRAME_ID} \
     sycl/device_type:=gpu \
     sycl/device_vendor:=intel \
@@ -163,7 +163,7 @@ ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
 
 ```bash
 ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
-    point_topic:=${POINT_TOPIC} \
+    points_topic:=${POINTS_TOPIC} \
     lidar_frame_id:=${FRAME_ID} \
     sycl/device_type:=gpu \
     sycl/device_vendor:=intel \

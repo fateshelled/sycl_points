@@ -42,7 +42,7 @@ def generate_launch_description():
     launch_args.extend(
         [
             DeclareLaunchArgument(
-                'point_topic',
+                'points_topic',
                 default_value='/os_cloud_node/points',
                 description='source point cloud topic',
             ),
@@ -157,13 +157,11 @@ def generate_launch_description():
                             parameters=[
                                 node_args,
                                 {
+                                    'points_topic': LaunchConfiguration('points_topic'),
                                     'odom_frame_id': LaunchConfiguration('odom_frame_id'),
                                     'base_link_id': LaunchConfiguration('base_link_id'),
                                     'use_sim_time': use_sim_time,
                                 },
-                            ],
-                            remappings=[
-                                ('points', LaunchConfiguration('point_topic')),
                             ],
                             extra_arguments=[{'use_intra_process_comms': True}],
                         ),
