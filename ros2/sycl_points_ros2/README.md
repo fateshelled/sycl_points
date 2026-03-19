@@ -68,22 +68,19 @@ source ~/ros2_ws/install/setup.bash
 
 # Set own parameters
 BAG_URI=/path/to/your/rosbag
-POINT_TOPIC=/your/pointcloud/topic
-FRAME_ID=/your/lidar/frame
 OUTPUT_TUM=lidar_odometry.tum
+POINT_TOPIC=/your/pointcloud/topic
 
 ros2 launch sycl_points_ros2 lidar_odometry_bag_eval_launch.py \
-    bag_uri:=${BAG_URI} \
-    point_topic:=${POINT_TOPIC} \
-    lidar_frame_id:=${FRAME_ID} \
-    output_tum:=${OUTPUT_TUM}
+    rosbag/uri:=${BAG_URI} \
+    eval/output_tum:=${OUTPUT_TUM} \
+    point_topic:=${POINT_TOPIC}
 ```
 
 Main additional parameters:
 
-- `bag/uri`: input bag path
-- `bag/topic`: `PointCloud2` topic to read
-- `bag/start_offset/sec`: starting offset in seconds to skip
+- `rosbag/uri`: input bag path
+- `rosbag/start_offset/sec`: starting offset in seconds to skip
 - `eval/output_tum`: output `.tum` path
 - `eval/write_first_frame`: whether to write the initial frame
 - `eval/exit_on_end`: whether to exit automatically after evaluation completes

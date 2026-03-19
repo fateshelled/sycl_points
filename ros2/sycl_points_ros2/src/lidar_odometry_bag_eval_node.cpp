@@ -20,8 +20,7 @@ LiDAROdometryBagEvalNode::LiDAROdometryBagEvalNode(const rclcpp::NodeOptions& op
     : LiDAROdometryBaseNode("lidar_odometry_bag_eval", options) {
 
     this->bag_uri_ = this->declare_parameter<std::string>("rosbag/uri", "");
-    this->bag_topic_ = this->declare_parameter<std::string>("rosbag/topic", "/os_cloud_node/points");
-    this->start_offset_sec_ = this->declare_parameter<double>("rosbag/start_offset_sec", 0.0);
+    this->start_offset_sec_ = this->declare_parameter<double>("rosbag/start_offset/sec", 0.0);
     this->output_tum_ = this->declare_parameter<std::string>("eval/output_tum", "sycl_lo_odom.tum");
     this->write_first_frame_ = this->declare_parameter<bool>("eval/write_first_frame", true);
     this->exit_on_end_ = this->declare_parameter<bool>("eval/exit_on_end", true);
