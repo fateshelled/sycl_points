@@ -37,18 +37,14 @@ def generate_launch_description():
 
     launch_args.extend(
         [
-            DeclareLaunchArgument('bag_uri', default_value='', description='input rosbag path'),
-            DeclareLaunchArgument('point_topic', default_value='/os_cloud_node/points', description='point cloud topic'),
-            DeclareLaunchArgument('lidar_frame_id', default_value='os_sensor', description='source point cloud frame'),
             DeclareLaunchArgument('odom_frame_id', default_value='odom', description='odom frame id'),
             DeclareLaunchArgument('base_link_id', default_value='base_link', description='base_link frame id'),
-            DeclareLaunchArgument('output_tum', default_value='sycl_lo_odom.tum', description='output tum filepath'),
-            DeclareLaunchArgument('bag_start_offset_sec', default_value='0.0', description='bag start offset in seconds'),
-            DeclareLaunchArgument('bag_max_frames', default_value='0', description='max frames to process'),
-            DeclareLaunchArgument('write_first_frame', default_value='true', choices=['true', 'false'],
-                                  description='write first frame pose to tum'),
-            DeclareLaunchArgument('exit_on_end', default_value='true', choices=['true', 'false'],
-                                  description='shutdown node after evaluation'),
+            DeclareLaunchArgument('rosbag/uri', default_value='', description='input rosbag path'),
+            DeclareLaunchArgument('rosbag/topic', default_value='/os_cloud_node/points', description='point cloud topic'),
+            DeclareLaunchArgument('rosbag/start_offset_sec', default_value='0.0', description='bag start offset in seconds'),
+            DeclareLaunchArgument('eval/output_tum', default_value='sycl_lo_odom.tum', description='output tum filepath'),
+            DeclareLaunchArgument('eval/write_first_frame', default_value='true', choices=['true', 'false'], description='write first frame pose to tum'),
+            DeclareLaunchArgument('eval/exit_on_end', default_value='true', choices=['true', 'false'], description='shutdown node after evaluation'),
         ]
     )
 
@@ -63,13 +59,12 @@ def generate_launch_description():
                 {
                     'odom_frame_id': LaunchConfiguration('odom_frame_id'),
                     'base_link_id': LaunchConfiguration('base_link_id'),
-                    'bag/uri': LaunchConfiguration('bag_uri'),
-                    'bag/topic': LaunchConfiguration('point_topic'),
-                    'bag/start_offset_sec': ParameterValue(LaunchConfiguration('bag_start_offset_sec'), value_type=float),
-                    'bag/max_frames': ParameterValue(LaunchConfiguration('bag_max_frames'), value_type=int),
-                    'eval/output_tum': LaunchConfiguration('output_tum'),
-                    'eval/write_first_frame': ParameterValue(LaunchConfiguration('write_first_frame'), value_type=bool),
-                    'eval/exit_on_end': ParameterValue(LaunchConfiguration('exit_on_end'), value_type=bool),
+                    'rosbag/uri': LaunchConfiguration('rosbag/uri'),
+                    'rosbag/topic': LaunchConfiguration('rosbag/topic'),
+                    'rosbag/start_offset_sec': ParameterValue(LaunchConfiguration('rosbag/start_offset_sec'), value_type=float),
+                    'eval/output_tum': LaunchConfiguration('eval/output_tum'),
+                    'eval/write_first_frame': ParameterValue(LaunchConfiguration('eval/write_first_frame'), value_type=bool),
+                    'eval/exit_on_end': ParameterValue(LaunchConfiguration('eval/exit_on_end'), value_type=bool),
                 },
             ],
         ),

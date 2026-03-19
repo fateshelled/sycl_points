@@ -19,10 +19,9 @@ namespace ros2 {
 LiDAROdometryBagEvalNode::LiDAROdometryBagEvalNode(const rclcpp::NodeOptions& options)
     : LiDAROdometryBaseNode("lidar_odometry_bag_eval", options) {
 
-    this->bag_uri_ = this->declare_parameter<std::string>("bag/uri", "");
-    this->bag_topic_ = this->declare_parameter<std::string>("bag/topic", "/os_cloud_node/points");
-    this->start_offset_sec_ = this->declare_parameter<double>("bag/start_offset_sec", 0.0);
-    this->max_frames_ = this->declare_parameter<int64_t>("bag/max_frames", 0);
+    this->bag_uri_ = this->declare_parameter<std::string>("rosbag/uri", "");
+    this->bag_topic_ = this->declare_parameter<std::string>("rosbag/topic", "/os_cloud_node/points");
+    this->start_offset_sec_ = this->declare_parameter<double>("rosbag/start_offset_sec", 0.0);
     this->output_tum_ = this->declare_parameter<std::string>("eval/output_tum", "sycl_lo_odom.tum");
     this->write_first_frame_ = this->declare_parameter<bool>("eval/write_first_frame", true);
     this->exit_on_end_ = this->declare_parameter<bool>("eval/exit_on_end", true);
@@ -46,10 +45,10 @@ void LiDAROdometryBagEvalNode::run() {
 
     try {
         if (this->bag_uri_.empty()) {
-            throw std::runtime_error("`bag/uri` must not be empty");
+            throw std::runtime_error("`rosbag/uri` must not be empty");
         }
         if (this->bag_topic_.empty()) {
-            throw std::runtime_error("`bag/topic` must not be empty");
+            throw std::runtime_error("`rosbag/topic` must not be empty");
         }
         if (this->output_tum_.empty()) {
             throw std::runtime_error("`eval/output_tum` must not be empty");
@@ -102,10 +101,6 @@ void LiDAROdometryBagEvalNode::run() {
                 const auto pose_msg = this->make_pose_message(msg.header, frame.odom);
                 this->write_tum_line(pose_msg);
                 ++written_frames;
-            }
-
-            if (this->max_frames_ > 0 && handled_frames >= this->max_frames_) {
-                break;
             }
         }
 

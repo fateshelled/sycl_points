@@ -83,8 +83,7 @@ Main additional parameters:
 
 - `bag/uri`: input bag path
 - `bag/topic`: `PointCloud2` topic to read
-- `bag/start_offset_sec`: starting offset in seconds to skip
-- `bag/max_frames`: maximum number of frames to process (`0` for unlimited)
+- `bag/start_offset/sec`: starting offset in seconds to skip
 - `eval/output_tum`: output `.tum` path
 - `eval/write_first_frame`: whether to write the initial frame
 - `eval/exit_on_end`: whether to exit automatically after evaluation completes

@@ -136,9 +136,7 @@ def generate_launch_description():
                             parameters=[
                                 node_args,
                                 {
-                                    'odom_frame_id': LaunchConfiguration(
-                                        'odom_frame_id'
-                                    ),
+                                    'odom_frame_id': LaunchConfiguration('odom_frame_id'),
                                     'base_link_id': LaunchConfiguration('base_link_id'),
                                     'use_sim_time': use_sim_time,
                                 },

@@ -26,7 +26,6 @@ private:
     std::string bag_topic_;
     std::string output_tum_;
     double start_offset_sec_ = 0.0;
-    int64_t max_frames_ = 0;
     bool write_first_frame_ = true;
     bool exit_on_end_ = true;
 };
