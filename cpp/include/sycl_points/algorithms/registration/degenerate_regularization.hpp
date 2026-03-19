@@ -21,7 +21,7 @@ enum class DegenerateRegularizationType {
     nl_reg
 };
 
-DegenerateRegularizationType DegenerateRegularizationType_from_string(const std::string& str) {
+inline DegenerateRegularizationType DegenerateRegularizationType_from_string(const std::string& str) {
     std::string upper = str;
     std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
 

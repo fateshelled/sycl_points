@@ -6,7 +6,7 @@
 namespace sycl_points {
 namespace ros2 {
 
-pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::Node* node) {
+inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::Node* node) {
     pipeline::lidar_odometry::Parameters params;
 
     // SYCL
