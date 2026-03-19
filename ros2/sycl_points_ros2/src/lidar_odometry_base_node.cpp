@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <numeric>
-
 #include <sycl_points/ros2/convert.hpp>
 #include <sycl_points/utils/time_utils.hpp>
 
@@ -62,7 +61,8 @@ void LiDAROdometryBaseNode::initialize_publishers(const PublishOptions& options)
     }
 
     if (this->pub_preprocessed_ != nullptr) {
-        RCLCPP_INFO(this->get_logger(), "Publish Preprocessed PointCloud: %s", this->pub_preprocessed_->get_topic_name());
+        RCLCPP_INFO(this->get_logger(), "Publish Preprocessed PointCloud: %s",
+                    this->pub_preprocessed_->get_topic_name());
     }
     if (this->pub_submap_ != nullptr) {
         RCLCPP_INFO(this->get_logger(), "Publish Submap PointCloud: %s", this->pub_submap_->get_topic_name());
@@ -254,8 +254,8 @@ nav_msgs::msg::Odometry LiDAROdometryBaseNode::make_keyframe_pose_message(const 
     return odom_msg;
 }
 
-geometry_msgs::msg::TransformStamped LiDAROdometryBaseNode::make_transform_message(const std_msgs::msg::Header& header,
-                                                                                   const Eigen::Isometry3f& odom) const {
+geometry_msgs::msg::TransformStamped LiDAROdometryBaseNode::make_transform_message(
+    const std_msgs::msg::Header& header, const Eigen::Isometry3f& odom) const {
     const Eigen::Isometry3f odom_to_base_link = odom * this->params_.frames.T_lidar_to_base_link;
     const auto odom_trans = odom_to_base_link.translation();
     const Eigen::Quaternionf odom_quat(odom_to_base_link.rotation());

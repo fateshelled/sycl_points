@@ -2,19 +2,17 @@
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <map>
+#include <memory>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <string>
 #include <sycl_points/pipeline/lidar_odometry.hpp>
 #include <sycl_points/pipeline/lidar_odometry_params.hpp>
-#include <tf2_ros/transform_broadcaster.hpp>
-
-#include <map>
-#include <memory>
-#include <string>
-#include <vector>
-
 #include <sycl_points/ros2/covariance_marker_publisher.hpp>
+#include <tf2_ros/transform_broadcaster.hpp>
+#include <vector>
 
 namespace sycl_points {
 namespace ros2 {

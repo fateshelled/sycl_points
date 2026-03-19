@@ -49,12 +49,6 @@ def generate_launch_description():
                                   description='write first frame pose to tum'),
             DeclareLaunchArgument('exit_on_end', default_value='true', choices=['true', 'false'],
                                   description='shutdown node after evaluation'),
-            DeclareLaunchArgument('publish_odom', default_value='true', choices=['true', 'false'],
-                                  description='publish odom / pose topics'),
-            DeclareLaunchArgument('publish_debug_clouds', default_value='false', choices=['true', 'false'],
-                                  description='publish debug point cloud topics'),
-            DeclareLaunchArgument('publish_tf', default_value='true', choices=['true', 'false'],
-                                  description='publish TF during bag evaluation'),
         ]
     )
 
@@ -76,9 +70,6 @@ def generate_launch_description():
                     'eval/output_tum': LaunchConfiguration('output_tum'),
                     'eval/write_first_frame': ParameterValue(LaunchConfiguration('write_first_frame'), value_type=bool),
                     'eval/exit_on_end': ParameterValue(LaunchConfiguration('exit_on_end'), value_type=bool),
-                    'publish/odom': ParameterValue(LaunchConfiguration('publish_odom'), value_type=bool),
-                    'publish/debug_clouds': ParameterValue(LaunchConfiguration('publish_debug_clouds'), value_type=bool),
-                    'publish/tf': ParameterValue(LaunchConfiguration('publish_tf'), value_type=bool),
                 },
             ],
         ),

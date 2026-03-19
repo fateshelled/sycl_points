@@ -4,21 +4,21 @@
 #include <filesystem>
 #include <iomanip>
 #include <memory>
-#include <stdexcept>
-#include <string>
-#include <string_view>
-
 #include <rclcpp/serialization.hpp>
 #include <rclcpp/serialized_message.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <rosbag2_storage/storage_options.hpp>
 #include <rosbag2_transport/reader_writer_factory.hpp>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace sycl_points {
 namespace ros2 {
 
 LiDAROdometryBagEvalNode::LiDAROdometryBagEvalNode(const rclcpp::NodeOptions& options)
     : LiDAROdometryBaseNode("lidar_odometry_bag_eval", options) {
+
     this->bag_uri_ = this->declare_parameter<std::string>("bag/uri", "");
     this->bag_topic_ = this->declare_parameter<std::string>("bag/topic", "/os_cloud_node/points");
     this->start_offset_sec_ = this->declare_parameter<double>("bag/start_offset_sec", 0.0);
@@ -27,14 +27,7 @@ LiDAROdometryBagEvalNode::LiDAROdometryBagEvalNode(const rclcpp::NodeOptions& op
     this->write_first_frame_ = this->declare_parameter<bool>("eval/write_first_frame", true);
     this->exit_on_end_ = this->declare_parameter<bool>("eval/exit_on_end", true);
 
-    const PublishOptions publish_options = {
-        .publish_odom = this->declare_parameter<bool>("publish/odom", true),
-        .publish_tf = this->declare_parameter<bool>("publish/tf", true),
-        .publish_debug_clouds = this->declare_parameter<bool>("publish/debug_clouds", false),
-    };
-
     this->initialize_processing();
-    this->initialize_publishers(publish_options);
 
     this->start_timer_ = this->create_wall_timer(std::chrono::milliseconds(10), [this]() { this->run(); });
 }
@@ -111,11 +104,6 @@ void LiDAROdometryBagEvalNode::run() {
                 ++written_frames;
             }
 
-            if ((frame.result == ResultType::success || frame.result == ResultType::first_frame) &&
-                (this->publish_odom_enabled() || this->publish_tf_enabled() || this->publish_debug_clouds_enabled())) {
-                this->publish_processed_frame(msg.header, frame);
-            }
-
             if (this->max_frames_ > 0 && handled_frames >= this->max_frames_) {
                 break;
             }
@@ -124,7 +112,8 @@ void LiDAROdometryBagEvalNode::run() {
         this->tum_stream_.flush();
         this->tum_stream_.close();
 
-        RCLCPP_INFO(this->get_logger(), "Bag evaluation finished. topic=%s handled_frames=%ld written_frames=%ld tum=%s",
+        RCLCPP_INFO(this->get_logger(),
+                    "Bag evaluation finished. topic=%s handled_frames=%ld written_frames=%ld tum=%s",
                     this->bag_topic_.c_str(), handled_frames, written_frames, this->output_tum_.c_str());
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "bag evaluation failed: %s", e.what());
