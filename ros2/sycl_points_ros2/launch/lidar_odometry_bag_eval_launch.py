@@ -37,6 +37,7 @@ def generate_launch_description():
 
     launch_args.extend(
         [
+            DeclareLaunchArgument('point_topic', default_value='/os_cloud_node/points', description='source point cloud topic'),
             DeclareLaunchArgument('odom_frame_id', default_value='odom', description='odom frame id'),
             DeclareLaunchArgument('base_link_id', default_value='base_link', description='base_link frame id'),
             DeclareLaunchArgument('rosbag/uri', default_value='', description='input rosbag path'),
@@ -66,6 +67,9 @@ def generate_launch_description():
                     'eval/write_first_frame': ParameterValue(LaunchConfiguration('eval/write_first_frame'), value_type=bool),
                     'eval/exit_on_end': ParameterValue(LaunchConfiguration('eval/exit_on_end'), value_type=bool),
                 },
+            ],
+            remappings=[
+                ('points', LaunchConfiguration('point_topic')),
             ],
         ),
     ]
