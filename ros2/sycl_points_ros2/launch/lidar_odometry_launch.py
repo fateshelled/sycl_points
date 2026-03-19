@@ -129,23 +129,7 @@ def generate_launch_description():
                                 },
                             ]
                         ),
-                        ComposableNode(
-                            package=package_name,
-                            plugin='sycl_points::ros2::LiDAROdometryNode',
-                            name=package_name,
-                            parameters=[
-                                node_args,
-                                {
-                                    'odom_frame_id': LaunchConfiguration('odom_frame_id'),
-                                    'base_link_id': LaunchConfiguration('base_link_id'),
-                                    'use_sim_time': use_sim_time,
-                                },
-                            ],
-                            remappings=[
-                                ('points', LaunchConfiguration('point_topic')),
-                            ],
-                            extra_arguments=[{'use_intra_process_comms': True}],
-                        ),
+                        # rosbag2_transport must load before sycl_points
                         ComposableNode(
                             package='rosbag2_transport',
                             plugin='rosbag2_transport::Player',
@@ -164,6 +148,23 @@ def generate_launch_description():
                                 }
                             ],
                             condition=IfCondition(LaunchConfiguration('rosbag/play')),
+                            extra_arguments=[{'use_intra_process_comms': True}],
+                        ),
+                        ComposableNode(
+                            package=package_name,
+                            plugin='sycl_points::ros2::LiDAROdometryNode',
+                            name=package_name,
+                            parameters=[
+                                node_args,
+                                {
+                                    'odom_frame_id': LaunchConfiguration('odom_frame_id'),
+                                    'base_link_id': LaunchConfiguration('base_link_id'),
+                                    'use_sim_time': use_sim_time,
+                                },
+                            ],
+                            remappings=[
+                                ('points', LaunchConfiguration('point_topic')),
+                            ],
                             extra_arguments=[{'use_intra_process_comms': True}],
                         ),
                     ],
