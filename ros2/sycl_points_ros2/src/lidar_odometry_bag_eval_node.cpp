@@ -84,7 +84,7 @@ void LiDAROdometryBagEvalNode::run() {
         int64_t handled_frames = 0;
         int64_t written_frames = 0;
 
-        while (reader->has_next()) {
+        while (rclcpp::ok() && reader->has_next()) {
             auto bag_message = reader->read_next();
             if (bag_message == nullptr || bag_message->topic_name != this->bag_topic_) {
                 continue;
