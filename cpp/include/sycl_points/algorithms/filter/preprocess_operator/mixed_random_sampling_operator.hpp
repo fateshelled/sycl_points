@@ -60,7 +60,7 @@ public:
                 throw std::invalid_argument(
                     "[PreprocessFilter::mixed_random_sampling] weights must be finite and non-negative");
             }
-            if (weight <= 0.0f) continue;
+            if (weight <= 0.0f || weighted_target == 0) continue;
 
             const float key = std::log(weighted_dist(this->mt_)) / weight;
             if (selected.size() < weighted_target) {
