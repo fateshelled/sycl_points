@@ -8,6 +8,7 @@
 #include "sycl_points/algorithms/filter/preprocess_operator/angle_incidence_filter_operator.hpp"
 #include "sycl_points/algorithms/filter/preprocess_operator/box_filter_operator.hpp"
 #include "sycl_points/algorithms/filter/preprocess_operator/farthest_point_sampling_operator.hpp"
+#include "sycl_points/algorithms/filter/preprocess_operator/mixed_random_sampling_operator.hpp"
 #include "sycl_points/algorithms/filter/preprocess_operator/random_sampling_operator.hpp"
 #include "sycl_points/algorithms/filter/preprocess_operator/weighted_sampling_operator.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -36,6 +37,7 @@ public:
         this->box_filter_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
         this->random_sampling_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
         this->weighted_random_sampling_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
+        this->mixed_random_sampling_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
         this->farthest_point_sampling_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
         this->angle_incidence_filter_op_.emplace(this->queue_, this->flags_, initialize_flags_fn, filter_by_flags_fn);
     }
@@ -45,6 +47,7 @@ public:
     void set_random_seed(uint_fast32_t seed) {
         this->random_sampling_op_->set_random_seed(seed);
         this->weighted_random_sampling_op_->set_random_seed(seed);
+        this->mixed_random_sampling_op_->set_random_seed(seed);
         this->farthest_point_sampling_op_->set_random_seed(seed);
     }
 
@@ -98,6 +101,27 @@ public:
     void weighted_random_sampling(const PointCloudShared& source, PointCloudShared& output,
                                   const shared_vector<float>& weights, size_t sampling_num) {
         this->weighted_random_sampling_apply(source, output, weights, sampling_num);
+    }
+
+    /// @brief Randomly samples points using a weighted/uniform mixture without replacement
+    /// @param data Point cloud to be sampled (modified in-place)
+    /// @param weights Per-point weights used for the weighted portion
+    /// @param sampling_num Number of points to retain after sampling
+    /// @param weighted_ratio Fraction of samples drawn from the weighted distribution
+    void mixed_random_sampling(PointCloudShared& data, const shared_vector<float>& weights, size_t sampling_num,
+                               float weighted_ratio) {
+        this->mixed_random_sampling_apply(data, data, weights, sampling_num, weighted_ratio);
+    }
+
+    /// @brief Randomly samples points using a weighted/uniform mixture without replacement
+    /// @param source Source point cloud to be sampled
+    /// @param output Output point cloud
+    /// @param weights Per-point weights used for the weighted portion
+    /// @param sampling_num Number of points to retain after sampling
+    /// @param weighted_ratio Fraction of samples drawn from the weighted distribution
+    void mixed_random_sampling(const PointCloudShared& source, PointCloudShared& output,
+                               const shared_vector<float>& weights, size_t sampling_num, float weighted_ratio) {
+        this->mixed_random_sampling_apply(source, output, weights, sampling_num, weighted_ratio);
     }
 
     /// @brief Farthest Point Sampling (FPS)
@@ -154,6 +178,7 @@ private:
     std::optional<preprocess_operator::BoxFilterOperator> box_filter_op_;
     std::optional<preprocess_operator::RandomSamplingOperator> random_sampling_op_;
     std::optional<preprocess_operator::WeightedSamplingOperator> weighted_random_sampling_op_;
+    std::optional<preprocess_operator::MixedRandomSamplingOperator> mixed_random_sampling_op_;
     std::optional<preprocess_operator::FarthestPointSamplingOperator> farthest_point_sampling_op_;
     std::optional<preprocess_operator::AngleIncidenceFilterOperator> angle_incidence_filter_op_;
 
@@ -228,6 +253,11 @@ private:
     void weighted_random_sampling_apply(const PointCloudShared& source, PointCloudShared& output,
                                         const shared_vector<float>& weights, size_t sampling_num) {
         this->weighted_random_sampling_op_->apply(source, output, weights, sampling_num);
+    }
+
+    void mixed_random_sampling_apply(const PointCloudShared& source, PointCloudShared& output,
+                                     const shared_vector<float>& weights, size_t sampling_num, float weighted_ratio) {
+        this->mixed_random_sampling_op_->apply(source, output, weights, sampling_num, weighted_ratio);
     }
 
     /// @brief Farthest Point Sampling (FPS)
