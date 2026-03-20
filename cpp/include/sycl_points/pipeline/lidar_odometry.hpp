@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <mutex>
 
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
@@ -62,8 +63,10 @@ public:
 
     /// @brief Feed a single IMU measurement into the preintegrator.
     ///        No-op when IMU integration is disabled.
+    ///        Thread-safe: may be called concurrently with process().
     void add_imu_measurement(const imu::IMUMeasurement& meas) {
         if (this->imu_preintegration_) {
+            std::lock_guard<std::mutex> lock(imu_mutex_);
             this->imu_preintegration_->integrate(meas);
         }
     }
@@ -123,6 +126,7 @@ public:
                 const Eigen::Matrix3f R_world_imu =
                     this->params_.pose.initial.rotation() *
                     this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
             }
 
@@ -163,6 +167,7 @@ public:
                 const Eigen::Matrix3f R_world_imu =
                     this->odom_.rotation() *
                     this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
             }
         }
@@ -208,6 +213,7 @@ private:
     Parameters params_;
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
+    mutable std::mutex imu_mutex_;  ///< Guards imu_preintegration_ state for thread safety.
 
     std::string error_message_;
 
@@ -511,11 +517,16 @@ private:
     }
 
     algorithms::registration::RegistrationResult registration() {
+        // Snapshot the IMU-based initial guess under the lock, then run ICP outside it.
         Eigen::Isometry3f init_T;
-        if (this->imu_preintegration_ && this->imu_preintegration_->has_measurements()) {
-            init_T = this->imu_motion_prediction();
-        } else {
-            init_T = this->adaptive_motion_prediction();
+        {
+            std::lock_guard<std::mutex> lock(imu_mutex_);
+            if (this->imu_preintegration_ &&
+                this->imu_preintegration_->get_dt_total() > 0.0) {
+                init_T = this->imu_motion_prediction();
+            } else {
+                init_T = this->adaptive_motion_prediction();
+            }
         }
 
         algorithms::registration::Registration::ExecutionOptions options;
