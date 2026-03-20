@@ -366,69 +366,6 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         }
     }
 
-    // tf and pose
-    {
-        params.frames.odom_frame_id = node->declare_parameter<std::string>("odom_frame_id", "odom");
-        params.frames.base_link_id = node->declare_parameter<std::string>("base_link_id", "base_link");
-        {
-            // x, y, z, qx, qy, qz, qw
-            const auto x = node->declare_parameter<double>("T_base_link_to_lidar/x", 0.0);
-            const auto y = node->declare_parameter<double>("T_base_link_to_lidar/y", 0.0);
-            const auto z = node->declare_parameter<double>("T_base_link_to_lidar/z", 0.0);
-            const auto qx = node->declare_parameter<double>("T_base_link_to_lidar/qx", 0.0);
-            const auto qy = node->declare_parameter<double>("T_base_link_to_lidar/qy", 0.0);
-            const auto qz = node->declare_parameter<double>("T_base_link_to_lidar/qz", 0.0);
-            const auto qw = node->declare_parameter<double>("T_base_link_to_lidar/qw", 1.0);
-            params.frames.T_base_link_to_lidar.setIdentity();
-            params.frames.T_base_link_to_lidar.translation() << x, y, z;
-            const Eigen::Quaternionf quat(qw, qx, qy, qz);
-            params.frames.T_base_link_to_lidar.matrix().block<3, 3>(0, 0) = quat.matrix();
-
-            params.frames.T_lidar_to_base_link = params.frames.T_base_link_to_lidar.inverse();
-        }
-
-        {
-            const auto x = node->declare_parameter<double>("initial_base_link_pose/x", 0.0);
-            const auto y = node->declare_parameter<double>("initial_base_link_pose/y", 0.0);
-            const auto z = node->declare_parameter<double>("initial_base_link_pose/z", 0.0);
-            const auto qx = node->declare_parameter<double>("initial_base_link_pose/qx", 0.0);
-            const auto qy = node->declare_parameter<double>("initial_base_link_pose/qy", 0.0);
-            const auto qz = node->declare_parameter<double>("initial_base_link_pose/qz", 0.0);
-            const auto qw = node->declare_parameter<double>("initial_base_link_pose/qw", 1.0);
-            Eigen::Isometry3f initial_base_link = Eigen::Isometry3f::Identity();
-            initial_base_link.translation() << x, y, z;
-            const Eigen::Quaternionf quat(qw, qx, qy, qz);
-            initial_base_link.matrix().block<3, 3>(0, 0) = quat.matrix();
-
-            params.pose.initial = initial_base_link * params.frames.T_base_link_to_lidar;
-        }
-    }
-
-    // Visualizer
-    {
-        // Preprocessed Scan Covariances
-        params.visualization.scan_covariance_markers.topic_name = node->declare_parameter<std::string>(
-            "vis/covariance_markers/scan/topic_name", params.visualization.scan_covariance_markers.topic_name);
-        params.visualization.scan_covariance_markers.marker_ns = node->declare_parameter<std::string>(
-            "vis/covariance_markers/scan/marker_ns", params.visualization.scan_covariance_markers.marker_ns);
-        params.visualization.scan_covariance_markers.scale_factor = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/scale_factor", params.visualization.scan_covariance_markers.scale_factor);
-        params.visualization.scan_covariance_markers.min_scale = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/min_scale", params.visualization.scan_covariance_markers.min_scale);
-        params.visualization.scan_covariance_markers.max_scale = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/max_scale", params.visualization.scan_covariance_markers.max_scale);
-        params.visualization.scan_covariance_markers.alpha = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/alpha", params.visualization.scan_covariance_markers.alpha);
-        params.visualization.scan_covariance_markers.color_by_planarity =
-            node->declare_parameter<bool>("vis/covariance_markers/scan/color_by_planarity",
-                                          params.visualization.scan_covariance_markers.color_by_planarity);
-        params.visualization.scan_covariance_markers.default_r = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_r", params.visualization.scan_covariance_markers.default_r);
-        params.visualization.scan_covariance_markers.default_g = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_g", params.visualization.scan_covariance_markers.default_g);
-        params.visualization.scan_covariance_markers.default_b = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_b", params.visualization.scan_covariance_markers.default_b);
-    }
     return params;
 }
 }  // namespace ros2

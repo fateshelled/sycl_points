@@ -9,7 +9,6 @@
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 #include "sycl_points/imu/imu_preintegration.hpp"
-#include "sycl_points/ros2/covariance_marker_publisher.hpp"
 
 namespace sycl_points {
 namespace pipeline {
@@ -187,19 +186,8 @@ struct Parameters {
         algorithms::registration::RegistrationPipelineParams pipeline;
     };
 
-    struct Frames {
-        std::string odom_frame_id = "odom";
-        std::string base_link_id = "base_link";
-        Eigen::Isometry3f T_base_link_to_lidar = Eigen::Isometry3f::Identity();
-        Eigen::Isometry3f T_lidar_to_base_link = Eigen::Isometry3f::Identity();
-    };
-
     struct Pose {
         Eigen::Isometry3f initial = Eigen::Isometry3f::Identity();
-    };
-
-    struct Visualization {
-        ros2::CovarianceMarkerConfig scan_covariance_markers;
     };
 
     Device device;
@@ -209,9 +197,7 @@ struct Parameters {
     MotionPrediction motion_prediction;
     IMU imu;
     Registration registration;
-    Frames frames;
     Pose pose;
-    Visualization visualization;
 };
 
 }  // namespace lidar_odometry

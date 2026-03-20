@@ -79,6 +79,15 @@ protected:
     bool input_convert_rgb_ = true;
     bool input_convert_intensity_ = true;
 
+    // ROS2/TF frame parameters
+    std::string odom_frame_id_ = "odom";
+    std::string base_link_id_ = "base_link";
+    Eigen::Isometry3f T_base_link_to_lidar_ = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f T_lidar_to_base_link_ = Eigen::Isometry3f::Identity();
+
+    // Visualization parameters
+    ros2::CovarianceMarkerConfig scan_covariance_marker_config_;
+
     // IMU buffer with mutual exclusion
     std::string imu_topic_ = "imu/data";
     std::deque<sensor_msgs::msg::Imu> imu_buffer_;

@@ -28,6 +28,63 @@ void LiDAROdometryBaseNode::initialize_processing() {
     this->input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
     this->input_convert_intensity_ = this->declare_parameter<bool>("input/convert_intensity", true);
 
+    // tf and pose (ROS2/TF specific)
+    this->odom_frame_id_ = this->declare_parameter<std::string>("odom_frame_id", this->odom_frame_id_);
+    this->base_link_id_ = this->declare_parameter<std::string>("base_link_id", this->base_link_id_);
+    {
+        const auto x = this->declare_parameter<double>("T_base_link_to_lidar/x", 0.0);
+        const auto y = this->declare_parameter<double>("T_base_link_to_lidar/y", 0.0);
+        const auto z = this->declare_parameter<double>("T_base_link_to_lidar/z", 0.0);
+        const auto qx = this->declare_parameter<double>("T_base_link_to_lidar/qx", 0.0);
+        const auto qy = this->declare_parameter<double>("T_base_link_to_lidar/qy", 0.0);
+        const auto qz = this->declare_parameter<double>("T_base_link_to_lidar/qz", 0.0);
+        const auto qw = this->declare_parameter<double>("T_base_link_to_lidar/qw", 1.0);
+        this->T_base_link_to_lidar_.setIdentity();
+        this->T_base_link_to_lidar_.translation() << static_cast<float>(x), static_cast<float>(y),
+            static_cast<float>(z);
+        const Eigen::Quaternionf quat(static_cast<float>(qw), static_cast<float>(qx), static_cast<float>(qy),
+                                      static_cast<float>(qz));
+        this->T_base_link_to_lidar_.matrix().block<3, 3>(0, 0) = quat.normalized().matrix();
+        this->T_lidar_to_base_link_ = this->T_base_link_to_lidar_.inverse();
+    }
+    {
+        const auto x = this->declare_parameter<double>("initial_base_link_pose/x", 0.0);
+        const auto y = this->declare_parameter<double>("initial_base_link_pose/y", 0.0);
+        const auto z = this->declare_parameter<double>("initial_base_link_pose/z", 0.0);
+        const auto qx = this->declare_parameter<double>("initial_base_link_pose/qx", 0.0);
+        const auto qy = this->declare_parameter<double>("initial_base_link_pose/qy", 0.0);
+        const auto qz = this->declare_parameter<double>("initial_base_link_pose/qz", 0.0);
+        const auto qw = this->declare_parameter<double>("initial_base_link_pose/qw", 1.0);
+        Eigen::Isometry3f initial_base_link = Eigen::Isometry3f::Identity();
+        initial_base_link.translation() << static_cast<float>(x), static_cast<float>(y), static_cast<float>(z);
+        const Eigen::Quaternionf quat(static_cast<float>(qw), static_cast<float>(qx), static_cast<float>(qy),
+                                      static_cast<float>(qz));
+        initial_base_link.matrix().block<3, 3>(0, 0) = quat.normalized().matrix();
+        this->params_.pose.initial = initial_base_link * this->T_base_link_to_lidar_;
+    }
+
+    // Visualization (ROS2 specific)
+    {
+        auto& c = this->scan_covariance_marker_config_;
+        c.topic_name = this->declare_parameter<std::string>("vis/covariance_markers/scan/topic_name", c.topic_name);
+        c.marker_ns = this->declare_parameter<std::string>("vis/covariance_markers/scan/marker_ns", c.marker_ns);
+        c.scale_factor = static_cast<float>(
+            this->declare_parameter<double>("vis/covariance_markers/scan/scale_factor", c.scale_factor));
+        c.min_scale =
+            static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/min_scale", c.min_scale));
+        c.max_scale =
+            static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/max_scale", c.max_scale));
+        c.alpha = static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/alpha", c.alpha));
+        c.color_by_planarity =
+            this->declare_parameter<bool>("vis/covariance_markers/scan/color_by_planarity", c.color_by_planarity);
+        c.default_r =
+            static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/default_r", c.default_r));
+        c.default_g =
+            static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/default_g", c.default_g));
+        c.default_b =
+            static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/default_b", c.default_b));
+    }
+
     this->pipeline_ = std::make_unique<pipeline::lidar_odometry::LiDAROdometryPipeline>(this->params_);
     this->pipeline_->get_device_queue()->print_device_info();
 
@@ -48,7 +105,7 @@ void LiDAROdometryBaseNode::initialize_publishers(const PublishOptions& options)
             this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lo/preprocessed", rclcpp::QoS(5));
         this->pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lo/submap", rclcpp::QoS(5));
         this->covariance_marker_publisher_ =
-            std::make_unique<CovarianceMarkerPublisher>(*this, this->params_.visualization.scan_covariance_markers);
+            std::make_unique<CovarianceMarkerPublisher>(*this, this->scan_covariance_marker_config_);
     }
 
     if (options.publish_odom) {
@@ -187,7 +244,7 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
     if (this->pub_submap_ != nullptr && this->pub_submap_->get_subscription_count() > 0) {
         auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), header);
         if (submap_msg != nullptr) {
-            submap_msg->header.frame_id = this->params_.frames.odom_frame_id;
+            submap_msg->header.frame_id = this->odom_frame_id_;
             this->pub_submap_->publish(*submap_msg);
         }
     }
@@ -196,14 +253,14 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
 nav_msgs::msg::Odometry LiDAROdometryBaseNode::make_odom_message(
     const std_msgs::msg::Header& header, const Eigen::Isometry3f& odom,
     const algorithms::registration::RegistrationResult* reg_result) const {
-    const Eigen::Isometry3f odom_to_base_link = odom * this->params_.frames.T_lidar_to_base_link;
+    const Eigen::Isometry3f odom_to_base_link = odom * this->T_lidar_to_base_link_;
     const auto odom_trans = odom_to_base_link.translation();
     const Eigen::Quaternionf odom_quat(odom_to_base_link.rotation());
 
     nav_msgs::msg::Odometry odom_msg;
     odom_msg.header.stamp = header.stamp;
-    odom_msg.header.frame_id = this->params_.frames.odom_frame_id;
-    odom_msg.child_frame_id = this->params_.frames.base_link_id;
+    odom_msg.header.frame_id = this->odom_frame_id_;
+    odom_msg.child_frame_id = this->base_link_id_;
     odom_msg.pose.pose.position.x = odom_trans.x();
     odom_msg.pose.pose.position.y = odom_trans.y();
     odom_msg.pose.pose.position.z = odom_trans.z();
@@ -239,14 +296,14 @@ geometry_msgs::msg::PoseStamped LiDAROdometryBaseNode::make_pose_message(const s
 
 nav_msgs::msg::Odometry LiDAROdometryBaseNode::make_keyframe_pose_message(const std_msgs::msg::Header& header,
                                                                           const Eigen::Isometry3f& odom) const {
-    const Eigen::Isometry3f odom_to_base_link = odom * this->params_.frames.T_lidar_to_base_link;
+    const Eigen::Isometry3f odom_to_base_link = odom * this->T_lidar_to_base_link_;
     const auto odom_trans = odom_to_base_link.translation();
     const Eigen::Quaternionf odom_quat(odom_to_base_link.rotation());
 
     nav_msgs::msg::Odometry odom_msg;
     odom_msg.header = header;
-    odom_msg.header.frame_id = this->params_.frames.odom_frame_id;
-    odom_msg.child_frame_id = this->params_.frames.base_link_id;
+    odom_msg.header.frame_id = this->odom_frame_id_;
+    odom_msg.child_frame_id = this->base_link_id_;
     odom_msg.pose.pose.position.x = odom_trans.x();
     odom_msg.pose.pose.position.y = odom_trans.y();
     odom_msg.pose.pose.position.z = odom_trans.z();
@@ -259,14 +316,14 @@ nav_msgs::msg::Odometry LiDAROdometryBaseNode::make_keyframe_pose_message(const 
 
 geometry_msgs::msg::TransformStamped LiDAROdometryBaseNode::make_transform_message(
     const std_msgs::msg::Header& header, const Eigen::Isometry3f& odom) const {
-    const Eigen::Isometry3f odom_to_base_link = odom * this->params_.frames.T_lidar_to_base_link;
+    const Eigen::Isometry3f odom_to_base_link = odom * this->T_lidar_to_base_link_;
     const auto odom_trans = odom_to_base_link.translation();
     const Eigen::Quaternionf odom_quat(odom_to_base_link.rotation());
 
     geometry_msgs::msg::TransformStamped tf;
     tf.header.stamp = header.stamp;
-    tf.header.frame_id = this->params_.frames.odom_frame_id;
-    tf.child_frame_id = this->params_.frames.base_link_id;
+    tf.header.frame_id = this->odom_frame_id_;
+    tf.child_frame_id = this->base_link_id_;
     tf.transform.translation.x = odom_trans.x();
     tf.transform.translation.y = odom_trans.y();
     tf.transform.translation.z = odom_trans.z();
