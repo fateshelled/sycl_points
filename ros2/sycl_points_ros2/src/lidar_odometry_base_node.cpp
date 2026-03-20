@@ -24,7 +24,6 @@ void LiDAROdometryBaseNode::initialize_processing() {
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
 
     this->points_topic_ = this->declare_parameter<std::string>("points_topic", this->points_topic_);
-    this->use_imu_ = this->declare_parameter<bool>("use_imu", this->use_imu_);
     this->imu_topic_ = this->declare_parameter<std::string>("imu_topic", this->imu_topic_);
     this->input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
     this->input_convert_intensity_ = this->declare_parameter<bool>("input/convert_intensity", true);

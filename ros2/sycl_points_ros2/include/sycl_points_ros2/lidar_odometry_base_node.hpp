@@ -80,7 +80,6 @@ protected:
     bool input_convert_intensity_ = true;
 
     // IMU buffer with mutual exclusion
-    bool use_imu_ = false;
     std::string imu_topic_ = "imu/data";
     std::deque<sensor_msgs::msg::Imu> imu_buffer_;
     mutable std::mutex imu_buffer_mutex_;
