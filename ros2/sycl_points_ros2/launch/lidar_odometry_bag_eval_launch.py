@@ -38,6 +38,7 @@ def generate_launch_description():
     launch_args.extend(
         [
             DeclareLaunchArgument('points_topic', default_value='/os_cloud_node/points', description='source point cloud topic'),
+            DeclareLaunchArgument('imu_topic', default_value='imu/data', description='IMU topic (used only when imu/enable:=true)'),
             DeclareLaunchArgument('odom_frame_id', default_value='odom', description='odom frame id'),
             DeclareLaunchArgument('base_link_id', default_value='base_link', description='base_link frame id'),
             DeclareLaunchArgument('rosbag/uri', default_value='', description='input rosbag path'),
@@ -58,6 +59,7 @@ def generate_launch_description():
                 node_args,
                 {
                     'points_topic': LaunchConfiguration('points_topic'),
+                    'imu_topic': LaunchConfiguration('imu_topic'),
                     'odom_frame_id': LaunchConfiguration('odom_frame_id'),
                     'base_link_id': LaunchConfiguration('base_link_id'),
                     'rosbag/uri': LaunchConfiguration('rosbag/uri'),

@@ -47,15 +47,9 @@ def generate_launch_description():
                 description='source point cloud topic',
             ),
             DeclareLaunchArgument(
-                'use_imu',
-                default_value='false',
-                choices=['true', 'false'],
-                description='enable IMU subscription for initial pose estimation',
-            ),
-            DeclareLaunchArgument(
                 'imu_topic',
                 default_value='imu/data',
-                description='IMU topic (used only when use_imu:=true)',
+                description='IMU topic (used only when imu/enable:=true)',
             ),
             DeclareLaunchArgument(
                 'lidar_frame_id',
@@ -169,7 +163,6 @@ def generate_launch_description():
                                 node_args,
                                 {
                                     'points_topic': LaunchConfiguration('points_topic'),
-                                    'use_imu': LaunchConfiguration('use_imu'),
                                     'imu_topic': LaunchConfiguration('imu_topic'),
                                     'odom_frame_id': LaunchConfiguration('odom_frame_id'),
                                     'base_link_id': LaunchConfiguration('base_link_id'),
