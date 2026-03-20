@@ -26,13 +26,17 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options)
         lidar_sub_options);
     RCLCPP_INFO(this->get_logger(), "Subscribe PointCloud: %s", this->sub_pc_->get_topic_name());
 
-    rclcpp::SubscriptionOptions imu_sub_options;
-    imu_sub_options.callback_group = this->cb_group_imu_;
-    this->sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
-        this->imu_topic_, rclcpp::QoS(100),
-        std::bind(&LiDAROdometryNode::imu_callback, this, std::placeholders::_1),
-        imu_sub_options);
-    RCLCPP_INFO(this->get_logger(), "Subscribe IMU: %s", this->sub_imu_->get_topic_name());
+    if (this->use_imu_) {
+        rclcpp::SubscriptionOptions imu_sub_options;
+        imu_sub_options.callback_group = this->cb_group_imu_;
+        this->sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
+            this->imu_topic_, rclcpp::QoS(100),
+            std::bind(&LiDAROdometryNode::imu_callback, this, std::placeholders::_1),
+            imu_sub_options);
+        RCLCPP_INFO(this->get_logger(), "Subscribe IMU: %s", this->sub_imu_->get_topic_name());
+    } else {
+        RCLCPP_INFO(this->get_logger(), "IMU disabled (use_imu:=false)");
+    }
 }
 
 LiDAROdometryNode::~LiDAROdometryNode() = default;
