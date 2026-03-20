@@ -78,9 +78,9 @@ public:
         }
 
         // Add to buffer and trim entries older than buffer_duration_sec
+        const double latest_timestamp = meas.timestamp;
         this->imu_buffer_.push_back(meas);
-        const double latest = this->imu_buffer_.back().timestamp;
-        while (latest - this->imu_buffer_.front().timestamp > this->params_.imu.buffer_duration_sec) {
+        while (latest_timestamp - this->imu_buffer_.front().timestamp > this->params_.imu.buffer_duration_sec) {
             this->imu_buffer_.pop_front();
         }
 
