@@ -5,6 +5,14 @@ lidar_odometry_node:
     # intel or nvidia or amd
     sycl/device_vendor: intel
 
+    points_topic: points
+    imu_topic: imu/data
+    odom_frame_id: odom
+    base_link_id: base_link
+    lidar_frame_id: os_sensor
+    rviz2: true
+    use_sim_time: false
+
     initial_base_link_pose/x: 0.0
     initial_base_link_pose/y: 0.0
     initial_base_link_pose/z: 0.0
@@ -29,8 +37,7 @@ lidar_odometry_node:
     T_imu_to_lidar/qz: 0.0
     T_imu_to_lidar/qw: 1.0
 
-    imu/enable: false
-
+    imu/enable: true
     imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
     imu/preintegration/gravity/y: 0.0
     imu/preintegration/gravity/z: -9.81
