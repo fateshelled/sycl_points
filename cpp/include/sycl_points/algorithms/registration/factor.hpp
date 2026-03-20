@@ -41,7 +41,7 @@ using RegTypeTags = std::tuple<                                       //
     std::integral_constant<RegType, RegType::GENZ>                    //
     >;                                                                //
 
-RegType RegType_from_string(const std::string& str) {
+inline RegType RegType_from_string(const std::string& str) {
     std::string upper = str;
     std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
     if (upper == "POINT_TO_POINT") {

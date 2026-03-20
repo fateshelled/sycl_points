@@ -27,7 +27,7 @@ using RobustLossTypeTags = std::tuple<                                     //
     std::integral_constant<RobustLossType, RobustLossType::GEMAN_MCCLURE>  //
     >;
 
-RobustLossType RobustLossType_from_string(const std::string& str) {
+inline RobustLossType RobustLossType_from_string(const std::string& str) {
     std::string upper = str;
     std::transform(str.begin(), str.end(), upper.begin(), [](u_char c) { return std::toupper(c); });
     if (upper == "NONE") {

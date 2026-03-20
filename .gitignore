@@ -36,3 +36,5 @@ cpp/build/*
 .vscode/*
 .claude/*
 CLAUDE.md
+
+*.pyc
