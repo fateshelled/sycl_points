@@ -124,8 +124,7 @@ public:
             // Reset IMU integrator so the next window starts from the initial pose.
             if (this->imu_preintegration_) {
                 const Eigen::Matrix3f R_world_imu =
-                    this->params_.pose.initial.rotation() *
-                    this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                    this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation().transpose();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
             }
@@ -165,8 +164,7 @@ public:
             // odom_ has already been updated to the current frame's pose above.
             if (this->imu_preintegration_) {
                 const Eigen::Matrix3f R_world_imu =
-                    this->odom_.rotation() *
-                    this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                    this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation().transpose();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
             }
@@ -345,11 +343,9 @@ private:
 
         // IMU preintegration (optional)
         if (this->params_.imu.enable) {
-            this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(
-                this->params_.imu.preintegration);
+            this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
-                this->params_.pose.initial.rotation() *
-                this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation().transpose();
             this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
         }
     }
@@ -499,14 +495,13 @@ private:
     /// @return Absolute predicted pose T_odom_to_lidar_curr (Isometry3f).
     Eigen::Isometry3f imu_motion_prediction() {
         // T_imu_rel: pose of IMU_curr in IMU_prev frame (4x4 float Matrix)
-        const TransformMatrix T_imu_rel =
-            this->imu_preintegration_->predict_relative_transform(this->params_.imu.bias);
+        const TransformMatrix T_imu_rel = this->imu_preintegration_->predict_relative_transform(this->params_.imu.bias);
 
         // Convert to LiDAR-frame relative transform:
         // T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
         const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
         Eigen::Isometry3f T_imu_rel_iso = Eigen::Isometry3f::Identity();
-        T_imu_rel_iso.linear()      = T_imu_rel.block<3, 3>(0, 0);
+        T_imu_rel_iso.linear() = T_imu_rel.block<3, 3>(0, 0);
         T_imu_rel_iso.translation() = T_imu_rel.block<3, 1>(0, 3);
 
         const Eigen::Isometry3f T_lidar_rel = T_i2l * T_imu_rel_iso * T_i2l.inverse();
@@ -521,8 +516,7 @@ private:
         Eigen::Isometry3f init_T;
         {
             std::lock_guard<std::mutex> lock(imu_mutex_);
-            if (this->imu_preintegration_ &&
-                this->imu_preintegration_->get_dt_total() > 0.0) {
+            if (this->imu_preintegration_ && this->imu_preintegration_->get_dt_total() > 0.0) {
                 init_T = this->imu_motion_prediction();
             } else {
                 init_T = this->adaptive_motion_prediction();

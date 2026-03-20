@@ -178,7 +178,7 @@ struct Parameters {
         Eigen::Isometry3f T_imu_to_lidar = Eigen::Isometry3f::Identity();
 
         imu::IMUPreintegrationParams preintegration;  ///< gravity vector etc.
-        imu::IMUBias bias;                             ///< initial/fixed bias estimate
+        imu::IMUBias bias;                            ///< initial/fixed bias estimate
     };
 
     struct Registration {
