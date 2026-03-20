@@ -78,21 +78,31 @@ public:
         : params_(params) {}
 
     /// @brief Reset the integrator (call at every new LiDAR keyframe).
-    void reset(const IMUBias& bias = IMUBias()) {
-        bias_lin_        = bias;
-        result_          = PreintegrationResult{};
-        has_prev_        = false;
+    /// @param bias           Current bias estimate used as the linearization point.
+    /// @param R_world_body_i Rotation from body to world frame at the window start.
+    ///                       Required to compensate gravity in predict_relative_transform().
+    void reset(const IMUBias& bias = IMUBias(),
+               const Eigen::Matrix3f& R_world_body_i = Eigen::Matrix3f::Identity()) {
+        bias_lin_         = bias;
+        result_           = PreintegrationResult{};
+        has_prev_         = false;
         num_measurements_ = 0;
-        step_count_      = 0;
+        step_count_       = 0;
+        R_world_body_i_   = R_world_body_i;
     }
 
     /// @brief Feed one IMU sample.  Integration starts after the second call.
+    ///        Out-of-order or duplicate samples (non-increasing timestamp) are silently dropped
+    ///        without corrupting the previous measurement used for midpoint integration.
     void integrate(const IMUMeasurement& meas) {
         if (!has_prev_) {
             prev_meas_ = meas;
             has_prev_  = true;
             ++num_measurements_;
             return;
+        }
+        if (meas.timestamp <= prev_meas_.timestamp) {
+            return;  // drop without overwriting prev_meas_
         }
         integrate_step(prev_meas_, meas);
         prev_meas_ = meas;
@@ -159,15 +169,27 @@ public:
     }
 
     /// @brief Predict the relative transform from window start to window end.
+    ///        Gravity is compensated using the initial orientation supplied to reset(),
+    ///        making the returned translation purely motion-induced.
     ///        Suitable for direct use as an ICP initial_guess when the absolute
     ///        world-frame velocity is not tracked.
     /// @return T_body_i_to_body_j  (TransformMatrix = Matrix4f)
     TransformMatrix predict_relative_transform(const IMUBias& current_bias) const {
         const PreintegrationResult c = get_corrected(current_bias);
+        const float dt_f = static_cast<float>(c.dt_total);
+
+        // Delta_p accumulates the specific force (accelerometer reading), which includes
+        // gravity.  Subtract the gravity contribution expressed in the window-start body
+        // frame so that a stationary device returns zero translation.
+        // Gravity term in window-start body frame: R_i^T * g_world.
+        // Its integral over [0, dt]: 0.5 * R_i^T * g_world * dt^2.
+        // Adding it cancels the gravity already baked into Delta_p.
+        const Eigen::Vector3f delta_p_grav_free =
+            c.Delta_p + 0.5f * (R_world_body_i_.transpose() * params_.gravity) * dt_f * dt_f;
 
         TransformMatrix T_rel = TransformMatrix::Identity();
         T_rel.block<3, 3>(0, 0) = c.Delta_R;
-        T_rel.block<3, 1>(0, 3) = c.Delta_p;
+        T_rel.block<3, 1>(0, 3) = delta_p_grav_free;
         return T_rel;
     }
 
@@ -180,12 +202,14 @@ private:
     /// @brief Right Jacobian of SO(3): Jr(phi) = d Exp(phi) / d phi.
     static Eigen::Matrix3f right_jacobian_so3(const Eigen::Vector3f& phi) {
         const float theta = phi.norm();
-        if (theta < 1e-6f) {
-            // First-order Taylor: Jr ≈ I - 0.5 * skew(phi)
-            return Eigen::Matrix3f::Identity() - 0.5f * eigen_utils::lie::skew(phi);
-        }
         const Eigen::Matrix3f S  = eigen_utils::lie::skew(phi);
         const Eigen::Matrix3f S2 = S * S;
+        if (theta < 1e-4f) {
+            // Second-order Taylor: Jr ≈ I - 0.5*S + (1/6)*S²
+            // Avoids catastrophic cancellation in (1-cos θ)/θ² and (θ-sin θ)/θ³
+            // for small θ in single-precision float (machine eps ~1.2e-7).
+            return Eigen::Matrix3f::Identity() - 0.5f * S + (1.0f / 6.0f) * S2;
+        }
         return Eigen::Matrix3f::Identity()
             - (1.0f - std::cos(theta)) / (theta * theta) * S
             + (theta - std::sin(theta)) / (theta * theta * theta) * S2;
@@ -260,6 +284,7 @@ private:
     IMUBias bias_lin_;
     PreintegrationResult result_;
     IMUMeasurement prev_meas_;
+    Eigen::Matrix3f R_world_body_i_ = Eigen::Matrix3f::Identity();
     bool has_prev_         = false;
     int  num_measurements_ = 0;
     int  step_count_       = 0;
