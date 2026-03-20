@@ -8,6 +8,7 @@
 
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
+#include "sycl_points/imu/imu_preintegration.hpp"
 #include "sycl_points/ros2/covariance_marker_publisher.hpp"
 
 namespace sycl_points {
@@ -170,6 +171,17 @@ struct Parameters {
         Adaptive adaptive;
     };
 
+    struct IMU {
+        bool enable = false;
+
+        /// Extrinsic: pose of the IMU body frame expressed in the LiDAR frame.
+        /// p_lidar = T_imu_to_lidar * p_imu
+        Eigen::Isometry3f T_imu_to_lidar = Eigen::Isometry3f::Identity();
+
+        imu::IMUPreintegrationParams preintegration;  ///< gravity vector etc.
+        imu::IMUBias bias;                             ///< initial/fixed bias estimate
+    };
+
     struct Registration {
         size_t min_num_points = 100;
         algorithms::registration::RegistrationPipelineParams pipeline;
@@ -195,6 +207,7 @@ struct Parameters {
     Submap submap;
     CovarianceEstimation covariance_estimation;
     MotionPrediction motion_prediction;
+    IMU imu;
     Registration registration;
     Frames frames;
     Pose pose;
