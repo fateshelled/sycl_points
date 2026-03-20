@@ -1,11 +1,14 @@
 #pragma once
 
+#include <deque>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <string>
 #include <sycl_points/pipeline/lidar_odometry.hpp>
@@ -75,6 +78,12 @@ protected:
     std::string points_topic_ = "points";
     bool input_convert_rgb_ = true;
     bool input_convert_intensity_ = true;
+
+    // IMU buffer with mutual exclusion
+    std::string imu_topic_ = "imu/data";
+    std::deque<sensor_msgs::msg::Imu> imu_buffer_;
+    mutable std::mutex imu_buffer_mutex_;
+    static constexpr double imu_buffer_duration_sec_ = 1.0;
 
 private:
     void add_delta_time(const std::string& name, double dt);
