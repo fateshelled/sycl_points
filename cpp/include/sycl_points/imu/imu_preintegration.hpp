@@ -120,16 +120,17 @@ public:
         const Eigen::Vector3f d_bg = new_bias.gyro_bias - bias_lin_.gyro_bias;
         const Eigen::Vector3f d_ba = new_bias.accel_bias - bias_lin_.accel_bias;
 
+        // copy
         PreintegrationResult corrected = result_;
 
         // Correct rotation: Delta_R_corr = Delta_R * Exp(J_R_bg * d_bg)
         const Eigen::Vector3f phi_corr = result_.J.J_R_bg * d_bg;
         const Eigen::Vector4f q_corr = eigen_utils::lie::so3_exp(phi_corr);
         const Eigen::Matrix3f R_corr = eigen_utils::geometry::quaternion_to_rotation_matrix(q_corr);
-        corrected.Delta_R = result_.Delta_R * R_corr;
+        corrected.Delta_R *= R_corr;
 
-        corrected.Delta_v = result_.Delta_v + result_.J.J_v_bg * d_bg + result_.J.J_v_ba * d_ba;
-        corrected.Delta_p = result_.Delta_p + result_.J.J_p_bg * d_bg + result_.J.J_p_ba * d_ba;
+        corrected.Delta_v += result_.J.J_v_bg * d_bg + result_.J.J_v_ba * d_ba;
+        corrected.Delta_p += result_.J.J_p_bg * d_bg + result_.J.J_p_ba * d_ba;
 
         return corrected;
     }
@@ -202,8 +203,9 @@ private:
             // for small θ in single-precision float (machine eps ~1.2e-7).
             return Eigen::Matrix3f::Identity() - 0.5f * S + (1.0f / 6.0f) * S2;
         }
-        return Eigen::Matrix3f::Identity() - (1.0f - std::cos(theta)) / (theta * theta) * S +
-               (theta - std::sin(theta)) / (theta * theta * theta) * S2;
+        return Eigen::Matrix3f::Identity()                       //
+               - (1.0f - std::cos(theta)) / (theta * theta) * S  //
+               + (theta - std::sin(theta)) / (theta * theta * theta) * S2;
     }
 
     /// @brief Integrate one step from measurement m0 to m1 using midpoint (RK2).
