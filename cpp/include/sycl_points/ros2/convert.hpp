@@ -44,7 +44,8 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         } else if (field.name == "intensity") {
             intensity_type = field.datatype;
             intensity_offset = field.offset;
-        } else if (field.name == "t" || field.name == "time" || field.name == "timestamp") {
+        } else if (field.name == "t" || field.name == "time" || field.name == "timestamp" ||
+                   field.name == "offset_time") {
             timestamp_type = field.datatype;
             timestamp_offset = field.offset;
         }
@@ -95,8 +96,12 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
         std::cerr << "Not supported timestamp field type" << std::endl;
     }
 
-    // Convert ROS2 timestamp fields (seconds relative to the header stamp) into
-    // the start-plus-offset representation used by PointCloudShared.
+    // Convert per-point timestamp fields into millisecond offsets from the header stamp.
+    // UINT32  : nanoseconds from scan start (Ouster "t", Livox "offset_time").
+    // FLOAT32 : seconds from scan start (Velodyne "time"). FLOAT32 lacks precision for
+    //           absolute Unix time, so it is always treated as a relative offset.
+    // FLOAT64 : absolute Unix timestamp in seconds when value > 1e8 s (Hesai, Livox
+    //           "timestamp"); otherwise treated as a relative offset in seconds.
     auto assign_timestamp_offsets = [&]() {
         if (!has_timestamp_field) {
             return;
@@ -115,8 +120,7 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             const size_t base = point_step * i + timestamp_offset;
 
             if (timestamp_type == sensor_msgs::msg::PointField::UINT32) {
-                // Ouster
-                // nanoseconds to milliseconds
+                // Ouster "t", Livox "offset_time": nanoseconds from scan start → milliseconds
                 const float offset_ms =
                     static_cast<float>(reinterpret_cast<const uint32_t*>(&msg_bytes[base])[0]) * 1e-6f;
                 offsets[i] = offset_ms;
@@ -124,22 +128,25 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
                 continue;
             }
 
-            double timestamp_ms = 0.0;
+            double offset_ms = 0.0;
             if (timestamp_type == sensor_msgs::msg::PointField::FLOAT32) {
-                timestamp_ms = static_cast<double>(reinterpret_cast<const float*>(&msg_bytes[base])[0]) * 1e3;
+                // FLOAT32 has insufficient precision for absolute Unix timestamps;
+                // always treat as scan-start-relative offset in seconds (e.g. Velodyne).
+                const double raw =
+                    static_cast<double>(reinterpret_cast<const float*>(&msg_bytes[base])[0]);
+                if (std::isfinite(raw) && raw > 0.0) {
+                    offset_ms = raw * 1e3;
+                }
             } else if (timestamp_type == sensor_msgs::msg::PointField::FLOAT64) {
-                timestamp_ms = reinterpret_cast<const double*>(&msg_bytes[base])[0] * 1e3;
+                const double raw = reinterpret_cast<const double*>(&msg_bytes[base])[0];
+                if (std::isfinite(raw) && raw >= 0.0) {
+                    // Values larger than 1e8 s (~year 1973) are absolute Unix timestamps.
+                    offset_ms = (raw > 1e8) ? raw * 1e3 - start_time_ms : raw * 1e3;
+                    if (offset_ms < 0.0) offset_ms = 0.0;
+                }
             }
-            if (!std::isfinite(timestamp_ms)) {
-                timestamp_ms = 0.0;
-            }
-            if (timestamp_ms < 0.0) {
-                timestamp_ms = 0.0;
-            }
-
-            const double offset = timestamp_ms - start_time_ms;
-            offsets[i] = static_cast<float>(offset);
-            max_offset_ms = std::max(max_offset_ms, offset);
+            offsets[i] = static_cast<float>(offset_ms);
+            max_offset_ms = std::max(max_offset_ms, offset_ms);
         }
 
         cloud->end_time_ms = cloud->start_time_ms + max_offset_ms;
