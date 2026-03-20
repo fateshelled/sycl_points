@@ -12,6 +12,7 @@ lidar_odometry_node:
     initial_base_link_pose/qy: 0.0
     initial_base_link_pose/qz: 0.0
     initial_base_link_pose/qw: 1.0
+
     T_base_link_to_lidar/x: 0.0
     T_base_link_to_lidar/y: 0.0
     T_base_link_to_lidar/z: 0.0
@@ -19,6 +20,26 @@ lidar_odometry_node:
     T_base_link_to_lidar/qy: 0.0
     T_base_link_to_lidar/qz: 0.0
     T_base_link_to_lidar/qw: 1.0
+
+    T_imu_to_lidar/x: 0.0
+    T_imu_to_lidar/y: 0.0
+    T_imu_to_lidar/z: 0.0
+    T_imu_to_lidar/qx: 0.0
+    T_imu_to_lidar/qy: 0.0
+    T_imu_to_lidar/qz: 0.0
+    T_imu_to_lidar/qw: 1.0
+
+    imu/enable: false
+
+    imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
+    imu/preintegration/gravity/y: 0.0
+    imu/preintegration/gravity/z: -9.81
+    imu/bias/gyro/x: 0.0  # Initial gyroscope bias [rad/s]
+    imu/bias/gyro/y: 0.0
+    imu/bias/gyro/z: 0.0
+    imu/bias/accel/x: 0.0  # Initial accelerometer bias [m/s^2]
+    imu/bias/accel/y: 0.0
+    imu/bias/accel/z: 0.0
 
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true

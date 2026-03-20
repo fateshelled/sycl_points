@@ -320,6 +320,52 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         }
     }
 
+    // IMU
+    {
+        params.imu.enable = node->declare_parameter<bool>("imu/enable", params.imu.enable);
+
+        // Extrinsic: T_imu_to_lidar
+        {
+            const auto x = node->declare_parameter<double>("T_imu_to_lidar/x", 0.0);
+            const auto y = node->declare_parameter<double>("T_imu_to_lidar/y", 0.0);
+            const auto z = node->declare_parameter<double>("T_imu_to_lidar/z", 0.0);
+            const auto qx = node->declare_parameter<double>("T_imu_to_lidar/qx", 0.0);
+            const auto qy = node->declare_parameter<double>("T_imu_to_lidar/qy", 0.0);
+            const auto qz = node->declare_parameter<double>("T_imu_to_lidar/qz", 0.0);
+            const auto qw = node->declare_parameter<double>("T_imu_to_lidar/qw", 1.0);
+            params.imu.T_imu_to_lidar.setIdentity();
+            params.imu.T_imu_to_lidar.translation() << static_cast<float>(x), static_cast<float>(y),
+                static_cast<float>(z);
+            const Eigen::Quaternionf quat(static_cast<float>(qw), static_cast<float>(qx), static_cast<float>(qy),
+                                          static_cast<float>(qz));
+            params.imu.T_imu_to_lidar.matrix().block<3, 3>(0, 0) = quat.normalized().matrix();
+        }
+
+        // Gravity vector in world frame [m/s^2]
+        {
+            const auto gx =
+                node->declare_parameter<double>("imu/preintegration/gravity/x", params.imu.preintegration.gravity.x());
+            const auto gy =
+                node->declare_parameter<double>("imu/preintegration/gravity/y", params.imu.preintegration.gravity.y());
+            const auto gz =
+                node->declare_parameter<double>("imu/preintegration/gravity/z", params.imu.preintegration.gravity.z());
+            params.imu.preintegration.gravity << static_cast<float>(gx), static_cast<float>(gy), static_cast<float>(gz);
+        }
+
+        // Initial/fixed bias
+        {
+            const auto bgx = node->declare_parameter<double>("imu/bias/gyro/x", params.imu.bias.gyro_bias.x());
+            const auto bgy = node->declare_parameter<double>("imu/bias/gyro/y", params.imu.bias.gyro_bias.y());
+            const auto bgz = node->declare_parameter<double>("imu/bias/gyro/z", params.imu.bias.gyro_bias.z());
+            params.imu.bias.gyro_bias << static_cast<float>(bgx), static_cast<float>(bgy), static_cast<float>(bgz);
+
+            const auto bax = node->declare_parameter<double>("imu/bias/accel/x", params.imu.bias.accel_bias.x());
+            const auto bay = node->declare_parameter<double>("imu/bias/accel/y", params.imu.bias.accel_bias.y());
+            const auto baz = node->declare_parameter<double>("imu/bias/accel/z", params.imu.bias.accel_bias.z());
+            params.imu.bias.accel_bias << static_cast<float>(bax), static_cast<float>(bay), static_cast<float>(baz);
+        }
+    }
+
     // tf and pose
     {
         params.frames.odom_frame_id = node->declare_parameter<std::string>("odom_frame_id", "odom");
