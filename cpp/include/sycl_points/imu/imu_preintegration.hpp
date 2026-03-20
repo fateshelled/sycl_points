@@ -13,16 +13,16 @@ namespace imu {
 
 /// @brief A single IMU measurement sample.
 struct IMUMeasurement {
-    double timestamp = 0.0;          ///< Absolute wall time [s]
-    Eigen::Vector3f gyro  = Eigen::Vector3f::Zero();   ///< Angular velocity [rad/s], body frame, raw
-    Eigen::Vector3f accel = Eigen::Vector3f::Zero();   ///< Linear acceleration [m/s^2], body frame, raw
+    double timestamp = 0.0;                           ///< Absolute wall time [s]
+    Eigen::Vector3f gyro = Eigen::Vector3f::Zero();   ///< Angular velocity [rad/s], body frame, raw
+    Eigen::Vector3f accel = Eigen::Vector3f::Zero();  ///< Linear acceleration [m/s^2], body frame, raw
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
 /// @brief Gyroscope and accelerometer biases.
 struct IMUBias {
-    Eigen::Vector3f gyro_bias  = Eigen::Vector3f::Zero();  ///< [rad/s]
+    Eigen::Vector3f gyro_bias = Eigen::Vector3f::Zero();   ///< [rad/s]
     Eigen::Vector3f accel_bias = Eigen::Vector3f::Zero();  ///< [m/s^2]
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -74,21 +74,19 @@ class IMUPreintegration {
 public:
     using Ptr = std::shared_ptr<IMUPreintegration>;
 
-    explicit IMUPreintegration(const IMUPreintegrationParams& params = IMUPreintegrationParams())
-        : params_(params) {}
+    explicit IMUPreintegration(const IMUPreintegrationParams& params = IMUPreintegrationParams()) : params_(params) {}
 
     /// @brief Reset the integrator (call at every new LiDAR keyframe).
     /// @param bias           Current bias estimate used as the linearization point.
     /// @param R_world_body_i Rotation from body to world frame at the window start.
     ///                       Required to compensate gravity in predict_relative_transform().
-    void reset(const IMUBias& bias = IMUBias(),
-               const Eigen::Matrix3f& R_world_body_i = Eigen::Matrix3f::Identity()) {
-        bias_lin_         = bias;
-        result_           = PreintegrationResult{};
-        has_prev_         = false;
+    void reset(const IMUBias& bias = IMUBias(), const Eigen::Matrix3f& R_world_body_i = Eigen::Matrix3f::Identity()) {
+        bias_lin_ = bias;
+        result_ = PreintegrationResult{};
+        has_prev_ = false;
         num_measurements_ = 0;
-        step_count_       = 0;
-        R_world_body_i_   = R_world_body_i;
+        step_count_ = 0;
+        R_world_body_i_ = R_world_body_i;
     }
 
     /// @brief Feed one IMU sample.  Integration starts after the second call.
@@ -97,7 +95,7 @@ public:
     void integrate(const IMUMeasurement& meas) {
         if (!has_prev_) {
             prev_meas_ = meas;
-            has_prev_  = true;
+            has_prev_ = true;
             ++num_measurements_;
             return;
         }
@@ -110,8 +108,7 @@ public:
     }
 
     /// @brief Convenience wrapper to integrate a batch of measurements.
-    void integrate_batch(
-        const std::vector<IMUMeasurement, Eigen::aligned_allocator<IMUMeasurement>>& measurements) {
+    void integrate_batch(const std::vector<IMUMeasurement, Eigen::aligned_allocator<IMUMeasurement>>& measurements) {
         for (const auto& m : measurements) {
             integrate(m);
         }
@@ -120,19 +117,20 @@ public:
     /// @brief Return bias-corrected preintegrated state using first-order Jacobians.
     ///        This avoids full re-integration when the bias estimate changes slightly.
     PreintegrationResult get_corrected(const IMUBias& new_bias) const {
-        const Eigen::Vector3f d_bg = new_bias.gyro_bias  - bias_lin_.gyro_bias;
+        const Eigen::Vector3f d_bg = new_bias.gyro_bias - bias_lin_.gyro_bias;
         const Eigen::Vector3f d_ba = new_bias.accel_bias - bias_lin_.accel_bias;
 
+        // copy
         PreintegrationResult corrected = result_;
 
         // Correct rotation: Delta_R_corr = Delta_R * Exp(J_R_bg * d_bg)
         const Eigen::Vector3f phi_corr = result_.J.J_R_bg * d_bg;
-        const Eigen::Vector4f q_corr   = eigen_utils::lie::so3_exp(phi_corr);
-        const Eigen::Matrix3f R_corr   = eigen_utils::geometry::quaternion_to_rotation_matrix(q_corr);
-        corrected.Delta_R = result_.Delta_R * R_corr;
+        const Eigen::Vector4f q_corr = eigen_utils::lie::so3_exp(phi_corr);
+        const Eigen::Matrix3f R_corr = eigen_utils::geometry::quaternion_to_rotation_matrix(q_corr);
+        corrected.Delta_R *= R_corr;
 
-        corrected.Delta_v = result_.Delta_v + result_.J.J_v_bg * d_bg + result_.J.J_v_ba * d_ba;
-        corrected.Delta_p = result_.Delta_p + result_.J.J_p_bg * d_bg + result_.J.J_p_ba * d_ba;
+        corrected.Delta_v += result_.J.J_v_bg * d_bg + result_.J.J_v_ba * d_ba;
+        corrected.Delta_p += result_.J.J_p_bg * d_bg + result_.J.J_p_ba * d_ba;
 
         return corrected;
     }
@@ -146,10 +144,8 @@ public:
     /// @param v_i_world       Body velocity in the world frame at window start [m/s].
     /// @param current_bias    Current bias estimate (may differ from linearization bias).
     /// @return Predicted world-frame pose T_world_body_j (TransformMatrix = Matrix4f).
-    TransformMatrix predict_transform(
-        const TransformMatrix& T_world_body_i,
-        const Eigen::Vector3f& v_i_world,
-        const IMUBias& current_bias) const {
+    TransformMatrix predict_transform(const TransformMatrix& T_world_body_i, const Eigen::Vector3f& v_i_world,
+                                      const IMUBias& current_bias) const {
         const PreintegrationResult c = get_corrected(current_bias);
         const float dt_f = static_cast<float>(c.dt_total);
 
@@ -157,10 +153,7 @@ public:
         const Eigen::Vector3f p_i = T_world_body_i.block<3, 1>(0, 3);
 
         const Eigen::Matrix3f R_j = R_i * c.Delta_R;
-        const Eigen::Vector3f p_j = p_i
-            + v_i_world * dt_f
-            + 0.5f * params_.gravity * dt_f * dt_f
-            + R_i * c.Delta_p;
+        const Eigen::Vector3f p_j = p_i + v_i_world * dt_f + 0.5f * params_.gravity * dt_f * dt_f + R_i * c.Delta_p;
 
         TransformMatrix T_j = TransformMatrix::Identity();
         T_j.block<3, 3>(0, 0) = R_j;
@@ -202,7 +195,7 @@ private:
     /// @brief Right Jacobian of SO(3): Jr(phi) = d Exp(phi) / d phi.
     static Eigen::Matrix3f right_jacobian_so3(const Eigen::Vector3f& phi) {
         const float theta = phi.norm();
-        const Eigen::Matrix3f S  = eigen_utils::lie::skew(phi);
+        const Eigen::Matrix3f S = eigen_utils::lie::skew(phi);
         const Eigen::Matrix3f S2 = S * S;
         if (theta < 1e-4f) {
             // Second-order Taylor: Jr ≈ I - 0.5*S + (1/6)*S²
@@ -210,9 +203,9 @@ private:
             // for small θ in single-precision float (machine eps ~1.2e-7).
             return Eigen::Matrix3f::Identity() - 0.5f * S + (1.0f / 6.0f) * S2;
         }
-        return Eigen::Matrix3f::Identity()
-            - (1.0f - std::cos(theta)) / (theta * theta) * S
-            + (theta - std::sin(theta)) / (theta * theta * theta) * S2;
+        return Eigen::Matrix3f::Identity()                       //
+               - (1.0f - std::cos(theta)) / (theta * theta) * S  //
+               + (theta - std::sin(theta)) / (theta * theta * theta) * S2;
     }
 
     /// @brief Integrate one step from measurement m0 to m1 using midpoint (RK2).
@@ -222,24 +215,24 @@ private:
         const float dt_f = static_cast<float>(dt);
 
         // Bias-corrected measurements
-        const Eigen::Vector3f omega_0 = m0.gyro  - bias_lin_.gyro_bias;
-        const Eigen::Vector3f omega_1 = m1.gyro  - bias_lin_.gyro_bias;
-        const Eigen::Vector3f a_0     = m0.accel - bias_lin_.accel_bias;
-        const Eigen::Vector3f a_1     = m1.accel - bias_lin_.accel_bias;
+        const Eigen::Vector3f omega_0 = m0.gyro - bias_lin_.gyro_bias;
+        const Eigen::Vector3f omega_1 = m1.gyro - bias_lin_.gyro_bias;
+        const Eigen::Vector3f a_0 = m0.accel - bias_lin_.accel_bias;
+        const Eigen::Vector3f a_1 = m1.accel - bias_lin_.accel_bias;
 
         // Midpoint values
         const Eigen::Vector3f omega_mid = 0.5f * (omega_0 + omega_1);
-        const Eigen::Vector3f a_mid     = 0.5f * (a_0 + a_1);
+        const Eigen::Vector3f a_mid = 0.5f * (a_0 + a_1);
 
         // Full-step rotation increment  Exp(omega_mid * dt)
-        const Eigen::Vector3f phi_mid  = omega_mid * dt_f;
-        const Eigen::Vector4f q_step   = eigen_utils::lie::so3_exp(phi_mid);
-        const Eigen::Matrix3f R_step   = eigen_utils::geometry::quaternion_to_rotation_matrix(q_step);
+        const Eigen::Vector3f phi_mid = omega_mid * dt_f;
+        const Eigen::Vector4f q_step = eigen_utils::lie::so3_exp(phi_mid);
+        const Eigen::Matrix3f R_step = eigen_utils::geometry::quaternion_to_rotation_matrix(q_step);
 
         // Half-step rotation for accel integration (use omega at m0 start)
-        const Eigen::Vector3f phi_half    = omega_0 * (0.5f * dt_f);
-        const Eigen::Vector4f q_half      = eigen_utils::lie::so3_exp(phi_half);
-        const Eigen::Matrix3f R_half      = eigen_utils::geometry::quaternion_to_rotation_matrix(q_half);
+        const Eigen::Vector3f phi_half = omega_0 * (0.5f * dt_f);
+        const Eigen::Vector4f q_half = eigen_utils::lie::so3_exp(phi_half);
+        const Eigen::Matrix3f R_half = eigen_utils::geometry::quaternion_to_rotation_matrix(q_half);
         const Eigen::Matrix3f Delta_R_mid = result_.Delta_R * R_half;
 
         // Save pre-update values for Jacobian propagation
@@ -252,13 +245,13 @@ private:
         const Eigen::Vector3f a_nav = Delta_R_mid * a_mid;
 
         // --- State update ---
-        result_.Delta_R  = result_.Delta_R * R_step;
+        result_.Delta_R = result_.Delta_R * R_step;
         result_.Delta_p += Delta_v_old * dt_f + 0.5f * a_nav * dt_f * dt_f;
-        result_.Delta_v  = Delta_v_old + a_nav * dt_f;
+        result_.Delta_v = Delta_v_old + a_nav * dt_f;
         result_.dt_total += dt;
 
         // --- Jacobian propagation (first-order discrete-time recurrence) ---
-        const Eigen::Matrix3f Jr     = right_jacobian_so3(phi_mid);
+        const Eigen::Matrix3f Jr = right_jacobian_so3(phi_mid);
         const Eigen::Matrix3f skew_a = eigen_utils::lie::skew(a_mid);
 
         result_.J.J_R_bg = R_step.transpose() * J_R_bg_old - Jr * dt_f;
@@ -266,16 +259,14 @@ private:
         result_.J.J_v_bg = J_v_bg_old - Delta_R_mid * skew_a * J_R_bg_old * dt_f;
         result_.J.J_v_ba = result_.J.J_v_ba - Delta_R_mid * dt_f;
 
-        result_.J.J_p_bg = result_.J.J_p_bg + J_v_bg_old * dt_f
-                           - 0.5f * Delta_R_mid * skew_a * J_R_bg_old * dt_f * dt_f;
-        result_.J.J_p_ba = result_.J.J_p_ba + J_v_ba_old * dt_f
-                           - 0.5f * Delta_R_mid * dt_f * dt_f;
+        result_.J.J_p_bg =
+            result_.J.J_p_bg + J_v_bg_old * dt_f - 0.5f * Delta_R_mid * skew_a * J_R_bg_old * dt_f * dt_f;
+        result_.J.J_p_ba = result_.J.J_p_ba + J_v_ba_old * dt_f - 0.5f * Delta_R_mid * dt_f * dt_f;
 
         // --- Periodically renormalize Delta_R to stay on SO(3) ---
         ++step_count_;
         if (step_count_ % 100 == 0) {
-            const Eigen::Vector4f q_norm =
-                eigen_utils::geometry::rotation_matrix_to_quaternion(result_.Delta_R);
+            const Eigen::Vector4f q_norm = eigen_utils::geometry::rotation_matrix_to_quaternion(result_.Delta_R);
             result_.Delta_R = eigen_utils::geometry::quaternion_to_rotation_matrix(q_norm);
         }
     }
@@ -285,9 +276,9 @@ private:
     PreintegrationResult result_;
     IMUMeasurement prev_meas_;
     Eigen::Matrix3f R_world_body_i_ = Eigen::Matrix3f::Identity();
-    bool has_prev_         = false;
-    int  num_measurements_ = 0;
-    int  step_count_       = 0;
+    bool has_prev_ = false;
+    int num_measurements_ = 0;
+    int step_count_ = 0;
 };
 
 }  // namespace imu

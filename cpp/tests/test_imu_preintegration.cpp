@@ -209,11 +209,14 @@ TEST(IMUPreintegration, BiasCorrection_SmallChange) {
 }
 
 // 9. predict_relative_transform with zero motion returns identity.
+//    A stationary sensor (z-up, default gravity [0,0,-9.81]) measures
+//    the gravity reaction force [0,0,+9.81].  The gravity compensation in
+//    predict_relative_transform cancels that contribution, yielding identity.
 TEST(IMUPreintegration, PredictRelativeTransformZeroMotion) {
     imu::IMUPreintegration integ;
     auto meas = make_constant_imu(0.0, 0.5, 50,
                                   Eigen::Vector3f::Zero(),
-                                  Eigen::Vector3f::Zero());
+                                  Eigen::Vector3f(0.0f, 0.0f, 9.81f));  // stationary: reacts against gravity
     integ.integrate_batch(meas);
 
     const sp::TransformMatrix T_rel =

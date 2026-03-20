@@ -1,6 +1,8 @@
 #pragma once
 
+#include <deque>
 #include <map>
+#include <mutex>
 
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
@@ -13,6 +15,7 @@
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
+#include "sycl_points/imu/imu_preintegration.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
@@ -58,6 +61,40 @@ public:
     }
 
     const auto& get_registration_result() const { return *this->reg_result_; }
+
+    /// @brief Feed a single IMU measurement into the buffer and preintegrator.
+    ///        Out-of-order or duplicate timestamps are silently dropped.
+    ///        No-op when IMU is disabled (params_.imu.enable == false).
+    ///        Buffering always runs when enabled; preintegration runs only if initialized.
+    ///        Thread-safe: may be called concurrently with process().
+    void add_imu_measurement(const imu::IMUMeasurement& meas) {
+        if (!this->params_.imu.enable) return;
+
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+
+        // Drop out-of-order / duplicate timestamps
+        if (!this->imu_buffer_.empty() && meas.timestamp <= this->imu_buffer_.back().timestamp) {
+            return;
+        }
+
+        // Add to buffer and trim entries older than buffer_duration_sec
+        const double latest_timestamp = meas.timestamp;
+        this->imu_buffer_.push_back(meas);
+        while (latest_timestamp - this->imu_buffer_.front().timestamp > this->params_.imu.buffer_duration_sec) {
+            this->imu_buffer_.pop_front();
+        }
+
+        if (this->imu_preintegration_) {
+            this->imu_preintegration_->integrate(meas);
+        }
+    }
+
+    /// @brief Return a snapshot of the current IMU buffer (for deskewing etc.).
+    ///        Thread-safe.
+    std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> get_imu_buffer() const {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+        return this->imu_buffer_;
+    }
 
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
         this->error_message_.clear();
@@ -109,6 +146,14 @@ public:
             this->last_keyframe_time_ = timestamp;
             this->last_frame_time_ = timestamp;
 
+            // Reset IMU integrator so the next window starts from the initial pose.
+            if (this->imu_preintegration_) {
+                const Eigen::Matrix3f R_world_imu =
+                    this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+                std::lock_guard<std::mutex> lock(imu_mutex_);
+                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
+            }
+
             return ResultType::first_frame;
         }
 
@@ -139,6 +184,15 @@ public:
             this->angular_velocity_ = Eigen::AngleAxisf(delta_angle_axis.angle() / this->dt_, delta_angle_axis.axis());
 
             this->registrated_ = true;
+
+            // Reset IMU integrator for the next inter-frame window.
+            // odom_ has already been updated to the current frame's pose above.
+            if (this->imu_preintegration_) {
+                const Eigen::Matrix3f R_world_imu =
+                    this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+                std::lock_guard<std::mutex> lock(imu_mutex_);
+                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
+            }
         }
         return ResultType::success;
     }
@@ -180,6 +234,10 @@ private:
     float dt_ = -1.0f;               // [s]
 
     Parameters params_;
+
+    imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
+    std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> imu_buffer_;
+    mutable std::mutex imu_mutex_;  ///< Guards imu_preintegration_ and imu_buffer_.
 
     std::string error_message_;
 
@@ -307,6 +365,14 @@ private:
         // utilities
         {
             this->clear_total_processing_times();
+        }
+
+        // IMU preintegration (optional)
+        if (this->params_.imu.enable) {
+            this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
+            const Eigen::Matrix3f R_world_imu =
+                this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+            this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
         }
     }
 
@@ -451,8 +517,37 @@ private:
         return init_T;
     }
 
+    /// @brief Predict the initial ICP pose using IMU preintegration.
+    /// @return Absolute predicted pose T_odom_to_lidar_curr (Isometry3f).
+    Eigen::Isometry3f imu_motion_prediction() {
+        // T_imu_rel: pose of IMU_curr in IMU_prev frame (4x4 float Matrix)
+        const TransformMatrix T_imu_rel = this->imu_preintegration_->predict_relative_transform(this->params_.imu.bias);
+
+        // Convert to LiDAR-frame relative transform:
+        // T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
+        const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
+        Eigen::Isometry3f T_imu_rel_iso = Eigen::Isometry3f::Identity();
+        T_imu_rel_iso.linear() = T_imu_rel.block<3, 3>(0, 0);
+        T_imu_rel_iso.translation() = T_imu_rel.block<3, 1>(0, 3);
+
+        const Eigen::Isometry3f T_lidar_rel = T_i2l * T_imu_rel_iso * T_i2l.inverse();
+
+        // Compose with current odom_ to get predicted absolute pose.
+        // At the time registration() is called, odom_ still holds T_odom_to_lidar at t_{k-1}.
+        return this->odom_ * T_lidar_rel;
+    }
+
     algorithms::registration::RegistrationResult registration() {
-        const Eigen::Isometry3f init_T = this->adaptive_motion_prediction();
+        // Snapshot the IMU-based initial guess under the lock, then run ICP outside it.
+        Eigen::Isometry3f init_T;
+        {
+            std::lock_guard<std::mutex> lock(imu_mutex_);
+            if (this->imu_preintegration_ && this->imu_preintegration_->get_dt_total() > 0.0) {
+                init_T = this->imu_motion_prediction();
+            } else {
+                init_T = this->adaptive_motion_prediction();
+            }
+        }
 
         algorithms::registration::Registration::ExecutionOptions options;
         options.dt = this->dt_;

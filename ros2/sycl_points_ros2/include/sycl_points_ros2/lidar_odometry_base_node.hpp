@@ -1,11 +1,9 @@
 #pragma once
 
-#include <deque>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -79,12 +77,17 @@ protected:
     bool input_convert_rgb_ = true;
     bool input_convert_intensity_ = true;
 
-    // IMU buffer with mutual exclusion
-    bool use_imu_ = false;
+    // ROS2/TF frame parameters
+    std::string odom_frame_id_ = "odom";
+    std::string base_link_id_ = "base_link";
+    Eigen::Isometry3f T_base_link_to_lidar_ = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f T_lidar_to_base_link_ = Eigen::Isometry3f::Identity();
+
+    // Visualization parameters
+    ros2::CovarianceMarkerConfig scan_covariance_marker_config_;
+
+    // IMU subscription topic name
     std::string imu_topic_ = "imu/data";
-    std::deque<sensor_msgs::msg::Imu> imu_buffer_;
-    mutable std::mutex imu_buffer_mutex_;
-    static constexpr double imu_buffer_duration_sec_ = 1.0;
 
 private:
     void add_delta_time(const std::string& name, double dt);
