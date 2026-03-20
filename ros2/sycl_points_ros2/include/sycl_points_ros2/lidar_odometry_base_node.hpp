@@ -1,11 +1,9 @@
 #pragma once
 
-#include <deque>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -88,11 +86,8 @@ protected:
     // Visualization parameters
     ros2::CovarianceMarkerConfig scan_covariance_marker_config_;
 
-    // IMU buffer with mutual exclusion
+    // IMU subscription topic name
     std::string imu_topic_ = "imu/data";
-    std::deque<sensor_msgs::msg::Imu> imu_buffer_;
-    mutable std::mutex imu_buffer_mutex_;
-    static constexpr double imu_buffer_duration_sec_ = 1.0;
 
 private:
     void add_delta_time(const std::string& name, double dt);

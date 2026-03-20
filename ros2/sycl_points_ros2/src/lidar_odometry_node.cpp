@@ -47,29 +47,15 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
 }
 
 void LiDAROdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
-    std::lock_guard<std::mutex> lock(this->imu_buffer_mutex_);
-
-    // Drop out-of-order or duplicate messages to keep the buffer monotonically increasing
-    if (!this->imu_buffer_.empty()) {
-        const double incoming_sec = rclcpp::Time(msg->header.stamp).seconds();
-        const double latest_sec = rclcpp::Time(this->imu_buffer_.back().header.stamp).seconds();
-        if (incoming_sec <= latest_sec) {
-            return;
-        }
-    }
-
-    this->imu_buffer_.push_back(*msg);
-
-    // Discard old entries, keeping only the last imu_buffer_duration_sec_ seconds
-    const double latest_sec = rclcpp::Time(this->imu_buffer_.back().header.stamp).seconds();
-    while (!this->imu_buffer_.empty()) {
-        const double oldest_sec = rclcpp::Time(this->imu_buffer_.front().header.stamp).seconds();
-        if (latest_sec - oldest_sec > imu_buffer_duration_sec_) {
-            this->imu_buffer_.pop_front();
-        } else {
-            break;
-        }
-    }
+    imu::IMUMeasurement meas;
+    meas.timestamp = rclcpp::Time(msg->header.stamp).seconds();
+    meas.gyro =
+        Eigen::Vector3f(static_cast<float>(msg->angular_velocity.x), static_cast<float>(msg->angular_velocity.y),
+                        static_cast<float>(msg->angular_velocity.z));
+    meas.accel =
+        Eigen::Vector3f(static_cast<float>(msg->linear_acceleration.x), static_cast<float>(msg->linear_acceleration.y),
+                        static_cast<float>(msg->linear_acceleration.z));
+    this->pipeline_->add_imu_measurement(meas);
 }
 }  // namespace ros2
 }  // namespace sycl_points

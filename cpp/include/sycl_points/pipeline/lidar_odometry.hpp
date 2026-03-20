@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <map>
 #include <mutex>
 
@@ -61,14 +62,38 @@ public:
 
     const auto& get_registration_result() const { return *this->reg_result_; }
 
-    /// @brief Feed a single IMU measurement into the preintegrator.
-    ///        No-op when IMU integration is disabled.
+    /// @brief Feed a single IMU measurement into the buffer and preintegrator.
+    ///        Out-of-order or duplicate timestamps are silently dropped.
+    ///        No-op when IMU is disabled (params_.imu.enable == false).
+    ///        Buffering always runs when enabled; preintegration runs only if initialized.
     ///        Thread-safe: may be called concurrently with process().
     void add_imu_measurement(const imu::IMUMeasurement& meas) {
+        if (!this->params_.imu.enable) return;
+
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+
+        // Drop out-of-order / duplicate timestamps
+        if (!this->imu_buffer_.empty() && meas.timestamp <= this->imu_buffer_.back().timestamp) {
+            return;
+        }
+
+        // Add to buffer and trim entries older than buffer_duration_sec
+        this->imu_buffer_.push_back(meas);
+        const double latest = this->imu_buffer_.back().timestamp;
+        while (latest - this->imu_buffer_.front().timestamp > this->params_.imu.buffer_duration_sec) {
+            this->imu_buffer_.pop_front();
+        }
+
         if (this->imu_preintegration_) {
-            std::lock_guard<std::mutex> lock(imu_mutex_);
             this->imu_preintegration_->integrate(meas);
         }
+    }
+
+    /// @brief Return a snapshot of the current IMU buffer (for deskewing etc.).
+    ///        Thread-safe.
+    std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> get_imu_buffer() const {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+        return this->imu_buffer_;
     }
 
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
@@ -124,7 +149,7 @@ public:
             // Reset IMU integrator so the next window starts from the initial pose.
             if (this->imu_preintegration_) {
                 const Eigen::Matrix3f R_world_imu =
-                    this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                    this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
             }
@@ -164,7 +189,7 @@ public:
             // odom_ has already been updated to the current frame's pose above.
             if (this->imu_preintegration_) {
                 const Eigen::Matrix3f R_world_imu =
-                    this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                    this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
             }
@@ -211,7 +236,8 @@ private:
     Parameters params_;
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
-    mutable std::mutex imu_mutex_;  ///< Guards imu_preintegration_ state for thread safety.
+    std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> imu_buffer_;
+    mutable std::mutex imu_mutex_;  ///< Guards imu_preintegration_ and imu_buffer_.
 
     std::string error_message_;
 
@@ -345,7 +371,7 @@ private:
         if (this->params_.imu.enable) {
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
-                this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
             this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
         }
     }
