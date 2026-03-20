@@ -50,6 +50,16 @@ void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2
 
 void LiDAROdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(this->imu_buffer_mutex_);
+
+    // Drop out-of-order or duplicate messages to keep the buffer monotonically increasing
+    if (!this->imu_buffer_.empty()) {
+        const double incoming_sec = rclcpp::Time(msg->header.stamp).seconds();
+        const double latest_sec   = rclcpp::Time(this->imu_buffer_.back().header.stamp).seconds();
+        if (incoming_sec <= latest_sec) {
+            return;
+        }
+    }
+
     this->imu_buffer_.push_back(*msg);
 
     // Discard old entries, keeping only the last imu_buffer_duration_sec_ seconds
