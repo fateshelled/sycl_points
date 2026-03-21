@@ -364,6 +364,11 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             const auto baz = node->declare_parameter<double>("imu/bias/accel/z", params.imu.bias.accel_bias.z());
             params.imu.bias.accel_bias << static_cast<float>(bax), static_cast<float>(bay), static_cast<float>(baz);
         }
+
+        params.imu.buffer_duration_sec =
+            node->declare_parameter<bool>("imu/buffer_duration_sec", params.imu.buffer_duration_sec);
+
+        params.imu.deskew.enable = node->declare_parameter<bool>("imu/deskew/enable", params.imu.deskew.enable);
     }
 
     return params;

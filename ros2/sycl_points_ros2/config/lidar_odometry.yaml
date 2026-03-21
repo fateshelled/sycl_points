@@ -37,7 +37,9 @@ lidar_odometry_node:
     T_imu_to_lidar/qz: 0.0
     T_imu_to_lidar/qw: 1.0
 
-    imu/enable: true
+    imu/enable: true                    # If true, unuse motion_prediction.
+    imu/deskew/enable: true             # IMU-based pre-processing deskew (applied before downsampling and ICP)
+    imu/buffer_duration_sec: 1.0
     imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
     imu/preintegration/gravity/y: 0.0
     imu/preintegration/gravity/z: -9.81
@@ -125,7 +127,7 @@ lidar_odometry_node:
     registration/criteria/translation: 1.0e-3
     registration/criteria/rotation: 1.0e-6
 
-    registration/velocity_update/enable: true
+    registration/velocity_update/enable: false  # Deskew pointcloud without IMU
     registration/velocity_update/iter: 2
 
     registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
