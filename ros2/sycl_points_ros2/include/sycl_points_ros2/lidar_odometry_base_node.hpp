@@ -35,6 +35,9 @@ public:
         Eigen::Isometry3f odom = Eigen::Isometry3f::Identity();
         Eigen::Isometry3f keyframe_pose = Eigen::Isometry3f::Identity();
         const algorithms::registration::RegistrationResult* registration_result = nullptr;
+        double dt_from_ros2_msg = 0.0;
+        std::map<std::string, double> pipeline_processing_times;
+        double processing_subtotal = 0.0;
     };
 
     LiDAROdometryBaseNode(const std::string& node_name, const rclcpp::NodeOptions& options);
@@ -90,6 +93,7 @@ protected:
     std::string imu_topic_ = "imu/data";
 
 private:
+    void record_processing_times(const ProcessedFrame& frame, double publish_time);
     void add_delta_time(const std::string& name, double dt);
     void print_processing_times(const std::string& name, double dt);
     void log_processing_times();

@@ -181,8 +181,16 @@ struct Parameters {
         imu::IMUBias bias;                            ///< initial/fixed bias estimate
 
         /// Duration [s] to retain IMU measurements in the internal buffer.
-        /// Used for future deskewing; 1 second covers typical scan periods.
+        /// 1 second covers typical scan periods.
         double buffer_duration_sec = 1.0;
+
+        /// IMU-based point cloud deskewing settings.
+        struct Deskew {
+            /// Enable pre-processing deskew using IMU measurements.
+            /// Applied before downsampling and ICP to correct per-point motion distortion.
+            bool enable = false;
+        };
+        Deskew deskew;
     };
 
     struct Registration {

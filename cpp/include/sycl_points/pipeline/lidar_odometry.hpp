@@ -4,6 +4,7 @@
 #include <map>
 #include <mutex>
 
+#include "sycl_points/algorithms/deskew/imu_deskew.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/feature/photometric_gradient.hpp"
@@ -377,12 +378,31 @@ private:
     }
 
     void preprocess(const PointCloudShared::Ptr scan) {
-        // box filter -> polar grid -> voxel grid
+        // Process Order:
+        //   IMU deskew -> box filter -> polar grid -> voxel grid -> random sampling -> intensity correct
+
+        // IMU deskew: pre-processing step applied before downsampling and ICP.
+        // Brings all points into the sensor frame at scan-start time using
+        // per-point IMU integration with gravity compensation.
+        if (this->params_.imu.enable && this->params_.imu.deskew.enable) {
+            auto imu_buf_snapshot = this->get_imu_buffer();
+            const double scan_start_sec = scan->start_time_ms * 1e-3;
+            // R_world_imu = R_world_lidar * R_lidar_imu
+            const Eigen::Matrix3f R_world_imu = this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+            algorithms::deskew::deskew_point_cloud_imu(*scan, *scan,  // in-place
+                                                       imu_buf_snapshot, scan_start_sec,
+                                                       this->params_.imu.T_imu_to_lidar, this->params_.imu.bias,
+                                                       this->params_.imu.preintegration, R_world_imu);
+            // On failure (insufficient IMU coverage etc.) processing continues without deskewing.
+        }
+
+        // Box filter
         if (this->params_.scan.preprocess.box_filter.enable) {
             this->preprocess_filter_->box_filter(*scan, this->params_.scan.preprocess.box_filter.min,
                                                  this->params_.scan.preprocess.box_filter.max);
         }
 
+        // Grid downsampling
         {
             auto input_ptr = scan;
             auto output_ptr = this->preprocessed_pc_;
