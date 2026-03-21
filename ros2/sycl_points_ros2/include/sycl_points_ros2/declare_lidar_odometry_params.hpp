@@ -366,7 +366,7 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         }
 
         params.imu.buffer_duration_sec =
-            node->declare_parameter<bool>("imu/buffer_duration_sec", params.imu.buffer_duration_sec);
+            node->declare_parameter<double>("imu/buffer_duration_sec", params.imu.buffer_duration_sec);
 
         params.imu.deskew.enable = node->declare_parameter<bool>("imu/deskew/enable", params.imu.deskew.enable);
     }
