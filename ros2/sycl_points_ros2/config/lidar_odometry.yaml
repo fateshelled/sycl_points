@@ -133,7 +133,8 @@ lidar_odometry_node:
     registration/criteria/translation: 1.0e-3  # [m]
     registration/criteria/rotation: 1.0e-6     # [rad]
 
-    registration/velocity_update/enable: false  # Deskew pointcloud without IMU
+    # Deskew pointcloud without IMU. Automatically disabled when imu/deskew/enable is true.
+    registration/velocity_update/enable: true
     registration/velocity_update/iter: 2
 
     registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
