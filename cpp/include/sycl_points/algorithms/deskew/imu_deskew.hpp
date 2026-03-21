@@ -55,8 +55,7 @@ SYCL_EXTERNAL inline Eigen::Vector4f quat_mult(const Eigen::Vector4f& a, const E
 /// @brief Spherical linear interpolation between two unit quaternions.
 ///        Uses so3_log / so3_exp (SYCL_EXTERNAL) for stable interpolation.
 ///        Element-wise scalar operations are used throughout to avoid SSE intrinsics.
-SYCL_EXTERNAL inline Eigen::Vector4f quat_slerp(const Eigen::Vector4f& q0, const Eigen::Vector4f& q1,
-                                                 float alpha) {
+SYCL_EXTERNAL inline Eigen::Vector4f quat_slerp(const Eigen::Vector4f& q0, const Eigen::Vector4f& q1, float alpha) {
     // Ensure the shorter arc is taken: flip q1 if dot product is negative.
     Eigen::Vector4f q1_ = q1;
     if (eigen_utils::dot<4>(q0, q1_) < 0.0f) {
@@ -84,9 +83,8 @@ SYCL_EXTERNAL inline Eigen::Vector4f quat_slerp(const Eigen::Vector4f& q0, const
 ///        Returns the interpolated rotation matrix and translation vector.
 ///        All Eigen::Vector4f operations are contained within this SYCL_EXTERNAL function
 ///        to prevent SSE intrinsics from being inlined into device kernel code.
-SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose* traj, size_t lo,
-                                                       size_t hi, float alpha, Eigen::Matrix3f& R_out,
-                                                       Eigen::Vector3f& t_out) {
+SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose* traj, size_t lo, size_t hi, float alpha,
+                                                      Eigen::Matrix3f& R_out, Eigen::Vector3f& t_out) {
     // Load quaternions element-by-element to avoid Vector4f 4-arg constructor SSE.
     Eigen::Vector4f q0, q1;
     q0(0) = traj[lo].q[0];
@@ -176,8 +174,7 @@ inline bool deskew_point_cloud_imu(
     std::vector<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> filtered;
     filtered.reserve(256);
     for (const auto& m : imu_buffer) {
-        if (m.timestamp >= scan_start_time_sec - kMarginSec &&
-            m.timestamp <= scan_end_sec + kMarginSec) {
+        if (m.timestamp >= scan_start_time_sec - kMarginSec && m.timestamp <= scan_end_sec + kMarginSec) {
             filtered.push_back(m);
         }
     }
@@ -201,9 +198,8 @@ inline bool deskew_point_cloud_imu(
     m_start.timestamp = scan_start_time_sec;
 
     // Find the first measurement at or after scan_start.
-    auto it_next = std::lower_bound(
-        filtered.begin(), filtered.end(), scan_start_time_sec,
-        [](const imu::IMUMeasurement& m, double t) { return m.timestamp < t; });
+    auto it_next = std::lower_bound(filtered.begin(), filtered.end(), scan_start_time_sec,
+                                    [](const imu::IMUMeasurement& m, double t) { return m.timestamp < t; });
 
     if (it_next == filtered.begin()) {
         // All measurements are at or after scan_start — use the first one as-is.
@@ -218,8 +214,7 @@ inline bool deskew_point_cloud_imu(
         // Interpolate between the bracketing measurements.
         const auto& prev_m = *std::prev(it_next);
         const float alpha =
-            static_cast<float>((scan_start_time_sec - prev_m.timestamp) /
-                               (it_next->timestamp - prev_m.timestamp));
+            static_cast<float>((scan_start_time_sec - prev_m.timestamp) / (it_next->timestamp - prev_m.timestamp));
         m_start.gyro = prev_m.gyro * (1.0f - alpha) + it_next->gyro * alpha;
         m_start.accel = prev_m.accel * (1.0f - alpha) + it_next->accel * alpha;
     }
@@ -328,8 +323,7 @@ inline bool deskew_point_cloud_imu(
             output_cloud.rgb->clear();
         }
         if (input_cloud.has_intensity()) {
-            output_cloud.intensities->assign(input_cloud.intensities->begin(),
-                                             input_cloud.intensities->end());
+            output_cloud.intensities->assign(input_cloud.intensities->begin(), input_cloud.intensities->end());
         } else {
             output_cloud.intensities->clear();
         }
@@ -363,8 +357,7 @@ inline bool deskew_point_cloud_imu(
         auto* points_out = output_cloud.points->data();
         auto* normals_out = output_cloud.has_normal() ? output_cloud.normals->data() : nullptr;
         auto* covs_out = output_cloud.has_cov() ? output_cloud.covs->data() : nullptr;
-        auto* color_gradients_out =
-            output_cloud.has_color_gradient() ? output_cloud.color_gradients->data() : nullptr;
+        auto* color_gradients_out = output_cloud.has_color_gradient() ? output_cloud.color_gradients->data() : nullptr;
         auto* intensity_gradients_out =
             output_cloud.has_intensity_gradient() ? output_cloud.intensity_gradients->data() : nullptr;
         const auto* timestamps = input_cloud.timestamp_offsets->data();
@@ -443,19 +436,18 @@ inline bool deskew_point_cloud_imu(
                     covs_out[idx].setZero();
                     const Eigen::Matrix3f cov_in = covs_in[idx].topLeftCorner<3, 3>();
                     const Eigen::Matrix3f R_interp_t = eigen_utils::transpose<3, 3>(R_interp);
-                    const Eigen::Matrix3f rotated_cov = eigen_utils::multiply<3, 3, 3>(
-                        R_interp, eigen_utils::multiply<3, 3, 3>(cov_in, R_interp_t));
+                    const Eigen::Matrix3f rotated_cov =
+                        eigen_utils::multiply<3, 3, 3>(R_interp, eigen_utils::multiply<3, 3, 3>(cov_in, R_interp_t));
                     covs_out[idx].topLeftCorner<3, 3>() = rotated_cov;
                 }
                 if (process_color_gradients) {
                     color_gradients_out[idx].setZero();
-                    color_gradients_out[idx] = eigen_utils::multiply<3, 3, 3>(
-                        color_gradients_in[idx], eigen_utils::transpose<3, 3>(R_interp));
+                    color_gradients_out[idx] =
+                        eigen_utils::multiply<3, 3, 3>(color_gradients_in[idx], eigen_utils::transpose<3, 3>(R_interp));
                 }
                 if (process_intensity_gradients) {
                     intensity_gradients_out[idx].setZero();
-                    intensity_gradients_out[idx] =
-                        eigen_utils::multiply<3, 3>(R_interp, intensity_gradients_in[idx]);
+                    intensity_gradients_out[idx] = eigen_utils::multiply<3, 3>(R_interp, intensity_gradients_in[idx]);
                 }
             });
     });
