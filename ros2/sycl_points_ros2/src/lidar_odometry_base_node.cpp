@@ -180,74 +180,70 @@ LiDAROdometryBaseNode::ProcessedFrame LiDAROdometryBaseNode::process_point_cloud
         frame.registration_result = &this->pipeline_->get_registration_result();
     }
 
-    const auto& current_processing_time = this->pipeline_->get_current_processing_time();
-    double total_time = dt_from_ros2_msg;
-    for (const auto& item : current_processing_time) {
-        total_time += item.second;
+    frame.dt_from_ros2_msg = dt_from_ros2_msg;
+    frame.pipeline_processing_times = this->pipeline_->get_current_processing_time();
+    frame.processing_subtotal = dt_from_ros2_msg;
+    for (const auto& item : frame.pipeline_processing_times) {
+        frame.processing_subtotal += item.second;
     }
-
-    this->add_delta_time("0. from ROS 2 msg", dt_from_ros2_msg);
-    this->add_delta_time("5. publish ROS 2 msg", 0.0);
-    this->add_delta_time("6. total", total_time);
-
-    this->print_processing_times("0. from ROS 2 msg", dt_from_ros2_msg);
-    for (const auto& [process_name, time] : current_processing_time) {
-        this->print_processing_times(process_name, time);
-    }
-    this->print_processing_times("5. publish ROS 2 msg", 0.0);
-    this->print_processing_times("6. total", total_time);
-    RCLCPP_INFO(this->get_logger(), "");
 
     return frame;
 }
 
 void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header& header, const ProcessedFrame& frame) {
-    if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
-        auto tf_msg = this->make_transform_message(header, frame.odom);
-        this->tf_broadcaster_->sendTransform(tf_msg);
-    }
+    double publish_time = 0.0;
+    time_utils::measure_execution(
+        [&]() {
+            if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
+                auto tf_msg = this->make_transform_message(header, frame.odom);
+                this->tf_broadcaster_->sendTransform(tf_msg);
+            }
 
-    if (this->publish_odom_enabled()) {
-        auto odom_msg = this->make_odom_message(header, frame.odom, frame.registration_result);
-        auto pose_msg = this->make_pose_message(header, frame.odom);
-        auto keyframe_msg = this->make_keyframe_pose_message(header, frame.keyframe_pose);
+            if (this->publish_odom_enabled()) {
+                auto odom_msg = this->make_odom_message(header, frame.odom, frame.registration_result);
+                auto pose_msg = this->make_pose_message(header, frame.odom);
+                auto keyframe_msg = this->make_keyframe_pose_message(header, frame.keyframe_pose);
 
-        if (this->pub_odom_ != nullptr) {
-            this->pub_odom_->publish(odom_msg);
-        }
-        if (this->pub_pose_ != nullptr) {
-            this->pub_pose_->publish(pose_msg);
-        }
-        if (this->pub_keyframe_pose_ != nullptr) {
-            this->pub_keyframe_pose_->publish(keyframe_msg);
-        }
-    }
+                if (this->pub_odom_ != nullptr) {
+                    this->pub_odom_->publish(odom_msg);
+                }
+                if (this->pub_pose_ != nullptr) {
+                    this->pub_pose_->publish(pose_msg);
+                }
+                if (this->pub_keyframe_pose_ != nullptr) {
+                    this->pub_keyframe_pose_->publish(keyframe_msg);
+                }
+            }
 
-    if (!this->publish_debug_clouds_enabled()) {
-        return;
-    }
+            if (!this->publish_debug_clouds_enabled()) {
+                return;
+            }
 
-    if (this->pub_preprocessed_ != nullptr && this->pub_preprocessed_->get_subscription_count() > 0) {
-        const auto preprocessed_msg = toROS2msg(this->pipeline_->get_preprocessed_point_cloud(), header);
-        if (preprocessed_msg != nullptr) {
-            this->pub_preprocessed_->publish(*preprocessed_msg);
-        }
-    }
+            if (this->pub_preprocessed_ != nullptr && this->pub_preprocessed_->get_subscription_count() > 0) {
+                const auto preprocessed_msg = toROS2msg(this->pipeline_->get_preprocessed_point_cloud(), header);
+                if (preprocessed_msg != nullptr) {
+                    this->pub_preprocessed_->publish(*preprocessed_msg);
+                }
+            }
 
-    if (this->covariance_marker_publisher_ != nullptr) {
-        if (const auto* registration_input_pc = this->pipeline_->get_registration_input_point_cloud();
-            registration_input_pc != nullptr) {
-            this->covariance_marker_publisher_->publish_if_subscribed(header, *registration_input_pc);
-        }
-    }
+            if (this->covariance_marker_publisher_ != nullptr) {
+                if (const auto* registration_input_pc = this->pipeline_->get_registration_input_point_cloud();
+                    registration_input_pc != nullptr) {
+                    this->covariance_marker_publisher_->publish_if_subscribed(header, *registration_input_pc);
+                }
+            }
 
-    if (this->pub_submap_ != nullptr && this->pub_submap_->get_subscription_count() > 0) {
-        auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), header);
-        if (submap_msg != nullptr) {
-            submap_msg->header.frame_id = this->odom_frame_id_;
-            this->pub_submap_->publish(*submap_msg);
-        }
-    }
+            if (this->pub_submap_ != nullptr && this->pub_submap_->get_subscription_count() > 0) {
+                auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), header);
+                if (submap_msg != nullptr) {
+                    submap_msg->header.frame_id = this->odom_frame_id_;
+                    this->pub_submap_->publish(*submap_msg);
+                }
+            }
+        },
+        publish_time);
+
+    this->record_processing_times(frame, publish_time);
 }
 
 nav_msgs::msg::Odometry LiDAROdometryBaseNode::make_odom_message(
@@ -332,6 +328,25 @@ geometry_msgs::msg::TransformStamped LiDAROdometryBaseNode::make_transform_messa
     tf.transform.rotation.z = odom_quat.z();
     tf.transform.rotation.w = odom_quat.w();
     return tf;
+}
+
+void LiDAROdometryBaseNode::record_processing_times(const ProcessedFrame& frame, double publish_time) {
+    const double total_time = frame.processing_subtotal + publish_time;
+
+    this->add_delta_time("0. from ROS 2 msg", frame.dt_from_ros2_msg);
+    for (const auto& [process_name, time] : frame.pipeline_processing_times) {
+        this->add_delta_time(process_name, time);
+    }
+    this->add_delta_time("5. publish ROS 2 msg", publish_time);
+    this->add_delta_time("6. total", total_time);
+
+    this->print_processing_times("0. from ROS 2 msg", frame.dt_from_ros2_msg);
+    for (const auto& [process_name, time] : frame.pipeline_processing_times) {
+        this->print_processing_times(process_name, time);
+    }
+    this->print_processing_times("5. publish ROS 2 msg", publish_time);
+    this->print_processing_times("6. total", total_time);
+    RCLCPP_INFO(this->get_logger(), "");
 }
 
 void LiDAROdometryBaseNode::add_delta_time(const std::string& name, double dt) {
