@@ -40,10 +40,11 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options)
 LiDAROdometryNode::~LiDAROdometryNode() = default;
 
 void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2::UniquePtr msg) {
-    const auto frame = this->process_point_cloud_message(*msg);
+    auto frame = this->process_point_cloud_message(*msg);
     if (frame.result == ResultType::success || frame.result == ResultType::first_frame) {
         this->publish_processed_frame(msg->header, frame);
     }
+    this->record_processing_times(frame);
 }
 
 void LiDAROdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {

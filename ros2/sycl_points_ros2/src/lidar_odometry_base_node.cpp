@@ -190,8 +190,8 @@ LiDAROdometryBaseNode::ProcessedFrame LiDAROdometryBaseNode::process_point_cloud
     return frame;
 }
 
-void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header& header, const ProcessedFrame& frame) {
-    double publish_time = 0.0;
+void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header& header, ProcessedFrame& frame) {
+    frame.publish_time = 0.0;
     time_utils::measure_execution(
         [&]() {
             if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
@@ -241,9 +241,7 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
                 }
             }
         },
-        publish_time);
-
-    this->record_processing_times(frame, publish_time);
+        frame.publish_time);
 }
 
 nav_msgs::msg::Odometry LiDAROdometryBaseNode::make_odom_message(
@@ -330,21 +328,21 @@ geometry_msgs::msg::TransformStamped LiDAROdometryBaseNode::make_transform_messa
     return tf;
 }
 
-void LiDAROdometryBaseNode::record_processing_times(const ProcessedFrame& frame, double publish_time) {
-    const double total_time = frame.processing_subtotal + publish_time;
+void LiDAROdometryBaseNode::record_processing_times(const ProcessedFrame& frame) {
+    const double total_time = frame.processing_subtotal + frame.publish_time;
 
     this->add_delta_time("0. from ROS 2 msg", frame.dt_from_ros2_msg);
     for (const auto& [process_name, time] : frame.pipeline_processing_times) {
         this->add_delta_time(process_name, time);
     }
-    this->add_delta_time("5. publish ROS 2 msg", publish_time);
+    this->add_delta_time("5. publish ROS 2 msg", frame.publish_time);
     this->add_delta_time("6. total", total_time);
 
     this->print_processing_times("0. from ROS 2 msg", frame.dt_from_ros2_msg);
     for (const auto& [process_name, time] : frame.pipeline_processing_times) {
         this->print_processing_times(process_name, time);
     }
-    this->print_processing_times("5. publish ROS 2 msg", publish_time);
+    this->print_processing_times("5. publish ROS 2 msg", frame.publish_time);
     this->print_processing_times("6. total", total_time);
     RCLCPP_INFO(this->get_logger(), "");
 }

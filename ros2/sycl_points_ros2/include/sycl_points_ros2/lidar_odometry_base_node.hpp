@@ -38,6 +38,7 @@ public:
         double dt_from_ros2_msg = 0.0;
         std::map<std::string, double> pipeline_processing_times;
         double processing_subtotal = 0.0;
+        double publish_time = 0.0;
     };
 
     LiDAROdometryBaseNode(const std::string& node_name, const rclcpp::NodeOptions& options);
@@ -47,7 +48,8 @@ protected:
     void initialize_processing();
     void initialize_publishers(const PublishOptions& options);
     ProcessedFrame process_point_cloud_message(const sensor_msgs::msg::PointCloud2& msg);
-    void publish_processed_frame(const std_msgs::msg::Header& header, const ProcessedFrame& frame);
+    void publish_processed_frame(const std_msgs::msg::Header& header, ProcessedFrame& frame);
+    void record_processing_times(const ProcessedFrame& frame);
 
     nav_msgs::msg::Odometry make_odom_message(
         const std_msgs::msg::Header& header, const Eigen::Isometry3f& odom,
@@ -93,7 +95,6 @@ protected:
     std::string imu_topic_ = "imu/data";
 
 private:
-    void record_processing_times(const ProcessedFrame& frame, double publish_time);
     void add_delta_time(const std::string& name, double dt);
     void print_processing_times(const std::string& name, double dt);
     void log_processing_times();
