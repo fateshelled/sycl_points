@@ -358,8 +358,14 @@ private:
         }
         // Registration
         {
+            auto reg_pipeline_params = this->params_.registration.pipeline;
+            if (this->params_.imu.enable && this->params_.imu.deskew.enable &&
+                reg_pipeline_params.velocity_update.enable) {
+                std::cerr << "[LiDAR Odometry] VelocityUpdate is disabled because IMU deskew is enabled." << std::endl;
+                reg_pipeline_params.velocity_update.enable = false;
+            }
             this->registration_pipeline_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
-                *this->queue_ptr_, this->params_.registration.pipeline);
+                *this->queue_ptr_, reg_pipeline_params);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
             this->registrated_ = false;
         }
@@ -707,7 +713,8 @@ private:
     }
 
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
-        if (this->params_.registration.pipeline.velocity_update.enable) {
+        if (this->params_.registration.pipeline.velocity_update.enable &&
+            !(this->params_.imu.enable && this->params_.imu.deskew.enable)) {
             algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
                                                                      this->odom_, reg_result.T);
         }
