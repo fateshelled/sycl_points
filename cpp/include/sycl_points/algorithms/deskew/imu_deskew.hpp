@@ -20,12 +20,10 @@ namespace deskew {
 ///
 /// Stores the relative pose of the LiDAR frame at a given time with respect to
 /// the LiDAR frame at the scan start. The quaternion convention is (x, y, z, w).
-/// Using a flat struct of primitives makes the data safe to pass as a raw pointer
-/// into SYCL device kernels.
 struct IMUTrajectoryPose {
-    float q[4];       ///< Unit quaternion [x, y, z, w] representing relative rotation.
-    float t[3];       ///< Relative translation in the scan-start LiDAR frame [m].
-    float timestamp;  ///< Time from scan start [s].
+    Eigen::Vector4f q;  ///< Unit quaternion [x, y, z, w] representing relative rotation.
+    Eigen::Vector3f t;  ///< Relative translation in the scan-start LiDAR frame [m].
+    float timestamp;    ///< Time from scan start [s].
 };
 
 static_assert(sizeof(IMUTrajectoryPose) == 32, "IMUTrajectoryPose size mismatch");
@@ -42,19 +40,17 @@ enum class IMUDeskewStatus {
 namespace detail {
 
 /// @brief Quaternion Hamilton product (x, y, z, w convention).
-///        Uses element-wise scalar access to avoid SSE intrinsics in device code.
 SYCL_EXTERNAL inline Eigen::Vector4f quat_mult(const Eigen::Vector4f& a, const Eigen::Vector4f& b) {
     Eigen::Vector4f result;
-    result(0) = a(3) * b(0) + a(0) * b(3) + a(1) * b(2) - a(2) * b(1);
-    result(1) = a(3) * b(1) - a(0) * b(2) + a(1) * b(3) + a(2) * b(0);
-    result(2) = a(3) * b(2) + a(0) * b(1) - a(1) * b(0) + a(2) * b(3);
-    result(3) = a(3) * b(3) - a(0) * b(0) - a(1) * b(1) - a(2) * b(2);
+    result(0) = sycl::fma(a(3), b(0), sycl::fma(+a(0), b(3), sycl::fma(+a(1), b(2), -a(2) * b(1))));
+    result(1) = sycl::fma(a(3), b(1), sycl::fma(-a(0), b(2), sycl::fma(+a(1), b(3), +a(2) * b(0))));
+    result(2) = sycl::fma(a(3), b(2), sycl::fma(+a(0), b(1), sycl::fma(-a(1), b(0), +a(2) * b(3))));
+    result(3) = sycl::fma(a(3), b(3), sycl::fma(-a(0), b(0), sycl::fma(-a(1), b(1), -a(2) * b(2))));
     return result;
 }
 
 /// @brief Spherical linear interpolation between two unit quaternions.
 ///        Uses so3_log / so3_exp (SYCL_EXTERNAL) for stable interpolation.
-///        Element-wise scalar operations are used throughout to avoid SSE intrinsics.
 SYCL_EXTERNAL inline Eigen::Vector4f quat_slerp(const Eigen::Vector4f& q0, const Eigen::Vector4f& q1, float alpha) {
     // Ensure the shorter arc is taken: flip q1 if dot product is negative.
     Eigen::Vector4f q1_ = q1;
@@ -81,29 +77,15 @@ SYCL_EXTERNAL inline Eigen::Vector4f quat_slerp(const Eigen::Vector4f& q0, const
 
 /// @brief Interpolate a pose trajectory entry at the given normalized parameter alpha.
 ///        Returns the interpolated rotation matrix and translation vector.
-///        All Eigen::Vector4f operations are contained within this SYCL_EXTERNAL function
-///        to prevent SSE intrinsics from being inlined into device kernel code.
-SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose* traj, size_t lo, size_t hi, float alpha,
-                                                      Eigen::Matrix3f& R_out, Eigen::Vector3f& t_out) {
-    // Load quaternions element-by-element to avoid Vector4f 4-arg constructor SSE.
-    Eigen::Vector4f q0, q1;
-    q0(0) = traj[lo].q[0];
-    q0(1) = traj[lo].q[1];
-    q0(2) = traj[lo].q[2];
-    q0(3) = traj[lo].q[3];
-    q1(0) = traj[hi].q[0];
-    q1(1) = traj[hi].q[1];
-    q1(2) = traj[hi].q[2];
-    q1(3) = traj[hi].q[3];
-
-    const Eigen::Vector4f q_interp = quat_slerp(q0, q1, alpha);
+SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& traj0, const IMUTrajectoryPose& traj1,
+                                                      float alpha, Eigen::Matrix3f& R_out, Eigen::Vector3f& t_out) {
+    const Eigen::Vector4f q_interp = quat_slerp(traj0.q, traj1.q, alpha);
     R_out = eigen_utils::geometry::quaternion_to_rotation_matrix(q_interp);
 
     // Element-wise LERP for translation.
-    const float inv_alpha = 1.0f - alpha;
-    t_out(0) = traj[lo].t[0] * inv_alpha + traj[hi].t[0] * alpha;
-    t_out(1) = traj[lo].t[1] * inv_alpha + traj[hi].t[1] * alpha;
-    t_out(2) = traj[lo].t[2] * inv_alpha + traj[hi].t[2] * alpha;
+    t_out(0) = sycl::fma(traj1.t(0) - traj0.t(0), alpha, traj0.t(0));
+    t_out(1) = sycl::fma(traj1.t(1) - traj0.t(1), alpha, traj0.t(1));
+    t_out(2) = sycl::fma(traj1.t(2) - traj0.t(2), alpha, traj0.t(2));
 }
 
 }  // namespace detail
@@ -215,8 +197,14 @@ inline bool deskew_point_cloud_imu(
         const auto& prev_m = *std::prev(it_next);
         const float alpha =
             static_cast<float>((scan_start_time_sec - prev_m.timestamp) / (it_next->timestamp - prev_m.timestamp));
-        m_start.gyro = prev_m.gyro * (1.0f - alpha) + it_next->gyro * alpha;
-        m_start.accel = prev_m.accel * (1.0f - alpha) + it_next->accel * alpha;
+
+        // LERP
+        m_start.gyro(0) = std::fma(it_next->gyro(0) - prev_m.gyro(0), alpha, prev_m.gyro(0));
+        m_start.gyro(1) = std::fma(it_next->gyro(1) - prev_m.gyro(1), alpha, prev_m.gyro(1));
+        m_start.gyro(2) = std::fma(it_next->gyro(2) - prev_m.gyro(2), alpha, prev_m.gyro(2));
+        m_start.accel(0) = std::fma(it_next->accel(0) - prev_m.accel(0), alpha, prev_m.accel(0));
+        m_start.accel(1) = std::fma(it_next->accel(1) - prev_m.accel(1), alpha, prev_m.accel(1));
+        m_start.accel(2) = std::fma(it_next->accel(2) - prev_m.accel(2), alpha, prev_m.accel(2));
     }
 
     // -----------------------------------------------------------------------
@@ -230,63 +218,57 @@ inline bool deskew_point_cloud_imu(
     // Identity pose at scan start (t = 0).
     {
         IMUTrajectoryPose identity{};
-        identity.q[0] = 0.0f;
-        identity.q[1] = 0.0f;
-        identity.q[2] = 0.0f;
-        identity.q[3] = 1.0f;
-        identity.t[0] = identity.t[1] = identity.t[2] = 0.0f;
+        identity.q.setZero();
+        identity.q(3) = 1.0f;
+        identity.t.setZero();
         identity.timestamp = 0.0f;
         traj_cpu.push_back(identity);
     }
 
-    imu::IMUPreintegration local_integrator(preintegration_params);
-    local_integrator.reset(bias, R_world_body_i);
-    local_integrator.integrate(m_start);  // stores as prev; no integration step yet
+    // IMU integration
+    {
+        imu::IMUPreintegration local_integrator(preintegration_params);
+        local_integrator.reset(bias, R_world_body_i);
+        local_integrator.integrate(m_start);  // stores as prev; no integration step yet
 
-    for (auto it = it_next; it != filtered.end(); ++it) {
-        if (it->timestamp > scan_end_sec + kMarginSec) break;
+        for (auto it = it_next; it != filtered.end(); ++it) {
+            if (it->timestamp > scan_end_sec + kMarginSec) break;
 
-        local_integrator.integrate(*it);
+            local_integrator.integrate(*it);
 
-        const float t_rel_sec = static_cast<float>(it->timestamp - scan_start_time_sec);
-        if (t_rel_sec < 0.0f) continue;
+            const float t_rel_sec = static_cast<float>(it->timestamp - scan_start_time_sec);
+            if (t_rel_sec < 0.0f) continue;
 
-        // predict_relative_transform() applies gravity compensation using dt_total,
-        // which equals t_rel_sec because the integrator was reset at scan_start.
-        const sycl_points::TransformMatrix T_imu_rel = local_integrator.predict_relative_transform(bias);
+            // predict_relative_transform() applies gravity compensation using dt_total,
+            // which equals t_rel_sec because the integrator was reset at scan_start.
+            const sycl_points::TransformMatrix T_imu_rel = local_integrator.predict_relative_transform(bias);
 
-        // Convert to LiDAR-frame relative transform:
-        //   T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
-        Eigen::Isometry3f T_imu_rel_iso = Eigen::Isometry3f::Identity();
-        T_imu_rel_iso.linear() = T_imu_rel.block<3, 3>(0, 0);
-        T_imu_rel_iso.translation() = T_imu_rel.block<3, 1>(0, 3);
-        const Eigen::Isometry3f T_lidar_rel = T_imu_to_lidar * T_imu_rel_iso * T_imu_to_lidar.inverse();
+            // Convert to LiDAR-frame relative transform:
+            //   T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
+            const Eigen::Isometry3f T_lidar_rel =
+                T_imu_to_lidar * Eigen::Isometry3f(T_imu_rel) * T_imu_to_lidar.inverse();
 
-        // Store as flat quaternion + translation for SYCL kernel access.
-        const Eigen::Quaternionf q_lidar(T_lidar_rel.rotation());
-        IMUTrajectoryPose entry{};
-        entry.q[0] = q_lidar.x();
-        entry.q[1] = q_lidar.y();
-        entry.q[2] = q_lidar.z();
-        entry.q[3] = q_lidar.w();
-        entry.t[0] = T_lidar_rel.translation().x();
-        entry.t[1] = T_lidar_rel.translation().y();
-        entry.t[2] = T_lidar_rel.translation().z();
-        entry.timestamp = t_rel_sec;
-        traj_cpu.push_back(entry);
-    }
+            // Store as flat quaternion + translation for SYCL kernel access.
+            const Eigen::Quaternionf q_lidar(T_lidar_rel.rotation());
+            IMUTrajectoryPose entry{};
+            entry.q = q_lidar.coeffs();
+            entry.t = T_lidar_rel.translation();
+            entry.timestamp = t_rel_sec;
+            traj_cpu.push_back(entry);
+        }
 
-    // Need at least 2 entries to interpolate (identity + at least one more).
-    if (traj_cpu.size() < 2) {
-        set_status(IMUDeskewStatus::insufficient_imu_coverage);
-        return false;
-    }
+        // Need at least 2 entries to interpolate (identity + at least one more).
+        if (traj_cpu.size() < 2) {
+            set_status(IMUDeskewStatus::insufficient_imu_coverage);
+            return false;
+        }
 
-    // Verify the trajectory covers the full scan duration.
-    const float scan_duration_f = static_cast<float>(scan_duration_sec);
-    if (traj_cpu.back().timestamp < scan_duration_f - static_cast<float>(kMarginSec)) {
-        set_status(IMUDeskewStatus::insufficient_imu_coverage);
-        return false;
+        // Verify the trajectory covers the full scan duration.
+        const float scan_duration_f = static_cast<float>(scan_duration_sec);
+        if (traj_cpu.back().timestamp < scan_duration_f - static_cast<float>(kMarginSec)) {
+            set_status(IMUDeskewStatus::insufficient_imu_coverage);
+            return false;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -409,18 +391,14 @@ inline bool deskew_point_cloud_imu(
                     alpha = sycl::clamp((t_sec - t_lo) / (t_hi - t_lo), 0.0f, 1.0f);
                 }
 
-                // ---- SLERP + LERP inside SYCL_EXTERNAL to avoid SSE intrinsics ----
-                // All Eigen::Vector4f operations (load, copy, slerp) are encapsulated
-                // inside interpolate_trajectory_pose so the kernel lambda itself never
-                // touches a Vector4f (which triggers pload/pstore on Packet4f).
+                // ---- SLERP + LERP ----
                 Eigen::Matrix3f R_interp;
                 Eigen::Vector3f t_interp;
-                detail::interpolate_trajectory_pose(traj_ptr, lo, hi, alpha, R_interp, t_interp);
+                detail::interpolate_trajectory_pose(traj_ptr[lo], traj_ptr[hi], alpha, R_interp, t_interp);
 
                 // ---- Apply SE3: p_out = R * p_in + t ----
                 const Eigen::Vector3f p3 = points_in[idx].template head<3>();
                 const Eigen::Vector3f Rp = eigen_utils::multiply<3, 3>(R_interp, p3);
-                // Element-wise scalar writes — avoids Eigen::Vector4f copy assignment (SSE pstore).
                 points_out[idx](0) = Rp(0) + t_interp(0);
                 points_out[idx](1) = Rp(1) + t_interp(1);
                 points_out[idx](2) = Rp(2) + t_interp(2);
