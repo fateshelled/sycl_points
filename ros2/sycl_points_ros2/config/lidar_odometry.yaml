@@ -37,9 +37,10 @@ lidar_odometry_node:
     T_imu_to_lidar/qz: 0.0
     T_imu_to_lidar/qw: 1.0
 
+    # IMU
     imu/enable: true                    # If true, unuse motion_prediction.
+    imu/buffer_duration_sec: 1.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew (applied before downsampling and ICP)
-    imu/buffer_duration_sec: 1.0
     imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
     imu/preintegration/gravity/y: 0.0
     imu/preintegration/gravity/z: -9.81
@@ -54,6 +55,7 @@ lidar_odometry_node:
     input/convert_rgb: true
     input/convert_intensity: false
 
+    # Scan PointCloud preprocessing
     scan/preprocess/box_filter/enable: true
     scan/preprocess/box_filter/max: 100.0
     scan/preprocess/box_filter/min: 0.4
@@ -78,6 +80,7 @@ lidar_odometry_node:
     scan/downsampling/random/enable: false
     scan/downsampling/random/num: 4096
 
+    # Covariance estimator
     covariance_estimation/neighbor_num: 15
     covariance_estimation/m_estimation/enable: false  # EXPERIMENTAL
     covariance_estimation/m_estimation/type: GEMAN_MCCLURE # HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
@@ -85,6 +88,7 @@ lidar_odometry_node:
     covariance_estimation/m_estimation/min_robust_scale: 5.0
     covariance_estimation/m_estimation/max_iterations: 1
 
+    # PointCloud Submapping
     submap/voxel_size: 0.4
     submap/max_distance_range: 50.0
     submap/point_random_sampling_num: 512
@@ -104,6 +108,7 @@ lidar_odometry_node:
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
+    # Motion Predict without IMU
     motion_prediction/static_factor: 0.2
     motion_prediction/verbose: false
     motion_prediction/adaptive/rotation/enable: true
@@ -117,6 +122,7 @@ lidar_odometry_node:
     motion_prediction/adaptive/translation/min_eigenvalue/low: 1.0
     motion_prediction/adaptive/translation/min_eigenvalue/high: 10.0
 
+    # PointCloud Registration
     registration/type: gicp  # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
     registration/random_sampling/enable: true
@@ -124,18 +130,18 @@ lidar_odometry_node:
     registration/max_iterations: 4
     registration/max_correspondence_distance: 2.0
     registration/mahalanobis_distance_threshold: 10.0
-    registration/criteria/translation: 1.0e-3
-    registration/criteria/rotation: 1.0e-6
+    registration/criteria/translation: 1.0e-3  # [m]
+    registration/criteria/rotation: 1.0e-6     # [rad]
 
     registration/velocity_update/enable: false  # Deskew pointcloud without IMU
     registration/velocity_update/iter: 2
 
-    registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
-    registration/robust/auto_scale: true    # If false, the robust scale is fixed to default_scale.
-    registration/robust/auto_scaling_iter: 4
+    registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    registration/robust/default_scale: 10.0  # If auto_scale is false, the robust scale is fixed to default_scale.
+    registration/robust/auto_scale: true
+    registration/robust/auto_scaling_iter: 2
     registration/robust/init_scale: 10.0
     registration/robust/min_scale: 1.25
-    registration/robust/default_scale: 10.0
 
     registration/photometric/enable: false
     registration/photometric/weight: 0.2        # Scaling factor to balance photometric error with geometric error
@@ -150,6 +156,7 @@ lidar_odometry_node:
 
     registration/genz/planarity_threshold: 0.2
 
+    # Registration Optimizer
     registration/optimization_method: LM  # GN, LM, DOGLEG
     registration/gn/lambda: 1.0  # small value -> fast convergence, but not stable.
     registration/lm/max_inner_iterations: 5
@@ -171,6 +178,7 @@ lidar_odometry_node:
     registration/degenerate_regularization/nl_reg/base_factor: 0.2
     registration/verbose: false
 
+    # Visualization
     vis/covariance_markers/scan/topic_name: "sycl_lo/scan_covariance_markers"
     vis/covariance_markers/scan/marker_ns: "covariance_ellipsoids"
     vis/covariance_markers/scan/scale_factor: 0.5
