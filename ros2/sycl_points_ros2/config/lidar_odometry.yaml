@@ -133,14 +133,15 @@ lidar_odometry_node:
     registration/criteria/translation: 1.0e-3  # [m]
     registration/criteria/rotation: 1.0e-6     # [rad]
 
-    # Deskew pointcloud without IMU. Automatically disabled when imu/deskew/enable is true.
+    # Deskew pointcloud without IMU.
+    # Automatically disabled when imu/deskew/enable is true.
     registration/velocity_update/enable: true
     registration/velocity_update/iter: 2
 
     registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
-    registration/robust/default_scale: 10.0  # If auto_scale is false, the robust scale is fixed to default_scale.
+    registration/robust/default_scale: 10.0  # If robust/auto_scale is false, the robust scale is fixed to default_scale.
     registration/robust/auto_scale: true
-    registration/robust/auto_scaling_iter: 2
+    registration/robust/auto_scaling_iter: 4
     registration/robust/init_scale: 10.0
     registration/robust/min_scale: 1.25
 
