@@ -359,6 +359,7 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
+            const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
             auto weights_ptr = out.data();
 
             h.depends_on(depends);
@@ -374,7 +375,7 @@ private:
 
                     const float squared_error = kernel::calculate_geometry_error<reg>(
                         cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
-                        genz_alpha);
+                        genz_alpha, genz_planarity_threshold);
                     const float residual_norm = sycl::sqrt(squared_error);
 
                     if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
@@ -502,6 +503,7 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
+            const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
             const float rotation_constraint_robust_scale = rotation_robust_scale;
@@ -561,11 +563,16 @@ private:
                     // ICP term
                     {
                         float residual_norm = 0.0f;
+                        float geom_alpha_weight = 1.0f;
                         const LinearizedKernelResult linearized =
                             kernel::linearize_geometry<reg>(cur_T,                                              //
                                                             source_ptr[index], source_cov,                      //
                                                             target_ptr[target_idx], target_cov, target_normal,  //
-                                                            residual_norm, genz_alpha);
+                                                            residual_norm, genz_alpha, genz_planarity_threshold);
+                        if constexpr (reg == RegType::GENZ) {
+                            geom_alpha_weight = kernel::compute_genz_correspondence_alpha_weight(
+                                target_cov, genz_alpha, genz_planarity_threshold);
+                        }
 
                         if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
                             if (residual_norm > mahalanobis_dist_threshold) {
@@ -583,7 +590,8 @@ private:
                         total_H2 = robust_weight * H2;
                         total_b0 = robust_weight * b0;
                         total_b1 = robust_weight * b1;
-                        total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                        total_error =
+                            geom_alpha_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
                     }
 
                     // Color term
@@ -720,6 +728,7 @@ private:
             const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
 
             const float genz_alpha = this->genz_alpha_;
+            const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
 
             const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
             const float photometric_robust_scale =
@@ -761,19 +770,25 @@ private:
                     float total_error = 0.0f;
                     // ICP term
                     {
+                        float geom_alpha_weight = 1.0f;
                         const float squared_error = kernel::calculate_geometry_error<reg>(
                             cur_T,                                              //
                             source_ptr[index], source_cov,                      // source
                             target_ptr[target_idx], target_cov, target_normal,  // target
-                            genz_alpha);
+                            genz_alpha, genz_planarity_threshold);
                         const float residual_norm = sycl::sqrt(squared_error);
+                        if constexpr (reg == RegType::GENZ) {
+                            geom_alpha_weight = kernel::compute_genz_correspondence_alpha_weight(
+                                target_cov, genz_alpha, genz_planarity_threshold);
+                        }
 
                         if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
                             if (residual_norm > mahalanobis_dist_threshold) return;
                         }
 
                         // Apply robust kernel
-                        total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                        total_error =
+                            geom_alpha_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
                     }
 
                     // Photometric term
