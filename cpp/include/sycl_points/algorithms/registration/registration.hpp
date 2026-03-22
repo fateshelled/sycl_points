@@ -359,6 +359,7 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
+            const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
             auto weights_ptr = out.data();
 
             h.depends_on(depends);
@@ -372,9 +373,10 @@ private:
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
 
+                    float genz_weight = 1.0f;  // compute, but not use
                     const float squared_error = kernel::calculate_geometry_error<reg>(
                         cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
-                        genz_alpha);
+                        genz_alpha, genz_weight, genz_planarity_threshold);
                     const float residual_norm = sycl::sqrt(squared_error);
 
                     if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
@@ -427,16 +429,7 @@ private:
                     }
 
                     const auto target_idx = neighbors_index_ptr[index];
-                    const auto cov = target_cov_ptr[target_idx];
-
-                    Eigen::Vector3f eigenvalues;
-                    Eigen::Matrix3f eigenvectors;
-                    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
-                    const float sum_eigenvalues = eigenvalues(0) + eigenvalues(1) + eigenvalues(2);
-                    const float surface_variation = (sum_eigenvalues > std::numeric_limits<float>::epsilon())
-                                                        ? eigenvalues(0) / sum_eigenvalues
-                                                        : 1.0f;
-                    if (surface_variation < planarity_threshold) {
+                    if (kernel::is_genz_planar_correspondence(target_cov_ptr[target_idx], planarity_threshold)) {
                         ++sum_plane_arg;
                     }
                     ++sum_inlier_arg;
@@ -502,6 +495,7 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
+            const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
             const float rotation_constraint_robust_scale = rotation_robust_scale;
@@ -561,11 +555,13 @@ private:
                     // ICP term
                     {
                         float residual_norm = 0.0f;
+                        float genz_weight = 1.0f;
                         const LinearizedKernelResult linearized =
                             kernel::linearize_geometry<reg>(cur_T,                                              //
                                                             source_ptr[index], source_cov,                      //
                                                             target_ptr[target_idx], target_cov, target_normal,  //
-                                                            residual_norm, genz_alpha);
+                                                            residual_norm,                                      //
+                                                            genz_alpha, genz_weight, genz_planarity_threshold);
 
                         if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
                             if (residual_norm > mahalanobis_dist_threshold) {
@@ -583,7 +579,13 @@ private:
                         total_H2 = robust_weight * H2;
                         total_b0 = robust_weight * b0;
                         total_b1 = robust_weight * b1;
-                        total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+
+                        if constexpr (reg == RegType::GENZ) {
+                            total_error =
+                                genz_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                        } else {
+                            total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                        }
                     }
 
                     // Color term
@@ -720,6 +722,7 @@ private:
             const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
 
             const float genz_alpha = this->genz_alpha_;
+            const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
 
             const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
             const float photometric_robust_scale =
@@ -761,11 +764,12 @@ private:
                     float total_error = 0.0f;
                     // ICP term
                     {
+                        float genz_weight = 1.0f;
                         const float squared_error = kernel::calculate_geometry_error<reg>(
                             cur_T,                                              //
                             source_ptr[index], source_cov,                      // source
                             target_ptr[target_idx], target_cov, target_normal,  // target
-                            genz_alpha);
+                            genz_alpha, genz_weight, genz_planarity_threshold);
                         const float residual_norm = sycl::sqrt(squared_error);
 
                         if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
@@ -773,7 +777,13 @@ private:
                         }
 
                         // Apply robust kernel
-                        total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+
+                        if constexpr (reg == RegType::GENZ) {
+                            total_error =
+                                genz_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                        } else {
+                            total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                        }
                     }
 
                     // Photometric term
