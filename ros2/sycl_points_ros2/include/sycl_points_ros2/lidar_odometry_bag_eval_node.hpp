@@ -1,6 +1,7 @@
 #pragma once
 
 #include <fstream>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "sycl_points_ros2/lidar_odometry_base_node.hpp"

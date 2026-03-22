@@ -68,7 +68,8 @@ void LiDAROdometryBagEvalNode::run() {
 
         auto reader = rosbag2_transport::ReaderWriterFactory::make_reader(storage_options);
         reader->open(storage_options);
-        rclcpp::Serialization<sensor_msgs::msg::PointCloud2> serializer;
+        rclcpp::Serialization<sensor_msgs::msg::PointCloud2> pc_serializer;
+        rclcpp::Serialization<sensor_msgs::msg::Imu> imu_serializer;
 
         const auto& metadata = reader->get_metadata();
         const auto bag_start_time_ns =
@@ -83,19 +84,39 @@ void LiDAROdometryBagEvalNode::run() {
 
         while (rclcpp::ok() && reader->has_next()) {
             auto bag_message = reader->read_next();
-            if (bag_message == nullptr || bag_message->topic_name != this->points_topic_) {
+            if (bag_message == nullptr) continue;
+
+            // Feed IMU measurements to the pipeline
+            if (this->params_.imu.enable && bag_message->topic_name == this->imu_topic_) {
+                sensor_msgs::msg::Imu imu_msg;
+                rclcpp::SerializedMessage serialized_imu(*bag_message->serialized_data);
+                imu_serializer.deserialize_message(&serialized_imu, &imu_msg);
+
+                imu::IMUMeasurement meas;
+                meas.timestamp = rclcpp::Time(imu_msg.header.stamp).seconds();
+                meas.gyro = Eigen::Vector3f(static_cast<float>(imu_msg.angular_velocity.x),
+                                            static_cast<float>(imu_msg.angular_velocity.y),
+                                            static_cast<float>(imu_msg.angular_velocity.z));
+                meas.accel = Eigen::Vector3f(static_cast<float>(imu_msg.linear_acceleration.x),
+                                             static_cast<float>(imu_msg.linear_acceleration.y),
+                                             static_cast<float>(imu_msg.linear_acceleration.z));
+                this->pipeline_->add_imu_measurement(meas);
                 continue;
             }
 
+            if (bag_message->topic_name != this->points_topic_) continue;
+
             sensor_msgs::msg::PointCloud2 msg;
             rclcpp::SerializedMessage serialized_msg(*bag_message->serialized_data);
-            serializer.deserialize_message(&serialized_msg, &msg);
+            pc_serializer.deserialize_message(&serialized_msg, &msg);
 
             ++handled_frames;
             const auto frame = this->process_point_cloud_message(msg);
+            this->record_processing_times(frame);
 
-            if (frame.result == ResultType::success ||
-                (frame.result == ResultType::first_frame && this->write_first_frame_)) {
+            const bool should_write_tum = frame.result == ResultType::success ||
+                                          (frame.result == ResultType::first_frame && this->write_first_frame_);
+            if (should_write_tum) {
                 const auto pose_msg = this->make_pose_message(msg.header, frame.odom);
                 this->write_tum_line(pose_msg);
                 ++written_frames;

@@ -320,69 +320,57 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         }
     }
 
-    // tf and pose
+    // IMU
     {
-        params.frames.odom_frame_id = node->declare_parameter<std::string>("odom_frame_id", "odom");
-        params.frames.base_link_id = node->declare_parameter<std::string>("base_link_id", "base_link");
-        {
-            // x, y, z, qx, qy, qz, qw
-            const auto x = node->declare_parameter<double>("T_base_link_to_lidar/x", 0.0);
-            const auto y = node->declare_parameter<double>("T_base_link_to_lidar/y", 0.0);
-            const auto z = node->declare_parameter<double>("T_base_link_to_lidar/z", 0.0);
-            const auto qx = node->declare_parameter<double>("T_base_link_to_lidar/qx", 0.0);
-            const auto qy = node->declare_parameter<double>("T_base_link_to_lidar/qy", 0.0);
-            const auto qz = node->declare_parameter<double>("T_base_link_to_lidar/qz", 0.0);
-            const auto qw = node->declare_parameter<double>("T_base_link_to_lidar/qw", 1.0);
-            params.frames.T_base_link_to_lidar.setIdentity();
-            params.frames.T_base_link_to_lidar.translation() << x, y, z;
-            const Eigen::Quaternionf quat(qw, qx, qy, qz);
-            params.frames.T_base_link_to_lidar.matrix().block<3, 3>(0, 0) = quat.matrix();
+        params.imu.enable = node->declare_parameter<bool>("imu/enable", params.imu.enable);
 
-            params.frames.T_lidar_to_base_link = params.frames.T_base_link_to_lidar.inverse();
+        // Extrinsic: T_imu_to_lidar
+        {
+            const auto x = node->declare_parameter<double>("T_imu_to_lidar/x", 0.0);
+            const auto y = node->declare_parameter<double>("T_imu_to_lidar/y", 0.0);
+            const auto z = node->declare_parameter<double>("T_imu_to_lidar/z", 0.0);
+            const auto qx = node->declare_parameter<double>("T_imu_to_lidar/qx", 0.0);
+            const auto qy = node->declare_parameter<double>("T_imu_to_lidar/qy", 0.0);
+            const auto qz = node->declare_parameter<double>("T_imu_to_lidar/qz", 0.0);
+            const auto qw = node->declare_parameter<double>("T_imu_to_lidar/qw", 1.0);
+            params.imu.T_imu_to_lidar.setIdentity();
+            params.imu.T_imu_to_lidar.translation() << static_cast<float>(x), static_cast<float>(y),
+                static_cast<float>(z);
+            const Eigen::Quaternionf quat(static_cast<float>(qw), static_cast<float>(qx), static_cast<float>(qy),
+                                          static_cast<float>(qz));
+            params.imu.T_imu_to_lidar.matrix().block<3, 3>(0, 0) = quat.normalized().matrix();
         }
 
+        // Gravity vector in world frame [m/s^2]
         {
-            const auto x = node->declare_parameter<double>("initial_base_link_pose/x", 0.0);
-            const auto y = node->declare_parameter<double>("initial_base_link_pose/y", 0.0);
-            const auto z = node->declare_parameter<double>("initial_base_link_pose/z", 0.0);
-            const auto qx = node->declare_parameter<double>("initial_base_link_pose/qx", 0.0);
-            const auto qy = node->declare_parameter<double>("initial_base_link_pose/qy", 0.0);
-            const auto qz = node->declare_parameter<double>("initial_base_link_pose/qz", 0.0);
-            const auto qw = node->declare_parameter<double>("initial_base_link_pose/qw", 1.0);
-            Eigen::Isometry3f initial_base_link = Eigen::Isometry3f::Identity();
-            initial_base_link.translation() << x, y, z;
-            const Eigen::Quaternionf quat(qw, qx, qy, qz);
-            initial_base_link.matrix().block<3, 3>(0, 0) = quat.matrix();
-
-            params.pose.initial = initial_base_link * params.frames.T_base_link_to_lidar;
+            const auto gx =
+                node->declare_parameter<double>("imu/preintegration/gravity/x", params.imu.preintegration.gravity.x());
+            const auto gy =
+                node->declare_parameter<double>("imu/preintegration/gravity/y", params.imu.preintegration.gravity.y());
+            const auto gz =
+                node->declare_parameter<double>("imu/preintegration/gravity/z", params.imu.preintegration.gravity.z());
+            params.imu.preintegration.gravity << static_cast<float>(gx), static_cast<float>(gy), static_cast<float>(gz);
         }
+
+        // Initial/fixed bias
+        {
+            const auto bgx = node->declare_parameter<double>("imu/bias/gyro/x", params.imu.bias.gyro_bias.x());
+            const auto bgy = node->declare_parameter<double>("imu/bias/gyro/y", params.imu.bias.gyro_bias.y());
+            const auto bgz = node->declare_parameter<double>("imu/bias/gyro/z", params.imu.bias.gyro_bias.z());
+            params.imu.bias.gyro_bias << static_cast<float>(bgx), static_cast<float>(bgy), static_cast<float>(bgz);
+
+            const auto bax = node->declare_parameter<double>("imu/bias/accel/x", params.imu.bias.accel_bias.x());
+            const auto bay = node->declare_parameter<double>("imu/bias/accel/y", params.imu.bias.accel_bias.y());
+            const auto baz = node->declare_parameter<double>("imu/bias/accel/z", params.imu.bias.accel_bias.z());
+            params.imu.bias.accel_bias << static_cast<float>(bax), static_cast<float>(bay), static_cast<float>(baz);
+        }
+
+        params.imu.buffer_duration_sec =
+            node->declare_parameter<double>("imu/buffer_duration_sec", params.imu.buffer_duration_sec);
+
+        params.imu.deskew.enable = node->declare_parameter<bool>("imu/deskew/enable", params.imu.deskew.enable);
     }
 
-    // Visualizer
-    {
-        // Preprocessed Scan Covariances
-        params.visualization.scan_covariance_markers.topic_name = node->declare_parameter<std::string>(
-            "vis/covariance_markers/scan/topic_name", params.visualization.scan_covariance_markers.topic_name);
-        params.visualization.scan_covariance_markers.marker_ns = node->declare_parameter<std::string>(
-            "vis/covariance_markers/scan/marker_ns", params.visualization.scan_covariance_markers.marker_ns);
-        params.visualization.scan_covariance_markers.scale_factor = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/scale_factor", params.visualization.scan_covariance_markers.scale_factor);
-        params.visualization.scan_covariance_markers.min_scale = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/min_scale", params.visualization.scan_covariance_markers.min_scale);
-        params.visualization.scan_covariance_markers.max_scale = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/max_scale", params.visualization.scan_covariance_markers.max_scale);
-        params.visualization.scan_covariance_markers.alpha = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/alpha", params.visualization.scan_covariance_markers.alpha);
-        params.visualization.scan_covariance_markers.color_by_planarity =
-            node->declare_parameter<bool>("vis/covariance_markers/scan/color_by_planarity",
-                                          params.visualization.scan_covariance_markers.color_by_planarity);
-        params.visualization.scan_covariance_markers.default_r = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_r", params.visualization.scan_covariance_markers.default_r);
-        params.visualization.scan_covariance_markers.default_g = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_g", params.visualization.scan_covariance_markers.default_g);
-        params.visualization.scan_covariance_markers.default_b = node->declare_parameter<double>(
-            "vis/covariance_markers/scan/default_b", params.visualization.scan_covariance_markers.default_b);
-    }
     return params;
 }
 }  // namespace ros2

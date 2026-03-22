@@ -6,6 +6,7 @@
 #include <memory>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <string>
 #include <sycl_points/pipeline/lidar_odometry.hpp>
@@ -34,6 +35,10 @@ public:
         Eigen::Isometry3f odom = Eigen::Isometry3f::Identity();
         Eigen::Isometry3f keyframe_pose = Eigen::Isometry3f::Identity();
         const algorithms::registration::RegistrationResult* registration_result = nullptr;
+        double dt_from_ros2_msg = 0.0;
+        std::map<std::string, double> pipeline_processing_times;
+        double processing_subtotal = 0.0;
+        double publish_time = 0.0;
     };
 
     LiDAROdometryBaseNode(const std::string& node_name, const rclcpp::NodeOptions& options);
@@ -43,7 +48,8 @@ protected:
     void initialize_processing();
     void initialize_publishers(const PublishOptions& options);
     ProcessedFrame process_point_cloud_message(const sensor_msgs::msg::PointCloud2& msg);
-    void publish_processed_frame(const std_msgs::msg::Header& header, const ProcessedFrame& frame);
+    void publish_processed_frame(const std_msgs::msg::Header& header, ProcessedFrame& frame);
+    void record_processing_times(const ProcessedFrame& frame);
 
     nav_msgs::msg::Odometry make_odom_message(
         const std_msgs::msg::Header& header, const Eigen::Isometry3f& odom,
@@ -75,6 +81,18 @@ protected:
     std::string points_topic_ = "points";
     bool input_convert_rgb_ = true;
     bool input_convert_intensity_ = true;
+
+    // ROS2/TF frame parameters
+    std::string odom_frame_id_ = "odom";
+    std::string base_link_id_ = "base_link";
+    Eigen::Isometry3f T_base_link_to_lidar_ = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f T_lidar_to_base_link_ = Eigen::Isometry3f::Identity();
+
+    // Visualization parameters
+    ros2::CovarianceMarkerConfig scan_covariance_marker_config_;
+
+    // IMU subscription topic name
+    std::string imu_topic_ = "imu/data";
 
 private:
     void add_delta_time(const std::string& name, double dt);
