@@ -7,6 +7,19 @@ lidar_odometry_node:
 
     points_topic: points
     imu_topic: imu/data
+
+    # QoS settings for subscriptions
+    # history:      "keep_last" (queue up to depth messages) or "keep_all".
+    #               If using intraprocess communication, set to keep_last.
+    # depth:        queue depth used only when history == "keep_last" (ignored for "keep_all")
+    # reliability:  "best_effort" or "reliable"
+    points_qos/history: "keep_last"
+    points_qos/depth: 10
+    points_qos/reliability: "best_effort"
+    imu_qos/history: "keep_last"
+    imu_qos/depth: 100
+    imu_qos/reliability: "best_effort"
+
     odom_frame_id: odom
     base_link_id: base_link
     lidar_frame_id: os_sensor
