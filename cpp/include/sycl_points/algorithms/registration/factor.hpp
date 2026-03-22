@@ -370,23 +370,29 @@ SYCL_EXTERNAL inline float calculate_point_to_distribution_error(const std::arra
     return (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis, residual)));
 }
 
-/// @brief Classify a correspondence as planar based on target covariance surface variation.
+/// @brief Compute PCA-based normalized curvature from target covariance.
 /// @param target_cov Target covariance matrix
-/// @param planarity_threshold Surface variation threshold for planar classification
-/// @return True when the correspondence is classified as planar
-SYCL_EXTERNAL inline bool is_genz_planar_correspondence(const Covariance& target_cov, float planarity_threshold) {
+/// @return Normalized curvature used for planar classification
+SYCL_EXTERNAL inline float compute_pca_normalized_curvature(const Covariance& target_cov) {
     Eigen::Vector3f eigenvalues;
     Eigen::Matrix3f eigenvectors;
     eigen_utils::symmetric_eigen_decomposition_3x3(target_cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
     const float sum_eigenvalues = eigenvalues(0) + eigenvalues(1) + eigenvalues(2);
-    const float surface_variation = (sum_eigenvalues > 1e-12f) ? eigenvalues(0) / sum_eigenvalues : 1.0f;
-    return surface_variation < planarity_threshold;
+    return (sum_eigenvalues > 1e-12f) ? eigenvalues(0) / sum_eigenvalues : 1.0f;
+}
+
+/// @brief Classify a correspondence as planar using PCA-based normalized curvature.
+/// @param target_cov Target covariance matrix
+/// @param planarity_threshold Normalized curvature threshold for planar classification
+/// @return True when the correspondence is classified as planar
+SYCL_EXTERNAL inline bool is_genz_planar_correspondence(const Covariance& target_cov, float planarity_threshold) {
+    return compute_pca_normalized_curvature(target_cov) < planarity_threshold;
 }
 
 /// @brief Compute the GenZ correspondence alpha weight from planar classification.
 /// @param target_cov Target covariance matrix
 /// @param genz_alpha Global GenZ alpha value
-/// @param planarity_threshold Surface variation threshold for planar classification
+/// @param planarity_threshold Normalized curvature threshold for planar classification
 /// @return Alpha weight for this correspondence
 SYCL_EXTERNAL inline float compute_genz_correspondence_alpha_weight(const Covariance& target_cov, float genz_alpha,
                                                                     float planarity_threshold) {

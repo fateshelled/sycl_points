@@ -428,16 +428,7 @@ private:
                     }
 
                     const auto target_idx = neighbors_index_ptr[index];
-                    const auto cov = target_cov_ptr[target_idx];
-
-                    Eigen::Vector3f eigenvalues;
-                    Eigen::Matrix3f eigenvectors;
-                    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
-                    const float sum_eigenvalues = eigenvalues(0) + eigenvalues(1) + eigenvalues(2);
-                    const float surface_variation = (sum_eigenvalues > std::numeric_limits<float>::epsilon())
-                                                        ? eigenvalues(0) / sum_eigenvalues
-                                                        : 1.0f;
-                    if (surface_variation < planarity_threshold) {
+                    if (kernel::is_genz_planar_correspondence(target_cov_ptr[target_idx], planarity_threshold)) {
                         ++sum_plane_arg;
                     }
                     ++sum_inlier_arg;
