@@ -276,6 +276,8 @@ private:
         this->current_processing_time_[pn_map_.at(name)] = dt;
     }
 
+    bool is_imu_deskew_enabled() const { return this->params_.imu.enable && this->params_.imu.deskew.enable; }
+
     void initialize() {
         // SYCL queue
         {
@@ -359,8 +361,7 @@ private:
         // Registration
         {
             auto reg_pipeline_params = this->params_.registration.pipeline;
-            if (this->params_.imu.enable && this->params_.imu.deskew.enable &&
-                reg_pipeline_params.velocity_update.enable) {
+            if (this->is_imu_deskew_enabled() && reg_pipeline_params.velocity_update.enable) {
                 std::cerr << "[LiDAR Odometry] VelocityUpdate is disabled because IMU deskew is enabled." << std::endl;
                 reg_pipeline_params.velocity_update.enable = false;
             }
@@ -390,7 +391,7 @@ private:
         // IMU deskew: pre-processing step applied before downsampling and ICP.
         // Brings all points into the sensor frame at scan-start time using
         // per-point IMU integration with gravity compensation.
-        if (this->params_.imu.enable && this->params_.imu.deskew.enable) {
+        if (this->is_imu_deskew_enabled()) {
             auto imu_buf_snapshot = this->get_imu_buffer();
             const double scan_start_sec = scan->start_time_ms * 1e-3;
             // R_world_imu = R_world_lidar * R_lidar_imu
@@ -713,8 +714,8 @@ private:
     }
 
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
-        if (this->params_.registration.pipeline.velocity_update.enable &&
-            !(this->params_.imu.enable && this->params_.imu.deskew.enable)) {
+        if (this->params_.registration.pipeline.velocity_update.enable &&  //
+            !this->is_imu_deskew_enabled()) {
             algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
                                                                      this->odom_, reg_result.T);
         }
