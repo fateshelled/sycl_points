@@ -267,7 +267,8 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
     // b = J.transpose() * mahalanobis * residual;
     ret.b = eigen_utils::multiply<6, 4>(J_T_mah, residual);
 
-    const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis_cov_inv, residual));
+    const float squared_norm =
+        eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis_cov_inv, residual));
     residual_norm = sycl::sqrt(squared_norm);
 
     ret.squared_error = squared_norm;
@@ -413,7 +414,8 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_geometry(const std::array<
                                                                const PointType& source_pt, const Covariance& source_cov,
                                                                const PointType& target_pt, const Covariance& target_cov,
                                                                const Normal& target_normal, float& residual_norm,
-                                                               float genz_alpha, float genz_planarity_threshold = 0.2f) {
+                                                               float genz_alpha, float& genz_weight,
+                                                               float genz_planarity_threshold = 0.2f) {
     if constexpr (reg == RegType::POINT_TO_POINT) {
         return linearize_point_to_point(T, source_pt, target_pt, residual_norm);
     } else if constexpr (reg == RegType::POINT_TO_PLANE) {
@@ -422,20 +424,20 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_geometry(const std::array<
         return linearize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
     } else if constexpr (reg == RegType::GENZ) {
         const bool is_planar = is_genz_planar_correspondence(target_cov, genz_planarity_threshold);
-        const float mode_weight = is_planar ? genz_alpha : (1.0f - genz_alpha);
+        genz_weight = is_planar ? genz_alpha : (1.0f - genz_alpha);
 
         float selected_residual_norm = 0.0f;
-        const auto selected_result = is_planar
-                                         ? linearize_point_to_plane(T, source_pt, target_pt, target_normal, selected_residual_norm)
-                                         : linearize_point_to_point(T, source_pt, target_pt, selected_residual_norm);
+        const auto selected_result =
+            is_planar ? linearize_point_to_plane(T, source_pt, target_pt, target_normal, selected_residual_norm)
+                      : linearize_point_to_point(T, source_pt, target_pt, selected_residual_norm);
 
         // Keep residual norm unweighted to avoid alpha being applied twice through robust weighting.
         residual_norm = selected_residual_norm;
 
         LinearizedKernelResult result;
-        result.H = eigen_utils::multiply<6, 6>(selected_result.H, mode_weight);
-        result.b = eigen_utils::multiply<6, 1>(selected_result.b, mode_weight);
-        result.squared_error = selected_result.squared_error * mode_weight;
+        result.H = eigen_utils::multiply<6, 6>(selected_result.H, genz_weight);
+        result.b = eigen_utils::multiply<6, 1>(selected_result.b, genz_weight);
+        result.squared_error = selected_result.squared_error * genz_weight;
         result.inlier = 1;
         return result;
     } else if constexpr (reg == RegType::POINT_TO_DISTRIBUTION) {
@@ -457,7 +459,8 @@ template <RegType reg = RegType::GICP>
 SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float4, 4>& T,                      //
                                                     const PointType& source_pt, const Covariance& source_cov,  //
                                                     const PointType& target_pt, const Covariance& target_cov,  //
-                                                    const Normal& target_normal, const float genz_alpha = 1.0f,
+                                                    const Normal& target_normal,                               //
+                                                    const float genz_alpha, float& genz_weight,
                                                     const float genz_planarity_threshold = 0.2f) {
     if constexpr (reg == RegType::POINT_TO_POINT) {
         return calculate_point_to_point_error(T, source_pt, target_pt);
@@ -467,6 +470,7 @@ SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float
         return calculate_gicp_error(T, source_pt, source_cov, target_pt, target_cov);
     } else if constexpr (reg == RegType::GENZ) {
         const bool is_planar = is_genz_planar_correspondence(target_cov, genz_planarity_threshold);
+        genz_weight = is_planar ? genz_alpha : (1.0f - genz_alpha);
         return is_planar ? calculate_point_to_plane_error(T, source_pt, target_pt, target_normal)
                          : calculate_point_to_point_error(T, source_pt, target_pt);
     } else if constexpr (reg == RegType::POINT_TO_DISTRIBUTION) {
