@@ -15,7 +15,8 @@ enum class RobustLossType {
     HUBER,         // Huber loss
     TUKEY,         // Tukey bi-weight
     CAUCHY,        // Cauchy loss
-    GEMAN_MCCLURE  // Geman-McClure loss
+    GEMAN_MCCLURE, // Geman-McClure loss
+    BARRON         // Barron's general adaptive robust loss (Barron 2019)
 };
 
 /// @brief Robust loss Type tags
@@ -24,7 +25,8 @@ using RobustLossTypeTags = std::tuple<                                     //
     std::integral_constant<RobustLossType, RobustLossType::HUBER>,         //
     std::integral_constant<RobustLossType, RobustLossType::TUKEY>,         //
     std::integral_constant<RobustLossType, RobustLossType::CAUCHY>,        //
-    std::integral_constant<RobustLossType, RobustLossType::GEMAN_MCCLURE>  //
+    std::integral_constant<RobustLossType, RobustLossType::GEMAN_MCCLURE>, //
+    std::integral_constant<RobustLossType, RobustLossType::BARRON>         //
     >;
 
 inline RobustLossType RobustLossType_from_string(const std::string& str) {
@@ -40,6 +42,8 @@ inline RobustLossType RobustLossType_from_string(const std::string& str) {
         return RobustLossType::CAUCHY;
     } else if (upper == "GEMAN_MCCLURE") {
         return RobustLossType::GEMAN_MCCLURE;
+    } else if (upper == "BARRON") {
+        return RobustLossType::BARRON;
     }
     std::string error_str = "[RobustLossType_from_string] Invalid RobustLossType str '";
     error_str += str;
@@ -52,9 +56,10 @@ namespace kernel {
 /// @brief Compute robust weight for given residual
 /// @param residual_norm Norm of residual vector
 /// @param scale Scale parameter for robust loss
+/// @param alpha Shape parameter for Barron loss (ignored for other loss types)
 /// @return Robust weight (0.0 to 1.0)
 template <RobustLossType LossType = RobustLossType::NONE>
-SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float scale) {
+SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float scale, float alpha = 1.0f) {
     if constexpr (LossType == RobustLossType::NONE) {
         return 1.0f;
     }
@@ -84,6 +89,18 @@ SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float scal
         const float x = normalized_residual * normalized_residual;
         const float denominator = 1.0f + x;
         return 1.0f / (denominator * denominator);
+    } else if constexpr (LossType == RobustLossType::BARRON) {
+        // Barron's general adaptive robust loss (Barron 2019)
+        // w(r, alpha, c) = ((r/c)^2 / |alpha-2| + 1)^(alpha/2 - 1)
+        // Special case alpha~2: reduces to L2 (w = 1)
+        // Reference: "A General and Adaptive Robust Loss Function", Barron, CVPR 2019
+        const float abs_alpha_minus_2 = sycl::fabs(alpha - 2.0f);
+        if (abs_alpha_minus_2 < 1e-4f) {
+            return 1.0f;
+        }
+        const float z2 = normalized_residual * normalized_residual;
+        const float base = z2 / abs_alpha_minus_2 + 1.0f;
+        return sycl::pow(base, alpha * 0.5f - 1.0f);
     }
 
     return 1.0f;
@@ -92,9 +109,10 @@ SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float scal
 /// @brief Compute robust error for given residual
 /// @param residual_norm Norm of residual vector
 /// @param scale Scale parameter for robust loss
-/// @return Robust weight (0.0 to 1.0)
+/// @param alpha Shape parameter for Barron loss (ignored for other loss types)
+/// @return Robust error value
 template <RobustLossType LossType = RobustLossType::NONE>
-SYCL_EXTERNAL inline float compute_robust_error(float residual_norm, float scale) {
+SYCL_EXTERNAL inline float compute_robust_error(float residual_norm, float scale, float alpha = 1.0f) {
     if constexpr (LossType == RobustLossType::NONE) {
         return 0.5f * residual_norm * residual_norm;
     } else if constexpr (LossType == RobustLossType::HUBER) {
@@ -108,6 +126,24 @@ SYCL_EXTERNAL inline float compute_robust_error(float residual_norm, float scale
         return 0.5f * scale * scale * sycl::log(1.0f + ((residual_norm * residual_norm) / (scale * scale)));
     } else if constexpr (LossType == RobustLossType::GEMAN_MCCLURE) {
         return 0.5f * (scale * scale * residual_norm * residual_norm) / (scale * scale + residual_norm * residual_norm);
+    } else if constexpr (LossType == RobustLossType::BARRON) {
+        // Barron's general adaptive robust loss (Barron 2019)
+        // rho(r, alpha, c) = (|alpha-2|/alpha) * (((r/c)^2/|alpha-2| + 1)^(alpha/2) - 1)
+        // Special cases:
+        //   alpha~2 : L2 loss  -> rho = 0.5*(r/c)^2
+        //   alpha~0 : Cauchy-like -> rho = log(1 + 0.5*(r/c)^2)
+        // Reference: "A General and Adaptive Robust Loss Function", Barron, CVPR 2019
+        const float z2 = (residual_norm * residual_norm) / (scale * scale);
+        const float abs_alpha_minus_2 = sycl::fabs(alpha - 2.0f);
+        if (abs_alpha_minus_2 < 1e-4f) {
+            return 0.5f * z2;
+        }
+        const float abs_alpha = sycl::fabs(alpha);
+        if (abs_alpha < 1e-4f) {
+            return sycl::log(1.0f + 0.5f * z2);
+        }
+        const float base = z2 / abs_alpha_minus_2 + 1.0f;
+        return (abs_alpha_minus_2 / alpha) * (sycl::pow(base, alpha * 0.5f) - 1.0f);
     }
 
     return 0.5f * residual_norm * residual_norm;

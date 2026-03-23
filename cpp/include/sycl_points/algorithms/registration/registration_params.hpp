@@ -45,6 +45,7 @@ struct RegistrationParams {
     struct Robust {
         robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
         float default_scale = 10.0f;                                 // default scale for robust loss function
+        float barron_alpha = 1.0f;  // shape parameter for Barron loss (alpha=2: L2, alpha=1: Charbonnier, alpha=0: Cauchy-like, alpha<0: heavier tail)
     };
     struct PhotometricTerm {
         bool enable = false;  // If true, use photometric term.

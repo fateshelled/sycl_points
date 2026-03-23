@@ -341,6 +341,7 @@ private:
                                                         shared_vector<float>& out,
                                                         const std::vector<sycl::event>& depends) const {
         sycl_utils::events events;
+        const float barron_alpha = this->params_.robust.barron_alpha;
         events += this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t N = source.size();
             const auto cur_T = eigen_utils::to_sycl_vec(transT);
@@ -381,10 +382,10 @@ private:
 
                     if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
                         if (residual_norm <= mahalanobis_dist_threshold) {
-                            weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                            weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale, barron_alpha);
                         }
                     } else {
-                        weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                        weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale, barron_alpha);
                     }
                 }
 
@@ -456,6 +457,7 @@ private:
         }
 
         // The robust_scale argument controls the influence of the robust loss inside the reduction kernel.
+        const float barron_alpha = this->params_.robust.barron_alpha;
         sycl_utils::events events;
         events += this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t N = source.size();
@@ -571,7 +573,7 @@ private:
 
                         // Apply robust kernel
                         const float robust_weight =
-                            robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
+                            robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale, barron_alpha);
                         const auto& [H0, H1, H2] = eigen_utils::to_sycl_vec(linearized.H);
                         const auto& [b0, b1] = eigen_utils::to_sycl_vec(linearized.b);
                         total_H0 = robust_weight * H0;
@@ -582,9 +584,9 @@ private:
 
                         if constexpr (reg == RegType::GENZ) {
                             total_error =
-                                genz_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                                genz_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale, barron_alpha);
                         } else {
-                            total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                            total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale, barron_alpha);
                         }
                     }
 
@@ -595,7 +597,7 @@ private:
                                                     target_rgb, target_normal, target_grad);
                         float residual_norm_color = sycl::sqrt(linearized_color.squared_error);
                         const float robust_weight_color =
-                            robust::kernel::compute_robust_weight<loss>(residual_norm_color, photometric_robust_scale);
+                            robust::kernel::compute_robust_weight<loss>(residual_norm_color, photometric_robust_scale, barron_alpha);
 
                         const auto& [H0_color, H1_color, H2_color] = eigen_utils::to_sycl_vec(linearized_color.H);
                         const auto& [b0_color, b1_color] = eigen_utils::to_sycl_vec(linearized_color.b);
@@ -606,7 +608,7 @@ private:
                         total_b0 += photometric_weight * robust_weight_color * b0_color;
                         total_b1 += photometric_weight * robust_weight_color * b1_color;
                         total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
-                                                                residual_norm_color, photometric_robust_scale);
+                                                                residual_norm_color, photometric_robust_scale, barron_alpha);
                     }
 
                     // Intensity term
@@ -616,7 +618,7 @@ private:
                             target_normal, target_intensity_grad);
                         float residual_norm_intensity = sycl::sqrt(linearized_intensity.squared_error);
                         const float robust_weight_intensity = robust::kernel::compute_robust_weight<loss>(
-                            residual_norm_intensity, photometric_robust_scale);
+                            residual_norm_intensity, photometric_robust_scale, barron_alpha);
 
                         const auto& [H0_intensity, H1_intensity, H2_intensity] =
                             eigen_utils::to_sycl_vec(linearized_intensity.H);
@@ -628,7 +630,7 @@ private:
                         total_b0 += photometric_weight * robust_weight_intensity * b0_intensity;
                         total_b1 += photometric_weight * robust_weight_intensity * b1_intensity;
                         total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
-                                                                residual_norm_intensity, photometric_robust_scale);
+                                                                residual_norm_intensity, photometric_robust_scale, barron_alpha);
                     }
 
                     // Rotation constraint term
@@ -637,7 +639,7 @@ private:
                             kernel::linearize_rotation_constraint(source_cov, target_cov, cur_T);
                         const float residual_norm_rot = sycl::sqrt(linearized_rot.squared_error);
                         const float robust_weight_rot = robust::kernel::compute_robust_weight<loss>(
-                            residual_norm_rot, rotation_constraint_robust_scale);
+                            residual_norm_rot, rotation_constraint_robust_scale, barron_alpha);
 
                         const auto& [H0_rot, H1_rot, H2_rot] = eigen_utils::to_sycl_vec(linearized_rot.H);
                         const auto& [b0_rot, b1_rot] = eigen_utils::to_sycl_vec(linearized_rot.b);
@@ -649,7 +651,7 @@ private:
                         total_b1 += rotation_constraint_weight * robust_weight_rot * b1_rot;
                         total_error +=
                             rotation_constraint_weight * robust::kernel::compute_robust_error<loss>(
-                                                             residual_norm_rot, rotation_constraint_robust_scale);
+                                                             residual_norm_rot, rotation_constraint_robust_scale, barron_alpha);
                     }
 
                     // Reduction on device
@@ -686,6 +688,7 @@ private:
                                                                  const Eigen::Matrix4f transT, float robust_scale,
                                                                  float rotation_robust_scale) {
         // The robust_scale argument ensures error reduction uses the caller-provided loss scale.
+        const float barron_alpha = this->params_.robust.barron_alpha;
         shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
         shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
 
@@ -780,9 +783,9 @@ private:
 
                         if constexpr (reg == RegType::GENZ) {
                             total_error =
-                                genz_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                                genz_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale, barron_alpha);
                         } else {
-                            total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);
+                            total_error = robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale, barron_alpha);
                         }
                     }
 
@@ -793,7 +796,7 @@ private:
                                                           target_rgb, target_normal, target_grad);
                         const float residual_norm_color = sycl::sqrt(squared_error_color);
                         total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
-                                                                residual_norm_color, photometric_robust_scale);
+                                                                residual_norm_color, photometric_robust_scale, barron_alpha);
                     }
                     if (use_intensity) {
                         const float squared_error_intensity = kernel::calculate_intensity_error(
@@ -801,7 +804,7 @@ private:
                             target_normal, target_intensity_grad);
                         const float residual_norm_intensity = sycl::sqrt(squared_error_intensity);
                         total_error += photometric_weight * robust::kernel::compute_robust_error<loss>(
-                                                                residual_norm_intensity, photometric_robust_scale);
+                                                                residual_norm_intensity, photometric_robust_scale, barron_alpha);
                     }
 
                     // Rotation constraint term
@@ -811,7 +814,7 @@ private:
                         const float residual_norm_rot = sycl::sqrt(squared_error_rot);
                         total_error +=
                             rotation_constraint_weight * robust::kernel::compute_robust_error<loss>(
-                                                             residual_norm_rot, rotation_constraint_robust_scale);
+                                                             residual_norm_rot, rotation_constraint_robust_scale, barron_alpha);
                     }
 
                     // Reduction
