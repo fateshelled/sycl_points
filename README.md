@@ -5,7 +5,11 @@ A C++ header-only point cloud processing library accelerated with SYCL for heter
 
 ## Overview
 
-sycl_points provides efficient implementations of common point cloud processing operations using Intel's SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on CPUs, Intel iGPU and NVIDIA GPUs supported by SYCL.
+sycl_points provides efficient implementations of common point cloud processing operations using the SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on CPUs, Intel iGPU and NVIDIA GPUs supported by SYCL.
+
+Two SYCL implementations are supported:
+- **Intel oneAPI DPC++** (default) — Intel CPUs, Intel iGPUs, NVIDIA GPUs via Codeplay plugin
+- **AdaptiveCpp** (formerly hipSYCL) — CPUs (OpenMP), NVIDIA GPUs (CUDA), AMD GPUs (HIP), and more
 
 This project was developed with reference to small_gicp and gtsam_points
 - https://github.com/koide3/small_gicp
@@ -65,11 +69,14 @@ note:
 - C++20 or later
 - Eigen
 - GTest
-- Intel oneAPI DPC++
-    - https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/
-- Intel oneAPI for NVIDIA® GPUs (optional)
+- One of the following SYCL implementations:
+  - **Intel oneAPI DPC++** (default)
+      - https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/
+  - **AdaptiveCpp** (formerly hipSYCL)
+      - https://github.com/AdaptiveCpp/AdaptiveCpp
+- Intel oneAPI for NVIDIA® GPUs (optional, Intel DPC++ only)
     - https://developer.codeplay.com/apt/index.html
-- Intel GPU Driver (optional)
+- Intel GPU Driver (optional, Intel DPC++ only)
     - https://dgpu-docs.intel.com/driver/client/overview.html
 
 ### Install dependencies
@@ -140,7 +147,32 @@ sudo gpasswd -a ${USER} render
 newgrp render
 ```
 
+#### AdaptiveCpp
+For the latest information, please refer to:
+- https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md
+
+```bash
+# Install dependencies (Ubuntu/Debian)
+sudo apt install libboost-fiber-dev libboost-context-dev
+
+# Clone and build AdaptiveCpp
+git clone https://github.com/AdaptiveCpp/AdaptiveCpp.git
+cd AdaptiveCpp
+mkdir build && cd build
+
+# For CPU (OpenMP) + NVIDIA CUDA backend
+cmake .. -DACPP_TARGETS="omp;cuda:sm_XX"  # replace sm_XX with your GPU arch (e.g. sm_86)
+
+# For CPU (OpenMP) only
+cmake .. -DACPP_TARGETS="omp"
+
+make -j$(nproc)
+sudo make install
+```
+
 ## Build and run example
+
+### Intel oneAPI DPC++ (default)
 
 ```bash
 source /opt/intel/oneapi/setvars.sh
@@ -170,6 +202,30 @@ ONEAPI_DEVICE_SELECTOR=opencl:1 ./example_registration
 # run example with CUDA device
 ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 ```
+
+### AdaptiveCpp
+
+```bash
+# build example (CPU via OpenMP)
+cd cpp
+mkdir build && cd build
+cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="omp"
+make
+
+# build example (NVIDIA GPU, replace sm_XX with your GPU arch)
+cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="cuda:sm_XX"
+make
+
+# build example (AMD GPU)
+cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="hip:gfxXXX"
+make
+
+# run example (device is selected automatically based on ACPP_TARGETS)
+./example_registration
+```
+
+> **Note:** When switching between `IntelDPCPP` and `AdaptiveCpp`, use a fresh build directory
+> or delete `CMakeCache.txt`, since the compiler selection is cached by CMake.
 
 #### device_query
 
