@@ -206,26 +206,31 @@ ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 ### AdaptiveCpp
 
 ```bash
-# build example (CPU via OpenMP)
 cd cpp
+
+# ACPP_TARGETS is auto-detected from nvidia-smi; falls back to "omp" if no GPU found
 mkdir build && cd build
-cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="omp"
+cmake .. -DSYCL_IMPL=AdaptiveCpp
 make
 
-# build example (NVIDIA GPU, replace sm_XX with your GPU arch)
-cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="cuda:sm_XX"
+# Explicit targets: CPU + NVIDIA GPU (replace sm_XX with your GPU arch, e.g. sm_86)
+mkdir build_cuda && cd build_cuda
+cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="omp;cuda:sm_XX"
 make
 
-# build example (AMD GPU)
-cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="hip:gfxXXX"
+# Explicit targets: AMD GPU
+mkdir build_hip && cd build_hip
+cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="omp;hip:gfxXXX"
 make
 
-# run example (device is selected automatically based on ACPP_TARGETS)
+# run example (device is selected automatically based on compiled-in ACPP_TARGETS)
 ./example_registration
 ```
 
-> **Note:** When switching between `IntelDPCPP` and `AdaptiveCpp`, use a fresh build directory
-> or delete `CMakeCache.txt`, since the compiler selection is cached by CMake.
+> **Note:** When switching between `IntelDPCPP` and `AdaptiveCpp`, or changing `ACPP_TARGETS`,
+> use a **fresh build directory** or delete `CMakeCache.txt`, since the compiler and target
+> selections are cached by CMake. Using separate directories (e.g. `build_omp`, `build_cuda`)
+> is recommended when testing multiple target configurations.
 
 #### device_query
 

@@ -6,6 +6,7 @@
 #include <iostream>
 #include <memory>
 #include <shared_mutex>
+#include <sstream>
 #include <sycl/sycl.hpp>
 
 namespace sycl_points {
@@ -425,12 +426,9 @@ public:
     DeviceQueue(const sycl::device& device) : ptr(std::make_shared<sycl::queue>(device)) {
         if (!sycl_utils::device_selector::is_supported_device(device)) {
             const std::string device_name = device.get_info<sycl::info::device::name>();
-#ifdef SYCL_IMPL_INTEL_DPCPP
-            const std::string backend_name = sycl::detail::get_backend_name_no_vendor(device.get_backend()).data();
-#else
-            const std::string backend_name = std::to_string(static_cast<int>(device.get_backend()));
-#endif
-            const std::string error_msg = device_name + " [" + backend_name + "]" + " is not supported.";
+            std::ostringstream oss;
+            oss << device.get_backend();
+            const std::string error_msg = device_name + " [" + oss.str() + "]" + " is not supported.";
             throw std::runtime_error("[DeviceQueue::DeviceQueue] " + error_msg);
         }
         this->work_group_size = sycl_utils::get_work_group_size(device);
