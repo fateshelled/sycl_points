@@ -138,7 +138,10 @@ lidar_odometry_node:
     registration/velocity_update/enable: true
     registration/velocity_update/iter: 2
 
-    registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE, BARRON
+    registration/robust/barron_alpha: 1.0    # Shape parameter for Barron loss (used when type=BARRON).
+                                             # α=2: L2, α=1: Charbonnier, α=0: Cauchy-like
+                                             # α=-2: Geman-McClure, α<<0: Welsch loss
     registration/robust/default_scale: 10.0  # If robust/auto_scale is false, the robust scale is fixed to default_scale.
     registration/robust/auto_scale: true
     registration/robust/auto_scaling_iter: 4

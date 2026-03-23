@@ -332,6 +332,7 @@ Platform: Intel(R) OpenCL Graphics
   - https://arxiv.org/abs/2411.06766
 - **Informed, Constrained, Aligned: A Field Analysis on Degeneracy-aware Point Cloud Registration in the Wild (2024)**
   - https://arxiv.org/abs/2408.11809
-
+- **A General and Adaptive Robust Loss Function (2017)**
+  - https://arxiv.org/abs/1701.03077
 ## License
 This library is released under Apache License 2.0

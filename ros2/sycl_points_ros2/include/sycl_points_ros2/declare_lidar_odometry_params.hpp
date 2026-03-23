@@ -224,6 +224,8 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                 node->declare_parameter<double>("registration/robust/min_scale", pipeline_robust.min_scale);
             pipeline_robust.auto_scaling_iter = node->declare_parameter<int64_t>(
                 "registration/robust/auto_scaling_iter", pipeline_robust.auto_scaling_iter);
+            robust.barron_alpha =
+                node->declare_parameter<double>("registration/robust/barron_alpha", robust.barron_alpha);
         }
         // deskew
         {
