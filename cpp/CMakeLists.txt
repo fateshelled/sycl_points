@@ -63,6 +63,41 @@ if(SYCL_IMPL STREQUAL "IntelDPCPP")
   message(STATUS "SYCL_IMPL: IntelDPCPP (targets: ${SYCL_TARGET_FLAGS})")
 
 elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
+  # Auto-detect ACPP_TARGETS from available hardware if not specified by user
+  if(NOT ACPP_TARGETS)
+    set(_acpp_auto_targets "omp")
+
+    # Detect NVIDIA GPUs via nvidia-smi
+    execute_process(
+      COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+      OUTPUT_VARIABLE _nvidia_compute_caps
+      RESULT_VARIABLE _nvidia_result
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+    if(_nvidia_result EQUAL 0 AND _nvidia_compute_caps)
+      string(REPLACE "\n" ";" _cap_list "${_nvidia_compute_caps}")
+      set(_cuda_targets "")
+      foreach(_cap IN LISTS _cap_list)
+        string(STRIP "${_cap}" _cap)
+        if(_cap)
+          string(REPLACE "." "" _sm "${_cap}")
+          list(APPEND _cuda_targets "cuda:sm_${_sm}")
+        endif()
+      endforeach()
+      list(REMOVE_DUPLICATES _cuda_targets)
+      foreach(_t IN LISTS _cuda_targets)
+        string(APPEND _acpp_auto_targets ";${_t}")
+      endforeach()
+      message(STATUS "AdaptiveCpp: detected NVIDIA GPU(s): ${_cuda_targets}")
+    else()
+      message(STATUS "AdaptiveCpp: no NVIDIA GPU detected")
+    endif()
+
+    set(ACPP_TARGETS "${_acpp_auto_targets}" CACHE STRING "AdaptiveCpp compilation targets" FORCE)
+    message(STATUS "AdaptiveCpp: auto-set ACPP_TARGETS=${ACPP_TARGETS}")
+  endif()
+
   find_package(AdaptiveCpp REQUIRED)
   add_compile_definitions(SYCL_IMPL_ADAPTIVECPP)
   message(STATUS "SYCL_IMPL: AdaptiveCpp (ACPP_TARGETS=${ACPP_TARGETS})")
