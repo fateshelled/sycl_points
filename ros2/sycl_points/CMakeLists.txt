@@ -39,6 +39,13 @@ endif()
 
 # Install ROS 2
 add_library(${PROJECT_NAME} INTERFACE)
+
+# Propagate SYCL_IMPL definition to consumers of this header-only library
+if(SYCL_IMPL STREQUAL "IntelDPCPP")
+  target_compile_definitions(${PROJECT_NAME} INTERFACE SYCL_IMPL_INTEL_DPCPP)
+elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
+  target_compile_definitions(${PROJECT_NAME} INTERFACE SYCL_IMPL_ADAPTIVECPP)
+endif()
 target_include_directories(${PROJECT_NAME} INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../cpp/include>
   $<INSTALL_INTERFACE:include>

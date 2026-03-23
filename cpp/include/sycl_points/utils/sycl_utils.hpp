@@ -251,6 +251,8 @@ struct events {
 /// @brief shared memory location advise to underlying runtime
 namespace mem_advise {
 
+#ifdef SYCL_IMPL_INTEL_DPCPP
+
 /// @brief Hints that data will be accessed from the device. set flag UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE.
 /// @tparam T data type
 /// @param queue SYCL queue
@@ -311,14 +313,33 @@ void clear_read_mostly(sycl::queue& queue, T* data_ptr, size_t N) {
     queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_READ_MOSTLY);
 }
 
+#else  // AdaptiveCpp: mem_advise hints are not available, use no-ops
+
+template <typename T>
+void set_accessed_by_device(sycl::queue&, T*, size_t) {}
+template <typename T>
+void clear_accessed_by_device(sycl::queue&, T*, size_t) {}
+template <typename T>
+void set_accessed_by_host(sycl::queue&, T*, size_t) {}
+template <typename T>
+void clear_accessed_by_host(sycl::queue&, T*, size_t) {}
+template <typename T>
+void set_read_mostly(sycl::queue&, T*, size_t) {}
+template <typename T>
+void clear_read_mostly(sycl::queue&, T*, size_t) {}
+
+#endif  // SYCL_IMPL_INTEL_DPCPP
+
 }  // namespace mem_advise
 
 namespace device_selector {
 
 inline bool is_supported_device(const sycl::device& dev) {
-    const auto backend = dev.get_backend();
     bool supported = true;
+#ifdef SYCL_IMPL_INTEL_DPCPP
+    const auto backend = dev.get_backend();
     supported &= (backend == sycl::backend::opencl) || (backend == sycl::backend::ext_oneapi_cuda);
+#endif
     supported &= enable_shared_allocations(dev);
     return supported;
 }
@@ -368,10 +389,12 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
     for (auto platform : sycl::platform::get_platforms()) {
         for (auto device : platform.get_devices()) {
             if (vendor_id == device.get_info<sycl::info::device::vendor_id>()) {
+#ifdef SYCL_IMPL_INTEL_DPCPP
                 if (device.get_backend() == sycl::backend::ext_oneapi_level_zero) {
                     // level_zero is not support
                     continue;
                 }
+#endif
                 if (select_cpu && device.is_cpu()) {
                     return device;
                 }
@@ -402,7 +425,11 @@ public:
     DeviceQueue(const sycl::device& device) : ptr(std::make_shared<sycl::queue>(device)) {
         if (!sycl_utils::device_selector::is_supported_device(device)) {
             const std::string device_name = device.get_info<sycl::info::device::name>();
+#ifdef SYCL_IMPL_INTEL_DPCPP
             const std::string backend_name = sycl::detail::get_backend_name_no_vendor(device.get_backend()).data();
+#else
+            const std::string backend_name = std::to_string(static_cast<int>(device.get_backend()));
+#endif
             const std::string error_msg = device_name + " [" + backend_name + "]" + " is not supported.";
             throw std::runtime_error("[DeviceQueue::DeviceQueue] " + error_msg);
         }

@@ -33,6 +33,7 @@ find_package(Eigen3 REQUIRED)
 
 if(SYCL_IMPL STREQUAL "IntelDPCPP")
   find_package(IntelSYCL REQUIRED)
+  add_compile_definitions(SYCL_IMPL_INTEL_DPCPP)
 
   set(SYCL_TARGET_FLAGS "spir64")
 
@@ -63,6 +64,7 @@ if(SYCL_IMPL STREQUAL "IntelDPCPP")
 
 elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
   find_package(AdaptiveCpp REQUIRED)
+  add_compile_definitions(SYCL_IMPL_ADAPTIVECPP)
   message(STATUS "SYCL_IMPL: AdaptiveCpp (ACPP_TARGETS=${ACPP_TARGETS})")
 endif()
 

@@ -57,10 +57,12 @@ if(SYCL_IMPL STREQUAL "IntelDPCPP")
     message(STATUS "Intel oneAPI for NVIDIA GPU support not available")
   endif()
 
+  add_compile_definitions(SYCL_IMPL_INTEL_DPCPP)
   message(STATUS "SYCL_IMPL: IntelDPCPP (targets: ${SYCL_TARGET_FLAGS})")
 
 elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
   find_package(AdaptiveCpp REQUIRED)
+  add_compile_definitions(SYCL_IMPL_ADAPTIVECPP)
   message(STATUS "SYCL_IMPL: AdaptiveCpp (ACPP_TARGETS=${ACPP_TARGETS})")
 endif()
 
