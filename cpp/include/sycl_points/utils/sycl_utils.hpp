@@ -9,6 +9,12 @@
 #include <sstream>
 #include <sycl/sycl.hpp>
 
+#ifdef SYCL_IMPL_ADAPTIVECPP
+#ifndef SYCL_EXTERNAL
+#define SYCL_EXTERNAL
+#endif
+#endif
+
 namespace sycl_points {
 
 namespace sycl_utils {
@@ -89,6 +95,25 @@ inline void free(void* data_ptr, const sycl::queue& queue) {
     }
 }
 
+/// @brief Get backend name as string
+/// @param backend sycl::backend value
+/// @return backend name string
+inline std::string get_backend_name(sycl::backend backend) {
+#ifdef SYCL_IMPL_ADAPTIVECPP
+    // hipsycl::rt::backend_id: cuda=0, hip=1, level_zero=2, ocl=3, omp=4
+    static constexpr const char* BackendNames[] = {"CUDA", "HIP", "Level Zero", "OpenCL", "OpenMP"};
+    const auto idx = static_cast<int>(backend);
+    if (idx >= 0 && idx < static_cast<int>(sizeof(BackendNames) / sizeof(BackendNames[0]))) {
+        return BackendNames[idx];
+    }
+    return "Unknown";
+#else
+    std::ostringstream oss;
+    oss << backend;
+    return oss.str();
+#endif
+}
+
 /// @brief Print device info
 /// @param device SYCL device
 inline void print_device_info(const sycl::device& device) {
@@ -100,8 +125,10 @@ inline void print_device_info(const sycl::device& device) {
         std::cout << "\ttype: " << (device.is_cpu() ? "CPU" : "GPU") << std::endl;
         std::cout << "\tVendor: " << device.get_info<sycl::info::device::vendor>() << std::endl;
         std::cout << "\tVendorID: " << device.get_info<sycl::info::device::vendor_id>() << std::endl;
-        std::cout << "\tBackend name: " << device.get_backend() << std::endl;
+        std::cout << "\tBackend name: " << get_backend_name(device.get_backend()) << std::endl;
+#ifndef SYCL_IMPL_ADAPTIVECPP
         std::cout << "\tBackend version: " << device.get_info<sycl::info::device::backend_version>() << std::endl;
+#endif
         std::cout << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << std::endl;
         std::cout << "\tGlobal Memory Size: "
                   << device.get_info<sycl::info::device::global_mem_size>() / 1024.0 / 1024.0 / 1024.0 << " GB"
@@ -426,9 +453,7 @@ public:
     DeviceQueue(const sycl::device& device) : ptr(std::make_shared<sycl::queue>(device)) {
         if (!sycl_utils::device_selector::is_supported_device(device)) {
             const std::string device_name = device.get_info<sycl::info::device::name>();
-            std::ostringstream oss;
-            oss << device.get_backend();
-            const std::string error_msg = device_name + " [" + oss.str() + "]" + " is not supported.";
+            const std::string error_msg = device_name + " [" + get_backend_name(device.get_backend()) + "]" + " is not supported.";
             throw std::runtime_error("[DeviceQueue::DeviceQueue] " + error_msg);
         }
         this->work_group_size = sycl_utils::get_work_group_size(device);
