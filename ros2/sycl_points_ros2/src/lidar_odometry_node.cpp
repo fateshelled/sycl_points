@@ -21,17 +21,21 @@ LiDAROdometryNode::LiDAROdometryNode(const rclcpp::NodeOptions& options)
     rclcpp::SubscriptionOptions lidar_sub_options;
     lidar_sub_options.callback_group = this->cb_group_lidar_;
     this->sub_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        this->points_topic_, rclcpp::QoS(10),
+        this->points_topic_, this->points_qos_params_.to_qos(),
         std::bind(&LiDAROdometryNode::point_cloud_callback, this, std::placeholders::_1), lidar_sub_options);
-    RCLCPP_INFO(this->get_logger(), "Subscribe PointCloud: %s", this->sub_pc_->get_topic_name());
+    RCLCPP_INFO(this->get_logger(), "Subscribe PointCloud: %s (history=%s, depth=%ld, reliability=%s)",
+                this->sub_pc_->get_topic_name(), this->points_qos_params_.history.c_str(),
+                this->points_qos_params_.depth, this->points_qos_params_.reliability.c_str());
 
     if (this->params_.imu.enable) {
         rclcpp::SubscriptionOptions imu_sub_options;
         imu_sub_options.callback_group = this->cb_group_imu_;
         this->sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
-            this->imu_topic_, rclcpp::QoS(100),
+            this->imu_topic_, this->imu_qos_params_.to_qos(),
             std::bind(&LiDAROdometryNode::imu_callback, this, std::placeholders::_1), imu_sub_options);
-        RCLCPP_INFO(this->get_logger(), "Subscribe IMU: %s", this->sub_imu_->get_topic_name());
+        RCLCPP_INFO(this->get_logger(), "Subscribe IMU: %s (history=%s, depth=%ld, reliability=%s)",
+                    this->sub_imu_->get_topic_name(), this->imu_qos_params_.history.c_str(),
+                    this->imu_qos_params_.depth, this->imu_qos_params_.reliability.c_str());
     } else {
         RCLCPP_INFO(this->get_logger(), "IMU disabled");
     }

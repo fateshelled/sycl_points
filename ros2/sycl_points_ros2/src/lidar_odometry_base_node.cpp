@@ -28,6 +28,19 @@ void LiDAROdometryBaseNode::initialize_processing() {
     this->input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
     this->input_convert_intensity_ = this->declare_parameter<bool>("input/convert_intensity", true);
 
+    // QoS settings
+    this->points_qos_params_.history =
+        this->declare_parameter<std::string>("points_qos/history", this->points_qos_params_.history);
+    this->points_qos_params_.depth =
+        this->declare_parameter<int64_t>("points_qos/depth", this->points_qos_params_.depth);
+    this->points_qos_params_.reliability =
+        this->declare_parameter<std::string>("points_qos/reliability", this->points_qos_params_.reliability);
+    this->imu_qos_params_.history =
+        this->declare_parameter<std::string>("imu_qos/history", this->imu_qos_params_.history);
+    this->imu_qos_params_.depth = this->declare_parameter<int64_t>("imu_qos/depth", this->imu_qos_params_.depth);
+    this->imu_qos_params_.reliability =
+        this->declare_parameter<std::string>("imu_qos/reliability", this->imu_qos_params_.reliability);
+
     // tf and pose (ROS2/TF specific)
     this->odom_frame_id_ = this->declare_parameter<std::string>("odom_frame_id", this->odom_frame_id_);
     this->base_link_id_ = this->declare_parameter<std::string>("base_link_id", this->base_link_id_);

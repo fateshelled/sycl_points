@@ -28,6 +28,32 @@ public:
         bool publish_debug_clouds = true;
     };
 
+    /// @brief QoS settings for a single subscription (history, depth, reliability)
+    struct SubscriptionQoSParams {
+        std::string history = "keep_last";        ///< "keep_last" or "keep_all"
+        int64_t depth = 10;                       ///< queue depth (used only when history == "keep_last")
+        std::string reliability = "best_effort";  ///< "best_effort" or "reliable"
+
+        rclcpp::QoS to_qos() const {
+            if (history == "keep_all") {
+                rclcpp::QoS qos = rclcpp::QoS(rclcpp::KeepAll());
+                if (reliability == "reliable") {
+                    qos.reliable();
+                } else {
+                    qos.best_effort();
+                }
+                return qos;
+            }
+            rclcpp::QoS qos(static_cast<size_t>(depth));
+            if (reliability == "reliable") {
+                qos.reliable();
+            } else {
+                qos.best_effort();
+            }
+            return qos;
+        }
+    };
+
     using ResultType = pipeline::lidar_odometry::LiDAROdometryPipeline::ResultType;
 
     struct ProcessedFrame {
@@ -93,6 +119,12 @@ protected:
 
     // IMU subscription topic name
     std::string imu_topic_ = "imu/data";
+
+    // QoS settings for subscriptions
+    // Points: keep_last(1) — only the latest scan is needed for real-time odometry
+    // IMU: keep_all — all measurements between frames are required for preintegration
+    SubscriptionQoSParams points_qos_params_{"keep_last", 1, "best_effort"};
+    SubscriptionQoSParams imu_qos_params_{"keep_all", 100, "best_effort"};
 
 private:
     void add_delta_time(const std::string& name, double dt);
