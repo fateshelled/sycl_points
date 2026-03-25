@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <sycl/sycl.hpp>
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 namespace algorithms {
