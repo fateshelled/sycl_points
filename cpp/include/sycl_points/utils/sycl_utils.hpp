@@ -446,7 +446,7 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
 template <typename Func>
 inline sycl::event submit_host_task(sycl::queue& q, const std::vector<sycl::event>& deps, Func&& f) {
 #ifdef SYCL_IMPL_ADAPTIVECPP
-    for (auto& e : deps) e.wait_and_throw();
+    sycl::event::wait_and_throw(deps);
     f();
     return sycl::event{};
 #else
