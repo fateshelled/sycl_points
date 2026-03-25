@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
-#include <shared_mutex>
 #include <sstream>
 #include <sycl/sycl.hpp>
 
@@ -437,6 +436,27 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
 
 }  // namespace device_selector
 
+/// @brief Submit a host-side callable with event dependencies.
+/// @details For Intel DPC++: uses handler::host_task for proper SYCL event integration.
+///          For AdaptiveCpp: waits for dependencies synchronously and executes on CPU.
+/// @param q SYCL queue to submit to
+/// @param deps Events to wait for before executing the callable
+/// @param f Callable to execute on the host
+/// @return SYCL event representing task completion
+template <typename Func>
+inline sycl::event submit_host_task(sycl::queue& q, const std::vector<sycl::event>& deps, Func&& f) {
+#ifdef SYCL_IMPL_ADAPTIVECPP
+    for (auto& e : deps) e.wait_and_throw();
+    f();
+    return sycl::event{};
+#else
+    return q.submit([&](sycl::handler& h) {
+        h.depends_on(deps);
+        h.host_task(std::forward<Func>(f));
+    });
+#endif
+}
+
 /// @brief Represents a SYCL queue with device-specific optimizations and management capabilities
 class DeviceQueue {
 private:
@@ -562,76 +582,6 @@ public:
         sycl_utils::mem_advise::clear_read_mostly<T>(*this->ptr, data_ptr, N);
     }
 
-    /// @brief Execute a task with shared mutex protection using SYCL event dependency chain
-    ///
-    /// This function provides thread-safe execution of SYCL tasks by wrapping them with
-    /// shared mutex operations. It supports both exclusive (write) and shared (read) locking
-    /// modes through the is_write parameter. The function ensures proper lock → task → unlock
-    /// ordering using SYCL event dependencies.
-    ///
-    /// @param mtx Shared mutex for synchronization control
-    /// @param task Function object that takes sycl::handler& and defines the SYCL task to execute
-    /// @param depends Vector of SYCL events that this operation should depend on (default: empty)
-    /// @param is_write Lock mode selector: true for exclusive lock (write), false for shared lock (read)
-    /// @param lock_timeout Lock timeout duration to prevent indefinite blocking (default: 50 milliseconds)
-    ///
-    /// @return SYCL event representing the completion of the entire operation (lock + task + unlock)
-    ///
-    /// @note The task execution order is guaranteed as: lock → task → unlock through event dependencies
-    /// @note For write operations (is_write=true): uses exclusive lock, blocks all other operations
-    /// @note For read operations (is_write=false): uses shared lock, allows concurrent readers
-    sycl::event execute_with_mutex(
-        std::shared_timed_mutex& mtx, const std::function<void(sycl::handler&)>& task,
-        const std::vector<sycl::event>& depends = {}, bool is_write = false,
-        const std::chrono::steady_clock::duration& lock_timeout = std::chrono::milliseconds(50)) const {
-        auto lock_event = this->ptr->submit([&mtx, is_write, &lock_timeout](sycl::handler& h) {
-            h.host_task([&mtx, is_write, &lock_timeout]() {
-                constexpr auto backoff = std::chrono::microseconds(50);
-                const auto now = std::chrono::steady_clock::now();
-                const auto end_time = now + lock_timeout;
-                if (lock_timeout == std::chrono::steady_clock::duration::zero()) {
-                    if (is_write) {
-                        mtx.lock();
-                    } else {
-                        mtx.lock_shared();
-                    }
-                    return;
-                }
-                while (std::chrono::steady_clock::now() < end_time) {
-                    bool locked = false;
-                    if (is_write) {
-                        locked = mtx.try_lock_for(backoff);
-                    } else {
-                        locked = mtx.try_lock_shared_for(backoff);
-                    }
-                    if (locked) {
-                        return;
-                    }
-                }
-                throw std::runtime_error(
-                    "[DeviceQueue::execute_with_mutex] failed to acquire mutex lock in given timeout");
-            });
-        });
-
-        auto task_event = ptr->submit([&task, &depends, &lock_event](sycl::handler& h) {
-            auto all_depends = depends;
-            all_depends.push_back(lock_event);
-            h.depends_on(all_depends);
-            task(h);
-        });
-
-        auto unlock_event = this->ptr->submit([&task_event, &mtx, is_write](sycl::handler& h) {
-            h.depends_on(task_event);
-            h.host_task([&mtx, is_write]() {
-                if (is_write) {
-                    mtx.unlock();
-                } else {
-                    mtx.unlock_shared();
-                }
-            });
-        });
-        return unlock_event;
-    }
 };
 
 }  // namespace sycl_utils
