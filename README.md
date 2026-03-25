@@ -151,24 +151,6 @@ newgrp render
 For the latest information, please refer to:
 - https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md
 
-```bash
-# Install dependencies (Ubuntu/Debian)
-sudo apt install libboost-fiber-dev libboost-context-dev
-
-# Clone and build AdaptiveCpp
-git clone https://github.com/AdaptiveCpp/AdaptiveCpp.git
-cd AdaptiveCpp
-mkdir build && cd build
-
-# For CPU (OpenMP) + NVIDIA CUDA backend
-cmake .. -DACPP_TARGETS="omp;cuda:sm_XX"  # replace sm_XX with your GPU arch (e.g. sm_86)
-
-# For CPU (OpenMP) only
-cmake .. -DACPP_TARGETS="omp"
-
-make -j$(nproc)
-sudo make install
-```
 
 ## Build and run example
 
