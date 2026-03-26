@@ -200,7 +200,7 @@ mkdir build_cuda && cd build_cuda
 cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="omp;cuda:sm_XX"
 make
 
-# Explicit targets: AMD GPU
+# Explicit targets: AMD GPU (replace gfxXXX with your GPU arch, e.g. gfx906)
 mkdir build_hip && cd build_hip
 cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="omp;hip:gfxXXX"
 make
