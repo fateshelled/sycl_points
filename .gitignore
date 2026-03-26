@@ -33,6 +33,11 @@
 
 build/*
 cpp/build/*
+cpp/build_dpcpp/*
+cpp/build_acpp/*
+cpp/build_cuda/*
+cpp/build_hip/*
+cpp/build_omp/*
 .vscode/*
 .claude/*
 CLAUDE.md
