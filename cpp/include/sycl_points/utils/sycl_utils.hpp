@@ -367,6 +367,10 @@ inline bool is_supported_device(const sycl::device& dev) {
     const auto backend = dev.get_backend();
     supported &= (backend == sycl::backend::opencl) || (backend == sycl::backend::ext_oneapi_cuda);
 #endif
+#ifdef SYCL_IMPL_ADAPTIVECPP
+    const auto backend = dev.get_backend();
+    supported &= (backend == sycl::backend::ocl) || (backend == sycl::backend::cuda) || (backend == sycl::backend::omp);
+#endif
     supported &= enable_shared_allocations(dev);
     return supported;
 }
@@ -473,7 +477,8 @@ public:
     DeviceQueue(const sycl::device& device) : ptr(std::make_shared<sycl::queue>(device)) {
         if (!sycl_utils::device_selector::is_supported_device(device)) {
             const std::string device_name = device.get_info<sycl::info::device::name>();
-            const std::string error_msg = device_name + " [" + get_backend_name(device.get_backend()) + "]" + " is not supported.";
+            const std::string error_msg =
+                device_name + " [" + get_backend_name(device.get_backend()) + "]" + " is not supported.";
             throw std::runtime_error("[DeviceQueue::DeviceQueue] " + error_msg);
         }
         this->work_group_size = sycl_utils::get_work_group_size(device);
@@ -581,7 +586,6 @@ public:
     void clear_read_mostly(T* data_ptr, size_t N) const {
         sycl_utils::mem_advise::clear_read_mostly<T>(*this->ptr, data_ptr, N);
     }
-
 };
 
 }  // namespace sycl_utils
