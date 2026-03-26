@@ -1,6 +1,6 @@
 # AdaptiveCpp ビルド手順
 
-Intel 内蔵 GPU (Level Zero) および NVIDIA GPU (CUDA) の両方に対応した AdaptiveCpp のビルド手順です。
+Intel 内蔵 GPU (OpenCL & Level Zero) および NVIDIA GPU (CUDA) の両方に対応した AdaptiveCpp のビルド手順です。
 
 ## 動作確認環境
 
