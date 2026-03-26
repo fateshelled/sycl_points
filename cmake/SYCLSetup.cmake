@@ -70,6 +70,22 @@ elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
       message(STATUS "AdaptiveCpp: no NVIDIA GPU detected")
     endif()
 
+    # Detect Intel GPU via acpp-info (OpenCL or Level Zero backend)
+    # If found, add "generic" (SSCP/JIT) target so kernels can run on Intel GPU at runtime.
+    # Note: "ocl" is not a valid AOT compile target; generic SSCP handles OpenCL at runtime.
+    execute_process(
+      COMMAND bash -c "acpp-info 2>/dev/null | awk '/Loaded backend.*: (OpenCL|Level Zero)/{b=1} b && /Found device.*Intel/{found=1; exit} END{exit !found}'"
+      RESULT_VARIABLE _intel_gpu_result
+      OUTPUT_QUIET
+      ERROR_QUIET
+    )
+    if(_intel_gpu_result EQUAL 0)
+      string(APPEND _acpp_auto_targets ";generic")
+      message(STATUS "AdaptiveCpp: detected Intel GPU, adding generic (SSCP/JIT) target")
+    else()
+      message(STATUS "AdaptiveCpp: no Intel GPU detected")
+    endif()
+
     set(ACPP_TARGETS "${_acpp_auto_targets}" CACHE STRING "AdaptiveCpp compilation targets" FORCE)
     message(STATUS "AdaptiveCpp: auto-set ACPP_TARGETS=${ACPP_TARGETS}")
   endif()
