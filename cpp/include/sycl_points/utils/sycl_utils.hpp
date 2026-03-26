@@ -22,6 +22,9 @@ namespace VENDOR_ID {
 constexpr uint32_t INTEL = 0x8086;   // 32902
 constexpr uint32_t NVIDIA = 0x10de;  // 4318
 constexpr uint32_t AMD = 0x1002;     // 4098
+#ifdef SYCL_IMPL_ADAPTIVECPP
+constexpr uint32_t OMP = 0xffffffff; // 4294967295
+#endif
 };  // namespace VENDOR_ID
 
 /// @brief get device optimized work_group_size
@@ -407,6 +410,10 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
         vendor_id = VENDOR_ID::NVIDIA;
     } else if (device_vendor_upper == "AMD") {
         vendor_id = VENDOR_ID::AMD;
+#ifdef SYCL_IMPL_ADAPTIVECPP
+    } else if (device_vendor_upper == "OMP") {
+        vendor_id = VENDOR_ID::OMP;
+#endif
     } else {
         throw std::runtime_error("[device_selector::select_device] invalid device vendor: " + device_vendor);
     }
@@ -424,6 +431,15 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
                 if (device.get_backend() == sycl::backend::ext_oneapi_level_zero) {
                     // level_zero is not support
                     continue;
+                }
+#endif
+#ifdef SYCL_IMPL_ADAPTIVECPP
+                if (device.get_backend() == sycl::backend::level_zero) {
+                    // level_zero is not support
+                    continue;
+                }
+                if (vendor_id == VENDOR_ID::OMP) {
+                    return device;
                 }
 #endif
                 if (select_cpu && device.is_cpu()) {
