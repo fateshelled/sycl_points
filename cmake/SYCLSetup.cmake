@@ -95,6 +95,22 @@ macro(apply_sycl_settings TARGET_NAME)
       -fsycl-targets=${SYCL_TARGET_FLAGS}
     )
   elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
-    add_sycl_to_target(TARGET ${TARGET_NAME})
+    # Manually replicate add_sycl_to_target to avoid target_link_libraries keyword/plain mixing
+    # (ament uses plain form; AdaptiveCpp's add_sycl_to_target uses keyword PRIVATE form)
+    get_target_property(_existing_compile_rule "${TARGET_NAME}" RULE_LAUNCH_COMPILE)
+    if("${_existing_compile_rule}" STREQUAL "_existing_compile_rule-NOTFOUND")
+      set(_existing_compile_rule "")
+    endif()
+    get_target_property(_existing_link_rule "${TARGET_NAME}" RULE_LAUNCH_LINK)
+    if("${_existing_link_rule}" STREQUAL "_existing_link_rule-NOTFOUND")
+      set(_existing_link_rule "")
+    endif()
+    set_target_properties("${TARGET_NAME}" PROPERTIES
+      RULE_LAUNCH_COMPILE "${_existing_compile_rule} ${ACPP_COMPILER_LAUNCH_RULE}"
+      RULE_LAUNCH_LINK    "${_existing_link_rule} ${ACPP_COMPILER_LAUNCH_RULE}"
+    )
+    # Use set_property instead of target_link_libraries to avoid keyword/plain mixing
+    # (ament uses plain form; cpp targets use keyword form; this works with both)
+    set_property(TARGET ${TARGET_NAME} APPEND PROPERTY LINK_LIBRARIES AdaptiveCpp::acpp-rt)
   endif()
 endmacro()
