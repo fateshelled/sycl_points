@@ -98,9 +98,6 @@ private:
 
     void build_from_cloud(const PointCloudShared& cloud);
 
-    /// @brief Recursively compute AABBs from leaves to root (post-order DFS).
-    static void compute_aabb_recursive(std::vector<BVHNode>& nodes, int idx);
-
     // ---------------------------------------------- Morton-code helpers
 
     /// @brief Interleave the lower 21 bits of @p v into every third bit.
@@ -202,25 +199,6 @@ inline LBVH::Ptr LBVH::build(const sycl_utils::DeviceQueue& queue, const PointCl
 }
 
 // ----------------------------------------------------------------------------
-//  AABB propagation
-// ----------------------------------------------------------------------------
-
-inline void LBVH::compute_aabb_recursive(std::vector<BVHNode>& nodes, int idx) {
-    BVHNode& node = nodes[static_cast<size_t>(idx)];
-    if (node.right_idx < 0) return;  // leaf
-
-    compute_aabb_recursive(nodes, node.left_idx);
-    compute_aabb_recursive(nodes, node.right_idx);
-
-    const BVHNode& l = nodes[static_cast<size_t>(node.left_idx)];
-    const BVHNode& r = nodes[static_cast<size_t>(node.right_idx)];
-    for (int i = 0; i < 3; ++i) {
-        node.aabb_min[i] = std::min(l.aabb_min[i], r.aabb_min[i]);
-        node.aabb_max[i] = std::max(l.aabb_max[i], r.aabb_max[i]);
-    }
-}
-
-// ----------------------------------------------------------------------------
 //  Host-side tree construction
 // ----------------------------------------------------------------------------
 
@@ -235,7 +213,11 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
     const size_t n = cloud.points->size();
     total_point_count_ = n;
 
-    // ---- 1. Bounding box -----------------------------------------------
+    const int ni = static_cast<int>(n);
+    const size_t wg_size   = queue_.get_work_group_size();
+    const size_t global_n  = queue_.get_global_size(n);
+
+    // ---- 1. Bounding box (CPU sequential — trivial O(n) reduction) -----
     float bbox_min[3] = {std::numeric_limits<float>::infinity(),
                          std::numeric_limits<float>::infinity(),
                          std::numeric_limits<float>::infinity()};
@@ -243,8 +225,9 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
                          std::numeric_limits<float>::lowest(),
                          std::numeric_limits<float>::lowest()};
 
+    const auto* pts_data = cloud.points->data();
     for (size_t i = 0; i < n; ++i) {
-        const auto& pt = (*cloud.points)[i];
+        const auto& pt = pts_data[i];
         bbox_min[0] = std::min(bbox_min[0], pt.x());
         bbox_min[1] = std::min(bbox_min[1], pt.y());
         bbox_min[2] = std::min(bbox_min[2], pt.z());
@@ -265,100 +248,175 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
         extent[i] = bbox_max[i] - bbox_min[i];
     }
 
-    // ---- 2. Morton codes -----------------------------------------------
-    std::vector<uint64_t> codes(n);
-    std::vector<int32_t> sorted_indices(n);
-    std::iota(sorted_indices.begin(), sorted_indices.end(), 0);
-
-    for (size_t i = 0; i < n; ++i) {
-        const auto& pt = (*cloud.points)[i];
-        const float nx = std::clamp((pt.x() - bbox_min[0]) / extent[0], 0.0f, 1.0f);
-        const float ny = std::clamp((pt.y() - bbox_min[1]) / extent[1], 0.0f, 1.0f);
-        const float nz = std::clamp((pt.z() - bbox_min[2]) / extent[2], 0.0f, 1.0f);
-        codes[i] = morton3d(nx, ny, nz);
-    }
-
-    // ---- 3. Sort by Morton code ----------------------------------------
-    std::sort(sorted_indices.begin(), sorted_indices.end(),
-              [&](int32_t a, int32_t b) { return codes[a] < codes[b]; });
-
-    std::vector<uint64_t> sorted_codes(n);
-    for (size_t i = 0; i < n; ++i) sorted_codes[i] = codes[sorted_indices[i]];
-
-    // ---- 4. Allocate node array ----------------------------------------
-    // Layout: internal nodes [0, n-2], leaf nodes [n-1, 2n-2].
-    // For n == 1 there are no internal nodes; the single leaf is the root.
+    // ---- Shared USM temporaries (accessible from both CPU and device) --
+    // codes_buf:          Morton code per original point index
+    // sorted_indices_buf: will hold sorted original indices after CPU sort
+    // sorted_codes_buf:   Morton codes in sorted order (for Karras kernels)
+    // parent_buf:         parent index of each BVH node (-1 for root)
+    // aabb_flags_buf:     visit counter for parallel AABB propagation
+    shared_vector<uint64_t> codes_buf(n,          uint64_t{0}, *queue_.ptr);
+    shared_vector<int32_t>  si_buf   (n,          int32_t{0},  *queue_.ptr);
+    shared_vector<uint64_t> sc_buf   (n,          uint64_t{0}, *queue_.ptr);
     const size_t num_nodes = (n > 1) ? (2 * n - 1) : 1;
-    std::vector<BVHNode> host_nodes(num_nodes);
+    shared_vector<int32_t>  parent_buf(num_nodes, int32_t{-1}, *queue_.ptr);
 
-    // ---- 5. Initialise leaf nodes --------------------------------------
-    for (size_t i = 0; i < n; ++i) {
-        const int32_t node_idx = static_cast<int32_t>(n) - 1 + static_cast<int32_t>(i);
-        const int32_t pt_idx = sorted_indices[i];
-        const auto& pt = (*cloud.points)[static_cast<size_t>(pt_idx)];
+    // ---- 2. Morton codes + iota (SYCL device kernel) -------------------
+    // Both codes_buf and si_buf are computed in a single dispatch.
+    {
+        auto* c  = codes_buf.data();
+        auto* si = si_buf.data();
+        const float bx = bbox_min[0], by = bbox_min[1], bz = bbox_min[2];
+        const float ex = extent[0],   ey = extent[1],   ez = extent[2];
 
-        BVHNode& node = host_nodes[static_cast<size_t>(node_idx)];
-        node.aabb_min[0] = pt.x();
-        node.aabb_min[1] = pt.y();
-        node.aabb_min[2] = pt.z();
-        node.aabb_max[0] = pt.x();
-        node.aabb_max[1] = pt.y();
-        node.aabb_max[2] = pt.z();
-        node.left_idx  = pt_idx;  // original point index returned by kNN
-        node.right_idx = -1;      // leaf sentinel
+        queue_.ptr->submit([&](sycl::handler& h) {
+            h.parallel_for(sycl::nd_range<1>(global_n, wg_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= n) return;
+                const auto& pt = pts_data[i];
+                const float nx = sycl::clamp((pt.x() - bx) / ex, 0.0f, 1.0f);
+                const float ny = sycl::clamp((pt.y() - by) / ey, 0.0f, 1.0f);
+                const float nz = sycl::clamp((pt.z() - bz) / ez, 0.0f, 1.0f);
+                c[i]  = morton3d(nx, ny, nz);
+                si[i] = static_cast<int32_t>(i);
+            });
+        }).wait();  // CPU needs codes_buf and si_buf for std::sort below
     }
+
+    // ---- 3. Sort sorted_indices by Morton code (CPU std::sort) ---------
+    // Shared USM is directly accessible from the CPU, so no copy needed.
+    std::sort(si_buf.begin(), si_buf.end(),
+              [&](int32_t a, int32_t b) { return codes_buf[a] < codes_buf[b]; });
+
+    // ---- 3b. Gather sorted codes (SYCL device kernel) ------------------
+    {
+        const auto* si = si_buf.data();
+        const auto* c  = codes_buf.data();
+        auto*       sc = sc_buf.data();
+
+        queue_.ptr->submit([&](sycl::handler& h) {
+            h.parallel_for(sycl::nd_range<1>(global_n, wg_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= n) return;
+                sc[i] = c[si[i]];
+            });
+        }).wait();
+    }
+
+    // ---- 4. Allocate node array in shared USM --------------------------
+    // Nodes are built directly here — no separate host buffer + upload.
+    nodes_ = {num_nodes, BVHNode{}, *queue_.ptr};
 
     // Handle the degenerate single-point case.
     if (n == 1) {
         root_index_ = 0;
-        nodes_ = {1, BVHNode{}, *queue_.ptr};
-        nodes_[0] = host_nodes[0];
+        const auto& pt = pts_data[0];
+        nodes_[0].aabb_min[0] = pt.x(); nodes_[0].aabb_min[1] = pt.y(); nodes_[0].aabb_min[2] = pt.z();
+        nodes_[0].aabb_max[0] = pt.x(); nodes_[0].aabb_max[1] = pt.y(); nodes_[0].aabb_max[2] = pt.z();
+        nodes_[0].left_idx  = 0;
+        nodes_[0].right_idx = -1;
         return;
     }
 
-    // ---- 6. Build internal nodes (Karras 2012) -------------------------
-    const int ni = static_cast<int>(n);
-    const uint64_t* sc = sorted_codes.data();
-    std::vector<int32_t> parent(num_nodes, -1);
+    // ---- 5. Initialise leaf nodes (SYCL device kernel) -----------------
+    // Layout: internal nodes [0, n-2], leaf nodes [n-1, 2n-2].
+    {
+        auto* nodes = nodes_.data();
+        const auto* si = si_buf.data();
 
-    for (int i = 0; i < ni - 1; ++i) {
-        const auto [first, last] = determine_range(sc, ni, i);
-        const int gamma = find_split(sc, ni, first, last);
+        queue_.ptr->submit([&](sycl::handler& h) {
+            h.parallel_for(sycl::nd_range<1>(global_n, wg_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= n) return;
+                const int32_t node_idx = ni - 1 + static_cast<int32_t>(i);
+                const int32_t pt_idx   = si[i];
+                const auto& pt = pts_data[pt_idx];
 
-        // Map split result to node indices:
-        //   if γ == first  → left  is leaf node (n-1+γ)
-        //   if γ+1 == last → right is leaf node (n-1+γ+1)
-        const int left_child  = (gamma     == first) ? (ni - 1 + gamma)     : gamma;
-        const int right_child = (gamma + 1 == last)  ? (ni - 1 + gamma + 1) : (gamma + 1);
-
-        BVHNode& node = host_nodes[static_cast<size_t>(i)];
-        node.left_idx  = left_child;
-        node.right_idx = right_child;  // >= 0, so not a leaf
-
-        parent[static_cast<size_t>(left_child)]  = i;
-        parent[static_cast<size_t>(right_child)] = i;
+                BVHNode& nd = nodes[node_idx];
+                nd.aabb_min[0] = pt.x(); nd.aabb_min[1] = pt.y(); nd.aabb_min[2] = pt.z();
+                nd.aabb_max[0] = pt.x(); nd.aabb_max[1] = pt.y(); nd.aabb_max[2] = pt.z();
+                nd.left_idx  = pt_idx;
+                nd.right_idx = -1;  // leaf sentinel
+            });
+        }).wait();
     }
 
-    // ---- 7. Locate root (the internal node with no parent) -------------
-    root_index_ = -1;
-    for (int i = 0; i < ni - 1; ++i) {
-        if (parent[static_cast<size_t>(i)] == -1) {
-            root_index_ = i;
-            break;
-        }
-    }
-    if (root_index_ < 0) {
-        throw std::runtime_error("[LBVH::build_from_cloud] failed to find root node");
+    // ---- 6. Build internal nodes (SYCL device kernel, Karras 2012) -----
+    // Each internal node i is independent: determine_range and find_split
+    // only read sc_buf; parent writes are race-free (each child has exactly
+    // one parent).
+    {
+        auto* nodes = nodes_.data();
+        auto* par   = parent_buf.data();
+        const auto* sc = sc_buf.data();
+        const size_t global_ni = queue_.get_global_size(static_cast<size_t>(ni - 1));
+
+        queue_.ptr->submit([&](sycl::handler& h) {
+            h.parallel_for(sycl::nd_range<1>(global_ni, wg_size), [=](sycl::nd_item<1> item) {
+                const size_t idx = item.get_global_id(0);
+                if (idx >= static_cast<size_t>(ni - 1)) return;
+                const int i = static_cast<int>(idx);
+
+                const auto [first, last] = determine_range(sc, ni, i);
+                const int gamma = find_split(sc, ni, first, last);
+
+                const int left_child  = (gamma     == first) ? (ni - 1 + gamma)     : gamma;
+                const int right_child = (gamma + 1 == last)  ? (ni - 1 + gamma + 1) : (gamma + 1);
+
+                BVHNode& nd = nodes[i];
+                nd.left_idx  = left_child;
+                nd.right_idx = right_child;
+
+                par[left_child]  = i;  // each child has exactly one parent → no race
+                par[right_child] = i;
+            });
+        }).wait();
     }
 
-    // ---- 8. Propagate AABBs from leaves to root ------------------------
-    compute_aabb_recursive(host_nodes, root_index_);
+    // ---- 7. Root node --------------------------------------------------
+    // In the Karras 2012 binary radix tree, internal node 0 always covers
+    // the full leaf range [0, n-1] and is therefore always the root.
+    root_index_ = 0;
 
-    // ---- 9. Upload to device -------------------------------------------
-    nodes_ = {num_nodes, BVHNode{}, *queue_.ptr};
-    for (size_t i = 0; i < num_nodes; ++i) {
-        nodes_[i] = host_nodes[i];
+    // ---- 8. Propagate AABBs bottom-up (SYCL kernel, Karras atomic) -----
+    // One thread per leaf. Each thread walks up the tree; the first child
+    // to reach an internal node stops, the second computes the AABB and
+    // continues. sycl::atomic_ref with acq_rel ensures the first child's
+    // AABB write is visible before the second child reads it.
+    {
+        shared_vector<int32_t> aabb_flags(ni - 1, int32_t{0}, *queue_.ptr);
+
+        auto* nodes = nodes_.data();
+        const auto* par  = parent_buf.data();
+        auto* flags = aabb_flags.data();
+
+        queue_.ptr->submit([&](sycl::handler& h) {
+            h.parallel_for(sycl::nd_range<1>(global_n, wg_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= n) return;
+
+                int32_t cur = par[ni - 1 + static_cast<int32_t>(i)];
+                while (cur >= 0) {
+                    sycl::atomic_ref<int32_t,
+                                     sycl::memory_order::acq_rel,
+                                     sycl::memory_scope::device,
+                                     sycl::access::address_space::global_space>
+                        counter(flags[cur]);
+
+                    if (counter.fetch_add(1) == 0) break;  // first to arrive: stop
+
+                    // Second to arrive: merge children's AABBs.
+                    const BVHNode& l = nodes[nodes[cur].left_idx];
+                    const BVHNode& r = nodes[nodes[cur].right_idx];
+                    for (int j = 0; j < 3; ++j) {
+                        nodes[cur].aabb_min[j] = sycl::fmin(l.aabb_min[j], r.aabb_min[j]);
+                        nodes[cur].aabb_max[j] = sycl::fmax(l.aabb_max[j], r.aabb_max[j]);
+                    }
+                    cur = par[cur];
+                }
+            });
+        }).wait();
     }
+    // nodes_ is already in shared USM — no upload step needed.
 }
 
 // ----------------------------------------------------------------------------
@@ -370,7 +428,8 @@ inline sycl_utils::events LBVH::knn_search_async(const PointCloudShared& queries
                                                   const TransformMatrix& transT) const {
     // BVH depth is O(log n): log2(n_max) ~= 17 for n=69k.
     // Each of the two stacks (near/far) gets MAX_DEPTH/2 entries.
-    constexpr size_t MAX_DEPTH = 32;
+    // Use 128 → each stack holds 64 entries, safe for practical point clouds.
+    constexpr size_t MAX_DEPTH = 128;
 
     if (k == 0) {
         const size_t query_size = queries.points ? queries.points->size() : 0;
