@@ -1,9 +1,7 @@
 lidar_odometry_node:
   ros__parameters:
-    # gpu or cpu
-    sycl/device_type: gpu
-    # intel or nvidia or amd
-    sycl/device_vendor: intel
+    sycl/device_type: gpu      # gpu, cpu
+    sycl/device_vendor: intel  # intel, nvidia, amd, omp(for AdaptiveCpp CPU backend)
 
     points_topic: points
     imu_topic: imu/data
