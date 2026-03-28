@@ -162,7 +162,7 @@ source /opt/intel/oneapi/setvars.sh
 # build example
 cd cpp
 mkdir build && cd build
-cmake ..
+cmake .. -DSYCL_IMPL=IntelDPCPP
 make
 
 # show device list
@@ -176,7 +176,6 @@ sycl-ls
 
 # specify the device to be used with `ONEAPI_DEVICE_SELECTOR`
 # note: level_zero is not supported.
-#       Intel Arc GPU is worked but too slow.
 
 # run example with OpenCL device (iGPU)
 ONEAPI_DEVICE_SELECTOR=opencl:1 ./example_registration
@@ -190,19 +189,8 @@ ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 ```bash
 cd cpp
 
-# ACPP_TARGETS is auto-detected from nvidia-smi; falls back to "omp" if no GPU found
 mkdir build && cd build
 cmake .. -DSYCL_IMPL=AdaptiveCpp
-make
-
-# Explicit targets: CPU + NVIDIA GPU (replace sm_XX with your GPU arch, e.g. sm_86)
-mkdir build_cuda && cd build_cuda
-cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="omp;cuda:sm_XX"
-make
-
-# Explicit targets: AMD GPU (replace gfxXXX with your GPU arch, e.g. gfx906)
-mkdir build_hip && cd build_hip
-cmake .. -DSYCL_IMPL=AdaptiveCpp -DACPP_TARGETS="omp;hip:gfxXXX"
 make
 
 # run example (device is selected automatically based on compiled-in ACPP_TARGETS)
