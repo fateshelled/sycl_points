@@ -66,7 +66,7 @@ public:
 
     /// @brief Construct an empty LBVH bound to the given queue.
     explicit LBVH(const sycl_utils::DeviceQueue& queue)
-        : queue_(queue), root_index_(-1), total_point_count_(0), nodes_(*queue.ptr) {}
+        : queue_(queue), root_index_(-1), total_point_count_(0) {}
 
     /// @brief Build an LBVH from a point cloud and return a shared pointer.
     /// @param queue  SYCL device queue used for all GPU operations.
@@ -184,7 +184,14 @@ private:
     sycl_utils::DeviceQueue queue_;
     int32_t root_index_;
     size_t total_point_count_;
-    mutable shared_vector<BVHNode> nodes_;  ///< Flat BVH node array on shared USM memory.
+    mutable shared_vector_ptr<BVHNode> nodes_;  ///< Flat BVH node array on shared USM memory.
+
+    // Reusable build-time USM buffers — allocated once, grown as needed.
+    shared_vector_ptr<uint64_t> codes_buf_;    ///< Morton code per original point index.
+    shared_vector_ptr<int32_t>  si_buf_;       ///< Sorted indices (sorted by Morton code).
+    shared_vector_ptr<uint64_t> sc_buf_;       ///< Morton codes in sorted order.
+    shared_vector_ptr<int32_t>  parent_buf_;   ///< Parent index for each BVH node.
+    shared_vector_ptr<int32_t>  aabb_flags_;   ///< Atomic visit counter for AABB propagation.
 };
 
 // ============================================================================
@@ -206,7 +213,7 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
     if (!cloud.points || cloud.points->empty()) {
         root_index_ = -1;
         total_point_count_ = 0;
-        nodes_.clear();
+        if (nodes_) nodes_->clear();
         return;
     }
 
@@ -248,23 +255,27 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
         extent[i] = bbox_max[i] - bbox_min[i];
     }
 
-    // ---- Shared USM temporaries (accessible from both CPU and device) --
-    // codes_buf:          Morton code per original point index
-    // sorted_indices_buf: will hold sorted original indices after CPU sort
-    // sorted_codes_buf:   Morton codes in sorted order (for Karras kernels)
-    // parent_buf:         parent index of each BVH node (-1 for root)
-    // aabb_flags_buf:     visit counter for parallel AABB propagation
-    shared_vector<uint64_t> codes_buf(n,          uint64_t{0}, *queue_.ptr);
-    shared_vector<int32_t>  si_buf   (n,          int32_t{0},  *queue_.ptr);
-    shared_vector<uint64_t> sc_buf   (n,          uint64_t{0}, *queue_.ptr);
+    // ---- Reuse shared USM temporaries (grow if needed, no realloc otherwise) --
+    // codes_buf_:   Morton code per original point index
+    // si_buf_:      sorted original indices (sorted by Morton code on CPU)
+    // sc_buf_:      Morton codes in sorted order (for Karras kernels)
+    // parent_buf_:  parent index of each BVH node (-1 for root/unset)
+    // aabb_flags_:  visit counter for parallel AABB propagation (init later)
+    if (!codes_buf_)  codes_buf_  = std::make_shared<shared_vector<uint64_t>>(*queue_.ptr);
+    if (!si_buf_)     si_buf_     = std::make_shared<shared_vector<int32_t>> (*queue_.ptr);
+    if (!sc_buf_)     sc_buf_     = std::make_shared<shared_vector<uint64_t>>(*queue_.ptr);
+    codes_buf_->resize(n);   // values written entirely by kernel — no init needed
+    si_buf_->resize(n);      // values written entirely by kernel — no init needed
+    sc_buf_->resize(n);      // values written entirely by kernel — no init needed
     const size_t num_nodes = (n > 1) ? (2 * n - 1) : 1;
-    shared_vector<int32_t>  parent_buf(num_nodes, int32_t{-1}, *queue_.ptr);
+    if (!parent_buf_) parent_buf_ = std::make_shared<shared_vector<int32_t>>(*queue_.ptr);
+    parent_buf_->assign(num_nodes, int32_t{-1});  // must start at -1 for Karras kernel
 
     // ---- 2. Morton codes + iota (SYCL device kernel) -------------------
-    // Both codes_buf and si_buf are computed in a single dispatch.
+    // Both codes_buf_ and si_buf_ are computed in a single dispatch.
     {
-        auto* c  = codes_buf.data();
-        auto* si = si_buf.data();
+        auto* c  = codes_buf_->data();
+        auto* si = si_buf_->data();
         const float bx = bbox_min[0], by = bbox_min[1], bz = bbox_min[2];
         const float ex = extent[0],   ey = extent[1],   ez = extent[2];
 
@@ -279,19 +290,19 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
                 c[i]  = morton3d(nx, ny, nz);
                 si[i] = static_cast<int32_t>(i);
             });
-        }).wait();  // CPU needs codes_buf and si_buf for std::sort below
+        }).wait_and_throw();  // CPU needs codes_buf_ and si_buf_ for std::sort below
     }
 
     // ---- 3. Sort sorted_indices by Morton code (CPU std::sort) ---------
     // Shared USM is directly accessible from the CPU, so no copy needed.
-    std::sort(si_buf.begin(), si_buf.end(),
-              [&](int32_t a, int32_t b) { return codes_buf[a] < codes_buf[b]; });
+    std::sort(si_buf_->begin(), si_buf_->end(),
+              [&](int32_t a, int32_t b) { return (*codes_buf_)[a] < (*codes_buf_)[b]; });
 
     // ---- 3b. Gather sorted codes (SYCL device kernel) ------------------
     {
-        const auto* si = si_buf.data();
-        const auto* c  = codes_buf.data();
-        auto*       sc = sc_buf.data();
+        const auto* si = si_buf_->data();
+        const auto* c  = codes_buf_->data();
+        auto*       sc = sc_buf_->data();
 
         queue_.ptr->submit([&](sycl::handler& h) {
             h.parallel_for(sycl::nd_range<1>(global_n, wg_size), [=](sycl::nd_item<1> item) {
@@ -299,29 +310,30 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
                 if (i >= n) return;
                 sc[i] = c[si[i]];
             });
-        }).wait();
+        }).wait_and_throw();
     }
 
-    // ---- 4. Allocate node array in shared USM --------------------------
-    // Nodes are built directly here — no separate host buffer + upload.
-    nodes_ = {num_nodes, BVHNode{}, *queue_.ptr};
+    // ---- 4. Resize node array in shared USM ----------------------------
+    // All node fields are written by subsequent kernels — no value-init needed.
+    if (!nodes_) nodes_ = std::make_shared<shared_vector<BVHNode>>(*queue_.ptr);
+    nodes_->resize(num_nodes);  // all fields written by subsequent kernels
 
     // Handle the degenerate single-point case.
     if (n == 1) {
         root_index_ = 0;
         const auto& pt = pts_data[0];
-        nodes_[0].aabb_min[0] = pt.x(); nodes_[0].aabb_min[1] = pt.y(); nodes_[0].aabb_min[2] = pt.z();
-        nodes_[0].aabb_max[0] = pt.x(); nodes_[0].aabb_max[1] = pt.y(); nodes_[0].aabb_max[2] = pt.z();
-        nodes_[0].left_idx  = 0;
-        nodes_[0].right_idx = -1;
+        (*nodes_)[0].aabb_min[0] = pt.x(); (*nodes_)[0].aabb_min[1] = pt.y(); (*nodes_)[0].aabb_min[2] = pt.z();
+        (*nodes_)[0].aabb_max[0] = pt.x(); (*nodes_)[0].aabb_max[1] = pt.y(); (*nodes_)[0].aabb_max[2] = pt.z();
+        (*nodes_)[0].left_idx  = 0;
+        (*nodes_)[0].right_idx = -1;
         return;
     }
 
     // ---- 5. Initialise leaf nodes (SYCL device kernel) -----------------
     // Layout: internal nodes [0, n-2], leaf nodes [n-1, 2n-2].
     {
-        auto* nodes = nodes_.data();
-        const auto* si = si_buf.data();
+        auto* nodes = nodes_->data();
+        const auto* si = si_buf_->data();
 
         queue_.ptr->submit([&](sycl::handler& h) {
             h.parallel_for(sycl::nd_range<1>(global_n, wg_size), [=](sycl::nd_item<1> item) {
@@ -337,17 +349,17 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
                 nd.left_idx  = pt_idx;
                 nd.right_idx = -1;  // leaf sentinel
             });
-        }).wait();
+        }).wait_and_throw();
     }
 
     // ---- 6. Build internal nodes (SYCL device kernel, Karras 2012) -----
     // Each internal node i is independent: determine_range and find_split
-    // only read sc_buf; parent writes are race-free (each child has exactly
+    // only read sc_buf_; parent writes are race-free (each child has exactly
     // one parent).
     {
-        auto* nodes = nodes_.data();
-        auto* par   = parent_buf.data();
-        const auto* sc = sc_buf.data();
+        auto* nodes = nodes_->data();
+        auto* par   = parent_buf_->data();
+        const auto* sc = sc_buf_->data();
         const size_t global_ni = queue_.get_global_size(static_cast<size_t>(ni - 1));
 
         queue_.ptr->submit([&](sycl::handler& h) {
@@ -369,7 +381,7 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
                 par[left_child]  = i;  // each child has exactly one parent → no race
                 par[right_child] = i;
             });
-        }).wait();
+        }).wait_and_throw();
     }
 
     // ---- 7. Root node --------------------------------------------------
@@ -383,11 +395,12 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
     // continues. sycl::atomic_ref with acq_rel ensures the first child's
     // AABB write is visible before the second child reads it.
     {
-        shared_vector<int32_t> aabb_flags(ni - 1, int32_t{0}, *queue_.ptr);
+        if (!aabb_flags_) aabb_flags_ = std::make_shared<shared_vector<int32_t>>(*queue_.ptr);
+        aabb_flags_->assign(ni - 1, int32_t{0});  // must be 0 before kernel launch
 
-        auto* nodes = nodes_.data();
-        const auto* par  = parent_buf.data();
-        auto* flags = aabb_flags.data();
+        auto* nodes = nodes_->data();
+        const auto* par  = parent_buf_->data();
+        auto* flags = aabb_flags_->data();
 
         queue_.ptr->submit([&](sycl::handler& h) {
             h.parallel_for(sycl::nd_range<1>(global_n, wg_size), [=](sycl::nd_item<1> item) {
@@ -414,7 +427,7 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
                     cur = par[cur];
                 }
             });
-        }).wait();
+        }).wait_and_throw();
     }
     // nodes_ is already in shared USM — no upload step needed.
 }
@@ -466,7 +479,7 @@ inline sycl_utils::events LBVH::knn_search_async_impl(const PointCloudShared& qu
 
     const size_t query_size  = queries.points->size();
     const size_t target_size = total_point_count_;
-    const size_t node_count  = nodes_.size();
+    const size_t node_count  = nodes_ ? nodes_->size() : 0;
     const int32_t root_idx   = root_index_;
 
     if (!result.indices || !result.distances) result.allocate(queue_, query_size, k);
@@ -485,7 +498,7 @@ inline sycl_utils::events LBVH::knn_search_async_impl(const PointCloudShared& qu
         auto* indices_ptr   = result.indices->data();
         auto* distances_ptr = result.distances->data();
         const auto* q_pts   = queries.points->data();
-        const auto* nodes_ptr = nodes_.data();
+        const auto* nodes_ptr = nodes_->data();
         const auto trans_vec  = eigen_utils::to_sycl_vec(transT);
 
         handler.parallel_for(sycl::nd_range<1>(global_sz, wg_size), [=](sycl::nd_item<1> item) {
