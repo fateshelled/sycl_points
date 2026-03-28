@@ -9,7 +9,7 @@ namespace sycl_utils {
 namespace device_selector {
 namespace test {
 
-// 利用可能なデバイスを動的に調べるヘルパー
+// Helper to dynamically enumerate available devices
 struct AvailableDevices {
     bool has_intel_cpu = false;  // DPC++: opencl backend
     bool has_intel_gpu = false;
@@ -39,7 +39,7 @@ struct AvailableDevices {
 static const AvailableDevices g_devices;
 
 // ---------------------------------------------------------------
-// 異常系: 無効なベンダー文字列
+// Error cases: invalid vendor string
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, InvalidVendorThrows) {
     EXPECT_THROW(
@@ -56,15 +56,15 @@ TEST(SelectDeviceTest, EmptyVendorThrows) {
 TEST(SelectDeviceTest, InvalidVendorErrorMessage) {
     try {
         select_device("bogus", "cpu");
-        FAIL() << "例外が投げられるべきでした";
+        FAIL() << "Expected exception to be thrown";
     } catch (const std::runtime_error& e) {
         EXPECT_NE(std::string(e.what()).find("bogus"), std::string::npos)
-            << "エラーメッセージにベンダー名が含まれるべきです: " << e.what();
+            << "Error message should contain vendor name: " << e.what();
     }
 }
 
 // ---------------------------------------------------------------
-// 異常系: 無効なデバイスタイプ文字列
+// Error cases: invalid device type string
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, InvalidDeviceTypeThrows) {
     EXPECT_THROW(
@@ -81,20 +81,20 @@ TEST(SelectDeviceTest, EmptyDeviceTypeThrows) {
 TEST(SelectDeviceTest, InvalidDeviceTypeErrorMessage) {
     try {
         select_device("intel", "fpga");
-        FAIL() << "例外が投げられるべきでした";
+        FAIL() << "Expected exception to be thrown";
     } catch (const std::runtime_error& e) {
         EXPECT_NE(std::string(e.what()).find("fpga"), std::string::npos)
-            << "エラーメッセージにタイプ名が含まれるべきです: " << e.what();
+            << "Error message should contain device type: " << e.what();
     }
 }
 
 // ---------------------------------------------------------------
-// 大文字小文字の正規化
+// Case normalization
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, VendorCaseInsensitive) {
 #ifdef SYCL_IMPL_ADAPTIVECPP
     if (!g_devices.has_nvidia_gpu) {
-        GTEST_SKIP() << "NVIDIA GPU が利用できないためスキップ";
+        GTEST_SKIP() << "NVIDIA GPU not available";
     }
     EXPECT_NO_THROW({ select_device("nvidia", "gpu"); });
     EXPECT_NO_THROW({ select_device("Nvidia", "gpu"); });
@@ -102,7 +102,7 @@ TEST(SelectDeviceTest, VendorCaseInsensitive) {
     EXPECT_NO_THROW({ select_device("nViDiA", "gpu"); });
 #else  // DPC++
     if (!g_devices.has_intel_cpu) {
-        GTEST_SKIP() << "Intel CPU が利用できないためスキップ";
+        GTEST_SKIP() << "Intel CPU not available";
     }
     EXPECT_NO_THROW({ select_device("intel", "cpu"); });
     EXPECT_NO_THROW({ select_device("Intel", "cpu"); });
@@ -114,14 +114,14 @@ TEST(SelectDeviceTest, VendorCaseInsensitive) {
 TEST(SelectDeviceTest, DeviceTypeCaseInsensitive) {
 #ifdef SYCL_IMPL_ADAPTIVECPP
     if (!g_devices.has_nvidia_gpu) {
-        GTEST_SKIP() << "NVIDIA GPU が利用できないためスキップ";
+        GTEST_SKIP() << "NVIDIA GPU not available";
     }
     EXPECT_NO_THROW({ select_device("nvidia", "gpu"); });
     EXPECT_NO_THROW({ select_device("nvidia", "Gpu"); });
     EXPECT_NO_THROW({ select_device("nvidia", "GPU"); });
 #else  // DPC++
     if (!g_devices.has_intel_cpu) {
-        GTEST_SKIP() << "Intel CPU が利用できないためスキップ";
+        GTEST_SKIP() << "Intel CPU not available";
     }
     EXPECT_NO_THROW({ select_device("intel", "cpu"); });
     EXPECT_NO_THROW({ select_device("intel", "Cpu"); });
@@ -130,11 +130,11 @@ TEST(SelectDeviceTest, DeviceTypeCaseInsensitive) {
 }
 
 // ---------------------------------------------------------------
-// 正常系: Intel CPU
+// Normal cases: Intel CPU
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, IntelCpuFound) {
     if (!g_devices.has_intel_cpu) {
-        GTEST_SKIP() << "Intel CPU が利用できないためスキップ";
+        GTEST_SKIP() << "Intel CPU not available";
     }
     sycl::device dev;
     ASSERT_NO_THROW({ dev = select_device("intel", "cpu"); });
@@ -143,11 +143,11 @@ TEST(SelectDeviceTest, IntelCpuFound) {
 }
 
 // ---------------------------------------------------------------
-// 正常系: Intel GPU
+// Normal cases: Intel GPU
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, IntelGpuFound) {
     if (!g_devices.has_intel_gpu) {
-        GTEST_SKIP() << "Intel GPU が利用できないためスキップ";
+        GTEST_SKIP() << "Intel GPU not available";
     }
     sycl::device dev;
     ASSERT_NO_THROW({ dev = select_device("intel", "gpu"); });
@@ -156,11 +156,11 @@ TEST(SelectDeviceTest, IntelGpuFound) {
 }
 
 // ---------------------------------------------------------------
-// 正常系: NVIDIA GPU
+// Normal cases: NVIDIA GPU
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, NvidiaGpuFound) {
     if (!g_devices.has_nvidia_gpu) {
-        GTEST_SKIP() << "NVIDIA GPU が利用できないためスキップ";
+        GTEST_SKIP() << "NVIDIA GPU not available";
     }
     sycl::device dev;
     ASSERT_NO_THROW({ dev = select_device("nvidia", "gpu"); });
@@ -169,57 +169,56 @@ TEST(SelectDeviceTest, NvidiaGpuFound) {
 }
 
 // ---------------------------------------------------------------
-// 異常系: 存在しないデバイスの組み合わせ
+// Error cases: device not found
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, NvidiaGpuNotFoundThrows) {
     if (g_devices.has_nvidia_gpu) {
-        GTEST_SKIP() << "NVIDIA GPU が存在するためスキップ";
+        GTEST_SKIP() << "NVIDIA GPU is present";
     }
     EXPECT_THROW({ select_device("nvidia", "gpu"); }, std::runtime_error);
 }
 
 TEST(SelectDeviceTest, AmdGpuNotFoundThrows) {
     if (g_devices.has_amd_gpu) {
-        GTEST_SKIP() << "AMD GPU が存在するためスキップ";
+        GTEST_SKIP() << "AMD GPU is present";
     }
     EXPECT_THROW({ select_device("amd", "gpu"); }, std::runtime_error);
 }
 
 TEST(SelectDeviceTest, IntelGpuNotFoundThrows) {
     if (g_devices.has_intel_gpu) {
-        GTEST_SKIP() << "Intel GPU が存在するためスキップ";
+        GTEST_SKIP() << "Intel GPU is present";
     }
     EXPECT_THROW({ select_device("intel", "gpu"); }, std::runtime_error);
 }
 
 TEST(SelectDeviceTest, NotFoundErrorMessage) {
-    // Intel CPU は通常存在するが、GPU として指定してもエラーになる状況を想定。
-    // どちらかが存在しない組み合わせを選ぶ。
+    // Use a combination that is unlikely to exist
     if (g_devices.has_amd_gpu) {
-        GTEST_SKIP() << "AMD GPU が存在するためスキップ";
+        GTEST_SKIP() << "AMD GPU is present";
     }
     try {
         select_device("amd", "gpu");
-        FAIL() << "例外が投げられるべきでした";
+        FAIL() << "Expected exception to be thrown";
     } catch (const std::runtime_error& e) {
         const std::string msg(e.what());
-        EXPECT_NE(msg.find("amd"), std::string::npos) << "エラーメッセージにベンダー名が含まれるべきです: " << msg;
-        EXPECT_NE(msg.find("gpu"), std::string::npos) << "エラーメッセージにタイプ名が含まれるべきです: " << msg;
+        EXPECT_NE(msg.find("amd"), std::string::npos) << "Error message should contain vendor name: " << msg;
+        EXPECT_NE(msg.find("gpu"), std::string::npos) << "Error message should contain device type: " << msg;
     }
 }
 
 // ---------------------------------------------------------------
-// 正常系: 返されたデバイスが is_supported_device を満たす
+// Normal cases: returned device satisfies is_supported_device
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, ReturnedDeviceIsSupported) {
 #ifdef SYCL_IMPL_ADAPTIVECPP
     if (!g_devices.has_nvidia_gpu) {
-        GTEST_SKIP() << "NVIDIA GPU が利用できないためスキップ";
+        GTEST_SKIP() << "NVIDIA GPU not available";
     }
     const sycl::device dev = select_device("nvidia", "gpu");
 #else  // DPC++
     if (!g_devices.has_intel_cpu) {
-        GTEST_SKIP() << "Intel CPU が利用できないためスキップ";
+        GTEST_SKIP() << "Intel CPU not available";
     }
     const sycl::device dev = select_device("intel", "cpu");
 #endif
@@ -227,20 +226,31 @@ TEST(SelectDeviceTest, ReturnedDeviceIsSupported) {
 }
 
 // ---------------------------------------------------------------
-// AdaptiveCpp 専用: OMP ベンダー
+// AdaptiveCpp only: OMP vendor
 // ---------------------------------------------------------------
 #ifdef SYCL_IMPL_ADAPTIVECPP
+TEST(SelectDeviceTest, IntelCpuFallsBackToOmp) {
+    if (!g_devices.has_omp) {
+        GTEST_SKIP() << "OMP device not available";
+    }
+    // AdaptiveCpp: CPU vendor request falls back to OMP backend
+    sycl::device dev;
+    ASSERT_NO_THROW({ dev = select_device("intel", "cpu"); });
+    EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::OMP);
+    EXPECT_EQ(dev.get_backend(), sycl::backend::omp);
+    EXPECT_TRUE(is_supported_device(dev));
+}
+
 TEST(SelectDeviceTest, OmpVendorNotAllowedInInvalidType) {
-    // omp ベンダーはデバイスタイプのチェック前に返されるが、
-    // 無効なタイプ文字列は先にエラーになる
+    // Invalid device type is rejected before the OMP vendor check
     EXPECT_THROW({ select_device("omp", "fpga"); }, std::runtime_error);
 }
 
 TEST(SelectDeviceTest, OmpVendorFoundAsCpu) {
     if (!g_devices.has_omp) {
-        GTEST_SKIP() << "OMP デバイスが利用できないためスキップ";
+        GTEST_SKIP() << "OMP device not available";
     }
-    // omp バックエンドは is_cpu()/is_gpu() に依存せず即返却される
+    // OMP backend device is returned regardless of is_cpu()/is_gpu()
     sycl::device dev;
     ASSERT_NO_THROW({ dev = select_device("omp", "cpu"); });
     EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::OMP);
@@ -249,7 +259,7 @@ TEST(SelectDeviceTest, OmpVendorFoundAsCpu) {
 
 TEST(SelectDeviceTest, OmpVendorCaseInsensitive) {
     if (!g_devices.has_omp) {
-        GTEST_SKIP() << "OMP デバイスが利用できないためスキップ";
+        GTEST_SKIP() << "OMP device not available";
     }
     EXPECT_NO_THROW({ select_device("omp", "cpu"); });
     EXPECT_NO_THROW({ select_device("OMP", "cpu"); });
@@ -258,25 +268,25 @@ TEST(SelectDeviceTest, OmpVendorCaseInsensitive) {
 #endif  // SYCL_IMPL_ADAPTIVECPP
 
 // ---------------------------------------------------------------
-// Level Zero はDPC++・AdaptiveCpp両方でコンパイラがネイティブ対応するが、
-// このライブラリでは動作未検証のためサポート外。select_device は両バックエンドで
-// Level Zero デバイスをスキップし、代わりに opencl/ocl バックエンドを返す。
+// Level Zero is natively supported by both DPC++ and AdaptiveCpp compilers,
+// but is untested in this library and therefore excluded.
+// select_device skips Level Zero devices and returns opencl/ocl backend instead.
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, LevelZeroDevicesNotReturned) {
     if (!g_devices.has_intel_gpu) {
-        GTEST_SKIP() << "Intel GPU が利用できないためスキップ";
+        GTEST_SKIP() << "Intel GPU not available";
     }
     const sycl::device dev = select_device("intel", "gpu");
 #ifdef SYCL_IMPL_INTEL_DPCPP
     EXPECT_NE(dev.get_backend(), sycl::backend::ext_oneapi_level_zero)
-        << "level_zero バックエンドのデバイスが返されるべきではありません";
+        << "level_zero backend device should not be returned";
     EXPECT_EQ(dev.get_backend(), sycl::backend::opencl)
-        << "opencl バックエンドのデバイスが返されるべきです";
+        << "opencl backend device should be returned";
 #else  // AdaptiveCpp
     EXPECT_NE(dev.get_backend(), sycl::backend::level_zero)
-        << "level_zero バックエンドのデバイスが返されるべきではありません";
+        << "level_zero backend device should not be returned";
     EXPECT_EQ(dev.get_backend(), sycl::backend::ocl)
-        << "ocl バックエンドのデバイスが返されるべきです";
+        << "ocl backend device should be returned";
 #endif
 }
 
