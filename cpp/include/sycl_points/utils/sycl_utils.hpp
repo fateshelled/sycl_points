@@ -425,7 +425,8 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
 
     for (auto platform : sycl::platform::get_platforms()) {
         for (auto device : platform.get_devices()) {
-            if (vendor_id == device.get_info<sycl::info::device::vendor_id>()) {
+            const auto dev_vendor_id = device.get_info<sycl::info::device::vendor_id>();
+            if (vendor_id == dev_vendor_id) {
 #ifdef SYCL_IMPL_INTEL_DPCPP
                 if (device.get_backend() == sycl::backend::ext_oneapi_level_zero) {
                     // level_zero is not support
@@ -448,6 +449,12 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
                     return device;
                 }
             }
+#ifdef SYCL_IMPL_ADAPTIVECPP
+            // AdaptiveCpp: any CPU vendor is exposed via OMP backend
+            else if (select_cpu && dev_vendor_id == VENDOR_ID::OMP) {
+                return device;
+            }
+#endif
         }
     }
     throw std::runtime_error("[device_selector::select_device] not found device: " + device_vendor + "/" + device_type);
