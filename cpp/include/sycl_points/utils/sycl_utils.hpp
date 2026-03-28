@@ -5,8 +5,14 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
-#include <shared_mutex>
+#include <sstream>
 #include <sycl/sycl.hpp>
+
+#ifdef SYCL_IMPL_ADAPTIVECPP
+#ifndef SYCL_EXTERNAL
+#define SYCL_EXTERNAL
+#endif
+#endif
 
 namespace sycl_points {
 
@@ -16,6 +22,9 @@ namespace VENDOR_ID {
 constexpr uint32_t INTEL = 0x8086;   // 32902
 constexpr uint32_t NVIDIA = 0x10de;  // 4318
 constexpr uint32_t AMD = 0x1002;     // 4098
+#ifdef SYCL_IMPL_ADAPTIVECPP
+constexpr uint32_t OMP = 0xffffffff; // 4294967295
+#endif
 };  // namespace VENDOR_ID
 
 /// @brief get device optimized work_group_size
@@ -88,6 +97,25 @@ inline void free(void* data_ptr, const sycl::queue& queue) {
     }
 }
 
+/// @brief Get backend name as string
+/// @param backend sycl::backend value
+/// @return backend name string
+inline std::string get_backend_name(sycl::backend backend) {
+#ifdef SYCL_IMPL_ADAPTIVECPP
+    // hipsycl::rt::backend_id: cuda=0, hip=1, level_zero=2, ocl=3, omp=4
+    static constexpr const char* BackendNames[] = {"CUDA", "HIP", "Level Zero", "OpenCL", "OpenMP"};
+    const auto idx = static_cast<int>(backend);
+    if (idx >= 0 && idx < static_cast<int>(sizeof(BackendNames) / sizeof(BackendNames[0]))) {
+        return BackendNames[idx];
+    }
+    return "Unknown";
+#else
+    std::ostringstream oss;
+    oss << backend;
+    return oss.str();
+#endif
+}
+
 /// @brief Print device info
 /// @param device SYCL device
 inline void print_device_info(const sycl::device& device) {
@@ -99,8 +127,10 @@ inline void print_device_info(const sycl::device& device) {
         std::cout << "\ttype: " << (device.is_cpu() ? "CPU" : "GPU") << std::endl;
         std::cout << "\tVendor: " << device.get_info<sycl::info::device::vendor>() << std::endl;
         std::cout << "\tVendorID: " << device.get_info<sycl::info::device::vendor_id>() << std::endl;
-        std::cout << "\tBackend name: " << device.get_backend() << std::endl;
+        std::cout << "\tBackend name: " << get_backend_name(device.get_backend()) << std::endl;
+#ifndef SYCL_IMPL_ADAPTIVECPP
         std::cout << "\tBackend version: " << device.get_info<sycl::info::device::backend_version>() << std::endl;
+#endif
         std::cout << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << std::endl;
         std::cout << "\tGlobal Memory Size: "
                   << device.get_info<sycl::info::device::global_mem_size>() / 1024.0 / 1024.0 / 1024.0 << " GB"
@@ -251,6 +281,8 @@ struct events {
 /// @brief shared memory location advise to underlying runtime
 namespace mem_advise {
 
+#ifdef SYCL_IMPL_INTEL_DPCPP
+
 /// @brief Hints that data will be accessed from the device. set flag UR_USM_ADVICE_FLAG_SET_ACCESSED_BY_DEVICE.
 /// @tparam T data type
 /// @param queue SYCL queue
@@ -311,14 +343,36 @@ void clear_read_mostly(sycl::queue& queue, T* data_ptr, size_t N) {
     queue.mem_advise(data_ptr, sizeof(T) * N, ur_usm_advice_flag_t::UR_USM_ADVICE_FLAG_CLEAR_READ_MOSTLY);
 }
 
+#else  // AdaptiveCpp: mem_advise hints are not available, use no-ops
+
+template <typename T>
+void set_accessed_by_device(sycl::queue&, T*, size_t) {}
+template <typename T>
+void clear_accessed_by_device(sycl::queue&, T*, size_t) {}
+template <typename T>
+void set_accessed_by_host(sycl::queue&, T*, size_t) {}
+template <typename T>
+void clear_accessed_by_host(sycl::queue&, T*, size_t) {}
+template <typename T>
+void set_read_mostly(sycl::queue&, T*, size_t) {}
+template <typename T>
+void clear_read_mostly(sycl::queue&, T*, size_t) {}
+
+#endif  // SYCL_IMPL_INTEL_DPCPP
+
 }  // namespace mem_advise
 
 namespace device_selector {
 
 inline bool is_supported_device(const sycl::device& dev) {
-    const auto backend = dev.get_backend();
     bool supported = true;
-    supported &= (backend == sycl::backend::opencl) || (backend == sycl::backend::ext_oneapi_cuda);
+    const auto backend = dev.get_backend();
+#ifdef SYCL_IMPL_INTEL_DPCPP
+    supported &= (backend != sycl::backend::ext_oneapi_level_zero);
+#endif
+#ifdef SYCL_IMPL_ADAPTIVECPP
+    supported &= (backend != sycl::backend::level_zero);
+#endif
     supported &= enable_shared_allocations(dev);
     return supported;
 }
@@ -355,6 +409,10 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
         vendor_id = VENDOR_ID::NVIDIA;
     } else if (device_vendor_upper == "AMD") {
         vendor_id = VENDOR_ID::AMD;
+#ifdef SYCL_IMPL_ADAPTIVECPP
+    } else if (device_vendor_upper == "OMP") {
+        vendor_id = VENDOR_ID::OMP;
+#endif
     } else {
         throw std::runtime_error("[device_selector::select_device] invalid device vendor: " + device_vendor);
     }
@@ -367,11 +425,23 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
 
     for (auto platform : sycl::platform::get_platforms()) {
         for (auto device : platform.get_devices()) {
-            if (vendor_id == device.get_info<sycl::info::device::vendor_id>()) {
+            const auto dev_vendor_id = device.get_info<sycl::info::device::vendor_id>();
+            if (vendor_id == dev_vendor_id) {
+#ifdef SYCL_IMPL_INTEL_DPCPP
                 if (device.get_backend() == sycl::backend::ext_oneapi_level_zero) {
                     // level_zero is not support
                     continue;
                 }
+#endif
+#ifdef SYCL_IMPL_ADAPTIVECPP
+                if (device.get_backend() == sycl::backend::level_zero) {
+                    // level_zero is not support
+                    continue;
+                }
+                if (vendor_id == VENDOR_ID::OMP) {
+                    return device;
+                }
+#endif
                 if (select_cpu && device.is_cpu()) {
                     return device;
                 }
@@ -379,12 +449,39 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
                     return device;
                 }
             }
+#ifdef SYCL_IMPL_ADAPTIVECPP
+            // AdaptiveCpp: any CPU vendor is exposed via OMP backend
+            else if (select_cpu && dev_vendor_id == VENDOR_ID::OMP) {
+                return device;
+            }
+#endif
         }
     }
     throw std::runtime_error("[device_selector::select_device] not found device: " + device_vendor + "/" + device_type);
 }
 
 }  // namespace device_selector
+
+/// @brief Submit a host-side callable with event dependencies.
+/// @details For Intel DPC++: uses handler::host_task for proper SYCL event integration.
+///          For AdaptiveCpp: waits for dependencies synchronously and executes on CPU.
+/// @param q SYCL queue to submit to
+/// @param deps Events to wait for before executing the callable
+/// @param f Callable to execute on the host
+/// @return SYCL event representing task completion
+template <typename Func>
+inline sycl::event submit_host_task(sycl::queue& q, const std::vector<sycl::event>& deps, Func&& f) {
+#ifdef SYCL_IMPL_ADAPTIVECPP
+    sycl::event::wait_and_throw(deps);
+    f();
+    return sycl::event{};
+#else
+    return q.submit([&](sycl::handler& h) {
+        h.depends_on(deps);
+        h.host_task(std::forward<Func>(f));
+    });
+#endif
+}
 
 /// @brief Represents a SYCL queue with device-specific optimizations and management capabilities
 class DeviceQueue {
@@ -402,8 +499,8 @@ public:
     DeviceQueue(const sycl::device& device) : ptr(std::make_shared<sycl::queue>(device)) {
         if (!sycl_utils::device_selector::is_supported_device(device)) {
             const std::string device_name = device.get_info<sycl::info::device::name>();
-            const std::string backend_name = sycl::detail::get_backend_name_no_vendor(device.get_backend()).data();
-            const std::string error_msg = device_name + " [" + backend_name + "]" + " is not supported.";
+            const std::string error_msg =
+                device_name + " [" + get_backend_name(device.get_backend()) + "]" + " is not supported.";
             throw std::runtime_error("[DeviceQueue::DeviceQueue] " + error_msg);
         }
         this->work_group_size = sycl_utils::get_work_group_size(device);
@@ -510,77 +607,6 @@ public:
     template <typename T>
     void clear_read_mostly(T* data_ptr, size_t N) const {
         sycl_utils::mem_advise::clear_read_mostly<T>(*this->ptr, data_ptr, N);
-    }
-
-    /// @brief Execute a task with shared mutex protection using SYCL event dependency chain
-    ///
-    /// This function provides thread-safe execution of SYCL tasks by wrapping them with
-    /// shared mutex operations. It supports both exclusive (write) and shared (read) locking
-    /// modes through the is_write parameter. The function ensures proper lock → task → unlock
-    /// ordering using SYCL event dependencies.
-    ///
-    /// @param mtx Shared mutex for synchronization control
-    /// @param task Function object that takes sycl::handler& and defines the SYCL task to execute
-    /// @param depends Vector of SYCL events that this operation should depend on (default: empty)
-    /// @param is_write Lock mode selector: true for exclusive lock (write), false for shared lock (read)
-    /// @param lock_timeout Lock timeout duration to prevent indefinite blocking (default: 50 milliseconds)
-    ///
-    /// @return SYCL event representing the completion of the entire operation (lock + task + unlock)
-    ///
-    /// @note The task execution order is guaranteed as: lock → task → unlock through event dependencies
-    /// @note For write operations (is_write=true): uses exclusive lock, blocks all other operations
-    /// @note For read operations (is_write=false): uses shared lock, allows concurrent readers
-    sycl::event execute_with_mutex(
-        std::shared_timed_mutex& mtx, const std::function<void(sycl::handler&)>& task,
-        const std::vector<sycl::event>& depends = {}, bool is_write = false,
-        const std::chrono::steady_clock::duration& lock_timeout = std::chrono::milliseconds(50)) const {
-        auto lock_event = this->ptr->submit([&mtx, is_write, &lock_timeout](sycl::handler& h) {
-            h.host_task([&mtx, is_write, &lock_timeout]() {
-                constexpr auto backoff = std::chrono::microseconds(50);
-                const auto now = std::chrono::steady_clock::now();
-                const auto end_time = now + lock_timeout;
-                if (lock_timeout == std::chrono::steady_clock::duration::zero()) {
-                    if (is_write) {
-                        mtx.lock();
-                    } else {
-                        mtx.lock_shared();
-                    }
-                    return;
-                }
-                while (std::chrono::steady_clock::now() < end_time) {
-                    bool locked = false;
-                    if (is_write) {
-                        locked = mtx.try_lock_for(backoff);
-                    } else {
-                        locked = mtx.try_lock_shared_for(backoff);
-                    }
-                    if (locked) {
-                        return;
-                    }
-                }
-                throw std::runtime_error(
-                    "[DeviceQueue::execute_with_mutex] failed to acquire mutex lock in given timeout");
-            });
-        });
-
-        auto task_event = ptr->submit([&task, &depends, &lock_event](sycl::handler& h) {
-            auto all_depends = depends;
-            all_depends.push_back(lock_event);
-            h.depends_on(all_depends);
-            task(h);
-        });
-
-        auto unlock_event = this->ptr->submit([&task_event, &mtx, is_write](sycl::handler& h) {
-            h.depends_on(task_event);
-            h.host_task([&mtx, is_write]() {
-                if (is_write) {
-                    mtx.unlock();
-                } else {
-                    mtx.unlock_shared();
-                }
-            });
-        });
-        return unlock_event;
     }
 };
 

@@ -401,21 +401,18 @@ public:
             });
         });
 
-        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(event);
-            h.host_task([&]() {
-                const uint32_t final_count = counter.at(0);
-                result.resize_points(final_count);
-                if (this->has_cov_data_) {
-                    result.resize_covs(final_count);
-                }
-                if (this->has_rgb_data_) {
-                    result.resize_rgb(final_count);
-                }
-                if (this->has_intensity_data_) {
-                    result.resize_intensities(final_count);
-                }
-            });
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+            const uint32_t final_count = counter.at(0);
+            result.resize_points(final_count);
+            if (this->has_cov_data_) {
+                result.resize_covs(final_count);
+            }
+            if (this->has_rgb_data_) {
+                result.resize_rgb(final_count);
+            }
+            if (this->has_intensity_data_) {
+                result.resize_intensities(final_count);
+            }
         });
         host_event.wait_and_throw();
     }
@@ -781,15 +778,12 @@ private:
             }
         });
 
-        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(event);
-            h.host_task([&]() {
-                if (failure_flag.at(0) != 0U) {
-                    std::cerr << "Could not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
-                    // throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
-                }
-                this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
-            });
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+            if (failure_flag.at(0) != 0U) {
+                std::cerr << "Could not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
+                // throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
+            }
+            this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
         });
         host_event.wait_and_throw();
     }
@@ -1248,9 +1242,8 @@ private:
             }
         });
 
-        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(event);
-            h.host_task([&]() { this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0)); });
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+            this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
         });
         host_event.wait_and_throw();
     }
@@ -1358,9 +1351,8 @@ private:
         });
 
         size_t expected_voxel_visits = 0;
-        auto expected_voxel_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(estimate_event);
-            h.host_task([&]() { expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0)); });
+        auto expected_voxel_event = sycl_utils::submit_host_task(*this->queue_.ptr, {estimate_event}, [&]() {
+            expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0));
         });
         expected_voxel_event.wait_and_throw();
 
@@ -1471,9 +1463,8 @@ private:
             });
         });
 
-        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(event);
-            h.host_task([&]() { this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0)); });
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+            this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
         });
         host_event.wait_and_throw();
     }
@@ -1545,9 +1536,8 @@ private:
                 counter += 1U;
             });
         });
-        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(event);
-            h.host_task([&]() { this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0)); });
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+            this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
         });
         host_event.wait_and_throw();
     }
@@ -1648,22 +1638,18 @@ private:
             });
         });
 
-        auto host_event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            h.depends_on(event);
-
-            h.host_task([&]() {
-                const uint32_t final_count = counter.at(0);
-                result.resize_points(final_count);
-                if (this->has_cov_data_) {
-                    result.resize_covs(final_count);
-                }
-                if (this->has_rgb_data_) {
-                    result.resize_rgb(final_count);
-                }
-                if (this->has_intensity_data_) {
-                    result.resize_intensities(final_count);
-                }
-            });
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+            const uint32_t final_count = counter.at(0);
+            result.resize_points(final_count);
+            if (this->has_cov_data_) {
+                result.resize_covs(final_count);
+            }
+            if (this->has_rgb_data_) {
+                result.resize_rgb(final_count);
+            }
+            if (this->has_intensity_data_) {
+                result.resize_intensities(final_count);
+            }
         });
         host_event.wait_and_throw();
     }

@@ -5,7 +5,11 @@ A C++ header-only point cloud processing library accelerated with SYCL for heter
 
 ## Overview
 
-sycl_points provides efficient implementations of common point cloud processing operations using Intel's SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on CPUs, Intel iGPU and NVIDIA GPUs supported by SYCL.
+sycl_points provides efficient implementations of common point cloud processing operations using the SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on CPUs, Intel iGPU and NVIDIA GPUs supported by SYCL.
+
+Two SYCL implementations are supported:
+- **Intel oneAPI DPC++** (default) — Intel CPUs, Intel iGPUs, NVIDIA GPUs via Codeplay plugin
+- **AdaptiveCpp** (formerly hipSYCL) — CPUs (OpenMP), NVIDIA GPUs (CUDA), AMD GPUs (HIP), and more
 
 This project was developed with reference to small_gicp and gtsam_points
 - https://github.com/koide3/small_gicp
@@ -65,11 +69,14 @@ note:
 - C++20 or later
 - Eigen
 - GTest
-- Intel oneAPI DPC++
-    - https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/
-- Intel oneAPI for NVIDIA® GPUs (optional)
+- One of the following SYCL implementations:
+  - **Intel oneAPI DPC++** (default)
+      - https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/
+  - **AdaptiveCpp** (formerly hipSYCL)
+      - https://github.com/AdaptiveCpp/AdaptiveCpp
+- Intel oneAPI for NVIDIA® GPUs (optional, Intel DPC++ only)
     - https://developer.codeplay.com/apt/index.html
-- Intel GPU Driver (optional)
+- Intel GPU Driver (optional, Intel DPC++ only)
     - https://dgpu-docs.intel.com/driver/client/overview.html
 
 ### Install dependencies
@@ -140,7 +147,14 @@ sudo gpasswd -a ${USER} render
 newgrp render
 ```
 
+#### AdaptiveCpp
+For the latest information, please refer to:
+- https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md
+
+
 ## Build and run example
+
+### Intel oneAPI DPC++ (default)
 
 ```bash
 source /opt/intel/oneapi/setvars.sh
@@ -148,7 +162,7 @@ source /opt/intel/oneapi/setvars.sh
 # build example
 cd cpp
 mkdir build && cd build
-cmake ..
+cmake .. -DSYCL_IMPL=IntelDPCPP
 make
 
 # show device list
@@ -162,7 +176,6 @@ sycl-ls
 
 # specify the device to be used with `ONEAPI_DEVICE_SELECTOR`
 # note: level_zero is not supported.
-#       Intel Arc GPU is worked but too slow.
 
 # run example with OpenCL device (iGPU)
 ONEAPI_DEVICE_SELECTOR=opencl:1 ./example_registration
@@ -171,159 +184,23 @@ ONEAPI_DEVICE_SELECTOR=opencl:1 ./example_registration
 ONEAPI_DEVICE_SELECTOR=cuda:0 ./example_registration
 ```
 
-#### device_query
-
-- Intel Core Ultra 7 265K
+### AdaptiveCpp
 
 ```bash
-Platform: Intel(R) OpenCL
-        Device: Intel(R) Core(TM) Ultra 7 265K
-        type: CPU
-        Vendor: Intel(R) Corporation
-        VendorID: 32902
-        Backend name: opencl
-        Backend version: 3.0
-        Driver version: 2025.20.6.0.04_224945
-        Global Memory Size: 30.7256 GB
-        Local Memory Size: 256 KB
-        Global Memory Cache Size: 3 MB
-        Global Memory Cache Line Size: 64 byte
-        Max Memory Allocation Size: 15.3628 GB
-        Max Work Group Size: 8192
-        Max Work Item Dimensions: 3
-        Max Work Item Sizes: [1, 1, 1]
-        Max Sub Groups num: 2048
-        Sub Group Sizes: [4, 8, 16, 32, 64]
-        Max compute units: 20
-        Max Clock Frequency: 0 GHz
-        Double precision support: true
-        Atomic 64bit support: true
-        USM host allocations: true
-        USM device allocations: true
-        USM shared allocations: true
-        USM atomic shared allocations: true
-        Available: true
+cd cpp
 
-Platform: Intel(R) OpenCL Graphics
-        Device: Intel(R) Graphics
-        type: GPU
-        Vendor: Intel(R) Corporation
-        VendorID: 32902
-        Backend name: opencl
-        Backend version: 3.0
-        Driver version: 25.27.34303
-        Global Memory Size: 28.4426 GB
-        Local Memory Size: 64 KB
-        Global Memory Cache Size: 4 MB
-        Global Memory Cache Line Size: 64 byte
-        Max Memory Allocation Size: 3.99999 GB
-        Max Work Group Size: 1024
-        Max Work Item Dimensions: 3
-        Max Work Item Sizes: [1, 1, 1]
-        Max Sub Groups num: 128
-        Sub Group Sizes: [8, 16, 32]
-        Max compute units: 64
-        Max Clock Frequency: 2 GHz
-        Double precision support: true
-        Atomic 64bit support: true
-        USM host allocations: true
-        USM device allocations: true
-        USM shared allocations: true
-        USM atomic shared allocations: false
-        Available: true
+mkdir build && cd build
+cmake .. -DSYCL_IMPL=AdaptiveCpp
+make
+
+# run example (device is selected automatically based on compiled-in ACPP_TARGETS)
+./example_registration
 ```
 
-- RTX 5060 Ti
-
-```bash
-Platform: NVIDIA CUDA BACKEND
-        Device: NVIDIA GeForce RTX 5060 Ti
-        type: GPU
-        Vendor: NVIDIA Corporation
-        VendorID: 4318
-        Backend name: ext_oneapi_cuda
-        Backend version: 12.0
-        Driver version: CUDA 12.8
-        Global Memory Size: 15.4649 GB
-        Local Memory Size: 99 KB
-        Global Memory Cache Size: 32 MB
-        Global Memory Cache Line Size: 128 byte
-        Max Memory Allocation Size: 15.4649 GB
-        Max Work Group Size: 1024
-        Max Work Item Dimensions: 3
-        Max Work Item Sizes: [1, 1, 1]
-        Max Sub Groups num: 32
-        Sub Group Sizes: [32]
-        Max compute units: 36
-        Max Clock Frequency: 2.692 GHz
-        Double precision support: true
-        Atomic 64bit support: true
-        USM host allocations: true
-        USM device allocations: true
-        USM shared allocations: true
-        USM atomic shared allocations: true
-        Available: true
-```
-
-- Intel Core i5 12600H
-
-```bash
-Platform: Intel(R) OpenCL
-        Device: 12th Gen Intel(R) Core(TM) i5-12600H
-        type: CPU
-        Vendor: Intel(R) Corporation
-        VendorID: 32902
-        Backend name: opencl
-        Backend version: 3.0
-        Driver version: 2025.20.6.0.04_224945
-        Global Memory Size: 31.0784 GB
-        Local Memory Size: 256 KB
-        Global Memory Cache Size: 1.25 MB
-        Global Memory Cache Line Size: 64 byte
-        Max Memory Allocation Size: 15.5392 GB
-        Max Work Group Size: 8192
-        Max Work Item Dimensions: 3
-        Max Work Item Sizes: [1, 1, 1]
-        Max Sub Groups num: 2048
-        Sub Group Sizes: [4, 8, 16, 32, 64]
-        Max compute units: 16
-        Max Clock Frequency: 0 GHz
-        Double precision support: true
-        Atomic 64bit support: true
-        USM host allocations: true
-        USM device allocations: true
-        USM shared allocations: true
-        USM atomic shared allocations: true
-        Available: true
-
-Platform: Intel(R) OpenCL Graphics
-        Device: Intel(R) Iris(R) Xe Graphics
-        type: GPU
-        Vendor: Intel(R) Corporation
-        VendorID: 32902
-        Backend name: opencl
-        Backend version: 3.0
-        Driver version: 25.27.34303
-        Global Memory Size: 28.7742 GB
-        Local Memory Size: 64 KB
-        Global Memory Cache Size: 0.46875 MB
-        Global Memory Cache Line Size: 64 byte
-        Max Memory Allocation Size: 3.99999 GB
-        Max Work Group Size: 512
-        Max Work Item Dimensions: 3
-        Max Work Item Sizes: [1, 1, 1]
-        Max Sub Groups num: 64
-        Sub Group Sizes: [8, 16, 32]
-        Max compute units: 80
-        Max Clock Frequency: 1.4 GHz
-        Double precision support: false
-        Atomic 64bit support: true
-        USM host allocations: true
-        USM device allocations: true
-        USM shared allocations: true
-        USM atomic shared allocations: false
-        Available: true
-```
+> **Note:** When switching between `IntelDPCPP` and `AdaptiveCpp`, or changing `ACPP_TARGETS`,
+> use a **fresh build directory** or delete `CMakeCache.txt`, since the compiler and target
+> selections are cached by CMake. Using separate directories (e.g. `build_omp`, `build_cuda`)
+> is recommended when testing multiple target configurations.
 
 ## References
 - https://github.com/koide3/small_gicp

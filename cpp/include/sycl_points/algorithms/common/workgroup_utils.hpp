@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <sycl/sycl.hpp>
 
+#include "sycl_points/utils/sycl_utils.hpp"
+
 namespace sycl_points {
 namespace algorithms {
 namespace common {
@@ -72,9 +74,9 @@ SYCL_EXTERNAL void bitonic_sort_local_data(LocalData* data, const size_t size, c
 template <typename LocalData, typename KeyType, typename KeyFunc, typename EqualFunc, typename CombineFunc,
           typename ResetFunc>
 SYCL_EXTERNAL void subgroup_reduction_sorted_local_data(LocalData* data, const size_t size,
-                                                         const sycl::nd_item<1>& item, const KeyType invalid_key,
-                                                         KeyFunc key_of, EqualFunc equal, CombineFunc combine,
-                                                         ResetFunc reset) {
+                                                        const sycl::nd_item<1>& item, const KeyType invalid_key,
+                                                        KeyFunc key_of, EqualFunc equal, CombineFunc combine,
+                                                        ResetFunc reset) {
     const size_t local_id = item.get_local_id(0);
     const bool is_active = (local_id < size);
 
@@ -259,10 +261,15 @@ SYCL_EXTERNAL void local_reduction(LocalData* local_data, const size_t point_num
         const size_t active_size = std::min(wg_size, remaining_points);
 
         bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item, invalid_key, key_of, compare);
-        subgroup_reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine,
-                                             reset);
+
+#ifndef __ACPP_ENABLE_LLVM_SSCP_TARGET__
+        // Subgroup shuffle-based optimization: skipped in SSCP mode
+        // (select_from_group not supported for types > 8 bytes in SSCP)
+        subgroup_reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine, reset);
         item.barrier(sycl::access::fence_space::local_space);
         bitonic_sort_local_data(local_data, active_size, wg_size_power_of_2, item, invalid_key, key_of, compare);
+#endif
+
         reduction_sorted_local_data(local_data, active_size, item, invalid_key, key_of, equal, combine, reset);
     }
 }

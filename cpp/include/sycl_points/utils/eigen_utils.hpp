@@ -893,10 +893,10 @@ SYCL_EXTERNAL inline Eigen::Vector4f so3_exp(const Eigen::Vector3f& omega) {
         imag_factor = 0.5f - 1.0f / 48.0f * theta_sq + 1.0f / 3840.0f * theta_quad;
         real_factor = 1.0f - 1.0f / 8.0f * theta_sq + 1.0f / 384.0f * theta_quad;
     } else {
-        const auto theta = std::sqrt(theta_sq);
+        const auto theta = sycl::sqrt(theta_sq);
         const auto half_theta = 0.5f * theta;
-        imag_factor = std::sin(half_theta) / theta;
-        real_factor = std::cos(half_theta);
+        imag_factor = sycl::sin(half_theta) / theta;
+        real_factor = sycl::cos(half_theta);
     }
     return Eigen::Vector4f(imag_factor * omega.x(), imag_factor * omega.y(), imag_factor * omega.z(), real_factor);
 }
@@ -910,7 +910,7 @@ SYCL_EXTERNAL inline Eigen::Matrix4f se3_exp(const Eigen::Vector<float, 6>& a) {
     const Eigen::Vector3f omega(a[0], a[1], a[2]);
 
     const auto theta_sq = eigen_utils::dot<3>(omega, omega);
-    const auto theta = std::sqrt(theta_sq);
+    const auto theta = sycl::sqrt(theta_sq);
     const Eigen::Matrix3f R = geometry::quaternion_to_rotation_matrix(so3_exp(omega));
 
     Eigen::Matrix4f se3 = Eigen::Matrix4f::Identity();
@@ -929,8 +929,8 @@ SYCL_EXTERNAL inline Eigen::Matrix4f se3_exp(const Eigen::Vector<float, 6>& a) {
         const Eigen::Matrix3f Omega = skew(omega);
         // V = I + (1.0 - cosθ / θ^1/2) * Omega + ((θ - sinθ) / (θ^1/2 * θ)) * Omega^2
         const Eigen::Matrix3f Omega_sq = multiply<3, 3, 3>(Omega, Omega);
-        const auto A = (1.0f - std::cos(theta)) / theta_sq;
-        const auto B = (theta - std::sin(theta)) / (theta_sq * theta);
+        const auto A = (1.0f - sycl::cos(theta)) / theta_sq;
+        const auto B = (theta - sycl::sin(theta)) / (theta_sq * theta);
         const Eigen::Matrix3f V =
             add<3, 3>(Eigen::Matrix3f::Identity(), add<3, 3>(multiply<3, 3>(Omega, A), multiply<3, 3>(Omega_sq, B)));
         const Eigen::Vector3f trans = multiply<3, 3>(V, Eigen::Vector3f(a[3], a[4], a[5]));

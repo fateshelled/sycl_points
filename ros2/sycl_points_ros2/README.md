@@ -14,8 +14,8 @@ Before building this package, ensure that you have installed `sycl_points` and i
 To build the ROS 2 wrapper, follow these steps. First, source the Intel oneAPI environment setup script. Then, build the workspace using `colcon`.
 
 ```bash
-# Source oneAPI environment
-source /opt/intel/oneapi/setvars.sh
+# If use DPC++, source oneAPI environment
+# source /opt/intel/oneapi/setvars.sh
 
 # ROS 2 setup script
 source /opt/ros/jazzy/setup.bash
@@ -29,7 +29,12 @@ git clone https://github.com/fateshelled/sycl_points.git
 
 # Build workspace
 cd ~/ros2_ws
-colcon build --symlink-install --packages-up-to sycl_points_ros2
+
+# Select SYCL implement
+# SYCL_IMPL=IntelDPCPP
+SYCL_IMPL=AdaptiveCpp
+
+colcon build --symlink-install --cmake-args -DSYCL_IMPL=${SYCL_IMPL} --packages-up-to sycl_points_ros2
 ```
 
 ## Launching the Node
@@ -38,8 +43,9 @@ Source your workspace setup file and launch the odometry node.
 
 ```bash
 # Setup environment
-source /opt/intel/oneapi/setvars.sh
 source ~/ros2_ws/install/setup.bash
+# if use IntelDPC++
+#source /opt/intel/oneapi/setvars.sh
 
 # Set own parameters
 POINTS_TOPIC=/your/pointcloud/topic
@@ -63,8 +69,10 @@ ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
 Instead of using `ros2 bag play`, you can sequentially read the bag in C++ and evaluate LiDAR odometry directly.
 
 ```bash
-source /opt/intel/oneapi/setvars.sh
+# Setup environment
 source ~/ros2_ws/install/setup.bash
+# if use IntelDPC++
+#source /opt/intel/oneapi/setvars.sh
 
 # Set own parameters
 BAG_URI=/path/to/your/rosbag

@@ -1,7 +1,20 @@
 cmake_minimum_required(VERSION 3.15)
 
-set(CMAKE_C_COMPILER "icx" CACHE PATH "C compiler" FORCE)
-set(CMAKE_CXX_COMPILER "icpx" CACHE PATH "C++ compiler" FORCE)
+# SYCL implementation selection (must be set before project())
+# Options: IntelDPCPP, AdaptiveCpp
+set(SYCL_IMPL "IntelDPCPP" CACHE STRING "SYCL implementation to use (IntelDPCPP or AdaptiveCpp)")
+set_property(CACHE SYCL_IMPL PROPERTY STRINGS "IntelDPCPP" "AdaptiveCpp")
+
+if(SYCL_IMPL STREQUAL "IntelDPCPP")
+  set(CMAKE_C_COMPILER "icx" CACHE PATH "C compiler")
+  set(CMAKE_CXX_COMPILER "icpx" CACHE PATH "C++ compiler")
+elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
+  if(NOT CMAKE_CXX_COMPILER)
+    set(CMAKE_CXX_COMPILER "acpp" CACHE PATH "C++ compiler")
+  endif()
+else()
+  message(FATAL_ERROR "Unknown SYCL_IMPL: ${SYCL_IMPL}. Choose IntelDPCPP or AdaptiveCpp")
+endif()
 
 project(sycl_points_example LANGUAGES CXX)
 
@@ -16,35 +29,11 @@ endif()
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TESTS   "Build tests"     ON)
 
-find_package(IntelSYCL REQUIRED)
 find_package(Eigen3 REQUIRED)
 
-set(SYCL_TARGET_FLAGS "spir64")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SYCLSetup.cmake")
 
-# Check for Intel oneAPI NVIDIA GPU support
-function(check_oneapi_nvidia_support RESULT_VAR)
-  execute_process(
-    COMMAND bash -c "sycl-ls | grep -q NVIDIA"
-    RESULT_VARIABLE EXIT_CODE
-    OUTPUT_QUIET
-    ERROR_QUIET
-  )
-  if(EXIT_CODE EQUAL 0)
-    set(${RESULT_VAR} TRUE PARENT_SCOPE)
-  else()
-    set(${RESULT_VAR} FALSE PARENT_SCOPE)
-  endif()
-endfunction()
-
-check_oneapi_nvidia_support(ENABLE_CUDA_BACKEND)
-if(${ENABLE_CUDA_BACKEND})
-  message(STATUS "Intel oneAPI for NVIDIA GPU support available")
-  set(SYCL_TARGET_FLAGS "${SYCL_TARGET_FLAGS},nvptx64-nvidia-cuda")
-else()
-  message(STATUS "Intel oneAPI for NVIDIA GPU support not available")
-endif()
-
-# Build example
+# Build examples
 if(BUILD_EXAMPLES)
   function(add_example_exec EXEC_NAME)
     add_executable(${EXEC_NAME}
@@ -54,18 +43,9 @@ if(BUILD_EXAMPLES)
       ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
     target_link_libraries(${EXEC_NAME} PRIVATE
-      sycl
       Eigen3::Eigen
     )
-    target_compile_options(${EXEC_NAME} PRIVATE
-      -fsycl
-      -fsycl-targets=${SYCL_TARGET_FLAGS}
-    )
-
-    target_link_options(${EXEC_NAME} PRIVATE
-      -fsycl
-      -fsycl-targets=${SYCL_TARGET_FLAGS}
-    )
+    apply_sycl_settings(${EXEC_NAME})
   endfunction()
 
   add_example_exec(example_memcpy)
@@ -74,8 +54,8 @@ if(BUILD_EXAMPLES)
   add_example_exec(device_query)
 endif()
 
-# Build test
-if (BUILD_TESTS)
+# Build tests
+if(BUILD_TESTS)
   find_package(GTest REQUIRED)
   include(CTest)
   enable_testing()
@@ -88,19 +68,10 @@ if (BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
     target_link_libraries(${EXEC_NAME} PRIVATE
-      sycl
       Eigen3::Eigen
       GTest::GTest GTest::Main
     )
-    target_compile_options(${EXEC_NAME} PRIVATE
-      -fsycl
-      -fsycl-targets=${SYCL_TARGET_FLAGS}
-    )
-
-    target_link_options(${EXEC_NAME} PRIVATE
-      -fsycl
-      -fsycl-targets=${SYCL_TARGET_FLAGS}
-    )
+    apply_sycl_settings(${EXEC_NAME})
     add_test(NAME ${EXEC_NAME} COMMAND ${EXEC_NAME})
   endfunction()
 
@@ -118,4 +89,5 @@ if (BUILD_TESTS)
   add_test_exec(test_imu_preintegration)
   add_test_exec(test_lidar_odometry_imu)
   add_test_exec(test_imu_deskew)
+  add_test_exec(test_select_device)
 endif()

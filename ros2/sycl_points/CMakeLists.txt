@@ -1,7 +1,20 @@
 cmake_minimum_required(VERSION 3.15)
 
-set(CMAKE_C_COMPILER "icx" CACHE PATH "C compiler" FORCE)
-set(CMAKE_CXX_COMPILER "icpx" CACHE PATH "C++ compiler" FORCE)
+# SYCL implementation selection (must be set before project())
+# Options: IntelDPCPP, AdaptiveCpp
+set(SYCL_IMPL "IntelDPCPP" CACHE STRING "SYCL implementation to use (IntelDPCPP or AdaptiveCpp)")
+set_property(CACHE SYCL_IMPL PROPERTY STRINGS "IntelDPCPP" "AdaptiveCpp")
+
+if(SYCL_IMPL STREQUAL "IntelDPCPP")
+  set(CMAKE_C_COMPILER "icx" CACHE PATH "C compiler")
+  set(CMAKE_CXX_COMPILER "icpx" CACHE PATH "C++ compiler")
+elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
+  if(NOT CMAKE_CXX_COMPILER)
+    set(CMAKE_CXX_COMPILER "acpp" CACHE PATH "C++ compiler")
+  endif()
+else()
+  message(FATAL_ERROR "Unknown SYCL_IMPL: ${SYCL_IMPL}. Choose IntelDPCPP or AdaptiveCpp")
+endif()
 
 project(sycl_points LANGUAGES CXX)
 
@@ -13,37 +26,21 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
-find_package(IntelSYCL REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(ament_cmake REQUIRED)
 
-set(SYCL_TARGET_FLAGS "spir64")
-
-# Check for Intel oneAPI NVIDIA GPU support
-function(check_oneapi_nvidia_support RESULT_VAR)
-  execute_process(
-    COMMAND bash -c "sycl-ls | grep -q NVIDIA"
-    RESULT_VARIABLE EXIT_CODE
-    OUTPUT_QUIET
-    ERROR_QUIET
-  )
-  if(EXIT_CODE EQUAL 0)
-    set(${RESULT_VAR} TRUE PARENT_SCOPE)
-  else()
-    set(${RESULT_VAR} FALSE PARENT_SCOPE)
-  endif()
-endfunction()
-
-check_oneapi_nvidia_support(ENABLE_CUDA_BACKEND)
-if(${ENABLE_CUDA_BACKEND})
-  message(STATUS "Intel oneAPI for NVIDIA GPU support available")
-  set(SYCL_TARGET_FLAGS "${SYCL_TARGET_FLAGS},nvptx64-nvidia-cuda")
-else()
-  message(STATUS "Intel oneAPI for NVIDIA GPU support not available")
-endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/SYCLSetup.cmake")
 
 # Install ROS 2
 add_library(${PROJECT_NAME} INTERFACE)
+
+# Propagate SYCL_IMPL definition to consumers of this header-only library
+if(SYCL_IMPL STREQUAL "IntelDPCPP")
+  target_compile_definitions(${PROJECT_NAME} INTERFACE SYCL_IMPL_INTEL_DPCPP)
+elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
+  target_compile_definitions(${PROJECT_NAME} INTERFACE SYCL_IMPL_ADAPTIVECPP)
+endif()
+
 target_include_directories(${PROJECT_NAME} INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../cpp/include>
   $<INSTALL_INTERFACE:include>
