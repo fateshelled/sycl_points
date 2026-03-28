@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 
 #include "sycl_points/utils/sycl_utils.hpp"
@@ -9,22 +10,40 @@ namespace sycl_utils {
 namespace device_selector {
 namespace test {
 
-// Helper to dynamically enumerate available devices
+// Helper to dynamically enumerate available devices.
+// DPC++: cpu_vendor holds the first available CPU vendor string ("intel", "amd", etc.)
+// AdaptiveCpp: any CPU vendor maps to OMP backend, so cpu_vendor is not needed.
 struct AvailableDevices {
-    bool has_intel_cpu = false;  // DPC++: opencl backend
+#ifdef SYCL_IMPL_INTEL_DPCPP
+    std::string cpu_vendor;  // first available CPU vendor string, empty if none
+    bool has_cpu() const { return !cpu_vendor.empty(); }
+#endif
     bool has_intel_gpu = false;
     bool has_nvidia_gpu = false;
     bool has_amd_gpu = false;
 #ifdef SYCL_IMPL_ADAPTIVECPP
-    bool has_omp = false;  // AdaptiveCpp: OMP backend (CPU)
+    bool has_omp = false;  // OMP backend handles all CPU vendors
 #endif
 
     AvailableDevices() {
+#ifdef SYCL_IMPL_INTEL_DPCPP
+        // Map vendor_id to the string accepted by select_device()
+        static const std::pair<uint32_t, const char*> kCpuVendors[] = {
+            {VENDOR_ID::INTEL, "intel"},
+            {VENDOR_ID::AMD, "amd"},
+        };
+#endif
         for (auto platform : sycl::platform::get_platforms()) {
             for (auto device : platform.get_devices()) {
                 if (!is_supported_device(device)) continue;
                 const auto vid = device.get_info<sycl::info::device::vendor_id>();
-                if (vid == VENDOR_ID::INTEL && device.is_cpu()) has_intel_cpu = true;
+#ifdef SYCL_IMPL_INTEL_DPCPP
+                if (cpu_vendor.empty() && device.is_cpu()) {
+                    for (const auto& [vid_val, name] : kCpuVendors) {
+                        if (vid == vid_val) { cpu_vendor = name; break; }
+                    }
+                }
+#endif
                 if (vid == VENDOR_ID::INTEL && device.is_gpu()) has_intel_gpu = true;
                 if (vid == VENDOR_ID::NVIDIA && device.is_gpu()) has_nvidia_gpu = true;
                 if (vid == VENDOR_ID::AMD && device.is_gpu()) has_amd_gpu = true;
@@ -101,13 +120,18 @@ TEST(SelectDeviceTest, VendorCaseInsensitive) {
     EXPECT_NO_THROW({ select_device("NVIDIA", "gpu"); });
     EXPECT_NO_THROW({ select_device("nViDiA", "gpu"); });
 #else  // DPC++
-    if (!g_devices.has_intel_cpu) {
-        GTEST_SKIP() << "Intel CPU not available";
+    if (!g_devices.has_cpu()) {
+        GTEST_SKIP() << "No CPU device available";
     }
-    EXPECT_NO_THROW({ select_device("intel", "cpu"); });
-    EXPECT_NO_THROW({ select_device("Intel", "cpu"); });
-    EXPECT_NO_THROW({ select_device("INTEL", "cpu"); });
-    EXPECT_NO_THROW({ select_device("iNtEl", "cpu"); });
+    const std::string& v = g_devices.cpu_vendor;
+    std::string upper = v;
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    std::string capitalized = v;
+    capitalized[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(capitalized[0])));
+
+    EXPECT_NO_THROW({ select_device(v, "cpu"); });
+    EXPECT_NO_THROW({ select_device(upper, "cpu"); });
+    EXPECT_NO_THROW({ select_device(capitalized, "cpu"); });
 #endif
 }
 
@@ -120,27 +144,32 @@ TEST(SelectDeviceTest, DeviceTypeCaseInsensitive) {
     EXPECT_NO_THROW({ select_device("nvidia", "Gpu"); });
     EXPECT_NO_THROW({ select_device("nvidia", "GPU"); });
 #else  // DPC++
-    if (!g_devices.has_intel_cpu) {
-        GTEST_SKIP() << "Intel CPU not available";
+    if (!g_devices.has_cpu()) {
+        GTEST_SKIP() << "No CPU device available";
     }
-    EXPECT_NO_THROW({ select_device("intel", "cpu"); });
-    EXPECT_NO_THROW({ select_device("intel", "Cpu"); });
-    EXPECT_NO_THROW({ select_device("intel", "CPU"); });
+    const std::string& v = g_devices.cpu_vendor;
+    EXPECT_NO_THROW({ select_device(v, "cpu"); });
+    EXPECT_NO_THROW({ select_device(v, "Cpu"); });
+    EXPECT_NO_THROW({ select_device(v, "CPU"); });
 #endif
 }
 
 // ---------------------------------------------------------------
-// Normal cases: Intel CPU
+// Normal cases: CPU (DPC++ only — vendor-agnostic)
+// AdaptiveCpp CPU is covered by AnyCpuVendorResolvesToOmp below.
 // ---------------------------------------------------------------
-TEST(SelectDeviceTest, IntelCpuFound) {
-    if (!g_devices.has_intel_cpu) {
-        GTEST_SKIP() << "Intel CPU not available";
+#ifdef SYCL_IMPL_INTEL_DPCPP
+TEST(SelectDeviceTest, CpuFound) {
+    if (!g_devices.has_cpu()) {
+        GTEST_SKIP() << "No CPU device available";
     }
     sycl::device dev;
-    ASSERT_NO_THROW({ dev = select_device("intel", "cpu"); });
+    ASSERT_NO_THROW({ dev = select_device(g_devices.cpu_vendor, "cpu"); });
     EXPECT_TRUE(dev.is_cpu());
-    EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::INTEL);
+    EXPECT_EQ(dev.get_backend(), sycl::backend::opencl)
+        << "DPC++: CPU should use opencl backend";
 }
+#endif
 
 // ---------------------------------------------------------------
 // Normal cases: Intel GPU
@@ -166,6 +195,33 @@ TEST(SelectDeviceTest, NvidiaGpuFound) {
     ASSERT_NO_THROW({ dev = select_device("nvidia", "gpu"); });
     EXPECT_TRUE(dev.is_gpu());
     EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::NVIDIA);
+#ifdef SYCL_IMPL_INTEL_DPCPP
+    EXPECT_EQ(dev.get_backend(), sycl::backend::ext_oneapi_cuda)
+        << "DPC++: NVIDIA GPU should use cuda backend";
+#else  // AdaptiveCpp
+    EXPECT_EQ(dev.get_backend(), sycl::backend::cuda)
+        << "AdaptiveCpp: NVIDIA GPU should use cuda backend";
+#endif
+}
+
+// ---------------------------------------------------------------
+// Normal cases: AMD GPU
+// ---------------------------------------------------------------
+TEST(SelectDeviceTest, AmdGpuFound) {
+    if (!g_devices.has_amd_gpu) {
+        GTEST_SKIP() << "AMD GPU not available";
+    }
+    sycl::device dev;
+    ASSERT_NO_THROW({ dev = select_device("amd", "gpu"); });
+    EXPECT_TRUE(dev.is_gpu());
+    EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::AMD);
+#ifdef SYCL_IMPL_INTEL_DPCPP
+    EXPECT_EQ(dev.get_backend(), sycl::backend::ext_oneapi_hip)
+        << "DPC++: AMD GPU should use hip backend";
+#else  // AdaptiveCpp
+    EXPECT_EQ(dev.get_backend(), sycl::backend::hip)
+        << "AdaptiveCpp: AMD GPU should use hip backend";
+#endif
 }
 
 // ---------------------------------------------------------------
@@ -217,28 +273,33 @@ TEST(SelectDeviceTest, ReturnedDeviceIsSupported) {
     }
     const sycl::device dev = select_device("nvidia", "gpu");
 #else  // DPC++
-    if (!g_devices.has_intel_cpu) {
-        GTEST_SKIP() << "Intel CPU not available";
+    if (!g_devices.has_cpu()) {
+        GTEST_SKIP() << "No CPU device available";
     }
-    const sycl::device dev = select_device("intel", "cpu");
+    const sycl::device dev = select_device(g_devices.cpu_vendor, "cpu");
 #endif
     EXPECT_TRUE(is_supported_device(dev));
 }
 
 // ---------------------------------------------------------------
-// AdaptiveCpp only: OMP vendor
+// AdaptiveCpp only: OMP backend handles all CPU vendors.
+// In AdaptiveCpp, the OMP backend runs on any CPU regardless of vendor
+// (Intel, AMD, Qualcomm, ARM, etc.). All recognized vendor strings
+// resolve to the same OMP device.
 // ---------------------------------------------------------------
 #ifdef SYCL_IMPL_ADAPTIVECPP
-TEST(SelectDeviceTest, IntelCpuFallsBackToOmp) {
+TEST(SelectDeviceTest, AnyCpuVendorResolvesToOmp) {
     if (!g_devices.has_omp) {
         GTEST_SKIP() << "OMP device not available";
     }
-    // AdaptiveCpp: CPU vendor request falls back to OMP backend
-    sycl::device dev;
-    ASSERT_NO_THROW({ dev = select_device("intel", "cpu"); });
-    EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::OMP);
-    EXPECT_EQ(dev.get_backend(), sycl::backend::omp);
-    EXPECT_TRUE(is_supported_device(dev));
+    // All CPU vendor requests resolve to the OMP backend device
+    for (const char* vendor : {"intel", "amd"}) {
+        sycl::device dev;
+        ASSERT_NO_THROW({ dev = select_device(vendor, "cpu"); }) << "vendor: " << vendor;
+        EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::OMP) << "vendor: " << vendor;
+        EXPECT_EQ(dev.get_backend(), sycl::backend::omp) << "vendor: " << vendor;
+        EXPECT_TRUE(is_supported_device(dev)) << "vendor: " << vendor;
+    }
 }
 
 TEST(SelectDeviceTest, OmpVendorNotAllowedInInvalidType) {
