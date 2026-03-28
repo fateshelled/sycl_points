@@ -43,6 +43,22 @@ void compareKNNResults(const sycl_points::algorithms::knn::KNNResult& lhs,
     }
 }
 
+/// Distance-only comparison used when ties in distance make index order ambiguous.
+void compareKNNResultsDistances(const sycl_points::algorithms::knn::KNNResult& lhs,
+                                const sycl_points::algorithms::knn::KNNResult& rhs, size_t k,
+                                float epsilon = 1e-4f) {
+    ASSERT_EQ(lhs.query_size, rhs.query_size);
+    ASSERT_EQ(lhs.k, rhs.k);
+
+    for (size_t i = 0; i < lhs.query_size; ++i) {
+        for (size_t j = 0; j < k; ++j) {
+            const size_t offset = i * k + j;
+            ASSERT_NEAR((*lhs.distances)[offset], (*rhs.distances)[offset], epsilon)
+                << "Distance mismatch at query " << i << ", neighbor " << j;
+        }
+    }
+}
+
 std::filesystem::path locateDataFile(const std::string& relative_path) {
     const std::vector<std::filesystem::path> candidates = {std::filesystem::path(relative_path),
                                                            std::filesystem::path("..") / relative_path,
@@ -228,7 +244,9 @@ TEST(LBVHTest, CollinearPoints) {
         auto brute = sycl_points::algorithms::knn::knn_search_bruteforce(queue, cloud, cloud, k);
         auto result = lbvh->knn_search(cloud, k);
 
-        compareKNNResults(result, brute, k);
+        // Collinear points cause many distance ties; only verify distances since
+        // tie-breaking order is implementation-defined and differs between algorithms.
+        compareKNNResultsDistances(result, brute, k);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception: " << e.what();
     }
