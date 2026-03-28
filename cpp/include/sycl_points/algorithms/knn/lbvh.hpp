@@ -43,29 +43,24 @@ public:
 
     // ------------------------------------------------------------------ Node
 
-    /// @brief A single BVH node — 64 bytes, standard-layout.
+    /// @brief A single BVH node — 32 bytes, standard-layout.
     ///
     /// Internal node  : left_idx  = left child index in nodes[]
-    ///                  right_idx = right child index in nodes[]
-    ///                  is_leaf   = 0
+    ///                  right_idx = right child index in nodes[]  (>= 0)
     ///
     /// Leaf node      : left_idx  = original point index in the input cloud
-    ///                  right_idx = -1
-    ///                  is_leaf   = 1
-    ///                  aabb_min == aabb_max == point position
+    ///                  right_idx = -1  (leaf sentinel)
+    ///                  aabb_min[0..2] == aabb_max[0..2] == point position
     struct BVHNode {
-        Eigen::Vector3f aabb_min;  ///< 12 bytes
-        int32_t left_idx;          ///<  4 bytes
-        Eigen::Vector3f aabb_max;  ///< 12 bytes
-        int32_t right_idx;         ///<  4 bytes
-        uint32_t is_leaf;          ///<  4 bytes
-        uint32_t padding[7];       ///< 28 bytes  → total 64 bytes
-
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        float   aabb_min[3];  ///< 12 bytes
+        int32_t left_idx;     ///<  4 bytes
+        float   aabb_max[3];  ///< 12 bytes
+        int32_t right_idx;    ///<  4 bytes  (< 0 → leaf)
+        // Total: 32 bytes, no padding
     };
 
     static_assert(std::is_standard_layout_v<BVHNode>, "BVHNode must be standard-layout");
-    static_assert(sizeof(BVHNode) == 64, "BVHNode must be 64 bytes");
+    static_assert(sizeof(BVHNode) == 32, "BVHNode must be 32 bytes");
 
     // ----------------------------------------------------------- Construction
 
@@ -212,15 +207,17 @@ inline LBVH::Ptr LBVH::build(const sycl_utils::DeviceQueue& queue, const PointCl
 
 inline void LBVH::compute_aabb_recursive(std::vector<BVHNode>& nodes, int idx) {
     BVHNode& node = nodes[static_cast<size_t>(idx)];
-    if (node.is_leaf) return;
+    if (node.right_idx < 0) return;  // leaf
 
     compute_aabb_recursive(nodes, node.left_idx);
     compute_aabb_recursive(nodes, node.right_idx);
 
     const BVHNode& l = nodes[static_cast<size_t>(node.left_idx)];
     const BVHNode& r = nodes[static_cast<size_t>(node.right_idx)];
-    node.aabb_min = l.aabb_min.cwiseMin(r.aabb_min);
-    node.aabb_max = l.aabb_max.cwiseMax(r.aabb_max);
+    for (int i = 0; i < 3; ++i) {
+        node.aabb_min[i] = std::min(l.aabb_min[i], r.aabb_min[i]);
+        node.aabb_max[i] = std::max(l.aabb_max[i], r.aabb_max[i]);
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -239,21 +236,34 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
     total_point_count_ = n;
 
     // ---- 1. Bounding box -----------------------------------------------
-    Eigen::Vector3f bbox_min = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity());
-    Eigen::Vector3f bbox_max = Eigen::Vector3f::Constant(std::numeric_limits<float>::lowest());
+    float bbox_min[3] = {std::numeric_limits<float>::infinity(),
+                         std::numeric_limits<float>::infinity(),
+                         std::numeric_limits<float>::infinity()};
+    float bbox_max[3] = {std::numeric_limits<float>::lowest(),
+                         std::numeric_limits<float>::lowest(),
+                         std::numeric_limits<float>::lowest()};
 
     for (size_t i = 0; i < n; ++i) {
         const auto& pt = (*cloud.points)[i];
-        const Eigen::Vector3f xyz(pt.x(), pt.y(), pt.z());
-        bbox_min = bbox_min.cwiseMin(xyz);
-        bbox_max = bbox_max.cwiseMax(xyz);
+        bbox_min[0] = std::min(bbox_min[0], pt.x());
+        bbox_min[1] = std::min(bbox_min[1], pt.y());
+        bbox_min[2] = std::min(bbox_min[2], pt.z());
+        bbox_max[0] = std::max(bbox_max[0], pt.x());
+        bbox_max[1] = std::max(bbox_max[1], pt.y());
+        bbox_max[2] = std::max(bbox_max[2], pt.z());
     }
 
     // Expand slightly so boundary points are strictly inside [0,1].
-    const float eps = std::max(1e-6f, (bbox_max - bbox_min).maxCoeff() * 1e-6f);
-    bbox_min.array() -= eps;
-    bbox_max.array() += eps;
-    const Eigen::Vector3f extent = bbox_max - bbox_min;
+    const float ext_max = std::max({bbox_max[0] - bbox_min[0],
+                                    bbox_max[1] - bbox_min[1],
+                                    bbox_max[2] - bbox_min[2]});
+    const float eps = std::max(1e-6f, ext_max * 1e-6f);
+    float extent[3];
+    for (int i = 0; i < 3; ++i) {
+        bbox_min[i] -= eps;
+        bbox_max[i] += eps;
+        extent[i] = bbox_max[i] - bbox_min[i];
+    }
 
     // ---- 2. Morton codes -----------------------------------------------
     std::vector<uint64_t> codes(n);
@@ -262,9 +272,9 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
 
     for (size_t i = 0; i < n; ++i) {
         const auto& pt = (*cloud.points)[i];
-        const float nx = std::clamp((pt.x() - bbox_min.x()) / extent.x(), 0.0f, 1.0f);
-        const float ny = std::clamp((pt.y() - bbox_min.y()) / extent.y(), 0.0f, 1.0f);
-        const float nz = std::clamp((pt.z() - bbox_min.z()) / extent.z(), 0.0f, 1.0f);
+        const float nx = std::clamp((pt.x() - bbox_min[0]) / extent[0], 0.0f, 1.0f);
+        const float ny = std::clamp((pt.y() - bbox_min[1]) / extent[1], 0.0f, 1.0f);
+        const float nz = std::clamp((pt.z() - bbox_min[2]) / extent[2], 0.0f, 1.0f);
         codes[i] = morton3d(nx, ny, nz);
     }
 
@@ -288,11 +298,14 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
         const auto& pt = (*cloud.points)[static_cast<size_t>(pt_idx)];
 
         BVHNode& node = host_nodes[static_cast<size_t>(node_idx)];
-        node.aabb_min = Eigen::Vector3f(pt.x(), pt.y(), pt.z());
-        node.aabb_max = node.aabb_min;
-        node.left_idx = pt_idx;  // original point index returned by kNN
-        node.right_idx = -1;
-        node.is_leaf = 1u;
+        node.aabb_min[0] = pt.x();
+        node.aabb_min[1] = pt.y();
+        node.aabb_min[2] = pt.z();
+        node.aabb_max[0] = pt.x();
+        node.aabb_max[1] = pt.y();
+        node.aabb_max[2] = pt.z();
+        node.left_idx  = pt_idx;  // original point index returned by kNN
+        node.right_idx = -1;      // leaf sentinel
     }
 
     // Handle the degenerate single-point case.
@@ -320,8 +333,7 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
 
         BVHNode& node = host_nodes[static_cast<size_t>(i)];
         node.left_idx  = left_child;
-        node.right_idx = right_child;
-        node.is_leaf   = 0u;
+        node.right_idx = right_child;  // >= 0, so not a leaf
 
         parent[static_cast<size_t>(left_child)]  = i;
         parent[static_cast<size_t>(right_child)] = i;
@@ -356,8 +368,9 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
 inline sycl_utils::events LBVH::knn_search_async(const PointCloudShared& queries, size_t k, KNNResult& result,
                                                   const std::vector<sycl::event>& depends,
                                                   const TransformMatrix& transT) const {
-    // BVH depth is O(log n), so MAX_DEPTH=64 is generous.
-    constexpr size_t MAX_DEPTH = 64;
+    // BVH depth is O(log n): log2(n_max) ~= 17 for n=69k.
+    // Each of the two stacks (near/far) gets MAX_DEPTH/2 entries.
+    constexpr size_t MAX_DEPTH = 32;
 
     if (k == 0) {
         const size_t query_size = queries.points ? queries.points->size() : 0;
@@ -425,137 +438,84 @@ inline sycl_utils::events LBVH::knn_search_async_impl(const PointCloudShared& qu
             transform::kernel::transform_point(q_pts[qi], qp, trans_vec);
             const float qx = qp.x(), qy = qp.y(), qz = qp.z();
 
-            // ---- Max-heap for k best candidates ----------------------
-            // Largest dist_sq sits at index 0 (heap root).
+            // ---- k-best sorted array (ascending by dist_sq) ----------
             NodeEntry best[MAX_K];
             for (size_t i = 0; i < MAX_K; ++i) best[i] = {-1, std::numeric_limits<float>::max()};
             size_t found = 0;
 
-            auto heap_swap = [&](size_t a, size_t b) {
-                NodeEntry tmp = best[a]; best[a] = best[b]; best[b] = tmp;
-            };
-            auto sift_up = [&](size_t idx) {
-                while (idx > 0) {
-                    const size_t par = (idx - 1) / 2;
-                    if (best[par].dist_sq >= best[idx].dist_sq) break;
-                    heap_swap(par, idx);
-                    idx = par;
-                }
-            };
-            auto sift_down = [&](size_t idx, size_t sz) {
-                while (true) {
-                    const size_t left = idx * 2 + 1;
-                    if (left >= sz) break;
-                    const size_t right   = left + 1;
-                    const size_t largest = (right < sz && best[right].dist_sq > best[left].dist_sq) ? right : left;
-                    if (best[idx].dist_sq >= best[largest].dist_sq) break;
-                    heap_swap(idx, largest);
-                    idx = largest;
-                }
-            };
             auto worst_dist_sq = [&]() -> float {
-                return (found < k) ? std::numeric_limits<float>::infinity() : best[0].dist_sq;
+                return (found < k) ? std::numeric_limits<float>::infinity() : best[k - 1].dist_sq;
             };
-            // Push a point candidate into the k-best max-heap.
+            // Insert candidate into sorted array (ascending dist_sq, like KDTree).
             auto push_candidate = [&](float d2, int32_t pt_idx) {
-                if (found < k) {
-                    best[found++] = {pt_idx, d2};
-                    sift_up(found - 1);
-                } else if (d2 < best[0].dist_sq) {
-                    best[0] = {pt_idx, d2};
-                    sift_down(0, found);
+                if constexpr (MAX_K == 1) {
+                    if (d2 < best[0].dist_sq) { best[0] = {pt_idx, d2}; found = 1; }
+                    return;
                 }
+                if (found == k && d2 >= best[k - 1].dist_sq) return;
+                size_t pos = (found < k) ? found : k - 1;
+                while (pos > 0 && d2 < best[pos - 1].dist_sq) {
+                    best[pos] = best[pos - 1];
+                    --pos;
+                }
+                best[pos] = {pt_idx, d2};
+                if (found < k) ++found;
             };
 
-            // ---- Traversal stack (best-first) -------------------------
-            NodeEntry stack[MAX_DEPTH];
-            size_t stack_size = 0;
-
-            // Squared distance from point (px,py,pz) to AABB [ax..bx, ay..by, az..bz].
-            auto aabb_dist2 = [](float ax, float ay, float az, float bx, float by, float bz,
-                                 float px, float py, float pz) -> float {
-                const float dx = sycl::fmax(0.0f, sycl::fmax(ax - px, px - bx));
-                const float dy = sycl::fmax(0.0f, sycl::fmax(ay - py, py - by));
-                const float dz = sycl::fmax(0.0f, sycl::fmax(az - pz, pz - bz));
+            // ---- AABB squared distance --------------------------------
+            auto aabb_dist2 = [](const BVHNode* n, float px, float py, float pz) -> float {
+                const float dx = sycl::fmax(0.0f, sycl::fmax(n->aabb_min[0] - px, px - n->aabb_max[0]));
+                const float dy = sycl::fmax(0.0f, sycl::fmax(n->aabb_min[1] - py, py - n->aabb_max[1]));
+                const float dz = sycl::fmax(0.0f, sycl::fmax(n->aabb_min[2] - pz, pz - n->aabb_max[2]));
                 return sycl::fma(dx, dx, sycl::fma(dy, dy, dz * dz));
             };
 
-            // Push a node onto the traversal stack.
-            // When the stack is full, evict the farthest entry.
-            auto push_stack = [&](int32_t node_idx, float d2) {
-                if (stack_size < MAX_DEPTH) {
-                    stack[stack_size++] = {node_idx, d2};
-                } else {
-                    size_t worst_pos = 0;
-                    float  worst_d   = stack[0].dist_sq;
-                    for (size_t i = 1; i < stack_size; ++i) {
-                        if (stack[i].dist_sq > worst_d) { worst_d = stack[i].dist_sq; worst_pos = i; }
-                    }
-                    if (d2 < worst_d) stack[worst_pos] = {node_idx, d2};
-                }
-            };
+            // ---- Depth-first traversal: near/far dual stack ----------
+            // (mirrors KDTree approach: O(1) pop, no linear scan)
+            constexpr size_t MAX_DEPTH_HALF = MAX_DEPTH / 2;
+            NodeEntry nearStack[MAX_DEPTH_HALF];
+            NodeEntry farStack[MAX_DEPTH_HALF];
+            size_t nearPtr = 0, farPtr = 0;
 
             if (node_count == 0 || root_idx < 0) return;
 
-            // Seed the stack with the root node.
-            {
-                const auto& root = nodes_ptr[root_idx];
-                push_stack(root_idx, aabb_dist2(root.aabb_min.x(), root.aabb_min.y(), root.aabb_min.z(),
-                                                root.aabb_max.x(), root.aabb_max.y(), root.aabb_max.z(),
-                                                qx, qy, qz));
-            }
+            nearStack[nearPtr++] = {root_idx, 0.0f};
 
-            // ---- Main traversal loop ----------------------------------
-            while (stack_size > 0) {
-                // Pop the entry with the smallest AABB distance (best-first).
-                size_t best_pos = 0;
-                float  best_d   = stack[0].dist_sq;
-                for (size_t i = 1; i < stack_size; ++i) {
-                    if (stack[i].dist_sq < best_d) { best_d = stack[i].dist_sq; best_pos = i; }
-                }
-                const int32_t cur_idx = stack[best_pos].node_idx;
-                stack[best_pos] = stack[--stack_size];
+            while (nearPtr > 0 || farPtr > 0) {
+                // Pop near first (depth-first priority), then far.
+                const NodeEntry cur = (nearPtr > 0) ? nearStack[--nearPtr] : farStack[--farPtr];
 
-                // Prune: the closest possible point in this subtree is farther
-                // than our current k-th best.
-                if (best_d > worst_dist_sq()) continue;
+                // Prune: AABB distance exceeds current k-th best.
+                if (cur.dist_sq > worst_dist_sq()) continue;
 
-                const BVHNode& node = nodes_ptr[cur_idx];
+                const BVHNode& node = nodes_ptr[cur.node_idx];
 
-                if (node.is_leaf) {
-                    // Leaf: compute exact squared distance to the stored point.
-                    // For leaf nodes aabb_min == aabb_max == point position.
-                    const float dx = qx - node.aabb_min.x();
-                    const float dy = qy - node.aabb_min.y();
-                    const float dz = qz - node.aabb_min.z();
-                    const float d2 = sycl::fma(dx, dx, sycl::fma(dy, dy, dz * dz));
-                    push_candidate(d2, node.left_idx);  // left_idx = original point index
+                if (node.right_idx < 0) {
+                    // Leaf: aabb_min holds the point position.
+                    const float dx = qx - node.aabb_min[0];
+                    const float dy = qy - node.aabb_min[1];
+                    const float dz = qz - node.aabb_min[2];
+                    push_candidate(sycl::fma(dx, dx, sycl::fma(dy, dy, dz * dz)), node.left_idx);
                 } else {
-                    // Internal: push children whose AABB is within reach.
-                    const float wd = worst_dist_sq();
-                    const int32_t children[2] = {node.left_idx, node.right_idx};
-                    for (int ci = 0; ci < 2; ++ci) {
-                        const int32_t child_idx = children[ci];
-                        if (child_idx < 0) continue;
-                        const BVHNode& child = nodes_ptr[child_idx];
-                        const float cd = aabb_dist2(child.aabb_min.x(), child.aabb_min.y(), child.aabb_min.z(),
-                                                    child.aabb_max.x(), child.aabb_max.y(), child.aabb_max.z(),
-                                                    qx, qy, qz);
-                        if (cd <= wd) push_stack(child_idx, cd);
-                    }
+                    // Internal: compute child AABB distances and push near first.
+                    const float wd      = worst_dist_sq();
+                    const float d_left  = aabb_dist2(&nodes_ptr[node.left_idx],  qx, qy, qz);
+                    const float d_right = aabb_dist2(&nodes_ptr[node.right_idx], qx, qy, qz);
+
+                    const bool left_is_near   = (d_left <= d_right);
+                    const int32_t near_child  = left_is_near ? node.left_idx  : node.right_idx;
+                    const int32_t far_child   = left_is_near ? node.right_idx : node.left_idx;
+                    const float   near_d      = left_is_near ? d_left  : d_right;
+                    const float   far_d       = left_is_near ? d_right : d_left;
+
+                    if (far_d  <= wd && farPtr  < MAX_DEPTH_HALF) farStack[farPtr++]   = {far_child,  far_d};
+                    if (near_d <= wd && nearPtr < MAX_DEPTH_HALF) nearStack[nearPtr++] = {near_child, 0.0f};
                 }
             }
 
-            // ---- Sort results ascending (heap-sort) -------------------
-            size_t hs = found;
-            while (hs > 1) {
-                heap_swap(0, hs - 1);
-                sift_down(0, --hs);
-            }
-
-            // ---- Write output -----------------------------------------
+            // ---- Write output (already sorted ascending) --------------
             for (size_t i = 0; i < k; ++i) {
-                indices_ptr[qi * k + i]   = best[i].node_idx;  // node_idx holds point index here
+                indices_ptr[qi * k + i]   = best[i].node_idx;
                 distances_ptr[qi * k + i] = best[i].dist_sq;
             }
         });
