@@ -366,13 +366,12 @@ namespace device_selector {
 
 inline bool is_supported_device(const sycl::device& dev) {
     bool supported = true;
-#ifdef SYCL_IMPL_INTEL_DPCPP
     const auto backend = dev.get_backend();
-    supported &= (backend == sycl::backend::opencl) || (backend == sycl::backend::ext_oneapi_cuda);
+#ifdef SYCL_IMPL_INTEL_DPCPP
+    supported &= (backend != sycl::backend::ext_oneapi_level_zero);
 #endif
 #ifdef SYCL_IMPL_ADAPTIVECPP
-    const auto backend = dev.get_backend();
-    supported &= (backend == sycl::backend::ocl) || (backend == sycl::backend::cuda) || (backend == sycl::backend::omp);
+    supported &= (backend != sycl::backend::level_zero);
 #endif
     supported &= enable_shared_allocations(dev);
     return supported;
