@@ -25,15 +25,15 @@ namespace algorithms {
 
 namespace knn {
 
-/// @brief Linear BVH built from Morton-code-sorted points (Karras 2012).
+/// @brief Linear BVH built from Morton-code-sorted points (Apetrei 2014).
 ///
 /// Construction runs on the host:
 ///   1. Compute a 63-bit Morton code for each point (21 bits per axis).
 ///   2. Sort points by Morton code.
-///   3. Build the binary BVH tree structure using the Karras (2012) parallel
-///      algorithm (executed serially on the host here for simplicity).
-///   4. Propagate AABBs bottom-up with a recursive post-order traversal.
-///   5. Upload the flat node array to a shared USM buffer for GPU access.
+///   3. Build the binary BVH tree structure using the Apetrei (2014) O(n)
+///      monotone-stack algorithm (Cartesian tree on delta values).
+///   4. Propagate AABBs bottom-up via a SYCL parallel kernel using atomics.
+///   5. The node array lives in shared USM memory for GPU access.
 ///
 /// kNN search runs entirely on the GPU via a best-first stack traversal that
 /// is identical in spirit to the existing KDTree / Octree kernels.
@@ -122,7 +122,7 @@ private:
         return expand_bits_21(xi) | (expand_bits_21(yi) << 1) | (expand_bits_21(zi) << 2);
     }
 
-    // ------------------------------------------- Karras (2012) BVH builders
+    // ------------------------------------------- BVH construction helpers
 
     /// @brief Number of common prefix bits between sorted codes[i] and codes[j].
     /// @return -1 when j is out of range; uses index as tiebreaker for duplicates.
@@ -134,42 +134,6 @@ private:
             return 63 + static_cast<int>(__builtin_clz(idx_xor));
         }
         return static_cast<int>(__builtin_clzll(codes[i] ^ codes[j]));
-    }
-
-    /// @brief Determine the leaf range [first, last] covered by internal node i.
-    static inline std::pair<int, int> determine_range(const uint64_t* codes, int n, int i) noexcept {
-        const int d = (delta(codes, n, i, i + 1) - delta(codes, n, i, i - 1)) > 0 ? 1 : -1;
-        const int delta_min = delta(codes, n, i, i - d);
-
-        // Exponential search for the upper bound of the range length.
-        int l_max = 2;
-        while (delta(codes, n, i, i + l_max * d) > delta_min) l_max <<= 1;
-
-        // Binary search to find the exact range end.
-        int l = 0;
-        for (int t = l_max >> 1; t >= 1; t >>= 1) {
-            if (delta(codes, n, i, i + (l + t) * d) > delta_min) l += t;
-        }
-
-        const int j = i + l * d;
-        return {std::min(i, j), std::max(i, j)};
-    }
-
-    /// @brief Find the Morton-prefix split position within [first, last].
-    static inline int find_split(const uint64_t* codes, int n, int first, int last) noexcept {
-        const int delta_node = delta(codes, n, first, last);
-        int split = first;
-        int step = last - first;
-
-        do {
-            step = (step + 1) / 2;  // ceil division
-            const int new_split = split + step;
-            if (new_split < last && delta(codes, n, first, new_split) > delta_node) {
-                split = new_split;
-            }
-        } while (step > 1);
-
-        return split;
     }
 
     // ---------------------------------------------------- kNN implementation
@@ -258,8 +222,8 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
     // ---- Reuse shared USM temporaries (grow if needed, no realloc otherwise) --
     // codes_buf_:   Morton code per original point index
     // si_buf_:      sorted original indices (sorted by Morton code on CPU)
-    // sc_buf_:      Morton codes in sorted order (for Karras kernels)
-    // parent_buf_:  parent index of each BVH node (-1 for root/unset)
+    // sc_buf_:      Morton codes in sorted order (read by Apetrei sweep)
+    // parent_buf_:  parent index of each BVH node (-1 = root/unset sentinel)
     // aabb_flags_:  visit counter for parallel AABB propagation (init later)
     if (!codes_buf_)  codes_buf_  = std::make_shared<shared_vector<uint64_t>>(*queue_.ptr);
     if (!si_buf_)     si_buf_     = std::make_shared<shared_vector<int32_t>> (*queue_.ptr);
@@ -269,7 +233,7 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
     sc_buf_->resize(n);      // values written entirely by kernel — no init needed
     const size_t num_nodes = (n > 1) ? (2 * n - 1) : 1;
     if (!parent_buf_) parent_buf_ = std::make_shared<shared_vector<int32_t>>(*queue_.ptr);
-    parent_buf_->assign(num_nodes, int32_t{-1});  // must start at -1 for Karras kernel
+    parent_buf_->assign(num_nodes, int32_t{-1});  // -1 = root sentinel for AABB kernel
 
     // ---- 2. Morton codes + iota (SYCL device kernel) -------------------
     // Both codes_buf_ and si_buf_ are computed in a single dispatch.
@@ -352,44 +316,51 @@ inline void LBVH::build_from_cloud(const PointCloudShared& cloud) {
         }).wait_and_throw();
     }
 
-    // ---- 6. Build internal nodes (SYCL device kernel, Karras 2012) -----
-    // Each internal node i is independent: determine_range and find_split
-    // only read sc_buf_; parent writes are race-free (each child has exactly
-    // one parent).
+    // ---- 6. Build internal nodes (Apetrei 2014, O(n) monotone stack) -----
+    // The LBVH is a Cartesian tree on adjacent delta values.  A single
+    // left-to-right host sweep constructs the tree in O(n) and also
+    // populates parent_buf_ for the AABB kernel in step 7.
+    // Root index emerges naturally — no separate root scan needed.
     {
-        auto* nodes = nodes_->data();
-        auto* par   = parent_buf_->data();
-        const auto* sc = sc_buf_->data();
-        const size_t global_ni = queue_.get_global_size(static_cast<size_t>(ni - 1));
+        const uint64_t* sc = sc_buf_->data();
+        BVHNode*   nodes   = nodes_->data();
+        int32_t*   par     = parent_buf_->data();  // pre-initialised to -1
 
-        queue_.ptr->submit([&](sycl::handler& h) {
-            h.parallel_for(sycl::nd_range<1>(global_ni, wg_size), [=](sycl::nd_item<1> item) {
-                const size_t idx = item.get_global_id(0);
-                if (idx >= static_cast<size_t>(ni - 1)) return;
-                const int i = static_cast<int>(idx);
+        std::vector<int32_t> stk;
+        stk.reserve(static_cast<size_t>(ni));
 
-                const auto [first, last] = determine_range(sc, ni, i);
-                const int gamma = find_split(sc, ni, first, last);
+        for (int s = 0; s < ni - 1; ++s) {
+            BVHNode& nd    = nodes[s];
+            nd.left_idx    = ni - 1 + s;   // default left child = leaf(s)
+            nd.right_idx   = -1;            // will be set by a later node or drain
 
-                const int left_child  = (gamma     == first) ? (ni - 1 + gamma)     : gamma;
-                const int right_child = (gamma + 1 == last)  ? (ni - 1 + gamma + 1) : (gamma + 1);
+            while (!stk.empty() &&
+                   delta(sc, ni, stk.back(), stk.back() + 1) >
+                   delta(sc, ni, s, s + 1)) {
+                const int top = stk.back();
+                stk.pop_back();
+                // nd.left_idx becomes the right child of nodes[top]
+                nodes[top].right_idx = nd.left_idx;
+                par[nd.left_idx]     = top;
+                nd.left_idx          = top;
+            }
+            par[nd.left_idx] = s;
+            stk.push_back(s);
+        }
 
-                BVHNode& nd = nodes[i];
-                nd.left_idx  = left_child;
-                nd.right_idx = right_child;
-
-                par[left_child]  = i;  // each child has exactly one parent → no race
-                par[right_child] = i;
-            });
-        }).wait_and_throw();
+        // Drain: wire remaining nodes toward leaf(n-1).
+        int32_t current = ni - 1 + (ni - 1);  // index of leaf(n-1)
+        while (!stk.empty()) {
+            const int top = stk.back();
+            stk.pop_back();
+            nodes[top].right_idx = current;
+            par[current]         = top;
+            current              = top;
+        }
+        root_index_ = current;  // root emerges naturally; par[root] stays -1
     }
 
-    // ---- 7. Root node --------------------------------------------------
-    // In the Karras 2012 binary radix tree, internal node 0 always covers
-    // the full leaf range [0, n-1] and is therefore always the root.
-    root_index_ = 0;
-
-    // ---- 8. Propagate AABBs bottom-up (SYCL kernel, Karras atomic) -----
+    // ---- 7. Propagate AABBs bottom-up (SYCL kernel, atomic) -----------
     // One thread per leaf. Each thread walks up the tree; the first child
     // to reach an internal node stops, the second computes the AABB and
     // continues. sycl::atomic_ref with acq_rel ensures the first child's
