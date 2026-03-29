@@ -9,7 +9,7 @@
 #include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/algorithms/common/workgroup_utils.hpp"
-#include "sycl_points/algorithms/knn/result.hpp"
+#include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -21,7 +21,7 @@ namespace mapping {
 // Reuse the voxel hashing utilities defined for filtering algorithms.
 namespace kernel = sycl_points::algorithms::filter::kernel;
 
-class VoxelHashMap {
+class VoxelHashMap : public knn::NearestNeighborBase {
 public:
     using Ptr = std::shared_ptr<VoxelHashMap>;
 
@@ -260,13 +260,15 @@ public:
     /// @param result KNNResult with k=1: indices are hash-table slot indices (-1 if not found),
     ///               distances are squared Euclidean distances to the voxel centroid
     /// @param depends SYCL event dependencies
+    /// @param transT Transform matrix applied to query points before search
     /// @return SYCL events
     template <size_t NUM_NEIGHBOR_VOXELS = 27>
     sycl_utils::events nearest_neighbor_search_async(const PointCloudShared& queries, knn::KNNResult& result,
-                                                     const std::vector<sycl::event>& depends = {}) const {
+                                                     const std::vector<sycl::event>& depends = {},
+                                                     const TransformMatrix& transT = TransformMatrix::Identity()) const {
         static_assert(NUM_NEIGHBOR_VOXELS == 7 || NUM_NEIGHBOR_VOXELS == 19 || NUM_NEIGHBOR_VOXELS == 27,
                       "NUM_NEIGHBOR_VOXELS must be 7, 19, or 27");
-        return nearest_neighbor_search_impl<NUM_NEIGHBOR_VOXELS>(queries, result, depends);
+        return nearest_neighbor_search_impl<NUM_NEIGHBOR_VOXELS>(queries, result, depends, transT);
     }
 
     /// @brief Nearest neighbor search (synchronous wrapper).
@@ -275,11 +277,40 @@ public:
     /// @param result KNNResult with k=1: indices are hash-table slot indices (-1 if not found),
     ///               distances are squared Euclidean distances to the voxel centroid
     /// @param depends SYCL event dependencies
+    /// @param transT Transform matrix applied to query points before search
     template <size_t NUM_NEIGHBOR_VOXELS = 27>
     void nearest_neighbor_search(const PointCloudShared& queries, knn::KNNResult& result,
-                                 const std::vector<sycl::event>& depends = {}) const {
-        nearest_neighbor_search_async<NUM_NEIGHBOR_VOXELS>(queries, result, depends).wait_and_throw();
+                                 const std::vector<sycl::event>& depends = {},
+                                 const TransformMatrix& transT = TransformMatrix::Identity()) const {
+        nearest_neighbor_search_async<NUM_NEIGHBOR_VOXELS>(queries, result, depends, transT).wait_and_throw();
     }
+
+    /// @brief Set the number of neighboring voxels used by the non-template nearest_neighbor_search_async override.
+    /// @param n Must be 7 (faces), 19 (faces+edges), or 27 (all)
+    void set_num_neighbor_voxels(size_t n) {
+        if (n != 7 && n != 19 && n != 27) {
+            throw std::invalid_argument("num_neighbor_voxels must be 7, 19, or 27");
+        }
+        num_neighbor_voxels_ = n;
+    }
+
+    /// @brief Get the current num_neighbor_voxels setting.
+    size_t get_num_neighbor_voxels() const { return num_neighbor_voxels_; }
+
+    // NearestNeighborBase override: dispatches to the template variant selected by num_neighbor_voxels_.
+    sycl_utils::events nearest_neighbor_search_async(
+        const PointCloudShared& queries, knn::KNNResult& result,
+        const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
+        const TransformMatrix& transT = TransformMatrix::Identity()) const override {
+        switch (num_neighbor_voxels_) {
+            case 7:  return nearest_neighbor_search_async<7>(queries, result, depends, transT);
+            case 19: return nearest_neighbor_search_async<19>(queries, result, depends, transT);
+            default: return nearest_neighbor_search_async<27>(queries, result, depends, transT);
+        }
+    }
+
+    // Prevent name hiding of the base class non-template nearest_neighbor_search.
+    using knn::NearestNeighborBase::nearest_neighbor_search;
 
 private:
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
@@ -544,6 +575,7 @@ private:
 
     size_t wg_size_add_point_cloud_ = 128UL;
 
+    size_t num_neighbor_voxels_ = 27;  ///< Neighbor voxel count used by non-template override (7, 19, or 27)
     size_t voxel_num_ = 0;
     bool has_cov_data_ = false;
     bool has_rgb_data_ = false;
@@ -1188,7 +1220,8 @@ private:
     /// @brief SYCL kernel implementation of nearest neighbor search over neighboring voxels.
     template <size_t NUM_NEIGHBOR_VOXELS>
     sycl_utils::events nearest_neighbor_search_impl(const PointCloudShared& queries, knn::KNNResult& result,
-                                                    const std::vector<sycl::event>& depends) const {
+                                                    const std::vector<sycl::event>& depends,
+                                                    const TransformMatrix& transT = TransformMatrix::Identity()) const {
         const size_t query_size = queries.size();
         result.allocate(this->queue_, query_size, 1);  // k = 1
 
@@ -1208,10 +1241,12 @@ private:
             const uint32_t min_pts = this->min_num_point_;
             auto out_indices   = result.indices->data();
             auto out_distances = result.distances->data();
+            const auto trans_vec = eigen_utils::to_sycl_vec(transT);
 
             h.parallel_for(sycl::range<1>(query_size), [=](sycl::id<1> id) {
                 const size_t qi = id[0];
-                const PointType q = query_ptr[qi];
+                PointType q;
+                transform::kernel::transform_point(query_ptr[qi], q, trans_vec);
 
                 // Compute query voxel coordinates (offset-adjusted).
                 const int64_t qx =
