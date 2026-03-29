@@ -1876,7 +1876,9 @@ private:
                 out_distances[qi] = best_dist;
             });
         });
-        return {event};
+        sycl_utils::events out;
+        out.push_back(event);
+        return out;
     }
 };
 
