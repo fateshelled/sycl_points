@@ -94,6 +94,8 @@ elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
   add_compile_definitions(SYCL_IMPL_ADAPTIVECPP)
   message(STATUS "SYCL_IMPL: AdaptiveCpp (ACPP_TARGETS=${ACPP_TARGETS})")
 
+else()
+  message(FATAL_ERROR "Unknown SYCL_IMPL: ${SYCL_IMPL}. Must be one of IntelDPCPP or AdaptiveCpp.")
 endif()
 
 # Apply SYCL settings to a target.
@@ -130,6 +132,8 @@ macro(apply_sycl_settings TARGET_NAME)
     # Use set_property instead of target_link_libraries to avoid keyword/plain mixing
     # (ament uses plain form; cpp targets use keyword form; this works with both)
     set_property(TARGET ${TARGET_NAME} APPEND PROPERTY LINK_LIBRARIES AdaptiveCpp::acpp-rt)
+  else()
+    message(FATAL_ERROR "Unknown SYCL_IMPL: ${SYCL_IMPL}. Must be one of IntelDPCPP or AdaptiveCpp.")
   endif()
 endmacro()
 
