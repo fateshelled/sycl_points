@@ -7,8 +7,23 @@
 #   - ACPP_TARGETS auto-detection (AdaptiveCpp only)
 #   - apply_sycl_settings(TARGET) macro
 
+if(CMAKE_PROJECT_NAME) # project() 実行後のみ動作するようにガード
+
 if(SYCL_IMPL STREQUAL "IntelDPCPP")
-  find_package(IntelSYCL REQUIRED)
+  find_package(IntelSYCL QUIET)
+  if(IntelSYCL_FOUND)
+    if(NOT TARGET sycl AND TARGET IntelSYCL::IntelSYCL)
+      # Map IntelSYCL::IntelSYCL to sycl target if necessary
+      add_library(sycl INTERFACE IMPORTED)
+      target_link_libraries(sycl INTERFACE IntelSYCL::IntelSYCL)
+    endif()
+  else()
+    message(STATUS "IntelSYCL package not found, using compiler driver flags (-fsycl)")
+  endif()
+
+  if(NOT TARGET sycl)
+    add_library(sycl INTERFACE IMPORTED)
+  endif()
   add_compile_definitions(SYCL_IMPL_INTEL_DPCPP)
 
   set(SYCL_TARGET_FLAGS "spir64")
@@ -86,7 +101,9 @@ endif()
 # For AdaptiveCpp: calls add_sycl_to_target().
 macro(apply_sycl_settings TARGET_NAME)
   if(SYCL_IMPL STREQUAL "IntelDPCPP")
-    target_link_libraries(${TARGET_NAME} PRIVATE sycl)
+    if(NOT TARGET sycl)
+      message(FATAL_ERROR "SYCL target not found. Ensure include(SYCLSetup.cmake) is called after project().")
+    endif()
     target_compile_options(${TARGET_NAME} PRIVATE
       -fsycl
       -fsycl-targets=${SYCL_TARGET_FLAGS}
@@ -115,3 +132,6 @@ macro(apply_sycl_settings TARGET_NAME)
     set_property(TARGET ${TARGET_NAME} APPEND PROPERTY LINK_LIBRARIES AdaptiveCpp::acpp-rt)
   endif()
 endmacro()
+
+
+endif() # CMAKE_PROJECT_NAME
