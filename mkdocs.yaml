@@ -24,3 +24,5 @@ extra_javascript:
 nav:
   - Home: index.md
   - 設計思想: design_philosophy.md
+  - AdaptiveCpp ビルド手順: install_adaptive_cpp.md
+  - oneAPI DPC++ Compiler (NVIDIA GPU 向け) ビルド手順: install_dpcpp_nvidia.md

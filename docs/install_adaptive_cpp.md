@@ -2,6 +2,9 @@
 
 Intel 内蔵 GPU (OpenCL & Level Zero) および NVIDIA GPU (CUDA) の両方に対応した AdaptiveCpp のビルド手順です。
 
+最新情報は公式ドキュメントを参照してください:
+- https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md
+
 ## 動作確認環境
 
 | 項目 | バージョン / 値 |
