@@ -13,6 +13,7 @@
 #include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/algorithms/common/workgroup_utils.hpp"
+#include "sycl_points/algorithms/knn/result.hpp"
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -476,6 +477,33 @@ public:
         event.wait_and_throw();
 
         return static_cast<float>(overlap_counter.at(0)) / static_cast<float>(N);
+    }
+
+    /// @brief Async nearest neighbor search using voxel neighborhood lookup.
+    /// @tparam NUM_NEIGHBOR_VOXELS Number of neighboring voxels to search: 7 (faces), 19 (faces+edges), or 27 (all)
+    /// @param queries Query point cloud
+    /// @param result KNNResult with k=1: indices are hash-table slot indices (-1 if not found),
+    ///               distances are squared Euclidean distances to the voxel centroid
+    /// @param depends SYCL event dependencies
+    /// @return SYCL events
+    template <size_t NUM_NEIGHBOR_VOXELS = 27>
+    sycl_utils::events nearest_neighbor_search_async(const PointCloudShared& queries, knn::KNNResult& result,
+                                                     const std::vector<sycl::event>& depends = {}) const {
+        static_assert(NUM_NEIGHBOR_VOXELS == 7 || NUM_NEIGHBOR_VOXELS == 19 || NUM_NEIGHBOR_VOXELS == 27,
+                      "NUM_NEIGHBOR_VOXELS must be 7, 19, or 27");
+        return nearest_neighbor_search_impl<NUM_NEIGHBOR_VOXELS>(queries, result, depends);
+    }
+
+    /// @brief Nearest neighbor search (synchronous wrapper).
+    /// @tparam NUM_NEIGHBOR_VOXELS Number of neighboring voxels to search: 7 (faces), 19 (faces+edges), or 27 (all)
+    /// @param queries Query point cloud
+    /// @param result KNNResult with k=1: indices are hash-table slot indices (-1 if not found),
+    ///               distances are squared Euclidean distances to the voxel centroid
+    /// @param depends SYCL event dependencies
+    template <size_t NUM_NEIGHBOR_VOXELS = 27>
+    void nearest_neighbor_search(const PointCloudShared& queries, knn::KNNResult& result,
+                                 const std::vector<sycl::event>& depends = {}) const {
+        nearest_neighbor_search_async<NUM_NEIGHBOR_VOXELS>(queries, result, depends).wait_and_throw();
     }
 
 private:
@@ -1701,6 +1729,120 @@ private:
     shared_vector_ptr<VoxelCovarianceData> covariance_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelColorData> color_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
+
+    /// @brief Encode offset-adjusted voxel coordinates into a 64-bit hash key.
+    SYCL_EXTERNAL static inline uint64_t encode_voxel_coords(const int64_t cx, const int64_t cy, const int64_t cz) {
+        return (static_cast<uint64_t>(cx & VoxelConstants::coord_bit_mask)
+                << (VoxelConstants::coord_bit_size * CartesianCoordComponent::X)) |
+               (static_cast<uint64_t>(cy & VoxelConstants::coord_bit_mask)
+                << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Y)) |
+               (static_cast<uint64_t>(cz & VoxelConstants::coord_bit_mask)
+                << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Z));
+    }
+
+    /// @brief SYCL kernel implementation of nearest neighbor search over neighboring voxels.
+    template <size_t NUM_NEIGHBOR_VOXELS>
+    sycl_utils::events nearest_neighbor_search_impl(const PointCloudShared& queries, knn::KNNResult& result,
+                                                    const std::vector<sycl::event>& depends) const {
+        const size_t query_size = queries.size();
+        result.allocate(this->queue_, query_size, 1);  // k = 1
+
+        if (query_size == 0 || this->voxel_num_ == 0) {
+            return {};
+        }
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(depends);
+
+            const auto query_ptr   = queries.points_ptr();
+            const auto key_ptr     = this->key_ptr_->data();
+            const auto core_ptr    = this->core_data_ptr_->data();
+            const float vs_inv     = this->inv_voxel_size_;
+            const size_t capacity  = this->capacity_;
+            const size_t max_probe = this->max_probe_length_;
+            const float occ_thresh = this->occupancy_threshold_log_odds_;
+            auto out_indices       = result.indices->data();
+            auto out_distances     = result.distances->data();
+
+            h.parallel_for(sycl::range<1>(query_size), [=](sycl::id<1> id) {
+                const size_t qi = id[0];
+                const PointType q = query_ptr[qi];
+
+                // Compute query voxel coordinates (offset-adjusted).
+                const int64_t qx =
+                    static_cast<int64_t>(sycl::floor(q.x() * vs_inv)) + VoxelConstants::coord_offset;
+                const int64_t qy =
+                    static_cast<int64_t>(sycl::floor(q.y() * vs_inv)) + VoxelConstants::coord_offset;
+                const int64_t qz =
+                    static_cast<int64_t>(sycl::floor(q.z() * vs_inv)) + VoxelConstants::coord_offset;
+
+                float best_dist = std::numeric_limits<float>::max();
+                int32_t best_slot = -1;
+
+                // Iterate all 27 combinations of dx/dy/dz in {-1, 0, 1}.
+                for (int dx = -1; dx <= 1; ++dx) {
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        for (int dz = -1; dz <= 1; ++dz) {
+                            // Filter based on the requested neighbor pattern.
+                            const int sum_abs =
+                                (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy) + (dz < 0 ? -dz : dz);
+                            if constexpr (NUM_NEIGHBOR_VOXELS == 7) {
+                                if (sum_abs > 1) continue;  // Keep only face neighbors (Manhattan dist <= 1)
+                            }
+                            if constexpr (NUM_NEIGHBOR_VOXELS == 19) {
+                                if (sum_abs > 2) continue;  // Keep face + edge neighbors (Manhattan dist <= 2)
+                            }
+                            // 27: no filter, all 3x3x3 neighbors included
+
+                            const int64_t nx = qx + static_cast<int64_t>(dx);
+                            const int64_t ny = qy + static_cast<int64_t>(dy);
+                            const int64_t nz = qz + static_cast<int64_t>(dz);
+
+                            // Skip out-of-range coordinates.
+                            if (nx < 0 || nx > VoxelConstants::coord_bit_mask) continue;
+                            if (ny < 0 || ny > VoxelConstants::coord_bit_mask) continue;
+                            if (nz < 0 || nz > VoxelConstants::coord_bit_mask) continue;
+
+                            const uint64_t neighbor_key = encode_voxel_coords(nx, ny, nz);
+
+                            // Probe hash table for this neighbor voxel.
+                            for (size_t probe = 0; probe < max_probe; ++probe) {
+                                const size_t slot = compute_slot_id(neighbor_key, probe, capacity);
+                                const uint64_t stored = key_ptr[slot];
+
+                                if (stored == neighbor_key) {
+                                    const VoxelCoreData& core = core_ptr[slot];
+                                    // Only consider occupied voxels above the threshold.
+                                    if (core.hit_count > 0U && core.log_odds >= occ_thresh) {
+                                        // Compute squared distance from query to voxel centroid.
+                                        const float inv_c = 1.0f / static_cast<float>(core.hit_count);
+                                        const float cx = core.sum_x * inv_c;
+                                        const float cy = core.sum_y * inv_c;
+                                        const float cz = core.sum_z * inv_c;
+                                        const float ex = q.x() - cx;
+                                        const float ey = q.y() - cy;
+                                        const float ez = q.z() - cz;
+                                        const float dist_sq = ex * ex + ey * ey + ez * ez;
+                                        if (dist_sq < best_dist) {
+                                            best_dist = dist_sq;
+                                            best_slot = static_cast<int32_t>(slot);
+                                        }
+                                    }
+                                    break;
+                                }
+                                if (stored == VoxelConstants::invalid_coord) break;
+                                // deleted_coord: continue probing (same as compute_overlap_ratio pattern)
+                            }
+                        }
+                    }
+                }
+
+                out_indices[qi]   = best_slot;
+                out_distances[qi] = best_dist;
+            });
+        });
+        return {event};
+    }
 };
 
 }  // namespace mapping
