@@ -1780,11 +1780,11 @@ private:
                 int32_t best_slot = -1;
 
                 // Iterate all 27 combinations of dx/dy/dz in {-1, 0, 1}.
-                for (int dx = -1; dx <= 1; ++dx) {
-                    for (int dy = -1; dy <= 1; ++dy) {
-                        for (int dz = -1; dz <= 1; ++dz) {
+                for (int8_t dx = -1; dx <= 1; ++dx) {
+                    for (int8_t dy = -1; dy <= 1; ++dy) {
+                        for (int8_t dz = -1; dz <= 1; ++dz) {
                             // Filter based on the requested neighbor pattern.
-                            const int sum_abs =
+                            const int8_t sum_abs =
                                 (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy) + (dz < 0 ? -dz : dz);
                             if constexpr (NUM_NEIGHBOR_VOXELS == 7) {
                                 if (sum_abs > 1) continue;  // Keep only face neighbors (Manhattan dist <= 1)
