@@ -5,18 +5,13 @@ cmake_minimum_required(VERSION 3.15)
 set(SYCL_IMPL "IntelDPCPP" CACHE STRING "SYCL implementation to use (IntelDPCPP or AdaptiveCpp)")
 set_property(CACHE SYCL_IMPL PROPERTY STRINGS "IntelDPCPP" "AdaptiveCpp")
 
-if(SYCL_IMPL STREQUAL "IntelDPCPP")
-  set(CMAKE_C_COMPILER "icx" CACHE PATH "C compiler")
-  set(CMAKE_CXX_COMPILER "icpx" CACHE PATH "C++ compiler")
-elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
-  if(NOT CMAKE_CXX_COMPILER)
-    set(CMAKE_CXX_COMPILER "acpp" CACHE PATH "C++ compiler")
-  endif()
-else()
-  message(FATAL_ERROR "Unknown SYCL_IMPL: ${SYCL_IMPL}. Choose IntelDPCPP or AdaptiveCpp")
-endif()
+# Set SYCL compiler before project()
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SYCLCompiler.cmake")
 
 project(sycl_points_example LANGUAGES CXX)
+
+# Initialize SYCL environment after compiler identification
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SYCLSetup.cmake")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,8 +25,6 @@ option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TESTS   "Build tests"     ON)
 
 find_package(Eigen3 REQUIRED)
-
-include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SYCLSetup.cmake")
 
 # Build examples
 if(BUILD_EXAMPLES)
