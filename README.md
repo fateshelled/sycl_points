@@ -75,7 +75,8 @@ note:
   - **AdaptiveCpp** (formerly hipSYCL)
       - https://github.com/AdaptiveCpp/AdaptiveCpp
 - Intel oneAPI for NVIDIA® GPUs (optional, Intel DPC++ only)
-    - https://developer.codeplay.com/apt/index.html
+    - **Binary packages are no longer distributed**; must be built from source
+    - https://github.com/intel/llvm
 - Intel GPU Driver (optional, Intel DPC++ only)
     - https://dgpu-docs.intel.com/driver/client/overview.html
 
@@ -105,23 +106,9 @@ sudo apt install intel-cpp-essentials
 ```
 
 #### Intel oneAPI for NVIDIA® GPUs (optional)
-For the latest information, please refer to the following URL:
-- https://developer.codeplay.com/apt/index.html
 
-```bash
-# Add Intel®'s package signing key and APT repository:
-sudo wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \ | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null && echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
-
-# Add Codeplay's package signing key and APT repository:
-sudo wget -qO - https://developer.codeplay.com/apt/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/codeplay-keyring.gpg > /dev/null && echo "deb [signed-by=/usr/share/keyrings/codeplay-keyring.gpg] https://developer.codeplay.com/apt all main" | sudo tee /etc/apt/sources.list.d/codeplay.list
-
-# update apt repository
-sudo apt update
-
-# install package, specify cuda version
-sudo apt purge oneapi-nvidia*
-sudo apt install oneapi-nvidia-12.6
-```
+> **Note:** Binary packages are no longer distributed. Intel DPC++ must be built from source.
+> See [docs/install_dpcpp_nvidia.md](docs/install_dpcpp_nvidia.md) for details.
 
 #### Intel GPU Driver (Optional)
 For the latest information, please refer to the following URL:
@@ -148,8 +135,8 @@ newgrp render
 ```
 
 #### AdaptiveCpp
-For the latest information, please refer to:
-- https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md
+
+See [docs/install_adaptive_cpp.md](docs/install_adaptive_cpp.md) for details.
 
 
 ## Build and run example
