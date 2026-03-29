@@ -66,30 +66,16 @@ export PATH=$DPCPP_HOME/build/install/bin:$PATH
 export LD_LIBRARY_PATH=$DPCPP_HOME/build/install/lib:$LD_LIBRARY_PATH
 ```
 
-任意のパス（例: `/opt/intel/llvm`）にインストールしたい場合は、以下の2通りの方法があります。
-
-**案1: ディレクトリを事前に作成してオーナーを変える**
+任意のパス（例: `/opt/intel/llvm`）にインストールしたい場合は、ビルド成果物をコピーします。
 
 ```bash
-sudo mkdir -p /opt/intel/llvm
-sudo chown $USER /opt/intel/llvm
-python buildbot/configure.py --cuda \
-    --cmake-opt="-DCMAKE_INSTALL_PREFIX=/opt/intel/llvm"
-python buildbot/compile.py -j $(nproc)
-```
-
-**案2: `build/install/` にビルドしてからコピー**
-
-```bash
-python buildbot/compile.py -j $(nproc)
-
 # build/install/ は $ORIGIN 相対 RPATH を使用しているため、
 # 別ディレクトリへコピーしてもライブラリの依存関係は正しく解決される
 sudo mkdir -p /opt/intel/llvm
 sudo cp -r build/install/. /opt/intel/llvm/
 ```
 
-いずれの場合も環境変数は以下:
+`/opt/intel/llvm` にインストールした場合の環境変数は以下です。
 
 ```bash
 export PATH=/opt/intel/llvm/bin:$PATH
