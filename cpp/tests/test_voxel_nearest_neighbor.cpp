@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <Eigen/Core>
 #include <algorithm>
 #include <limits>
 #include <vector>
@@ -38,8 +39,7 @@ protected:
     sycl_points::sycl_utils::DeviceQueue queue;
     const float voxel_size = 1.0f;
 
-    VoxelHashMapNNTest()
-        : queue(sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v)) {}
+    VoxelHashMapNNTest() : queue(sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v)) {}
 };
 
 /// Basic case: insert one point at the origin, query near it.
@@ -59,7 +59,7 @@ TEST_F(VoxelHashMapNNTest, BasicNearestNeighbor) {
     ASSERT_EQ(result.k, 1u);
 
     const int32_t idx = result.indices->at(0);
-    const float dist  = result.distances->at(0);
+    const float dist = result.distances->at(0);
 
     EXPECT_GE(idx, 0) << "Expected a valid slot index for the inserted voxel";
     EXPECT_LT(dist, voxel_size * voxel_size) << "Distance should be within one voxel";
@@ -123,7 +123,7 @@ TEST_F(VoxelHashMapNNTest, NeighborPattern19) {
     // The edge voxel centroid (1.5, 1.5, 0.5) is closer to the query than the corner (1.5, 1.5, 1.5).
     EXPECT_GE(result19.indices->at(0), 0) << "19-neighbor search must find the edge voxel";
     // Verify it found the edge voxel, not the corner (smaller distance expected).
-    const float dist_to_edge   = (Eigen::Vector3f(0.1f, 0.1f, 0.1f) - Eigen::Vector3f(1.5f, 1.5f, 0.5f)).squaredNorm();
+    const float dist_to_edge = (Eigen::Vector3f(0.1f, 0.1f, 0.1f) - Eigen::Vector3f(1.5f, 1.5f, 0.5f)).squaredNorm();
     const float dist_to_corner = (Eigen::Vector3f(0.1f, 0.1f, 0.1f) - Eigen::Vector3f(1.5f, 1.5f, 1.5f)).squaredNorm();
     EXPECT_LT(dist_to_edge, dist_to_corner);
     EXPECT_NEAR(result19.distances->at(0), dist_to_edge, 1e-4f);
@@ -181,8 +181,7 @@ protected:
     sycl_points::sycl_utils::DeviceQueue queue;
     const float voxel_size = 1.0f;
 
-    OccupancyGridMapNNTest()
-        : queue(sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v)) {}
+    OccupancyGridMapNNTest() : queue(sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v)) {}
 };
 
 /// Basic case: insert a point with enough log-odds, query near it.
@@ -203,7 +202,7 @@ TEST_F(OccupancyGridMapNNTest, BasicNearestNeighbor) {
 
     ASSERT_EQ(result.query_size, 1u);
     const int32_t idx = result.indices->at(0);
-    const float dist  = result.distances->at(0);
+    const float dist = result.distances->at(0);
 
     EXPECT_GE(idx, 0) << "Expected occupied voxel to be found";
     EXPECT_LT(dist, voxel_size * voxel_size);
