@@ -266,9 +266,19 @@ public:
                         break;
                 }
 
-                // Apply Anderson acceleration to the outer iteration (on top of any optimizer)
+                // Apply safeguarded Anderson acceleration to the outer iteration
                 if (this->params_.anderson.enabled) {
-                    result.T = this->anderson_acc_.apply(result.T, T_initial);
+                    const Eigen::Isometry3f T_anderson = this->anderson_acc_.apply(result.T, T_initial);
+                    // Recompute error with the accelerated pose (reusing existing neighbors)
+                    const auto [anderson_error, anderson_inlier] =
+                        compute_error(source, target, this->neighbors_->at(0), T_anderson.matrix(),
+                                      robust_scale, rotation_robust_scale);
+                    // Accept only if Anderson pose reduces error
+                    if (anderson_error <= result.error) {
+                        result.T = T_anderson;
+                        result.error = anderson_error;
+                        result.inlier = anderson_inlier;
+                    }
                 }
 
                 if (result.converged) {
