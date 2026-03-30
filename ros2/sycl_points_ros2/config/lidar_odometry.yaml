@@ -173,7 +173,6 @@ lidar_odometry_node:
     registration/optimization_method: LM  # GN, LM, DOGLEG
     registration/gn/lambda: 1.0  # small value -> fast convergence, but not stable.
     registration/lm/max_inner_iterations: 5
-    registration/lm/lambda_factor: 2.0
     registration/lm/init_lambda: 1.0
     registration/lm/max_lambda: 1.0e+3
     registration/lm/min_lambda: 1.0e-3

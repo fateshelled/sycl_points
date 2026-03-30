@@ -228,6 +228,7 @@ public:
                                                     : this->params_.rotation_constraint.robust.default_scale;
 
             float lm_lambda = this->params_.lm.init_lambda;
+            float lm_nu = 2.0f;  // Nielsen's rule: initial nu
             for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
                 // Nearest neighbor search on device
                 auto knn_event =
@@ -247,8 +248,8 @@ public:
                 // Optimize on Host
                 switch (this->params_.optimization_method) {
                     case OptimizationMethod::LEVENBERG_MARQUARDT:
-                        this->optimize_levenberg_marquardt(source, target, result, regularized_result, lm_lambda, iter,
-                                                           robust_scale, rotation_robust_scale);
+                        this->optimize_levenberg_marquardt(source, target, result, regularized_result, lm_lambda,
+                                                           lm_nu, iter, robust_scale, rotation_robust_scale);
                         break;
                     case OptimizationMethod::POWELL_DOGLEG:
                         this->optimize_powell_dogleg(source, target, result, regularized_result, trust_region_radius,
@@ -877,7 +878,8 @@ private:
 
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
                                       RegistrationResult& result, const LinearizedResult& linearized_result,
-                                      float& lambda, size_t iter, float robust_scale, float rotation_robust_scale) {
+                                      float& lambda, float& nu, size_t iter, float robust_scale,
+                                      float rotation_robust_scale) {
         const auto& H = linearized_result.H;
         const auto& g = linearized_result.b;
         const float current_error = linearized_result.error;
@@ -908,28 +910,36 @@ private:
                 std::cout << "dt: " << delta.tail<3>().norm() << ", ";
                 std::cout << "dr: " << delta.head<3>().norm() << std::endl;
             }
-            if (new_error <= current_error) {
+
+            // Nielsen's rule: compute gain ratio rho = actual / predicted reduction
+            // predicted = 0.5 * delta^T * (lambda * delta - g)  [undamped quadratic model]
+            const float predicted = 0.5f * delta.dot(lambda * delta - g);
+            const float rho = (predicted > 0.0f) ? (current_error - new_error) / predicted : -1.0f;
+
+            if (rho > 0.0f) {
+                // Step accepted
                 result.converged = this->is_converged(delta);
                 result.T = new_T;
                 result.error = new_error;
                 result.inlier = inlier;
                 updated = true;
 
-                lambda = std::clamp(lambda / this->params_.lm.lambda_factor, this->params_.lm.min_lambda,
-                                    this->params_.lm.max_lambda);
-
+                const float scale = std::max(1.0f / 3.0f, 1.0f - std::pow(2.0f * rho - 1.0f, 3.0f));
+                lambda = std::clamp(lambda * scale, this->params_.lm.min_lambda, this->params_.lm.max_lambda);
+                nu = 2.0f;
                 break;
             } else if (std::fabs(new_error - last_error) <= 1e-6f) {
+                // Stagnation safety check
                 result.converged = this->is_converged(delta);
                 result.T = new_T;
                 result.error = new_error;
                 result.inlier = inlier;
                 updated = false;
-
                 break;
             } else {
-                lambda = std::clamp(lambda * this->params_.lm.lambda_factor, this->params_.lm.min_lambda,
-                                    this->params_.lm.max_lambda);
+                // Step rejected: increase lambda with doubling nu
+                lambda = std::clamp(lambda * nu, this->params_.lm.min_lambda, this->params_.lm.max_lambda);
+                nu *= 2.0f;
             }
             last_error = new_error;
         }

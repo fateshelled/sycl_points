@@ -69,8 +69,7 @@ struct RegistrationParams {
     };
     struct LevenbergMarquardt {
         size_t max_inner_iterations = 10;  // (for LM method)
-        float lambda_factor = 2.0f;        // lambda increase factor (for LM method)
-        float init_lambda = 1.0f;          // initial lambda (for LM method)
+        float init_lambda = 1.0f;          // initial lambda (for LM method, Nielsen's rule)
         float max_lambda = 1e3f;           // max lambda (for LM method)
         float min_lambda = 1e-6f;          // min lambda (for LM method)
     };

@@ -282,7 +282,6 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
 
             lm.max_inner_iterations =
                 node->declare_parameter<int64_t>("registration/lm/max_inner_iterations", lm.max_inner_iterations);
-            lm.lambda_factor = node->declare_parameter<double>("registration/lm/lambda_factor", lm.lambda_factor);
             lm.init_lambda = node->declare_parameter<double>("registration/lm/init_lambda", lm.init_lambda);
             lm.max_lambda = node->declare_parameter<double>("registration/lm/max_lambda", lm.max_lambda);
             lm.min_lambda = node->declare_parameter<double>("registration/lm/min_lambda", lm.min_lambda);
