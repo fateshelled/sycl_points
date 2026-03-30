@@ -169,6 +169,11 @@ lidar_odometry_node:
 
     registration/genz/planarity_threshold: 0.2
 
+    # Anderson Acceleration
+    registration/anderson/enabled: false    # If true, apply Anderson acceleration to the outer iteration
+    registration/anderson/window_size: 5    # History window size m (Anderson(m))
+    registration/anderson/beta: 1.0         # Mixing parameter: 1.0 = pure Anderson acceleration
+
     # Registration Optimizer
     registration/optimization_method: LM  # GN, LM, DOGLEG
     registration/gn/lambda: 1.0  # small value -> fast convergence, but not stable.
