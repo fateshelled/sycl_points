@@ -629,7 +629,7 @@ private:
             return std::min(max_work_group_size, 64UL);
         } else if (this->queue_.is_intel() && this->queue_.is_gpu()) {
             // Intel iGPU:
-            return std::min(max_work_group_size, compute_units * 16UL);
+            return std::min(max_work_group_size, compute_units * 8UL);
         } else if (this->queue_.is_cpu()) {
             // CPU:
             return std::min(max_work_group_size, compute_units * 100UL);
@@ -896,48 +896,26 @@ private:
                     last_update = 0;
                 };
 
-                auto voxel_num = sycl::reduction(voxel_num_vec.data(), sycl::plus<uint32_t>());
-
-                const auto remove_staleness = (int64_t)this->staleness_counter_ - this->max_staleness_;
+                const uint32_t remove_staleness = this->staleness_counter_ - this->max_staleness_;
                 auto range = sycl::nd_range<1>(global_size, work_group_size);
+                const auto voxel_num_ptr = voxel_num_vec.data();
 
-                if (this->queue_.is_nvidia()) {
-                    h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
-                        const uint32_t i = item.get_global_id(0);
-                        if (i >= N) return;
+                h.parallel_for(range, [=](sycl::nd_item<1> item) {
+                    const uint32_t i = item.get_global_id(0);
+                    if (i >= N) return;
 
-                        const auto voxel_hash = key_ptr[i];
-                        if (voxel_hash == VoxelConstants::invalid_coord) return;
+                    const auto voxel_hash = key_ptr[i];
+                    if (voxel_hash == VoxelConstants::invalid_coord) return;
 
-                        const auto last_update = last_update_ptr[i];
-                        if (last_update >= remove_staleness) {
-                            // count up num of voxel
-                            voxel_num_arg += 1U;
-                            return;
-                        }
-                        clear_function(key_ptr[i], core_ptr[i], covariance_ptr[i], color_ptr[i], intensity_ptr[i],
-                                       last_update_ptr[i]);
-                    });
-                } else {
-                    const auto voxel_num_ptr = voxel_num_vec.data();
-
-                    h.parallel_for(range, [=](sycl::nd_item<1> item) {
-                        const uint32_t i = item.get_global_id(0);
-                        if (i >= N) return;
-
-                        const auto voxel_hash = key_ptr[i];
-                        if (voxel_hash == VoxelConstants::invalid_coord) return;
-
-                        const auto last_update = last_update_ptr[i];
-                        if (last_update >= remove_staleness) {
-                            // count up num of voxel
-                            atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
-                            return;
-                        }
-                        clear_function(key_ptr[i], core_ptr[i], covariance_ptr[i], color_ptr[i], intensity_ptr[i],
-                                       last_update_ptr[i]);
-                    });
-                }
+                    const auto last_update = last_update_ptr[i];
+                    if (last_update >= remove_staleness) {
+                        // count up num of voxel
+                        atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(1U);
+                        return;
+                    }
+                    clear_function(key_ptr[i], core_ptr[i], covariance_ptr[i], color_ptr[i], intensity_ptr[i],
+                                   last_update_ptr[i]);
+                });
             })
             .wait_and_throw();
         this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
