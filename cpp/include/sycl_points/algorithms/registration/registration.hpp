@@ -929,12 +929,7 @@ private:
                 nu = 2.0f;
                 break;
             } else if (std::fabs(new_error - last_error) <= 1e-6f) {
-                // Stagnation safety check
-                result.converged = this->is_converged(delta);
-                result.T = new_T;
-                result.error = new_error;
-                result.inlier = inlier;
-                updated = false;
+                // Stagnation safety check: break without updating pose (step was rejected)
                 break;
             } else {
                 // Step rejected: increase lambda with doubling nu
