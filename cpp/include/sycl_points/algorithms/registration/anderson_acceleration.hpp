@@ -58,15 +58,17 @@ public:
         const Eigen::Vector<float, 6> f_new = x_new - x_hist_.back();
         f_hist_.push_back(f_new);
 
-        // Keep history bounded to window_size
-        while (x_hist_.size() > window_size_) {
+        // Keep history bounded.  To construct m_k = window_size_ columns in F_k / X_k
+        // we need window_size_+1 residuals (to form window_size_ differences), so allow
+        // f_hist_ to hold up to window_size_+1 entries before trimming.
+        while (x_hist_.size() > window_size_ + 1) {
             x_hist_.pop_front();
         }
-        while (f_hist_.size() > window_size_) {
+        while (f_hist_.size() > window_size_ + 1) {
             f_hist_.pop_front();
         }
 
-        // Store current iterate AFTER trimming (so x_hist_ has at most window_size_ entries)
+        // Store current iterate AFTER trimming
         x_hist_.push_back(x_new);
 
         const int m_k = static_cast<int>(f_hist_.size()) - 1;
@@ -77,12 +79,13 @@ public:
 
         // Build F_k (6 x m_k): column differences of residuals
         // Build X_k (6 x m_k): column differences of iterates
-        // We index: f_hist_[0..m_k] (size = m_k+1), x_hist_[0..m_k+1] (size = m_k+2)
+        // Since f_hist_[j] = x_hist_[j+1] - x_hist_[j], X_k can be built directly
+        // from f_hist_ without recomputing differences from x_hist_.
         Eigen::MatrixXf F_k(6, m_k);
         Eigen::MatrixXf X_k(6, m_k);
         for (int j = 0; j < m_k; ++j) {
             F_k.col(j) = f_hist_[j + 1] - f_hist_[j];
-            X_k.col(j) = x_hist_[j + 1] - x_hist_[j];
+            X_k.col(j) = f_hist_[j];
         }
 
         // Solve unconstrained LS: gamma* = argmin ||f_k - F_k * gamma||_2
