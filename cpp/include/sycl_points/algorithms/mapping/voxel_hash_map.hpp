@@ -263,9 +263,9 @@ public:
     /// @param transT Transform matrix applied to query points before search
     /// @return SYCL events
     template <size_t NUM_NEIGHBOR_VOXELS = 27>
-    sycl_utils::events nearest_neighbor_search_async(const PointCloudShared& queries, knn::KNNResult& result,
-                                                     const std::vector<sycl::event>& depends = {},
-                                                     const TransformMatrix& transT = TransformMatrix::Identity()) const {
+    sycl_utils::events nearest_neighbor_search_async(
+        const PointCloudShared& queries, knn::KNNResult& result, const std::vector<sycl::event>& depends = {},
+        const TransformMatrix& transT = TransformMatrix::Identity()) const {
         static_assert(NUM_NEIGHBOR_VOXELS == 7 || NUM_NEIGHBOR_VOXELS == 19 || NUM_NEIGHBOR_VOXELS == 27,
                       "NUM_NEIGHBOR_VOXELS must be 7, 19, or 27");
         return nearest_neighbor_search_impl<NUM_NEIGHBOR_VOXELS>(queries, result, depends, transT);
@@ -303,9 +303,12 @@ public:
         const std::vector<sycl::event>& depends = std::vector<sycl::event>(),
         const TransformMatrix& transT = TransformMatrix::Identity()) const override {
         switch (num_neighbor_voxels_) {
-            case 7:  return nearest_neighbor_search_async<7>(queries, result, depends, transT);
-            case 19: return nearest_neighbor_search_async<19>(queries, result, depends, transT);
-            default: return nearest_neighbor_search_async<27>(queries, result, depends, transT);
+            case 7:
+                return nearest_neighbor_search_async<7>(queries, result, depends, transT);
+            case 19:
+                return nearest_neighbor_search_async<19>(queries, result, depends, transT);
+            default:
+                return nearest_neighbor_search_async<27>(queries, result, depends, transT);
         }
     }
 
@@ -966,86 +969,45 @@ private:
                 const auto has_intensity = this->has_intensity_data_;
                 auto range = sycl::nd_range<1>(global_size, work_group_size);
 
-                if (this->queue_.is_nvidia()) {
-                    auto voxel_num = sycl::reduction(voxel_num_vec.data(), sycl::plus<uint32_t>());
+                auto voxel_num_ptr = voxel_num_vec.data();
 
-                    h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
-                        const uint32_t i = item.get_global_id(0);
-                        if (i >= N) return;
+                h.parallel_for(range, [=](sycl::nd_item<1> item) {
+                    const uint32_t i = item.get_global_id(0);
+                    if (i >= N) return;
 
-                        const uint64_t key = old_key[i];
-                        if (key == VoxelConstants::invalid_coord) return;
+                    const uint64_t key = old_key[i];
+                    if (key == VoxelConstants::invalid_coord) return;
 
-                        VoxelLocalData data;
-                        data.voxel_idx = key;
-                        data.core_acc.sum_x = old_core[i].sum_x;
-                        data.core_acc.sum_y = old_core[i].sum_y;
-                        data.core_acc.sum_z = old_core[i].sum_z;
-                        data.core_acc.count = old_core[i].count;
-                        if (has_cov) {
-                            data.covariance_acc.sum_xx = old_covariance[i].sum_xx;
-                            data.covariance_acc.sum_xy = old_covariance[i].sum_xy;
-                            data.covariance_acc.sum_xz = old_covariance[i].sum_xz;
-                            data.covariance_acc.sum_yy = old_covariance[i].sum_yy;
-                            data.covariance_acc.sum_yz = old_covariance[i].sum_yz;
-                            data.covariance_acc.sum_zz = old_covariance[i].sum_zz;
-                        }
-                        if (has_rgb) {
-                            data.color_acc.sum_r = old_color[i].sum_r;
-                            data.color_acc.sum_g = old_color[i].sum_g;
-                            data.color_acc.sum_b = old_color[i].sum_b;
-                            data.color_acc.sum_a = old_color[i].sum_a;
-                        }
-                        if (has_intensity) {
-                            data.intensity_acc.sum_intensity = old_intensity[i].sum_intensity;
-                        }
+                    VoxelLocalData data;
+                    data.voxel_idx = key;
+                    data.core_acc.sum_x = old_core[i].sum_x;
+                    data.core_acc.sum_y = old_core[i].sum_y;
+                    data.core_acc.sum_z = old_core[i].sum_z;
+                    data.core_acc.count = old_core[i].count;
+                    if (has_cov) {
+                        data.covariance_acc.sum_xx = old_covariance[i].sum_xx;
+                        data.covariance_acc.sum_xy = old_covariance[i].sum_xy;
+                        data.covariance_acc.sum_xz = old_covariance[i].sum_xz;
+                        data.covariance_acc.sum_yy = old_covariance[i].sum_yy;
+                        data.covariance_acc.sum_yz = old_covariance[i].sum_yz;
+                        data.covariance_acc.sum_zz = old_covariance[i].sum_zz;
+                    }
+                    if (has_rgb) {
+                        data.color_acc.sum_r = old_color[i].sum_r;
+                        data.color_acc.sum_g = old_color[i].sum_g;
+                        data.color_acc.sum_b = old_color[i].sum_b;
+                        data.color_acc.sum_a = old_color[i].sum_a;
+                    }
+                    if (has_intensity) {
+                        data.intensity_acc.sum_intensity = old_intensity[i].sum_intensity;
+                    }
 
-                        global_reduction(
-                            data, new_key, new_core, new_covariance, new_color, new_intensity, old_last_update[i],
-                            new_last_update, max_probe, new_cp, [&](uint32_t num) { voxel_num_arg += num; }, has_cov,
-                            has_rgb, has_intensity);
-                    });
-                } else {
-                    auto voxel_num_ptr = voxel_num_vec.data();
-
-                    h.parallel_for(range, [=](sycl::nd_item<1> item) {
-                        const uint32_t i = item.get_global_id(0);
-                        if (i >= N) return;
-
-                        const uint64_t key = old_key[i];
-                        if (key == VoxelConstants::invalid_coord) return;
-
-                        VoxelLocalData data;
-                        data.voxel_idx = key;
-                        data.core_acc.sum_x = old_core[i].sum_x;
-                        data.core_acc.sum_y = old_core[i].sum_y;
-                        data.core_acc.sum_z = old_core[i].sum_z;
-                        data.core_acc.count = old_core[i].count;
-                        if (has_cov) {
-                            data.covariance_acc.sum_xx = old_covariance[i].sum_xx;
-                            data.covariance_acc.sum_xy = old_covariance[i].sum_xy;
-                            data.covariance_acc.sum_xz = old_covariance[i].sum_xz;
-                            data.covariance_acc.sum_yy = old_covariance[i].sum_yy;
-                            data.covariance_acc.sum_yz = old_covariance[i].sum_yz;
-                            data.covariance_acc.sum_zz = old_covariance[i].sum_zz;
-                        }
-                        if (has_rgb) {
-                            data.color_acc.sum_r = old_color[i].sum_r;
-                            data.color_acc.sum_g = old_color[i].sum_g;
-                            data.color_acc.sum_b = old_color[i].sum_b;
-                            data.color_acc.sum_a = old_color[i].sum_a;
-                        }
-                        if (has_intensity) {
-                            data.intensity_acc.sum_intensity = old_intensity[i].sum_intensity;
-                        }
-
-                        global_reduction(
-                            data, new_key, new_core, new_covariance, new_color, new_intensity, old_last_update[i],
-                            new_last_update, max_probe, new_cp,
-                            [&](uint32_t num) { atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(num); }, has_cov,
-                            has_rgb, has_intensity);
-                    });
-                }
+                    global_reduction(
+                        data, new_key, new_core, new_covariance, new_color, new_intensity, old_last_update[i],
+                        new_last_update, max_probe, new_cp,
+                        [&](uint32_t num) { atomic_ref_uint32_t(voxel_num_ptr[0]).fetch_add(num); }, has_cov, has_rgb,
+                        has_intensity);
+                });
             })
             .wait_and_throw();
         this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
@@ -1210,14 +1172,14 @@ private:
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             h.depends_on(depends);
 
-            const auto query_ptr  = queries.points_ptr();
-            const auto key_ptr    = this->key_ptr_->data();
-            const auto core_ptr   = this->core_data_ptr_->data();
-            const float vs_inv    = this->voxel_size_inv_;
+            const auto query_ptr = queries.points_ptr();
+            const auto key_ptr = this->key_ptr_->data();
+            const auto core_ptr = this->core_data_ptr_->data();
+            const float vs_inv = this->voxel_size_inv_;
             const size_t capacity = this->capacity_;
             const size_t max_probe = this->max_probe_length_;
             const uint32_t min_pts = this->min_num_point_;
-            auto out_indices   = result.indices->data();
+            auto out_indices = result.indices->data();
             auto out_distances = result.distances->data();
             const auto trans_vec = eigen_utils::to_sycl_vec(transT);
 
@@ -1227,12 +1189,9 @@ private:
                 transform::kernel::transform_point(query_ptr[qi], q, trans_vec);
 
                 // Compute query voxel coordinates (offset-adjusted).
-                const int64_t qx =
-                    static_cast<int64_t>(sycl::floor(q.x() * vs_inv)) + VoxelConstants::coord_offset;
-                const int64_t qy =
-                    static_cast<int64_t>(sycl::floor(q.y() * vs_inv)) + VoxelConstants::coord_offset;
-                const int64_t qz =
-                    static_cast<int64_t>(sycl::floor(q.z() * vs_inv)) + VoxelConstants::coord_offset;
+                const int64_t qx = static_cast<int64_t>(sycl::floor(q.x() * vs_inv)) + VoxelConstants::coord_offset;
+                const int64_t qy = static_cast<int64_t>(sycl::floor(q.y() * vs_inv)) + VoxelConstants::coord_offset;
+                const int64_t qz = static_cast<int64_t>(sycl::floor(q.z() * vs_inv)) + VoxelConstants::coord_offset;
 
                 float best_dist = std::numeric_limits<float>::max();
                 int32_t best_slot = -1;
@@ -1292,7 +1251,7 @@ private:
                     }
                 }
 
-                out_indices[qi]   = best_slot;
+                out_indices[qi] = best_slot;
                 out_distances[qi] = best_dist;
             });
         });
