@@ -9,6 +9,7 @@
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
+#include "sycl_points/algorithms/registration/anderson_acceleration.hpp"
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
@@ -228,6 +229,12 @@ public:
                                                     : this->params_.rotation_constraint.robust.default_scale;
 
             float lm_lambda = this->params_.lm.init_lambda;
+
+            if (this->params_.anderson.enabled) {
+                this->anderson_acc_.reset(this->params_.anderson.window_size, this->params_.anderson.beta);
+            }
+            const Eigen::Isometry3f T_initial(initial_guess);
+
             for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
                 // Nearest neighbor search on device
                 auto knn_event =
@@ -242,7 +249,7 @@ public:
 
                 // Regularization
                 const LinearizedResult regularized_result =
-                    this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
+                    this->degenerate_reg_.regularize(linearized_result, result.T, T_initial);
 
                 // Optimize on Host
                 switch (this->params_.optimization_method) {
@@ -258,6 +265,12 @@ public:
                         this->optimize_gauss_newton(result, regularized_result, iter);
                         break;
                 }
+
+                // Apply Anderson acceleration to the outer iteration (on top of any optimizer)
+                if (this->params_.anderson.enabled) {
+                    result.T = this->anderson_acc_.apply(result.T, T_initial);
+                }
+
                 if (result.converged) {
                     break;
                 }
@@ -294,6 +307,7 @@ private:
 
     DegenerateRegularization degenerate_reg_;
     float genz_alpha_ = 1.0f;
+    AndersonAcceleration anderson_acc_;
 
     template <typename Func>
     sycl_utils::events dispatch(Func&& exec) const {
