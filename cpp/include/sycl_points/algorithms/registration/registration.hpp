@@ -267,19 +267,8 @@ public:
                 }
 
                 // Apply safeguarded Anderson acceleration to the outer iteration
-                if (this->params_.anderson.enabled) {
-                    const Eigen::Isometry3f T_anderson = this->anderson_acc_.apply(result.T, T_initial);
-                    // Recompute error with the accelerated pose (reusing existing neighbors)
-                    const auto [anderson_error, anderson_inlier] =
-                        compute_error(source, target, this->neighbors_->at(0), T_anderson.matrix(),
-                                      robust_scale, rotation_robust_scale);
-                    // Accept only if Anderson pose reduces error
-                    if (anderson_error <= result.error) {
-                        result.T = T_anderson;
-                        result.error = anderson_error;
-                        result.inlier = anderson_inlier;
-                    }
-                }
+                this->apply_anderson_acceleration(source, target, result, T_initial, robust_scale,
+                                                   rotation_robust_scale);
 
                 if (result.converged) {
                     break;
@@ -871,6 +860,28 @@ private:
         }
         solution.setZero();
         return false;
+    }
+
+    void apply_anderson_acceleration(const PointCloudShared& source, const PointCloudShared& target,
+                                     RegistrationResult& result, const Eigen::Isometry3f& T_initial,
+                                     float robust_scale, float rotation_robust_scale) {
+        if (!this->params_.anderson.enabled) {
+            return;
+        }
+        const Eigen::Isometry3f T_anderson = this->anderson_acc_.apply(result.T, T_initial);
+        const auto [anderson_error, anderson_inlier] =
+            compute_error(source, target, this->neighbors_->at(0), T_anderson.matrix(),
+                          robust_scale, rotation_robust_scale);
+        const bool accepted = anderson_error <= result.error;
+        if (this->params_.verbose) {
+            std::cout << "  anderson: " << (accepted ? "accepted" : "rejected")
+                      << ", error: " << result.error << " -> " << anderson_error << std::endl;
+        }
+        if (accepted) {
+            result.T = T_anderson;
+            result.error = anderson_error;
+            result.inlier = anderson_inlier;
+        }
     }
 
     void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result, size_t iter) {
