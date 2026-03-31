@@ -23,7 +23,7 @@ namespace registration {
 ///   F_k = [f_{k-m_k+1}-f_{k-m_k}, ..., f_k-f_{k-1}]  (6 x m_k)
 ///   X_k = [x_{k-m_k+1}-x_{k-m_k}, ..., x_{k+1}-x_k]  (6 x m_k)
 ///   gamma* = argmin_gamma ||f_k - F_k * gamma||_2^2
-///   x_{k+1}^AA = x_{k+1} - (beta * F_k + X_k) * gamma*
+///   x_{k+1}^AA = x_{k+1} - (1 - beta) * f_k - (beta * F_k + X_k) * gamma*
 ///   T_{k+1}^AA = se3_exp(x_{k+1}^AA) * T_initial
 class AndersonAcceleration {
 public:
@@ -37,6 +37,7 @@ public:
         beta_ = beta;
         x_hist_.clear();
         f_hist_.clear();
+        initial_T_inv_cached_ = false;
     }
 
     /// @brief Apply Anderson acceleration to the current iterate.
@@ -44,8 +45,14 @@ public:
     /// @param initial_T  The initial guess passed to Registration::align()
     /// @return Accelerated transformation
     Eigen::Isometry3f apply(const Eigen::Isometry3f& input_T, const Eigen::Isometry3f& initial_T) {
+        // Cache initial_T^{-1} on the first call (constant throughout the align() loop)
+        if (!initial_T_inv_cached_) {
+            initial_T_inv_ = initial_T.inverse();
+            initial_T_inv_cached_ = true;
+        }
+
         // Compute relative transform in Lie algebra: x_{k+1} = log(input_T * initial_T^{-1})
-        const Eigen::Isometry3f rel = input_T * initial_T.inverse();
+        const Eigen::Isometry3f rel = input_T * initial_T_inv_;
         const Eigen::Vector<float, 6> x_new = eigen_utils::lie::se3_log(rel);
 
         if (x_hist_.empty()) {
@@ -89,12 +96,18 @@ public:
         }
 
         // Solve unconstrained LS: gamma* = argmin ||f_k - F_k * gamma||_2
-        // Use Householder QR for numerical stability with rank-deficient systems
+        // Use column-pivoting QR for robustness against rank-deficient F_k
         const Eigen::Vector<float, 6>& f_k = f_hist_.back();
-        const Eigen::VectorXf gamma = F_k.householderQr().solve(f_k);
+        const Eigen::VectorXf gamma = F_k.colPivHouseholderQr().solve(f_k);
 
-        // Accelerated iterate: x_acc = x_{k+1} - (beta * F_k + X_k) * gamma
-        const Eigen::Vector<float, 6> x_acc = x_new - (beta_ * F_k + X_k) * gamma;
+        // Guard against numerical failures (NaN/Inf) that can arise in degenerate cases
+        if (!gamma.allFinite()) {
+            return input_T;
+        }
+
+        // Accelerated iterate (Walker & Ni 2011, Type 2 with damping beta):
+        //   x_acc = x_{k+1} - (1 - beta) * f_k - (beta * F_k + X_k) * gamma*
+        const Eigen::Vector<float, 6> x_acc = x_new - (1.0f - beta_) * f_k - (beta_ * F_k + X_k) * gamma;
 
         // Retract back to SE(3): T_acc = se3_exp(x_acc) * initial_T
         const Eigen::Isometry3f T_acc =
@@ -105,6 +118,10 @@ public:
 private:
     size_t window_size_ = 5;
     float beta_ = 1.0f;
+
+    // Cached inverse of initial_T (constant throughout an align() call)
+    Eigen::Isometry3f initial_T_inv_;
+    bool initial_T_inv_cached_ = false;
 
     // x_hist_[i] = se3_log(T_i * T_initial^{-1})
     std::deque<Eigen::Vector<float, 6>> x_hist_;
