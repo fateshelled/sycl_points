@@ -265,13 +265,12 @@ public:
                         this->optimize_gauss_newton(result, regularized_result, iter);
                         break;
                 }
-
-                // Apply safeguarded Anderson acceleration to the outer iteration
-                this->apply_anderson_acceleration(source, target, result, T_initial, robust_scale,
-                                                  rotation_robust_scale);
-
                 if (result.converged) {
                     break;
+                } else {
+                    // Apply safeguarded Anderson acceleration to the outer iteration
+                    this->apply_anderson_acceleration(source, target, result, T_initial, robust_scale,
+                                                      rotation_robust_scale);
                 }
             }
         }
