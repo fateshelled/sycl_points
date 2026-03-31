@@ -268,6 +268,18 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                 "registration/rotation_constraint/robust/min_scale", pipeline_robust.rotation_min_scale);
         }
 
+        // Anderson Acceleration
+        {
+            auto& anderson = solver.anderson;
+
+            anderson.enabled =
+                node->declare_parameter<bool>("registration/anderson/enabled", anderson.enabled);
+            anderson.window_size = node->declare_parameter<int64_t>(
+                "registration/anderson/window_size", anderson.window_size);
+            anderson.beta =
+                node->declare_parameter<double>("registration/anderson/beta", anderson.beta);
+        }
+
         // Optimization
         {
             auto& gn = solver.gn;

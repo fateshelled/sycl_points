@@ -83,6 +83,12 @@ struct RegistrationParams {
         float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
     };
 
+    struct AndersonAcceleration {
+        bool enabled = false;     // If true, apply Anderson acceleration to the outer iteration
+        size_t window_size = 5;   // History window size m (Anderson(m))
+        float beta = 1.0f;        // Mixing parameter: 1.0 = pure Anderson acceleration
+    };
+
     RegType reg_type = RegType::GICP;          // Registration Type
     size_t max_iterations = 20;                // max iteration
     float lambda = 1e-6f;                      // damping factor
@@ -98,6 +104,7 @@ struct RegistrationParams {
     GaussNewton gn;
     LevenbergMarquardt lm;
     Dogleg dogleg;
+    AndersonAcceleration anderson;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
 
     DegenerateRegularizationParams degenerate_reg;  // Degenerate Regularization
