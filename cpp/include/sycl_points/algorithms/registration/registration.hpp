@@ -268,7 +268,7 @@ public:
 
                 // Apply safeguarded Anderson acceleration to the outer iteration
                 this->apply_anderson_acceleration(source, target, result, T_initial, robust_scale,
-                                                   rotation_robust_scale);
+                                                  rotation_robust_scale);
 
                 if (result.converged) {
                     break;
@@ -863,26 +863,29 @@ private:
     }
 
     void apply_anderson_acceleration(const PointCloudShared& source, const PointCloudShared& target,
-                                     RegistrationResult& result, const Eigen::Isometry3f& T_initial,
-                                     float robust_scale, float rotation_robust_scale) {
+                                     RegistrationResult& result, const Eigen::Isometry3f& T_initial, float robust_scale,
+                                     float rotation_robust_scale) {
         if (!this->params_.anderson.enabled) {
             return;
         }
-        // Compute the baseline error at the optimizer's proposed pose.  This is necessary
-        // because different optimizers leave result.error in different states: Gauss-Newton
-        // stores the pre-step error (linearized_result.error), while Levenberg-Marquardt
-        // and Powell's Dogleg store the post-step error.  Recomputing here ensures a fair
-        // comparison against the Anderson-accelerated pose for all methods.
-        const auto [baseline_error, baseline_inlier] =
-            compute_error(source, target, this->neighbors_->at(0), result.T.matrix(),
-                          robust_scale, rotation_robust_scale);
+
+        // Gauss-Newton leaves result.error as the pre-step linearized error,
+        // so recompute the baseline at result.T for a fair Anderson comparison.
+        // LM/Dogleg already store the post-step error, so no recomputation needed.
+        float baseline_error = result.error;
+        int baseline_inlier = result.inlier;
+        if (this->params_.optimization_method == OptimizationMethod::GAUSS_NEWTON) {
+            std::tie(baseline_error, baseline_inlier) = compute_error(
+                source, target, this->neighbors_->at(0), result.T.matrix(), robust_scale, rotation_robust_scale);
+        }
+
         const Eigen::Isometry3f T_anderson = this->anderson_acc_.apply(result.T, T_initial);
-        const auto [anderson_error, anderson_inlier] =
-            compute_error(source, target, this->neighbors_->at(0), T_anderson.matrix(),
-                          robust_scale, rotation_robust_scale);
+        const auto [anderson_error, anderson_inlier] = compute_error(
+            source, target, this->neighbors_->at(0), T_anderson.matrix(), robust_scale, rotation_robust_scale);
+
         const bool accepted = anderson_error <= baseline_error;
         if (this->params_.verbose) {
-            std::cout << "  anderson: " << (accepted ? "accepted" : "rejected")
+            std::cout << "  anderson: " << (accepted ? "accepted" : "rejected")  //
                       << ", error: " << baseline_error << " -> " << anderson_error << std::endl;
         }
         if (accepted) {
@@ -909,7 +912,7 @@ private:
         result.iterations = iter;
         result.H = linearized_result.H;
         result.b = linearized_result.b;
-        result.error = linearized_result.error;
+        result.error = linearized_result.error;  // previous pose error
         result.inlier = linearized_result.inlier;
 
         if (this->params_.verbose) {
