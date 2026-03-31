@@ -868,19 +868,30 @@ private:
         if (!this->params_.anderson.enabled) {
             return;
         }
+        // Compute the baseline error at the optimizer's proposed pose.  This is necessary
+        // because different optimizers leave result.error in different states: Gauss-Newton
+        // stores the pre-step error (linearized_result.error), while Levenberg-Marquardt
+        // and Powell's Dogleg store the post-step error.  Recomputing here ensures a fair
+        // comparison against the Anderson-accelerated pose for all methods.
+        const auto [baseline_error, baseline_inlier] =
+            compute_error(source, target, this->neighbors_->at(0), result.T.matrix(),
+                          robust_scale, rotation_robust_scale);
         const Eigen::Isometry3f T_anderson = this->anderson_acc_.apply(result.T, T_initial);
         const auto [anderson_error, anderson_inlier] =
             compute_error(source, target, this->neighbors_->at(0), T_anderson.matrix(),
                           robust_scale, rotation_robust_scale);
-        const bool accepted = anderson_error <= result.error;
+        const bool accepted = anderson_error <= baseline_error;
         if (this->params_.verbose) {
             std::cout << "  anderson: " << (accepted ? "accepted" : "rejected")
-                      << ", error: " << result.error << " -> " << anderson_error << std::endl;
+                      << ", error: " << baseline_error << " -> " << anderson_error << std::endl;
         }
         if (accepted) {
             result.T = T_anderson;
             result.error = anderson_error;
             result.inlier = anderson_inlier;
+        } else {
+            result.error = baseline_error;
+            result.inlier = baseline_inlier;
         }
     }
 
