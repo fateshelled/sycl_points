@@ -9,6 +9,7 @@
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
+#include "sycl_points/algorithms/registration/anderson_acceleration.hpp"
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
@@ -228,6 +229,12 @@ public:
                                                     : this->params_.rotation_constraint.robust.default_scale;
 
             float lm_lambda = this->params_.lm.init_lambda;
+
+            if (this->params_.anderson.enabled) {
+                this->anderson_acc_.reset(this->params_.anderson.window_size, this->params_.anderson.beta);
+            }
+            const Eigen::Isometry3f T_initial(initial_guess);
+
             for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
                 // Nearest neighbor search on device
                 auto knn_event =
@@ -242,7 +249,7 @@ public:
 
                 // Regularization
                 const LinearizedResult regularized_result =
-                    this->degenerate_reg_.regularize(linearized_result, result.T, Eigen::Isometry3f(initial_guess));
+                    this->degenerate_reg_.regularize(linearized_result, result.T, T_initial);
 
                 // Optimize on Host
                 switch (this->params_.optimization_method) {
@@ -260,6 +267,10 @@ public:
                 }
                 if (result.converged) {
                     break;
+                } else {
+                    // Apply safeguarded Anderson acceleration to the outer iteration
+                    this->apply_anderson_acceleration(source, target, result, T_initial, robust_scale,
+                                                      rotation_robust_scale);
                 }
             }
         }
@@ -294,6 +305,7 @@ private:
 
     DegenerateRegularization degenerate_reg_;
     float genz_alpha_ = 1.0f;
+    AndersonAcceleration anderson_acc_;
 
     template <typename Func>
     sycl_utils::events dispatch(Func&& exec) const {
@@ -849,6 +861,42 @@ private:
         return false;
     }
 
+    void apply_anderson_acceleration(const PointCloudShared& source, const PointCloudShared& target,
+                                     RegistrationResult& result, const Eigen::Isometry3f& T_initial, float robust_scale,
+                                     float rotation_robust_scale) {
+        if (!this->params_.anderson.enabled) {
+            return;
+        }
+
+        // Gauss-Newton leaves result.error as the pre-step linearized error,
+        // so recompute the baseline at result.T for a fair Anderson comparison.
+        // LM/Dogleg already store the post-step error, so no recomputation needed.
+        float baseline_error = result.error;
+        int baseline_inlier = result.inlier;
+        if (this->params_.optimization_method == OptimizationMethod::GAUSS_NEWTON) {
+            std::tie(baseline_error, baseline_inlier) = compute_error(
+                source, target, this->neighbors_->at(0), result.T.matrix(), robust_scale, rotation_robust_scale);
+        }
+
+        const Eigen::Isometry3f T_anderson = this->anderson_acc_.apply(result.T, T_initial);
+        const auto [anderson_error, anderson_inlier] = compute_error(
+            source, target, this->neighbors_->at(0), T_anderson.matrix(), robust_scale, rotation_robust_scale);
+
+        const bool accepted = anderson_error <= baseline_error;
+        if (this->params_.verbose) {
+            std::cout << "  anderson: " << (accepted ? "accepted" : "rejected")  //
+                      << ", error: " << baseline_error << " -> " << anderson_error << std::endl;
+        }
+        if (accepted) {
+            result.T = T_anderson;
+            result.error = anderson_error;
+            result.inlier = anderson_inlier;
+        } else {
+            result.error = baseline_error;
+            result.inlier = baseline_inlier;
+        }
+    }
+
     void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result, size_t iter) {
         Eigen::Vector<float, 6> delta;
         const bool success = this->solve_linear_system(
@@ -863,7 +911,7 @@ private:
         result.iterations = iter;
         result.H = linearized_result.H;
         result.b = linearized_result.b;
-        result.error = linearized_result.error;
+        result.error = linearized_result.error;  // previous pose error
         result.inlier = linearized_result.inlier;
 
         if (this->params_.verbose) {
