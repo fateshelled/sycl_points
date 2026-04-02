@@ -180,8 +180,34 @@ mkdir build && cd build
 cmake .. -DSYCL_IMPL=AdaptiveCpp
 make
 
-# run example (device is selected automatically based on compiled-in ACPP_TARGETS)
-./example_registration
+# show device list
+acpp-info -l
+
+# # example output
+# =================Backend information===================
+# Loaded backend 0: Level Zero
+#   Found device: Intel(R) Graphics
+# Loaded backend 1: CUDA
+#   Found device: NVIDIA GeForce RTX 5060 Ti
+# Loaded backend 2: OpenCL
+#   Found device: Intel(R) Graphics
+# Loaded backend 3: OpenMP
+#   Found device: AdaptiveCpp OpenMP host device
+
+# specify the device to be used with `ACPP_VISIBILITY_MASK`
+# if specify cuda devive number, use `CUDA_VISIBLE_DEVICES`
+# note: level_zero is not supported.
+
+# run example with OpenCL device
+ACPP_VISIBILITY_MASK=ocl ./example_registration
+
+# run example with CPU OpenMP
+ACPP_VISIBILITY_MASK=omp ./example_registration
+
+# run example with CUDA device
+ACPP_VISIBILITY_MASK=cuda ./example_registration
+# or
+CUDA_VISIBLE_DEVICES=0 ./example_registration
 ```
 
 > **Note:** When switching between `IntelDPCPP` and `AdaptiveCpp`, or changing `ACPP_TARGETS`,
