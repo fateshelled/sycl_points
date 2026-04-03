@@ -569,7 +569,7 @@ private:
             return std::min(max_work_group_size, 64UL);
         } else if (this->queue_.is_intel() && this->queue_.is_gpu()) {
             // Intel iGPU:
-            return std::min(max_work_group_size, compute_units * 16UL);
+            return std::min(max_work_group_size, compute_units * 8UL);
         } else if (this->queue_.is_cpu()) {
             // CPU:
             return std::min(max_work_group_size, compute_units * 100UL);
