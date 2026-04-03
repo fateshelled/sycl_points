@@ -437,6 +437,89 @@ TEST(VoxelHashMapTest, ComputesOverlapRatioFromPointCloud) {
     }
 }
 
+TEST(VoxelHashMapTest, CountsVoxelsCorrectlyForLargeBatch) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        const float voxel_size = 1.0f;
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, voxel_size);
+
+        // Generate 100 points, each in a distinct voxel (spacing > voxel_size).
+        const size_t num_points = 100;
+        std::vector<Eigen::Vector3f> positions;
+        positions.reserve(num_points);
+        for (size_t i = 0; i < num_points; ++i) {
+            positions.emplace_back(static_cast<float>(i) * 2.0f + 0.5f, 0.5f, 0.5f);
+        }
+
+        auto cloud = MakePointCloud(queue, positions);
+        voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
+
+        sycl_points::PointCloudShared result(queue);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero(), 1000.0f);
+        ASSERT_EQ(result.size(), num_points);
+
+        auto out_positions = ExtractPositions(*result.points);
+        std::sort(out_positions.begin(), out_positions.end(),
+                  [](const Eigen::Vector3f& a, const Eigen::Vector3f& b) { return a.x() < b.x(); });
+        for (size_t i = 0; i < num_points; ++i) {
+            EXPECT_NEAR(out_positions[i].x(), static_cast<float>(i) * 2.0f + 0.5f, 1e-5f);
+        }
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
+TEST(VoxelHashMapTest, PreservesDataAfterRehash) {
+    try {
+        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
+        sycl_points::sycl_utils::DeviceQueue queue(device);
+
+        const float voxel_size = 1.0f;
+        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, voxel_size);
+        // Set an extremely low threshold so that rehash is triggered after very few voxels.
+        voxel_map.set_rehash_threshold(0.0f);
+
+        // Insert a first batch of points. Each point lands in a separate voxel because
+        // voxel_size is 1.0 and coordinates are spaced by 10.
+        const std::vector<Eigen::Vector3f> batch1_positions = {
+            {0.5f, 0.5f, 0.5f},
+            {10.5f, 0.5f, 0.5f},
+            {20.5f, 0.5f, 0.5f},
+        };
+        auto cloud1 = MakePointCloud(queue, batch1_positions);
+        // This call should trigger rehash (threshold 0.0 < 0/30029 is false at first,
+        // but after the first add the voxel count becomes 3, so next add triggers rehash).
+        voxel_map.add_point_cloud(cloud1, Eigen::Isometry3f::Identity());
+
+        // Insert a second batch to trigger rehash (voxel_num=3, 3/30029 > 0.0).
+        const std::vector<Eigen::Vector3f> batch2_positions = {
+            {30.5f, 0.5f, 0.5f},
+            {40.5f, 0.5f, 0.5f},
+        };
+        auto cloud2 = MakePointCloud(queue, batch2_positions);
+        voxel_map.add_point_cloud(cloud2, Eigen::Isometry3f::Identity());
+
+        // After rehash, all 5 voxels should still be present.
+        sycl_points::PointCloudShared result(queue);
+        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
+        ASSERT_EQ(result.size(), 5U);
+
+        auto positions = ExtractPositions(*result.points);
+        std::sort(positions.begin(), positions.end(),
+                  [](const Eigen::Vector3f& a, const Eigen::Vector3f& b) { return a.x() < b.x(); });
+
+        EXPECT_NEAR(positions[0].x(), 0.5f, 1e-5f);
+        EXPECT_NEAR(positions[1].x(), 10.5f, 1e-5f);
+        EXPECT_NEAR(positions[2].x(), 20.5f, 1e-5f);
+        EXPECT_NEAR(positions[3].x(), 30.5f, 1e-5f);
+        EXPECT_NEAR(positions[4].x(), 40.5f, 1e-5f);
+    } catch (const sycl::exception& e) {
+        FAIL() << "SYCL exception caught: " << e.what();
+    }
+}
+
 TEST(VoxelHashMapTest, RemovesStaleVoxelsAfterConfiguredCycles) {
     try {
         sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
