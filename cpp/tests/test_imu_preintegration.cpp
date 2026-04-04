@@ -335,7 +335,141 @@ TEST(IMUPreintegration, MidpointBetterThanEulerForRotation) {
     EXPECT_LT(err_midpoint, 0.01f);
 }
 
-// 14. get_corrected with identical bias returns the same result as get_raw.
+// ─── covariance tests ─────────────────────────────────────────────────────────
+
+// 14. Covariance remains zero when all noise params are zero (default).
+TEST(IMUPreintegration, CovarianceZeroWithNoNoise) {
+    imu::IMUPreintegration integ;  // default params: all noise = 0
+    auto meas = make_constant_imu(0.0, 1.0, 100,
+                                  Eigen::Vector3f(0.1f, 0.0f, 0.0f),
+                                  Eigen::Vector3f(0.0f, 0.0f, 9.81f));
+    integ.integrate_batch(meas);
+
+    EXPECT_TRUE(integ.get_raw().covariance.isZero(kEpsTight));
+}
+
+// 15. Covariance grows (is non-zero) after integration when noise params are set.
+TEST(IMUPreintegration, CovarianceGrowsWithNoise) {
+    imu::IMUPreintegrationParams params;
+    params.gyro_noise_density    = 1e-3f;
+    params.accel_noise_density   = 1e-2f;
+    params.gyro_bias_rw_density  = 1e-5f;
+    params.accel_bias_rw_density = 1e-4f;
+
+    imu::IMUPreintegration integ(params);
+    auto meas = make_constant_imu(0.0, 1.0, 100,
+                                  Eigen::Vector3f::Zero(),
+                                  Eigen::Vector3f::Zero());
+    integ.integrate_batch(meas);
+
+    const auto& cov = integ.get_raw().covariance;
+
+    // Diagonal entries for rotation, velocity, and position must be positive.
+    EXPECT_GT(cov(3, 3), 0.0f);   // rotation
+    EXPECT_GT(cov(6, 6), 0.0f);   // velocity
+    EXPECT_GT(cov(0, 0), 0.0f);   // position (grows due to velocity uncertainty)
+    EXPECT_GT(cov(9, 9), 0.0f);   // accel bias RW
+    EXPECT_GT(cov(12, 12), 0.0f); // gyro bias RW
+}
+
+// 16. Covariance is symmetric after integration.
+TEST(IMUPreintegration, CovarianceIsSymmetric) {
+    imu::IMUPreintegrationParams params;
+    params.gyro_noise_density    = 1e-3f;
+    params.accel_noise_density   = 1e-2f;
+    params.gyro_bias_rw_density  = 1e-5f;
+    params.accel_bias_rw_density = 1e-4f;
+
+    imu::IMUPreintegration integ(params);
+    auto meas = make_constant_imu(0.0, 1.0, 100,
+                                  Eigen::Vector3f(0.1f, -0.05f, 0.08f),
+                                  Eigen::Vector3f(0.2f, 0.1f, 9.7f));
+    integ.integrate_batch(meas);
+
+    const auto& cov = integ.get_raw().covariance;
+    EXPECT_TRUE(cov.isApprox(cov.transpose(), 1e-5f));
+}
+
+// 17. Covariance is positive semi-definite (all eigenvalues >= 0).
+TEST(IMUPreintegration, CovarianceIsPositiveSemiDefinite) {
+    imu::IMUPreintegrationParams params;
+    params.gyro_noise_density    = 1e-3f;
+    params.accel_noise_density   = 1e-2f;
+    params.gyro_bias_rw_density  = 1e-5f;
+    params.accel_bias_rw_density = 1e-4f;
+
+    imu::IMUPreintegration integ(params);
+    auto meas = make_constant_imu(0.0, 1.0, 100,
+                                  Eigen::Vector3f(0.1f, -0.05f, 0.08f),
+                                  Eigen::Vector3f(0.2f, 0.1f, 9.7f));
+    integ.integrate_batch(meas);
+
+    const auto& cov = integ.get_raw().covariance;
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 15, 15>> eig(cov);
+    EXPECT_EQ(eig.info(), Eigen::Success);
+    EXPECT_GE(eig.eigenvalues().minCoeff(), -1e-6f);  // non-negative up to float noise
+}
+
+// 18. Initial covariance is propagated: reset() with non-zero initial_covariance
+//     results in covariance >= initial_covariance (in the PSD sense).
+TEST(IMUPreintegration, InitialCovariancePropagatedForward) {
+    imu::IMUPreintegrationParams params;
+    params.gyro_noise_density    = 1e-3f;
+    params.accel_noise_density   = 1e-2f;
+    params.gyro_bias_rw_density  = 1e-5f;
+    params.accel_bias_rw_density = 1e-4f;
+
+    // Start with a diagonal initial covariance (1 cm² on position, etc.)
+    Eigen::Matrix<float, 15, 15> P0 = Eigen::Matrix<float, 15, 15>::Zero();
+    P0.block<3, 3>(0, 0)   = 1e-4f * Eigen::Matrix3f::Identity();  // position
+    P0.block<3, 3>(3, 3)   = 1e-6f * Eigen::Matrix3f::Identity();  // rotation
+    P0.block<3, 3>(6, 6)   = 1e-4f * Eigen::Matrix3f::Identity();  // velocity
+    P0.block<3, 3>(9, 9)   = 1e-8f * Eigen::Matrix3f::Identity();  // acc bias
+    P0.block<3, 3>(12, 12) = 1e-8f * Eigen::Matrix3f::Identity();  // gyr bias
+
+    imu::IMUPreintegration integ(params);
+    integ.reset(imu::IMUBias{}, Eigen::Matrix3f::Identity(), P0);
+    auto meas = make_constant_imu(0.0, 1.0, 100,
+                                  Eigen::Vector3f::Zero(),
+                                  Eigen::Vector3f::Zero());
+    integ.integrate_batch(meas);
+
+    const auto& cov = integ.get_raw().covariance;
+
+    // Rotation diagonal must be >= P0 rotation (process noise added it).
+    EXPECT_GE(cov(3, 3), P0(3, 3));
+    EXPECT_GE(cov(6, 6), P0(6, 6));
+
+    // With zero IMU signal and non-trivial initial velocity uncertainty,
+    // position uncertainty must exceed the initial position uncertainty.
+    EXPECT_GT(cov(0, 0), P0(0, 0));
+}
+
+// 19. Covariance with zero noise but non-zero initial_covariance: after zero-motion
+//     integration the propagated covariance should only change due to F (no Q added).
+//     For pure zero motion (no rotation, no accel), F ≈ I + off-diagonal vel→pos term,
+//     so the rotation and bias blocks should be unchanged (= P0).
+TEST(IMUPreintegration, ZeroNoisePreservesInitialCovarianceBiasBlocks) {
+    // Zero noise params → no Q added during integration.
+    imu::IMUPreintegrationParams params;  // all noise densities = 0
+
+    Eigen::Matrix<float, 15, 15> P0 = Eigen::Matrix<float, 15, 15>::Identity() * 1e-4f;
+    P0.block<3, 3>(9,  9 ) = 1e-6f * Eigen::Matrix3f::Identity();
+    P0.block<3, 3>(12, 12) = 1e-6f * Eigen::Matrix3f::Identity();
+
+    imu::IMUPreintegration integ(params);
+    integ.reset(imu::IMUBias{}, Eigen::Matrix3f::Identity(), P0);
+
+    // Zero motion: no integration steps fired (only one measurement fed → no step).
+    // Covariance must still equal P0 exactly.
+    imu::IMUMeasurement m0;
+    m0.timestamp = 0.0;
+    integ.integrate(m0);
+
+    EXPECT_TRUE(integ.get_raw().covariance.isApprox(P0, kEpsTight));
+}
+
+// 20. get_corrected with identical bias returns the same result as get_raw.
 TEST(IMUPreintegration, GetCorrectedSameBiasEqualsRaw) {
     imu::IMUBias bias;
     bias.gyro_bias  = Eigen::Vector3f(0.01f, -0.02f, 0.005f);
