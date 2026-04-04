@@ -332,10 +332,13 @@ private:
         //     G[δba, nba] = I,  Q_nba = σ_ba²·dt · I
         //     G[δbg, nbg] = I,  Q_nbg = σ_bg²·dt · I
         //
-        // Skip if all noise parameters are zero (keeps covariance at its initial value).
-        if (params_.gyro_noise_density > 0.0f || params_.accel_noise_density > 0.0f ||
-            params_.gyro_bias_rw_density > 0.0f || params_.accel_bias_rw_density > 0.0f) {
-
+        // F is always applied so that existing uncertainty (e.g. velocity error from
+        // initial_covariance) propagates through state dynamics even when all noise
+        // parameters are zero.  Q is only non-zero when noise parameters are set.
+        // Skip the entire block only when both covariance and Q are trivially zero.
+        const bool has_noise = (params_.gyro_noise_density > 0.0f || params_.accel_noise_density > 0.0f ||
+                                params_.gyro_bias_rw_density > 0.0f || params_.accel_bias_rw_density > 0.0f);
+        if (has_noise || !result_.covariance.isZero()) {
             // --- Build F (15×15) ---
             Eigen::Matrix<float, 15, 15> F = Eigen::Matrix<float, 15, 15>::Identity();
 
@@ -353,32 +356,34 @@ private:
             F.block<3, 3>(6, 9) = -Delta_R_mid * dt_f;
 
             // --- Build process noise Q = G·Q_d·G^T (sparse, closed-form) ---
-            const float sa2  = params_.accel_noise_density * params_.accel_noise_density;
-            const float sg2  = params_.gyro_noise_density * params_.gyro_noise_density;
-            const float sba2 = params_.accel_bias_rw_density * params_.accel_bias_rw_density;
-            const float sbg2 = params_.gyro_bias_rw_density * params_.gyro_bias_rw_density;
-
             const float dt2 = dt_f * dt_f;
             const float dt3 = dt2 * dt_f;
 
             Eigen::Matrix<float, 15, 15> Q = Eigen::Matrix<float, 15, 15>::Zero();
 
-            // Accel noise contributions (Q_na = sa2/dt·I):
-            //   [δp,δp]: G[δp,na]·Q_na·G[δp,na]^T = 0.5·dt²·(sa2/dt)·0.5·dt²·I = sa2·dt³/4·I
-            //   [δp,δv]: G[δp,na]·Q_na·G[δv,na]^T = 0.5·dt²·(sa2/dt)·dt·I      = sa2·dt²/2·I
-            //   [δv,δv]: G[δv,na]·Q_na·G[δv,na]^T = dt·(sa2/dt)·dt·I            = sa2·dt·I
-            Q.block<3, 3>(0, 0) += (sa2 * dt3 / 4.0f) * Eigen::Matrix3f::Identity();
-            Q.block<3, 3>(0, 6) += (sa2 * dt2 / 2.0f) * Eigen::Matrix3f::Identity();
-            Q.block<3, 3>(6, 0) += (sa2 * dt2 / 2.0f) * Eigen::Matrix3f::Identity();
-            Q.block<3, 3>(6, 6) += (sa2 * dt_f) * Eigen::Matrix3f::Identity();
+            if (has_noise) {
+                const float sa2  = params_.accel_noise_density * params_.accel_noise_density;
+                const float sg2  = params_.gyro_noise_density * params_.gyro_noise_density;
+                const float sba2 = params_.accel_bias_rw_density * params_.accel_bias_rw_density;
+                const float sbg2 = params_.gyro_bias_rw_density * params_.gyro_bias_rw_density;
 
-            // Gyro noise contribution (Q_ng = sg2/dt·I):
-            //   [δφ,δφ]: Jr·dt·(sg2/dt)·dt·Jr^T = sg2·dt·Jr·Jr^T
-            Q.block<3, 3>(3, 3) += (sg2 * dt_f) * (Jr * Jr.transpose());
+                // Accel noise contributions (Q_na = sa2/dt·I):
+                //   [δp,δp]: G[δp,na]·Q_na·G[δp,na]^T = 0.5·dt²·(sa2/dt)·0.5·dt²·I = sa2·dt³/4·I
+                //   [δp,δv]: G[δp,na]·Q_na·G[δv,na]^T = 0.5·dt²·(sa2/dt)·dt·I      = sa2·dt²/2·I
+                //   [δv,δv]: G[δv,na]·Q_na·G[δv,na]^T = dt·(sa2/dt)·dt·I            = sa2·dt·I
+                Q.block<3, 3>(0, 0) += (sa2 * dt3 / 4.0f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(0, 6) += (sa2 * dt2 / 2.0f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(6, 0) += (sa2 * dt2 / 2.0f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(6, 6) += (sa2 * dt_f) * Eigen::Matrix3f::Identity();
 
-            // Bias random-walk contributions (Q_nba = sba2·dt·I, Q_nbg = sbg2·dt·I):
-            Q.block<3, 3>(9,  9 ) += (sba2 * dt_f) * Eigen::Matrix3f::Identity();
-            Q.block<3, 3>(12, 12) += (sbg2 * dt_f) * Eigen::Matrix3f::Identity();
+                // Gyro noise contribution (Q_ng = sg2/dt·I):
+                //   [δφ,δφ]: Jr·dt·(sg2/dt)·dt·Jr^T = sg2·dt·Jr·Jr^T
+                Q.block<3, 3>(3, 3) += (sg2 * dt_f) * (Jr * Jr.transpose());
+
+                // Bias random-walk contributions (Q_nba = sba2·dt·I, Q_nbg = sbg2·dt·I):
+                Q.block<3, 3>(9,  9 ) += (sba2 * dt_f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(12, 12) += (sbg2 * dt_f) * Eigen::Matrix3f::Identity();
+            }
 
             // Propagate: Σ_{k+1} = F·Σ_k·F^T + Q
             // Enforce symmetry explicitly to prevent numerical drift in single precision.

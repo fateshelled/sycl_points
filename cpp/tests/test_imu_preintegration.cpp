@@ -445,23 +445,16 @@ TEST(IMUPreintegration, InitialCovariancePropagatedForward) {
     EXPECT_GT(cov(0, 0), P0(0, 0));
 }
 
-// 19. Covariance with zero noise but non-zero initial_covariance: after zero-motion
-//     integration the propagated covariance should only change due to F (no Q added).
-//     For pure zero motion (no rotation, no accel), F ≈ I + off-diagonal vel→pos term,
-//     so the rotation and bias blocks should be unchanged (= P0).
-TEST(IMUPreintegration, ZeroNoisePreservesInitialCovarianceBiasBlocks) {
-    // Zero noise params → no Q added during integration.
+// 19. Zero noise + no integration step: covariance unchanged (no step fires).
+TEST(IMUPreintegration, ZeroNoiseNoStepPreservesCovariance) {
     imu::IMUPreintegrationParams params;  // all noise densities = 0
 
     Eigen::Matrix<float, 15, 15> P0 = Eigen::Matrix<float, 15, 15>::Identity() * 1e-4f;
-    P0.block<3, 3>(9,  9 ) = 1e-6f * Eigen::Matrix3f::Identity();
-    P0.block<3, 3>(12, 12) = 1e-6f * Eigen::Matrix3f::Identity();
 
     imu::IMUPreintegration integ(params);
     integ.reset(imu::IMUBias{}, Eigen::Matrix3f::Identity(), P0);
 
-    // Zero motion: no integration steps fired (only one measurement fed → no step).
-    // Covariance must still equal P0 exactly.
+    // Only one measurement → no integrate_step called → covariance must equal P0.
     imu::IMUMeasurement m0;
     m0.timestamp = 0.0;
     integ.integrate(m0);
@@ -469,7 +462,37 @@ TEST(IMUPreintegration, ZeroNoisePreservesInitialCovarianceBiasBlocks) {
     EXPECT_TRUE(integ.get_raw().covariance.isApprox(P0, kEpsTight));
 }
 
-// 20. get_corrected with identical bias returns the same result as get_raw.
+// 20. Zero noise + non-zero initial_covariance: F still propagates existing uncertainty.
+//     Even when all noise densities are zero, an initial velocity error must
+//     grow into a position error over time (F[δp,δv] = I·dt coupling).
+TEST(IMUPreintegration, ZeroNoisePropagatesInitialCovariance) {
+    imu::IMUPreintegrationParams params;  // all noise densities = 0
+
+    // Initial covariance: only velocity uncertainty is non-zero.
+    Eigen::Matrix<float, 15, 15> P0 = Eigen::Matrix<float, 15, 15>::Zero();
+    P0.block<3, 3>(6, 6) = 1e-4f * Eigen::Matrix3f::Identity();  // velocity only
+
+    imu::IMUPreintegration integ(params);
+    integ.reset(imu::IMUBias{}, Eigen::Matrix3f::Identity(), P0);
+
+    auto meas = make_constant_imu(0.0, 1.0, 100,
+                                  Eigen::Vector3f::Zero(),
+                                  Eigen::Vector3f::Zero());
+    integ.integrate_batch(meas);
+
+    const auto& cov = integ.get_raw().covariance;
+
+    // Velocity uncertainty must remain (no damping).
+    EXPECT_NEAR(cov(6, 6), P0(6, 6), 1e-6f);
+
+    // Position uncertainty must have grown from the velocity→position coupling
+    // via F[δp,δv] = I·dt (even with zero noise Q).
+    EXPECT_GT(cov(0, 0), 0.0f);
+    EXPECT_GT(cov(1, 1), 0.0f);
+    EXPECT_GT(cov(2, 2), 0.0f);
+}
+
+// 21. get_corrected with identical bias returns the same result as get_raw.
 TEST(IMUPreintegration, GetCorrectedSameBiasEqualsRaw) {
     imu::IMUBias bias;
     bias.gyro_bias  = Eigen::Vector3f(0.01f, -0.02f, 0.005f);
