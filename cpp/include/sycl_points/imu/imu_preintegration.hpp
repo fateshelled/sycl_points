@@ -313,11 +313,15 @@ private:
         // Error-state ordering: [δp(0:3), δφ(3:6), δv(6:9), δba(9:12), δbg(12:15)]
         //
         // Discrete state-transition matrix F (15×15):
-        //   δp_{k+1} = δp_k + δv_k·dt  − 0.5·ΔRm·[am×]·Jr·dt²·δφ_k − 0.5·ΔRm·dt²·δba
+        //   δp_{k+1} = δp_k + δv_k·dt  − 0.5·ΔRm·[am×]·dt²·δφ_k − 0.5·ΔRm·dt²·δba
         //   δφ_{k+1} = R_step^T·δφ_k   − Jr·dt·δbg
-        //   δv_{k+1} = δv_k             − ΔRm·[am×]·Jr·dt·δφ_k − ΔRm·dt·δba
+        //   δv_{k+1} = δv_k             − ΔRm·[am×]·dt·δφ_k − ΔRm·dt·δba
         //   δba_{k+1}= δba_k
         //   δbg_{k+1}= δbg_k
+        //
+        // Note: Jr only appears in F[δφ, δbg].  The rotation-error effect on position
+        // and velocity (F[δp,δφ] and F[δv,δφ]) arises from the rotation of the
+        // accelerometer measurement, which does not involve the exponential-map Jacobian.
         //
         // Process noise Q = G·Q_d·G^T (computed analytically, sparse):
         //   Accel white noise (σ_a, PSD σ_a²):
@@ -335,19 +339,17 @@ private:
             // --- Build F (15×15) ---
             Eigen::Matrix<float, 15, 15> F = Eigen::Matrix<float, 15, 15>::Identity();
 
-            const Eigen::Matrix3f skew_a_Jr = skew_a * Jr;
-
-            // δp row
-            F.block<3, 3>(0, 3) = -0.5f * Delta_R_mid * skew_a_Jr * dt_f * dt_f;
+            // δp row  (Jr is NOT used here; only needed for the bias→rotation block)
+            F.block<3, 3>(0, 3) = -0.5f * Delta_R_mid * skew_a * dt_f * dt_f;
             F.block<3, 3>(0, 6) = Eigen::Matrix3f::Identity() * dt_f;
             F.block<3, 3>(0, 9) = -0.5f * Delta_R_mid * dt_f * dt_f;
 
-            // δφ row
+            // δφ row  (Jr applies only to the bias term)
             F.block<3, 3>(3, 3)  = R_step.transpose();
             F.block<3, 3>(3, 12) = -Jr * dt_f;
 
-            // δv row
-            F.block<3, 3>(6, 3) = -Delta_R_mid * skew_a_Jr * dt_f;
+            // δv row  (Jr is NOT used here)
+            F.block<3, 3>(6, 3) = -Delta_R_mid * skew_a * dt_f;
             F.block<3, 3>(6, 9) = -Delta_R_mid * dt_f;
 
             // --- Build process noise Q = G·Q_d·G^T (sparse, closed-form) ---
@@ -379,7 +381,8 @@ private:
             Q.block<3, 3>(12, 12) += (sbg2 * dt_f) * Eigen::Matrix3f::Identity();
 
             // Propagate: Σ_{k+1} = F·Σ_k·F^T + Q
-            result_.covariance = F * result_.covariance * F.transpose() + Q;
+            // Enforce symmetry explicitly to prevent numerical drift in single precision.
+            result_.covariance = eigen_utils::ensure_symmetric<15>(F * result_.covariance * F.transpose() + Q);
         }
 
         // --- Periodically renormalize Delta_R to stay on SO(3) ---
