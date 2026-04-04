@@ -86,7 +86,9 @@ struct State {
 ///                 Must be symmetric positive-definite.
 /// @param[out] H_imu  15×15 information matrix  (= P_pred⁻¹).
 /// @param[out] b_imu  15×1  gradient vector     (= H_imu · r).
-inline void compute_imu_hessian_gradient(
+/// @return true on success; false if P_pred is ill-conditioned (H_imu and
+///         b_imu are set to zero in that case).
+inline bool compute_imu_hessian_gradient(
     const State&                          x_pred,
     const State&                          x_op,
     const Eigen::Matrix<float, 15, 15>&   P_pred,
@@ -102,12 +104,14 @@ inline void compute_imu_hessian_gradient(
     //    solveInPlace(I) overwrites the identity in-place, yielding P⁻¹.
     // ------------------------------------------------------------------
     Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(P_pred);
-    if (ldlt.info() != Eigen::Success) {
-        // Factorisation failed (ill-conditioned or non-PSD matrix).
-        // Return zero outputs to signal the caller that this term is invalid.
+    // Eigen's LDLT::isPositive() returns true for PSD matrices (D_i >= 0),
+    // which includes degenerate cases like the zero matrix.  Instead, check
+    // that every diagonal entry of D is strictly positive to ensure P_pred
+    // is truly invertible.
+    if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) {
         H_imu.setZero();
         b_imu.setZero();
-        return;
+        return false;
     }
     H_imu.setIdentity();
     ldlt.solveInPlace(H_imu);
@@ -151,6 +155,7 @@ inline void compute_imu_hessian_gradient(
     //    toward the IMU prediction.
     // ------------------------------------------------------------------
     b_imu = H_imu * r;
+    return true;
 }
 
 }  // namespace imu

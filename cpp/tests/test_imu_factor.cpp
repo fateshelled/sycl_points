@@ -41,7 +41,7 @@ TEST(ImuFactor, HessianIsInverseOfCovariance) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, P_pred, H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, P_pred, H, b));
 
     // H · P_pred should equal the identity matrix
     const Eigen::Matrix<float, 15, 15> product = H * P_pred;
@@ -55,7 +55,7 @@ TEST(ImuFactor, ZeroResidualGivesZeroGradient) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, diag_cov(0.01f), H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, diag_cov(0.01f), H, b));
 
     EXPECT_TRUE(b.isZero(kEpsTight)) << "b =\n" << b.transpose();
 }
@@ -70,7 +70,7 @@ TEST(ImuFactor, PositionResidualOnlyAffectsPositionBlock) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b));
 
     // For a diagonal covariance H = (1/σ²) I, so b[0:3] = (1/σ²) * Δp
     const float h_diag = 1.0f / sigma_sq;
@@ -93,7 +93,7 @@ TEST(ImuFactor, VelocityResidualOnly) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b));
 
     // H = I for σ²=1, so b[6:9] = Δv
     EXPECT_NEAR(b(6),  0.5f, kEps);
@@ -116,7 +116,7 @@ TEST(ImuFactor, BiasResiduals) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b));
 
     const float inv_s2 = 1.0f / sigma_sq;
     // Accel bias block (indices 9-11)
@@ -144,7 +144,7 @@ TEST(ImuFactor, RotationResidualSO3Log) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b));
 
     // H = I (σ²=1), so b[3:6] = rotation vector
     EXPECT_NEAR(b(3), 0.0f,  kEps);
@@ -169,9 +169,9 @@ TEST(ImuFactor, RotationResidualAntisymmetry) {
     Eigen::Matrix<float, 15, 1>  b_ab, b_ba;
 
     // r = Log(R_a^T R_b)
-    imu::compute_imu_hessian_gradient(x_a, x_b, P, H, b_ab);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_a, x_b, P, H, b_ab));
     // r = Log(R_b^T R_a)
-    imu::compute_imu_hessian_gradient(x_b, x_a, P, H, b_ba);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_b, x_a, P, H, b_ba));
 
     // The two rotation residuals should be negatives of each other
     EXPECT_TRUE(b_ab.segment<3>(3).isApprox(-b_ba.segment<3>(3), kEps))
@@ -193,7 +193,7 @@ TEST(ImuFactor, HessianIsSymmetricPositiveDefinite) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b));
 
     // Symmetry
     EXPECT_TRUE(H.isApprox(H.transpose(), kEpsTight)) << "H is not symmetric";
@@ -216,7 +216,7 @@ TEST(ImuFactor, GradientEqualsHTimesResidual) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b));
 
     // Reconstruct the residual via the same eigen_utils path and verify b = H * r
     Eigen::Matrix<float, 15, 1> r;
@@ -243,7 +243,7 @@ TEST(ImuFactor, NearIdentityRotationIsNumericallyStable) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, diag_cov(1.0f), H, b);
+    EXPECT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, diag_cov(1.0f), H, b));
 
     EXPECT_TRUE(b.allFinite()) << "b contains NaN or Inf";
     EXPECT_NEAR(b.segment<3>(imu::State::kIdxRot).norm(), 0.0f, kEps);
@@ -268,7 +268,7 @@ TEST(ImuFactor, IllConditionedCovarianceReturnsZero) {
 
     Eigen::Matrix<float, 15, 15> H;
     Eigen::Matrix<float, 15, 1>  b;
-    imu::compute_imu_hessian_gradient(x_pred, x_op, P_zero, H, b);
+    EXPECT_FALSE(imu::compute_imu_hessian_gradient(x_pred, x_op, P_zero, H, b));
 
     EXPECT_TRUE(H.isZero()) << "H should be zero for ill-conditioned P";
     EXPECT_TRUE(b.isZero()) << "b should be zero for ill-conditioned P";
