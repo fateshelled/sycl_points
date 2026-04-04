@@ -220,13 +220,13 @@ TEST(ImuFactor, GradientEqualsHTimesResidual) {
 
     // Reconstruct the residual via the same eigen_utils path and verify b = H * r
     Eigen::Matrix<float, 15, 1> r;
-    r.segment<3>(0) = x_op.position  - x_pred.position;
+    r.segment<3>(imu::State::kIdxPos)     = x_op.position  - x_pred.position;
     const Eigen::Matrix3f R_rel = x_pred.rotation.transpose() * x_op.rotation;
     const Eigen::Vector4f q_rel = sycl_points::eigen_utils::geometry::rotation_matrix_to_quaternion(R_rel);
-    r.segment<3>(3) = sycl_points::eigen_utils::lie::so3_log(q_rel);
-    r.segment<3>(6) = x_op.velocity   - x_pred.velocity;
-    r.segment<3>(9) = x_op.accel_bias - x_pred.accel_bias;
-    r.segment<3>(12) = x_op.gyro_bias - x_pred.gyro_bias;
+    r.segment<3>(imu::State::kIdxRot)     = sycl_points::eigen_utils::lie::so3_log(q_rel);
+    r.segment<3>(imu::State::kIdxVel)     = x_op.velocity   - x_pred.velocity;
+    r.segment<3>(imu::State::kIdxAccBias) = x_op.accel_bias - x_pred.accel_bias;
+    r.segment<3>(imu::State::kIdxGyrBias) = x_op.gyro_bias  - x_pred.gyro_bias;
 
     const Eigen::Matrix<float, 15, 1> b_expected = H * r;
     EXPECT_TRUE(b.isApprox(b_expected, kEpsTight))
@@ -246,5 +246,30 @@ TEST(ImuFactor, NearIdentityRotationIsNumericallyStable) {
     imu::compute_imu_hessian_gradient(x_pred, x_op, diag_cov(1.0f), H, b);
 
     EXPECT_TRUE(b.allFinite()) << "b contains NaN or Inf";
-    EXPECT_NEAR(b.segment<3>(3).norm(), 0.0f, kEps);
+    EXPECT_NEAR(b.segment<3>(imu::State::kIdxRot).norm(), 0.0f, kEps);
+}
+
+// 11. kIdx* constants match the expected state-vector layout.
+TEST(ImuFactor, StateIndexConstantsAreCorrect) {
+    EXPECT_EQ(imu::State::kIdxPos,     0);
+    EXPECT_EQ(imu::State::kIdxRot,     3);
+    EXPECT_EQ(imu::State::kIdxVel,     6);
+    EXPECT_EQ(imu::State::kIdxAccBias, 9);
+    EXPECT_EQ(imu::State::kIdxGyrBias, 12);
+}
+
+// 12. Ill-conditioned (zero) covariance returns zero H and b (LDLT guard).
+TEST(ImuFactor, IllConditionedCovarianceReturnsZero) {
+    imu::State x_pred, x_op;
+    x_op.position = Eigen::Vector3f(1.0f, 2.0f, 3.0f);
+
+    // A zero matrix is not positive-definite → LDLT must detect this.
+    const Eigen::Matrix<float, 15, 15> P_zero = Eigen::Matrix<float, 15, 15>::Zero();
+
+    Eigen::Matrix<float, 15, 15> H;
+    Eigen::Matrix<float, 15, 1>  b;
+    imu::compute_imu_hessian_gradient(x_pred, x_op, P_zero, H, b);
+
+    EXPECT_TRUE(H.isZero()) << "H should be zero for ill-conditioned P";
+    EXPECT_TRUE(b.isZero()) << "b should be zero for ill-conditioned P";
 }

@@ -35,7 +35,17 @@ namespace imu {
 /// The rotation is stored as a 3×3 matrix on SO(3).  Inside the optimisation
 /// all perturbations are expressed in the 3-D tangent space (Lie algebra so(3))
 /// using a right-perturbation convention.
+///
+/// The named index constants (kIdx*) identify the start of each 3-D block
+/// in the 15-D error-state vector and should be used instead of magic numbers.
 struct State {
+    /// Start indices of each 3-D block in the 15-D error-state / tangent vector.
+    static constexpr int kIdxPos      = 0;   ///< position    (indices  0– 2)
+    static constexpr int kIdxRot      = 3;   ///< rotation    (indices  3– 5)
+    static constexpr int kIdxVel      = 6;   ///< velocity    (indices  6– 8)
+    static constexpr int kIdxAccBias  = 9;   ///< accel bias  (indices  9–11)
+    static constexpr int kIdxGyrBias  = 12;  ///< gyro bias   (indices 12–14)
+
     Eigen::Vector3f position   = Eigen::Vector3f::Zero();      ///< World-frame position [m]
     Eigen::Matrix3f rotation   = Eigen::Matrix3f::Identity();  ///< Body-to-world rotation R ∈ SO(3)
     Eigen::Vector3f velocity   = Eigen::Vector3f::Zero();      ///< World-frame velocity [m/s]
@@ -86,11 +96,21 @@ inline void compute_imu_hessian_gradient(
     // ------------------------------------------------------------------
     // 1. Information matrix  H_imu = P_pred⁻¹
     //
-    //    Use an LLT (Cholesky) factorisation instead of .inverse() for
-    //    better numerical conditioning.  Solving  P · H = I  yields H.
+    //    Use LDLT (Bunch-Kaufman) factorisation: more robust than LLT for
+    //    single-precision floats because it handles positive semi-definite
+    //    matrices and detects numerical failures.
+    //    solveInPlace(I) overwrites the identity in-place, yielding P⁻¹.
     // ------------------------------------------------------------------
-    const Eigen::LLT<Eigen::Matrix<float, 15, 15>> llt(P_pred);
-    H_imu = llt.solve(Eigen::Matrix<float, 15, 15>::Identity());
+    Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(P_pred);
+    if (ldlt.info() != Eigen::Success) {
+        // Factorisation failed (ill-conditioned or non-PSD matrix).
+        // Return zero outputs to signal the caller that this term is invalid.
+        H_imu.setZero();
+        b_imu.setZero();
+        return;
+    }
+    H_imu.setIdentity();
+    ldlt.solveInPlace(H_imu);
 
     // ------------------------------------------------------------------
     // 2. Manifold residual  r = x_op ⊖ x_pred  (15×1)
@@ -103,25 +123,25 @@ inline void compute_imu_hessian_gradient(
     // ------------------------------------------------------------------
     Eigen::Matrix<float, 15, 1> r;
 
-    // Indices 0–2: position residual
-    r.segment<3>(0) = x_op.position - x_pred.position;
+    // Indices kIdxPos (0–2): position residual
+    r.segment<3>(State::kIdxPos) = x_op.position - x_pred.position;
 
-    // Indices 3–5: rotation residual on SO(3)
+    // Indices kIdxRot (3–5): rotation residual on SO(3)
     //   R_pred^T · R_op  is the relative rotation from R_pred to R_op.
     //   Convert to a quaternion and apply the existing so3_log to obtain
     //   the 3-D tangent-space error vector.
     const Eigen::Matrix3f R_relative = x_pred.rotation.transpose() * x_op.rotation;
     const Eigen::Vector4f q_relative = eigen_utils::geometry::rotation_matrix_to_quaternion(R_relative);
-    r.segment<3>(3) = eigen_utils::lie::so3_log(q_relative);
+    r.segment<3>(State::kIdxRot) = eigen_utils::lie::so3_log(q_relative);
 
-    // Indices 6–8: velocity residual
-    r.segment<3>(6) = x_op.velocity - x_pred.velocity;
+    // Indices kIdxVel (6–8): velocity residual
+    r.segment<3>(State::kIdxVel) = x_op.velocity - x_pred.velocity;
 
-    // Indices 9–11: accelerometer bias residual
-    r.segment<3>(9) = x_op.accel_bias - x_pred.accel_bias;
+    // Indices kIdxAccBias (9–11): accelerometer bias residual
+    r.segment<3>(State::kIdxAccBias) = x_op.accel_bias - x_pred.accel_bias;
 
-    // Indices 12–14: gyroscope bias residual
-    r.segment<3>(12) = x_op.gyro_bias - x_pred.gyro_bias;
+    // Indices kIdxGyrBias (12–14): gyroscope bias residual
+    r.segment<3>(State::kIdxGyrBias) = x_op.gyro_bias - x_pred.gyro_bias;
 
     // ------------------------------------------------------------------
     // 3. Gradient  b_imu = H_imu · r
