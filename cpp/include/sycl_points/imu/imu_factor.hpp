@@ -148,13 +148,14 @@ inline bool compute_imu_hessian_gradient(
     r.segment<3>(State::kIdxGyrBias) = x_op.gyro_bias - x_pred.gyro_bias;
 
     // ------------------------------------------------------------------
-    // 3. Gradient  b_imu = H_imu · r
+    // 3. Gradient  b_imu = P_pred⁻¹ · r
     //
-    //    This is the right-hand side of the Gauss-Newton normal equations
-    //    for the IMU prior term.  A positive b_imu pulls the state back
-    //    toward the IMU prediction.
+    //    Reuse the LDLT factorisation already computed in step 1 to solve
+    //    P_pred · b = r directly, instead of forming H_imu = P_pred⁻¹
+    //    explicitly and then computing H_imu · r.  This avoids one extra
+    //    matrix–vector product and is more numerically stable.
     // ------------------------------------------------------------------
-    b_imu = H_imu * r;
+    b_imu = ldlt.solve(r);
     return true;
 }
 
