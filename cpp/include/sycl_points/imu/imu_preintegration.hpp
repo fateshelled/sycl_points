@@ -86,9 +86,9 @@ struct IMUPreintegrationParams {
     ///   gyro_bias_rw_density  ≈ 1e-5  rad/s²/√Hz
     ///   accel_bias_rw_density ≈ 1e-4  m/s³/√Hz
     /// @{
-    float gyro_noise_density    = 0.0f;  ///< Gyroscope white noise density [rad/s/√Hz]
-    float accel_noise_density   = 0.0f;  ///< Accelerometer white noise density [m/s²/√Hz]
-    float gyro_bias_rw_density  = 0.0f;  ///< Gyroscope bias random-walk density [rad/s²/√Hz]
+    float gyro_noise_density = 0.0f;     ///< Gyroscope white noise density [rad/s/√Hz]
+    float accel_noise_density = 0.0f;    ///< Accelerometer white noise density [m/s²/√Hz]
+    float gyro_bias_rw_density = 0.0f;   ///< Gyroscope bias random-walk density [rad/s²/√Hz]
     float accel_bias_rw_density = 0.0f;  ///< Accelerometer bias random-walk density [m/s³/√Hz]
     /// @}
 
@@ -348,7 +348,7 @@ private:
             F.block<3, 3>(0, 9) = -0.5f * Delta_R_mid * dt_f * dt_f;
 
             // δφ row  (Jr applies only to the bias term)
-            F.block<3, 3>(3, 3)  = R_step.transpose();
+            F.block<3, 3>(3, 3) = R_step.transpose();
             F.block<3, 3>(3, 12) = -Jr * dt_f;
 
             // δv row  (Jr is NOT used here)
@@ -362,8 +362,8 @@ private:
             Eigen::Matrix<float, 15, 15> Q = Eigen::Matrix<float, 15, 15>::Zero();
 
             if (has_noise) {
-                const float sa2  = params_.accel_noise_density * params_.accel_noise_density;
-                const float sg2  = params_.gyro_noise_density * params_.gyro_noise_density;
+                const float sa2 = params_.accel_noise_density * params_.accel_noise_density;
+                const float sg2 = params_.gyro_noise_density * params_.gyro_noise_density;
                 const float sba2 = params_.accel_bias_rw_density * params_.accel_bias_rw_density;
                 const float sbg2 = params_.gyro_bias_rw_density * params_.gyro_bias_rw_density;
 
@@ -381,7 +381,7 @@ private:
                 Q.block<3, 3>(3, 3) += (sg2 * dt_f) * (Jr * Jr.transpose());
 
                 // Bias random-walk contributions (Q_nba = sba2·dt·I, Q_nbg = sbg2·dt·I):
-                Q.block<3, 3>(9,  9 ) += (sba2 * dt_f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(9, 9) += (sba2 * dt_f) * Eigen::Matrix3f::Identity();
                 Q.block<3, 3>(12, 12) += (sbg2 * dt_f) * Eigen::Matrix3f::Identity();
             }
 
