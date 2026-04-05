@@ -32,7 +32,9 @@
 *.app
 
 build/*
+build_test/*
 cpp/build/*
+cpp/build_test/*
 cpp/build_dpcpp/*
 cpp/build_acpp/*
 cpp/build_cuda/*

@@ -47,6 +47,24 @@ struct PreintegrationResult {
     double dt_total = 0.0;                                  ///< Total integrated duration [s]
     PreintegrationJacobians J;
 
+    /// @brief 15×15 covariance matrix of the navigation state.
+    ///
+    /// Propagated from the initial_covariance supplied to reset() by the
+    /// discrete error-state dynamics:
+    ///
+    ///   Σ_{k+1} = F_k · Σ_k · F_k^T  +  G_k · Q_d · G_k^T
+    ///
+    /// State-vector ordering (matches imu::State in imu_factor.hpp):
+    ///   indices  0– 2  position           (world frame)
+    ///   indices  3– 5  rotation           (so(3) tangent, right-perturbation)
+    ///   indices  6– 8  velocity           (world frame)
+    ///   indices  9–11  accelerometer bias (body frame)
+    ///   indices 12–14  gyroscope bias     (body frame)
+    ///
+    /// Pass directly as P_pred to compute_imu_hessian_gradient().
+    /// Remains zero if all IMUPreintegrationParams noise densities are zero.
+    Eigen::Matrix<float, 15, 15> covariance = Eigen::Matrix<float, 15, 15>::Zero();
+
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
@@ -54,6 +72,25 @@ struct PreintegrationResult {
 struct IMUPreintegrationParams {
     /// Gravity vector in the world frame [m/s^2]. Default: z-down.
     Eigen::Vector3f gravity = Eigen::Vector3f(0.0f, 0.0f, -9.81f);
+
+    /// @name IMU noise parameters for 15×15 covariance propagation.
+    ///
+    /// Set non-zero values to enable covariance propagation.  The noise model
+    /// follows the standard IMU calibration convention (e.g. Kalibr):
+    ///   - Measurement noise  PSD: σ²  → discrete variance = σ² / dt per step.
+    ///   - Bias random-walk   PSD: σ²  → discrete variance = σ² * dt per step.
+    ///
+    /// Typical MEMS IMU values (order-of-magnitude):
+    ///   gyro_noise_density    ≈ 1e-3  rad/s/√Hz
+    ///   accel_noise_density   ≈ 1e-2  m/s²/√Hz
+    ///   gyro_bias_rw_density  ≈ 1e-5  rad/s²/√Hz
+    ///   accel_bias_rw_density ≈ 1e-4  m/s³/√Hz
+    /// @{
+    float gyro_noise_density = 0.0f;     ///< Gyroscope white noise density [rad/s/√Hz]
+    float accel_noise_density = 0.0f;    ///< Accelerometer white noise density [m/s²/√Hz]
+    float gyro_bias_rw_density = 0.0f;   ///< Gyroscope bias random-walk density [rad/s²/√Hz]
+    float accel_bias_rw_density = 0.0f;  ///< Accelerometer bias random-walk density [m/s³/√Hz]
+    /// @}
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
@@ -77,12 +114,20 @@ public:
     explicit IMUPreintegration(const IMUPreintegrationParams& params = IMUPreintegrationParams()) : params_(params) {}
 
     /// @brief Reset the integrator (call at every new LiDAR keyframe).
-    /// @param bias           Current bias estimate used as the linearization point.
-    /// @param R_world_body_i Rotation from body to world frame at the window start.
-    ///                       Required to compensate gravity in predict_relative_transform().
-    void reset(const IMUBias& bias = IMUBias(), const Eigen::Matrix3f& R_world_body_i = Eigen::Matrix3f::Identity()) {
+    /// @param bias               Current bias estimate used as the linearization point.
+    /// @param R_world_body_i     Rotation from body to world frame at the window start.
+    ///                           Required to compensate gravity in predict_relative_transform().
+    /// @param initial_covariance 15×15 state covariance at the window start.
+    ///                           Typically the posterior covariance P from the previous
+    ///                           keyframe optimisation.  Propagated forward together with
+    ///                           the IMU process noise; pass as P_pred to
+    ///                           compute_imu_hessian_gradient().
+    ///                           Defaults to zero (uncertainty from IMU noise only).
+    void reset(const IMUBias& bias = IMUBias(), const Eigen::Matrix3f& R_world_body_i = Eigen::Matrix3f::Identity(),
+               const Eigen::Matrix<float, 15, 15>& initial_covariance = Eigen::Matrix<float, 15, 15>::Zero()) {
         bias_lin_ = bias;
         result_ = PreintegrationResult{};
+        result_.covariance = initial_covariance;
         has_prev_ = false;
         num_measurements_ = 0;
         step_count_ = 0;
@@ -262,6 +307,88 @@ private:
         result_.J.J_p_bg =
             result_.J.J_p_bg + J_v_bg_old * dt_f - 0.5f * Delta_R_mid * skew_a * J_R_bg_old * dt_f * dt_f;
         result_.J.J_p_ba = result_.J.J_p_ba + J_v_ba_old * dt_f - 0.5f * Delta_R_mid * dt_f * dt_f;
+
+        // --- 15×15 covariance propagation ---
+        //
+        // Error-state ordering: [δp(0:3), δφ(3:6), δv(6:9), δba(9:12), δbg(12:15)]
+        //
+        // Discrete state-transition matrix F (15×15):
+        //   δp_{k+1} = δp_k + δv_k·dt  − 0.5·ΔRm·[am×]·dt²·δφ_k − 0.5·ΔRm·dt²·δba
+        //   δφ_{k+1} = R_step^T·δφ_k   − Jr·dt·δbg
+        //   δv_{k+1} = δv_k             − ΔRm·[am×]·dt·δφ_k − ΔRm·dt·δba
+        //   δba_{k+1}= δba_k
+        //   δbg_{k+1}= δbg_k
+        //
+        // Note: Jr only appears in F[δφ, δbg].  The rotation-error effect on position
+        // and velocity (F[δp,δφ] and F[δv,δφ]) arises from the rotation of the
+        // accelerometer measurement, which does not involve the exponential-map Jacobian.
+        //
+        // Process noise Q = G·Q_d·G^T (computed analytically, sparse):
+        //   Accel white noise (σ_a, PSD σ_a²):
+        //     G[δp, na] = 0.5·ΔRm·dt²,  G[δv, na] = ΔRm·dt,  Q_na = σ_a²/dt · I
+        //   Gyro white noise (σ_g, PSD σ_g²):
+        //     G[δφ, ng] = Jr·dt,                              Q_ng = σ_g²/dt · I
+        //   Bias random-walk noise:
+        //     G[δba, nba] = I,  Q_nba = σ_ba²·dt · I
+        //     G[δbg, nbg] = I,  Q_nbg = σ_bg²·dt · I
+        //
+        // F is always applied so that existing uncertainty (e.g. velocity error from
+        // initial_covariance) propagates through state dynamics even when all noise
+        // parameters are zero.  Q is only non-zero when noise parameters are set.
+        // Skip the entire block only when both covariance and Q are trivially zero.
+        const bool has_noise = (params_.gyro_noise_density > 0.0f || params_.accel_noise_density > 0.0f ||
+                                params_.gyro_bias_rw_density > 0.0f || params_.accel_bias_rw_density > 0.0f);
+        if (has_noise || !result_.covariance.isZero()) {
+            // --- Build F (15×15) ---
+            Eigen::Matrix<float, 15, 15> F = Eigen::Matrix<float, 15, 15>::Identity();
+
+            // δp row  (Jr is NOT used here; only needed for the bias→rotation block)
+            F.block<3, 3>(0, 3) = -0.5f * Delta_R_mid * skew_a * dt_f * dt_f;
+            F.block<3, 3>(0, 6) = Eigen::Matrix3f::Identity() * dt_f;
+            F.block<3, 3>(0, 9) = -0.5f * Delta_R_mid * dt_f * dt_f;
+
+            // δφ row  (Jr applies only to the bias term)
+            F.block<3, 3>(3, 3) = R_step.transpose();
+            F.block<3, 3>(3, 12) = -Jr * dt_f;
+
+            // δv row  (Jr is NOT used here)
+            F.block<3, 3>(6, 3) = -Delta_R_mid * skew_a * dt_f;
+            F.block<3, 3>(6, 9) = -Delta_R_mid * dt_f;
+
+            // --- Build process noise Q = G·Q_d·G^T (sparse, closed-form) ---
+            const float dt2 = dt_f * dt_f;
+            const float dt3 = dt2 * dt_f;
+
+            Eigen::Matrix<float, 15, 15> Q = Eigen::Matrix<float, 15, 15>::Zero();
+
+            if (has_noise) {
+                const float sa2 = params_.accel_noise_density * params_.accel_noise_density;
+                const float sg2 = params_.gyro_noise_density * params_.gyro_noise_density;
+                const float sba2 = params_.accel_bias_rw_density * params_.accel_bias_rw_density;
+                const float sbg2 = params_.gyro_bias_rw_density * params_.gyro_bias_rw_density;
+
+                // Accel noise contributions (Q_na = sa2/dt·I):
+                //   [δp,δp]: G[δp,na]·Q_na·G[δp,na]^T = 0.5·dt²·(sa2/dt)·0.5·dt²·I = sa2·dt³/4·I
+                //   [δp,δv]: G[δp,na]·Q_na·G[δv,na]^T = 0.5·dt²·(sa2/dt)·dt·I      = sa2·dt²/2·I
+                //   [δv,δv]: G[δv,na]·Q_na·G[δv,na]^T = dt·(sa2/dt)·dt·I            = sa2·dt·I
+                Q.block<3, 3>(0, 0) += (sa2 * dt3 / 4.0f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(0, 6) += (sa2 * dt2 / 2.0f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(6, 0) += (sa2 * dt2 / 2.0f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(6, 6) += (sa2 * dt_f) * Eigen::Matrix3f::Identity();
+
+                // Gyro noise contribution (Q_ng = sg2/dt·I):
+                //   [δφ,δφ]: Jr·dt·(sg2/dt)·dt·Jr^T = sg2·dt·Jr·Jr^T
+                Q.block<3, 3>(3, 3) += (sg2 * dt_f) * (Jr * Jr.transpose());
+
+                // Bias random-walk contributions (Q_nba = sba2·dt·I, Q_nbg = sbg2·dt·I):
+                Q.block<3, 3>(9, 9) += (sba2 * dt_f) * Eigen::Matrix3f::Identity();
+                Q.block<3, 3>(12, 12) += (sbg2 * dt_f) * Eigen::Matrix3f::Identity();
+            }
+
+            // Propagate: Σ_{k+1} = F·Σ_k·F^T + Q
+            // Enforce symmetry explicitly to prevent numerical drift in single precision.
+            result_.covariance = eigen_utils::ensure_symmetric<15>(F * result_.covariance * F.transpose() + Q);
+        }
 
         // --- Periodically renormalize Delta_R to stay on SO(3) ---
         ++step_count_;
