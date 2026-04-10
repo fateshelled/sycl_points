@@ -71,7 +71,11 @@ struct PreintegrationResult {
 /// @brief Parameters for IMU preintegration.
 struct IMUPreintegrationParams {
     /// Gravity vector in the world frame [m/s^2]. Default: z-down.
-    Eigen::Vector3f gravity = Eigen::Vector3f(0.0f, 0.0f, -9.81f);
+    Eigen::Vector3f gravity = Eigen::Vector3f(0.0f, 0.0f, -9.80665ff);
+
+    /// Scale factor applied to raw accelerometer measurements before integration.
+    /// Set to 9.80665 when the IMU reports acceleration in [G] instead of [m/s^2].
+    float accel_scale = 1.0f;
 
     /// @name IMU noise parameters for 15×15 covariance propagation.
     ///
@@ -259,11 +263,11 @@ private:
         if (dt < 1e-9) return;
         const float dt_f = static_cast<float>(dt);
 
-        // Bias-corrected measurements
+        // Bias-corrected measurements (accel scaled to [m/s^2] if sensor outputs [G])
         const Eigen::Vector3f omega_0 = m0.gyro - bias_lin_.gyro_bias;
         const Eigen::Vector3f omega_1 = m1.gyro - bias_lin_.gyro_bias;
-        const Eigen::Vector3f a_0 = m0.accel - bias_lin_.accel_bias;
-        const Eigen::Vector3f a_1 = m1.accel - bias_lin_.accel_bias;
+        const Eigen::Vector3f a_0 = m0.accel * params_.accel_scale - bias_lin_.accel_bias;
+        const Eigen::Vector3f a_1 = m1.accel * params_.accel_scale - bias_lin_.accel_bias;
 
         // Midpoint values
         const Eigen::Vector3f omega_mid = 0.5f * (omega_0 + omega_1);
