@@ -353,6 +353,13 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             params.imu.T_imu_to_lidar.matrix().block<3, 3>(0, 0) = quat.normalized().matrix();
         }
 
+        // IMU acceleration unit: "m_s2" (default) or "G" (1G = 9.80665 m/s^2)
+        {
+            std::string accel_unit = node->declare_parameter<std::string>("imu/accel_unit", "m_s2");
+            std::transform(accel_unit.begin(), accel_unit.end(), accel_unit.begin(), [](unsigned char c) { return std::toupper(c); });
+            params.imu.preintegration.accel_scale = (accel_unit == "G") ? 9.80665f : 1.0f;
+        }
+
         // Gravity vector in world frame [m/s^2]
         {
             const auto gx =
