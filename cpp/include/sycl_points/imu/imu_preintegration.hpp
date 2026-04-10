@@ -71,7 +71,7 @@ struct PreintegrationResult {
 /// @brief Parameters for IMU preintegration.
 struct IMUPreintegrationParams {
     /// Gravity vector in the world frame [m/s^2]. Default: z-down.
-    Eigen::Vector3f gravity = Eigen::Vector3f(0.0f, 0.0f, -9.80665ff);
+    Eigen::Vector3f gravity = Eigen::Vector3f(0.0f, 0.0f, -9.80665f);
 
     /// Scale factor applied to raw accelerometer measurements before integration.
     /// Set to 9.80665 when the IMU reports acceleration in [G] instead of [m/s^2].
