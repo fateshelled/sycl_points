@@ -355,7 +355,8 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
 
         // IMU acceleration unit: "m_s2" (default) or "G" (1G = 9.80665 m/s^2)
         {
-            const std::string accel_unit = node->declare_parameter<std::string>("imu/accel_unit", "m_s2");
+            std::string accel_unit = node->declare_parameter<std::string>("imu/accel_unit", "m_s2");
+            std::transform(accel_unit.begin(), accel_unit.end(), accel_unit.begin(), [](unsigned char c) { return std::toupper(c); });
             params.imu.preintegration.accel_scale = (accel_unit == "G") ? 9.80665f : 1.0f;
         }
 
