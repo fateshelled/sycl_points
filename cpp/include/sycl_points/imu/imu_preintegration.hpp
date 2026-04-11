@@ -121,6 +121,10 @@ public:
     /// @param bias               Current bias estimate used as the linearization point.
     /// @param R_world_body_i     Rotation from body to world frame at the window start.
     ///                           Required to compensate gravity in predict_relative_transform().
+    /// @param v_world_i          Linear velocity in the world frame at the window start [m/s].
+    ///                           Used by predict_relative_transform() to add the constant-
+    ///                           velocity contribution (v * dt) to the predicted displacement.
+    ///                           Defaults to zero.
     /// @param initial_covariance 15×15 state covariance at the window start.
     ///                           Typically the posterior covariance P from the previous
     ///                           keyframe optimisation.  Propagated forward together with
@@ -128,6 +132,7 @@ public:
     ///                           compute_imu_hessian_gradient().
     ///                           Defaults to zero (uncertainty from IMU noise only).
     void reset(const IMUBias& bias = IMUBias(), const Eigen::Matrix3f& R_world_body_i = Eigen::Matrix3f::Identity(),
+               const Eigen::Vector3f& v_world_i = Eigen::Vector3f::Zero(),
                const Eigen::Matrix<float, 15, 15>& initial_covariance = Eigen::Matrix<float, 15, 15>::Zero()) {
         bias_lin_ = bias;
         result_ = PreintegrationResult{};
@@ -136,6 +141,7 @@ public:
         num_measurements_ = 0;
         step_count_ = 0;
         R_world_body_i_ = R_world_body_i;
+        v_world_i_ = v_world_i;
     }
 
     /// @brief Feed one IMU sample.  Integration starts after the second call.
@@ -190,10 +196,10 @@ public:
     /// @brief Predict the absolute world-frame pose at the end of the window.
     ///
     /// @param T_world_body_i  World-to-body transform at window start (4x4 SE3).
-    /// @param v_i_world       Body velocity in the world frame at window start [m/s].
+    /// @param v_world_i       Body velocity in the world frame at window start [m/s].
     /// @param current_bias    Current bias estimate (may differ from linearization bias).
     /// @return Predicted world-frame pose T_world_body_j (TransformMatrix = Matrix4f).
-    TransformMatrix predict_transform(const TransformMatrix& T_world_body_i, const Eigen::Vector3f& v_i_world,
+    TransformMatrix predict_transform(const TransformMatrix& T_world_body_i, const Eigen::Vector3f& v_world_i,
                                       const IMUBias& current_bias) const {
         const PreintegrationResult c = get_corrected(current_bias);
         const float dt_f = static_cast<float>(c.dt_total);
@@ -202,7 +208,7 @@ public:
         const Eigen::Vector3f p_i = T_world_body_i.block<3, 1>(0, 3);
 
         const Eigen::Matrix3f R_j = R_i * c.Delta_R;
-        const Eigen::Vector3f p_j = p_i + v_i_world * dt_f + 0.5f * params_.gravity * dt_f * dt_f + R_i * c.Delta_p;
+        const Eigen::Vector3f p_j = p_i + v_world_i * dt_f + 0.5f * params_.gravity * dt_f * dt_f + R_i * c.Delta_p;
 
         TransformMatrix T_j = TransformMatrix::Identity();
         T_j.block<3, 3>(0, 0) = R_j;
@@ -211,10 +217,10 @@ public:
     }
 
     /// @brief Predict the relative transform from window start to window end.
-    ///        Gravity is compensated using the initial orientation supplied to reset(),
-    ///        making the returned translation purely motion-induced.
-    ///        Suitable for direct use as an ICP initial_guess when the absolute
-    ///        world-frame velocity is not tracked.
+    ///        Gravity is compensated using the initial orientation supplied to reset().
+    ///        The initial velocity supplied to reset() is also included, so the returned
+    ///        translation captures both constant-velocity motion and acceleration-induced
+    ///        displacement.  Suitable for direct use as an ICP initial guess.
     /// @return T_body_i_to_body_j  (TransformMatrix = Matrix4f)
     TransformMatrix predict_relative_transform(const IMUBias& current_bias) const {
         const PreintegrationResult c = get_corrected(current_bias);
@@ -229,9 +235,13 @@ public:
         const Eigen::Vector3f delta_p_grav_free =
             c.Delta_p + 0.5f * (R_world_body_i_.transpose() * params_.gravity) * dt_f * dt_f;
 
+        // Add the initial velocity contribution in window-start body frame.
+        // v_world * dt is expressed in body frame as R_i^T * v_world * dt.
+        const Eigen::Vector3f delta_p = delta_p_grav_free + R_world_body_i_.transpose() * v_world_i_ * dt_f;
+
         TransformMatrix T_rel = TransformMatrix::Identity();
         T_rel.block<3, 3>(0, 0) = c.Delta_R;
-        T_rel.block<3, 1>(0, 3) = delta_p_grav_free;
+        T_rel.block<3, 1>(0, 3) = delta_p;
         return T_rel;
     }
 
@@ -407,6 +417,7 @@ private:
     PreintegrationResult result_;
     IMUMeasurement prev_meas_;
     Eigen::Matrix3f R_world_body_i_ = Eigen::Matrix3f::Identity();
+    Eigen::Vector3f v_world_i_ = Eigen::Vector3f::Zero();
     bool has_prev_ = false;
     int num_measurements_ = 0;
     int step_count_ = 0;
