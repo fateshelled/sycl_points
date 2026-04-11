@@ -152,7 +152,6 @@ public:
                 const Eigen::Matrix3f R_world_imu =
                     this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
-                this->imu_prev_Delta_R_ = Eigen::Matrix3f::Identity();
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, Eigen::Vector3f::Zero());
             }
 
@@ -216,7 +215,6 @@ private:
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
     Eigen::Vector3f linear_velocity_;       // [m/s] in previous LiDAR body frame
-    Eigen::Matrix3f imu_prev_Delta_R_;      // Delta_R from the previous IMU integration window
     Eigen::AngleAxisf angular_velocity_;    // [rad/s]
     Eigen::Isometry3f prev_odom_;           // prev T_odom_to_lidar
     Eigen::Isometry3f odom_;                // current T_odom_to_lidar
@@ -574,21 +572,7 @@ private:
                 }
                 const Eigen::Matrix3f R_world_imu =
                     this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-                // Rotate linear_velocity_ (in previous LiDAR body frame at t_{k-2}) by the
-                // IMU-derived Delta_R from the previous window to correct its direction to t_{k-1}.
-                // The LiDAR-derived velocity captures the average direction over [t_{k-2}, t_{k-1}],
-                // while Delta_R (integrated from gyroscope at 100-1000 Hz) gives the actual
-                // rotation that occurred during that window, bringing the direction up to t_{k-1}.
-                //
-                // Derivation (all expressed in their respective body frames):
-                //   v_imu_{k-2} = T_lidar_to_imu * v_lidar_{k-2}   (LiDAR → IMU frame)
-                //   v_imu_{k-1} = Delta_R * v_imu_{k-2}             (rotate to t_{k-1} body frame)
-                //   v_world     = R_world_imu_{k-1} * v_imu_{k-1}   (to world frame)
-                const Eigen::Matrix3f T_lidar_to_imu = this->params_.imu.T_imu_to_lidar.rotation().transpose();
-                const Eigen::Vector3f v_world =
-                    R_world_imu * this->imu_prev_Delta_R_ * T_lidar_to_imu * this->linear_velocity_;
-                // Save Delta_R of this window for the next frame's velocity correction.
-                this->imu_prev_Delta_R_ = this->imu_preintegration_->get_raw().Delta_R;
+                const Eigen::Vector3f v_world = this->odom_.rotation() * this->linear_velocity_;
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_world);
             } else {
                 init_T = this->adaptive_motion_prediction();
