@@ -152,7 +152,8 @@ public:
                 const Eigen::Matrix3f R_world_imu =
                     this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
-                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
+                this->imu_prev_Delta_R_ = Eigen::Matrix3f::Identity();
+                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, Eigen::Vector3f::Zero());
             }
 
             return ResultType::first_frame;
@@ -185,15 +186,6 @@ public:
             this->angular_velocity_ = Eigen::AngleAxisf(delta_angle_axis.angle() / this->dt_, delta_angle_axis.axis());
 
             this->registrated_ = true;
-
-            // Reset IMU integrator for the next inter-frame window.
-            // odom_ has already been updated to the current frame's pose above.
-            if (this->imu_preintegration_) {
-                const Eigen::Matrix3f R_world_imu =
-                    this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-                std::lock_guard<std::mutex> lock(imu_mutex_);
-                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
-            }
         }
         return ResultType::success;
     }
@@ -223,7 +215,8 @@ private:
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
-    Eigen::Vector3f linear_velocity_;       // [m/s]
+    Eigen::Vector3f linear_velocity_;       // [m/s] in previous LiDAR body frame
+    Eigen::Matrix3f imu_prev_Delta_R_;      // Delta_R from the previous IMU integration window
     Eigen::AngleAxisf angular_velocity_;    // [rad/s]
     Eigen::Isometry3f prev_odom_;           // prev T_odom_to_lidar
     Eigen::Isometry3f odom_;                // current T_odom_to_lidar
@@ -547,7 +540,8 @@ private:
     /// @brief Predict the initial ICP pose using IMU preintegration.
     /// @return Absolute predicted pose T_odom_to_lidar_curr (Isometry3f).
     Eigen::Isometry3f imu_motion_prediction() {
-        // T_imu_rel: pose of IMU_curr in IMU_prev frame (4x4 float Matrix)
+        // T_imu_rel: relative pose in IMU body frame, with gravity and initial velocity
+        // already accounted for inside predict_relative_transform().
         const TransformMatrix T_imu_rel = this->imu_preintegration_->predict_relative_transform(this->params_.imu.bias);
 
         // Convert to LiDAR-frame relative transform:
@@ -559,18 +553,43 @@ private:
 
         const Eigen::Isometry3f T_lidar_rel = T_i2l * T_imu_rel_iso * T_i2l.inverse();
 
-        // Compose with current odom_ to get predicted absolute pose.
-        // At the time registration() is called, odom_ still holds T_odom_to_lidar at t_{k-1}.
         return this->odom_ * T_lidar_rel;
     }
 
     algorithms::registration::RegistrationResult registration() {
-        // Snapshot the IMU-based initial guess under the lock, then run ICP outside it.
+        // Snapshot the IMU-based initial guess under the lock, then immediately reset the
+        // integrator so the next window starts from this scan's arrival time.  Resetting
+        // here (before ICP) ensures:
+        //   1. The IMU window covers exactly [t_{k-1}, t_k] with no gap from ICP latency.
+        //   2. The velocity used is the window-start velocity (previous frame's result),
+        //      not the window-end velocity that would only be available after ICP.
         Eigen::Isometry3f init_T;
         {
             std::lock_guard<std::mutex> lock(imu_mutex_);
-            if (this->imu_preintegration_ && this->imu_preintegration_->get_dt_total() > 0.0) {
-                init_T = this->imu_motion_prediction();
+            if (this->imu_preintegration_) {
+                if (this->imu_preintegration_->get_dt_total() > 0.0) {
+                    init_T = this->imu_motion_prediction();
+                } else {
+                    init_T = this->adaptive_motion_prediction();
+                }
+                const Eigen::Matrix3f R_world_imu =
+                    this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+                // Rotate linear_velocity_ (in previous LiDAR body frame at t_{k-2}) by the
+                // IMU-derived Delta_R from the previous window to correct its direction to t_{k-1}.
+                // The LiDAR-derived velocity captures the average direction over [t_{k-2}, t_{k-1}],
+                // while Delta_R (integrated from gyroscope at 100-1000 Hz) gives the actual
+                // rotation that occurred during that window, bringing the direction up to t_{k-1}.
+                //
+                // Derivation (all expressed in their respective body frames):
+                //   v_imu_{k-2} = T_lidar_to_imu * v_lidar_{k-2}   (LiDAR → IMU frame)
+                //   v_imu_{k-1} = Delta_R * v_imu_{k-2}             (rotate to t_{k-1} body frame)
+                //   v_world     = R_world_imu_{k-1} * v_imu_{k-1}   (to world frame)
+                const Eigen::Matrix3f T_lidar_to_imu = this->params_.imu.T_imu_to_lidar.rotation().transpose();
+                const Eigen::Vector3f v_world =
+                    R_world_imu * this->imu_prev_Delta_R_ * T_lidar_to_imu * this->linear_velocity_;
+                // Save Delta_R of this window for the next frame's velocity correction.
+                this->imu_prev_Delta_R_ = this->imu_preintegration_->get_raw().Delta_R;
+                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_world);
             } else {
                 init_T = this->adaptive_motion_prediction();
             }
