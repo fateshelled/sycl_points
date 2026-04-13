@@ -114,21 +114,45 @@ public:
         // preprocess
         double dt_preprocessing = 0.0;
         {
-            time_utils::measure_execution([&]() { this->preprocess(scan); }, dt_preprocessing);
+            try {
+                time_utils::measure_execution([&]() { this->preprocess(scan); }, dt_preprocessing);
+            } catch (const sycl::exception& e) {
+                std::cerr << "[LiDAR Odometry] SYCL exception in preprocess: " << e.what() << std::endl;
+                throw;
+            } catch (const std::exception& e) {
+                std::cerr << "[LiDAR Odometry] exception in preprocess: " << e.what() << std::endl;
+                throw;
+            }
         }
 
         // compute covariances
         {
             double dt_covariance = 0.0;
-            time_utils::measure_execution([&]() { compute_covariances(); }, dt_covariance);
+            try {
+                time_utils::measure_execution([&]() { compute_covariances(); }, dt_covariance);
+            } catch (const sycl::exception& e) {
+                std::cerr << "[LiDAR Odometry] SYCL exception in compute_covariances: " << e.what() << std::endl;
+                throw;
+            } catch (const std::exception& e) {
+                std::cerr << "[LiDAR Odometry] exception in compute_covariances: " << e.what() << std::endl;
+                throw;
+            }
             this->add_delta_time(ProcessName::compute_covariances, dt_covariance);
         }
 
         // angle incidence filter
         {
             double dt_angle_incidence_filter = 0.0;
-            time_utils::measure_execution([&]() { this->angle_incidence_filter(this->preprocessed_pc_); },
-                                          dt_angle_incidence_filter);
+            try {
+                time_utils::measure_execution([&]() { this->angle_incidence_filter(this->preprocessed_pc_); },
+                                              dt_angle_incidence_filter);
+            } catch (const sycl::exception& e) {
+                std::cerr << "[LiDAR Odometry] SYCL exception in angle_incidence_filter: " << e.what() << std::endl;
+                throw;
+            } catch (const std::exception& e) {
+                std::cerr << "[LiDAR Odometry] exception in angle_incidence_filter: " << e.what() << std::endl;
+                throw;
+            }
             dt_preprocessing += dt_angle_incidence_filter;
             this->add_delta_time(ProcessName::preprocessing, dt_preprocessing);
         }
@@ -141,7 +165,15 @@ public:
 
         // first frame processing
         if (this->is_first_frame_) {
-            this->build_submap(this->preprocessed_pc_, this->params_.pose.initial);
+            try {
+                this->build_submap(this->preprocessed_pc_, this->params_.pose.initial);
+            } catch (const sycl::exception& e) {
+                std::cerr << "[LiDAR Odometry] SYCL exception in build_submap (first frame): " << e.what() << std::endl;
+                throw;
+            } catch (const std::exception& e) {
+                std::cerr << "[LiDAR Odometry] exception in build_submap (first frame): " << e.what() << std::endl;
+                throw;
+            }
 
             this->is_first_frame_ = false;
             this->last_keyframe_time_ = timestamp;
@@ -161,14 +193,32 @@ public:
         // Registration
         {
             double dt_registration = 0.0;
-            *this->reg_result_ = time_utils::measure_execution([&]() { return registration(); }, dt_registration);
+            try {
+                *this->reg_result_ =
+                    time_utils::measure_execution([&]() { return registration(); }, dt_registration);
+            } catch (const sycl::exception& e) {
+                std::cerr << "[LiDAR Odometry] SYCL exception in registration: " << e.what() << std::endl;
+                throw;
+            } catch (const std::exception& e) {
+                std::cerr << "[LiDAR Odometry] exception in registration: " << e.what() << std::endl;
+                throw;
+            }
             this->add_delta_time(ProcessName::registration, dt_registration);
         }
 
         // Submapping
         {
             double dt_build_submap = 0.0;
-            time_utils::measure_execution([&]() { return submapping(*this->reg_result_, timestamp); }, dt_build_submap);
+            try {
+                time_utils::measure_execution([&]() { return submapping(*this->reg_result_, timestamp); },
+                                              dt_build_submap);
+            } catch (const sycl::exception& e) {
+                std::cerr << "[LiDAR Odometry] SYCL exception in submapping: " << e.what() << std::endl;
+                throw;
+            } catch (const std::exception& e) {
+                std::cerr << "[LiDAR Odometry] exception in submapping: " << e.what() << std::endl;
+                throw;
+            }
             this->add_delta_time(ProcessName::build_submap, dt_build_submap);
         }
 
