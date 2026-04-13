@@ -73,6 +73,11 @@ public:
 
         std::lock_guard<std::mutex> lock(imu_mutex_);
 
+        // Drop invalid data
+        if (!meas.accel.allFinite() || !meas.gyro.allFinite()) {
+            return;
+        }
+
         // Drop out-of-order / duplicate timestamps
         if (!this->imu_buffer_.empty() && meas.timestamp <= this->imu_buffer_.back().timestamp) {
             return;
