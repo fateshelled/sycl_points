@@ -2,7 +2,6 @@
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
-#include <cstdint>
 #include <vector>
 
 #include "sycl_points/utils/sycl_utils.hpp"

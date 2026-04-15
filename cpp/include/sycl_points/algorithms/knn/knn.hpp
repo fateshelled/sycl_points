@@ -1,17 +1,8 @@
 #pragma once
 
-#include <algorithm>
-#include <chrono>
-#include <execution>
-#include <iostream>
-#include <limits>
-#include <memory>
-#include <numeric>
-
-#include "sycl_points/algorithms/common/filter_by_flags.hpp"
 #include "sycl_points/algorithms/knn/result.hpp"
 #include "sycl_points/points/point_cloud.hpp"
-#include "sycl_points/utils/eigen_utils.hpp"
+
 
 namespace sycl_points {
 

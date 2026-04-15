@@ -3,10 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <random>
 
-#include "sycl_points/algorithms/common/transform.hpp"
-#include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/registration/anderson_acceleration.hpp"

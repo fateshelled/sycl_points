@@ -3,7 +3,8 @@
 #include <cmath>
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
-#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/points/types.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 namespace algorithms {

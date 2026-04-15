@@ -5,9 +5,6 @@
 
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
-#include "sycl_points/algorithms/registration/linearized_result.hpp"
-#include "sycl_points/algorithms/registration/photometric_factor.hpp"
-#include "sycl_points/algorithms/registration/rotation_constraint.hpp"
 #include "sycl_points/algorithms/robust/robust.hpp"
 
 namespace sycl_points {
