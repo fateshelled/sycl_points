@@ -1,0 +1,12 @@
+CompileFlags:
+  Add: [
+    "-std=c++20",
+    "-fsycl",
+    # "-isystem", "/opt/intel/llvm/include",
+    # "-isystem", "/opt/intel/llvm/lib/clang/21/include",
+    "-isystem", "/usr/local/include/AdaptiveCpp",
+    "-isystem", "/usr/include/eigen3",
+    "-isystem", "/opt/ros/jazzy/include",
+    "--target=x86_64-unknown-linux-gnu"
+  ]
+  Remove: [-fsycl-targets=*, -fno-canonical-system-headers]
