@@ -2,7 +2,6 @@
 
 #include <limits>
 #include <optional>
-#include <random>
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
 #include "sycl_points/algorithms/filter/preprocess_operator/angle_incidence_filter_operator.hpp"

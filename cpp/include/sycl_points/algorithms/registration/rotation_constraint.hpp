@@ -1,7 +1,5 @@
 #pragma once
 
-#include "sycl_points/algorithms/common/transform.hpp"
-#include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/points/types.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"

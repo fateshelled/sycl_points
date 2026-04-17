@@ -23,7 +23,7 @@ constexpr uint32_t INTEL = 0x8086;   // 32902
 constexpr uint32_t NVIDIA = 0x10de;  // 4318
 constexpr uint32_t AMD = 0x1002;     // 4098
 #ifdef SYCL_IMPL_ADAPTIVECPP
-constexpr uint32_t OMP = 0xffffffff; // 4294967295
+constexpr uint32_t OMP = 0xffffffff;  // 4294967295
 #endif
 };  // namespace VENDOR_ID
 
@@ -496,7 +496,18 @@ public:
 
     /// @brief constructor
     /// @param device sycl::device class
-    DeviceQueue(const sycl::device& device) : ptr(std::make_shared<sycl::queue>(device)) {
+    DeviceQueue(const sycl::device& device)
+        : ptr(std::make_shared<sycl::queue>(device, [](sycl::exception_list el) {
+              for (auto& e : el) {
+                  try {
+                      std::rethrow_exception(e);
+                  } catch (const std::exception& ex) {
+                      std::cerr << "[SYCL async exception] " << ex.what() << std::endl;
+                  } catch (...) {
+                      std::cerr << "[SYCL async exception] unknown exception" << std::endl;
+                  }
+              }
+          })) {
         if (!sycl_utils::device_selector::is_supported_device(device)) {
             const std::string device_name = device.get_info<sycl::info::device::name>();
             const std::string error_msg =

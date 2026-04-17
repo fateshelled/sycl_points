@@ -73,6 +73,11 @@ public:
 
         std::lock_guard<std::mutex> lock(imu_mutex_);
 
+        // Drop invalid data
+        if (!meas.accel.allFinite() || !meas.gyro.allFinite()) {
+            return;
+        }
+
         // Drop out-of-order / duplicate timestamps
         if (!this->imu_buffer_.empty() && meas.timestamp <= this->imu_buffer_.back().timestamp) {
             return;
@@ -114,21 +119,39 @@ public:
         // preprocess
         double dt_preprocessing = 0.0;
         {
-            time_utils::measure_execution([&]() { this->preprocess(scan); }, dt_preprocessing);
+            try {
+                time_utils::measure_execution([&]() { this->preprocess(scan); }, dt_preprocessing);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("preprocess: ") + e.what();
+                std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
         }
 
         // compute covariances
         {
             double dt_covariance = 0.0;
-            time_utils::measure_execution([&]() { compute_covariances(); }, dt_covariance);
+            try {
+                time_utils::measure_execution([&]() { compute_covariances(); }, dt_covariance);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("compute_covariances: ") + e.what();
+                std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
             this->add_delta_time(ProcessName::compute_covariances, dt_covariance);
         }
 
         // angle incidence filter
         {
             double dt_angle_incidence_filter = 0.0;
-            time_utils::measure_execution([&]() { this->angle_incidence_filter(this->preprocessed_pc_); },
-                                          dt_angle_incidence_filter);
+            try {
+                time_utils::measure_execution([&]() { this->angle_incidence_filter(this->preprocessed_pc_); },
+                                              dt_angle_incidence_filter);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("angle_incidence_filter: ") + e.what();
+                std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
             dt_preprocessing += dt_angle_incidence_filter;
             this->add_delta_time(ProcessName::preprocessing, dt_preprocessing);
         }
@@ -141,7 +164,13 @@ public:
 
         // first frame processing
         if (this->is_first_frame_) {
-            this->build_submap(this->preprocessed_pc_, this->params_.pose.initial);
+            try {
+                this->build_submap(this->preprocessed_pc_, this->params_.pose.initial);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("build_submap (first frame): ") + e.what();
+                std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
 
             this->is_first_frame_ = false;
             this->last_keyframe_time_ = timestamp;
@@ -161,14 +190,27 @@ public:
         // Registration
         {
             double dt_registration = 0.0;
-            *this->reg_result_ = time_utils::measure_execution([&]() { return registration(); }, dt_registration);
+            try {
+                *this->reg_result_ = time_utils::measure_execution([&]() { return registration(); }, dt_registration);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("registration: ") + e.what();
+                std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
             this->add_delta_time(ProcessName::registration, dt_registration);
         }
 
         // Submapping
         {
             double dt_build_submap = 0.0;
-            time_utils::measure_execution([&]() { return submapping(*this->reg_result_, timestamp); }, dt_build_submap);
+            try {
+                time_utils::measure_execution([&]() { return submapping(*this->reg_result_, timestamp); },
+                                              dt_build_submap);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("submapping: ") + e.what();
+                std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
             this->add_delta_time(ProcessName::build_submap, dt_build_submap);
         }
 
