@@ -1,7 +1,5 @@
 #include "sycl_points_ros2/lidar_odometry_base_node.hpp"
 
-#include <algorithm>
-#include <numeric>
 #include <sycl_points/ros2/convert.hpp>
 #include <sycl_points/utils/time_utils.hpp>
 
@@ -81,12 +79,9 @@ void LiDAROdometryBaseNode::initialize_processing() {
         auto& c = this->scan_covariance_marker_config_;
         c.topic_name = this->declare_parameter<std::string>("vis/covariance_markers/scan/topic_name", c.topic_name);
         c.marker_ns = this->declare_parameter<std::string>("vis/covariance_markers/scan/marker_ns", c.marker_ns);
-        c.scale_factor = static_cast<float>(
-            this->declare_parameter<double>("vis/covariance_markers/scan/scale_factor", c.scale_factor));
-        c.min_scale =
-            static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/min_scale", c.min_scale));
-        c.max_scale =
-            static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/max_scale", c.max_scale));
+        c.scale_factor = this->declare_parameter<double>("vis/covariance_markers/scan/scale_factor", c.scale_factor);
+        c.min_scale = this->declare_parameter<double>("vis/covariance_markers/scan/min_scale", c.min_scale);
+        c.max_scale = this->declare_parameter<double>("vis/covariance_markers/scan/max_scale", c.max_scale);
         c.alpha = static_cast<float>(this->declare_parameter<double>("vis/covariance_markers/scan/alpha", c.alpha));
         c.color_by_planarity =
             this->declare_parameter<bool>("vis/covariance_markers/scan/color_by_planarity", c.color_by_planarity);
