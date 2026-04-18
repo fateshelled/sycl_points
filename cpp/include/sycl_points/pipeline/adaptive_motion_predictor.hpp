@@ -5,7 +5,6 @@
 #include <memory>
 
 #include "sycl_points/algorithms/registration/result.hpp"
-#include "sycl_points/pipeline/lidar_odometry_params.hpp"
 
 namespace sycl_points {
 namespace pipeline {
@@ -16,7 +15,29 @@ namespace lidar_odometry {
 class AdaptiveMotionPredictor {
 public:
     using Ptr = std::shared_ptr<AdaptiveMotionPredictor>;
-    using Params = Parameters::MotionPrediction;
+
+    struct Params {
+        struct AdaptiveAxis {
+            bool enable = true;
+            float factor_min = 0.2f;
+            float factor_max = 1.0f;
+            float min_eigenvalue_low = 1.0f;
+            float min_eigenvalue_high = 10.0f;
+        };
+
+        struct Adaptive {
+            AdaptiveAxis rotation = {.enable = true,
+                                     .factor_min = 0.2f,
+                                     .factor_max = 1.0f,
+                                     .min_eigenvalue_low = 5.0f,
+                                     .min_eigenvalue_high = 10.0f};
+            AdaptiveAxis translation;
+        };
+
+        float static_factor = 0.5f;
+        bool verbose = false;
+        Adaptive adaptive;
+    };
 
     explicit AdaptiveMotionPredictor(const Params& params) : params_(params) {}
 
