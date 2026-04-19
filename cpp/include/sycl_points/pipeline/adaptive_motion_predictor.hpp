@@ -68,6 +68,9 @@ public:
 
                     const float min_eig_ratio = solver_rot.eigenvalues().minCoeff() / reg_result->inlier;
                     const float score = std::clamp((min_eig_ratio - low) / std::max(high - low, 1e-6f), 0.0f, 1.0f);
+                    // When degenerate (score→0), apply full motion (max_factor) to prevent map distortion
+                    // by maintaining constant-velocity assumption. When well-constrained (score→1),
+                    // ICP can correct the pose, so motion prediction is dampened (min_factor).
                     rot_factor = max_factor * (1.0f - score) + min_factor * score;
 
                     if (params_.verbose) {
@@ -87,6 +90,7 @@ public:
 
                     const float min_eig_ratio = solver_trans.eigenvalues().minCoeff() / reg_result->inlier;
                     const float score = std::clamp((min_eig_ratio - low) / std::max(high - low, 1e-6f), 0.0f, 1.0f);
+                    // Same intent as rot_factor: trust motion model more when degenerate.
                     trans_factor = max_factor * (1.0f - score) + min_factor * score;
                 }
                 if (params_.verbose) {
