@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Geometry>
+#include <algorithm>
 #include <iostream>
 #include <memory>
 
@@ -66,7 +67,7 @@ public:
                     const float min_factor = params_.adaptive.rotation.factor_min;
 
                     const float min_eig_ratio = solver_rot.eigenvalues().minCoeff() / reg_result->inlier;
-                    const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
+                    const float score = std::clamp((min_eig_ratio - low) / std::max(high - low, 1e-6f), 0.0f, 1.0f);
                     rot_factor = max_factor * (1.0f - score) + min_factor * score;
 
                     if (params_.verbose) {
@@ -85,7 +86,7 @@ public:
                     const float min_factor = params_.adaptive.translation.factor_min;
 
                     const float min_eig_ratio = solver_trans.eigenvalues().minCoeff() / reg_result->inlier;
-                    const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
+                    const float score = std::clamp((min_eig_ratio - low) / std::max(high - low, 1e-6f), 0.0f, 1.0f);
                     trans_factor = max_factor * (1.0f - score) + min_factor * score;
                 }
                 if (params_.verbose) {
