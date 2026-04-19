@@ -139,13 +139,12 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
 
     // motion predictor
     {
-        params.motion_prediction.static_factor =
-            node->declare_parameter<double>("motion_prediction/static_factor", params.motion_prediction.static_factor);
         params.motion_prediction.verbose =
             node->declare_parameter<bool>("motion_prediction/verbose", params.motion_prediction.verbose);
+        params.motion_prediction.velocity_ema_alpha =
+            node->declare_parameter<double>("motion_prediction/velocity/ema_alpha",
+                                            params.motion_prediction.velocity_ema_alpha);
 
-        params.motion_prediction.adaptive.rotation.enable = node->declare_parameter<bool>(
-            "motion_prediction/adaptive/rotation/enable", params.motion_prediction.adaptive.rotation.enable);
         params.motion_prediction.adaptive.rotation.factor_min = node->declare_parameter<double>(
             "motion_prediction/adaptive/rotation/factor/min", params.motion_prediction.adaptive.rotation.factor_min);
         params.motion_prediction.adaptive.rotation.factor_max = node->declare_parameter<double>(
@@ -156,9 +155,6 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         params.motion_prediction.adaptive.rotation.min_eigenvalue_high =
             node->declare_parameter<double>("motion_prediction/adaptive/rotation/min_eigenvalue/high",
                                             params.motion_prediction.adaptive.rotation.min_eigenvalue_high);
-
-        params.motion_prediction.adaptive.translation.enable = node->declare_parameter<bool>(
-            "motion_prediction/adaptive/translation/enable", params.motion_prediction.adaptive.translation.enable);
         params.motion_prediction.adaptive.translation.factor_min =
             node->declare_parameter<double>("motion_prediction/adaptive/translation/factor/min",
                                             params.motion_prediction.adaptive.translation.factor_min);
