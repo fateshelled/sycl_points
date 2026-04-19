@@ -49,7 +49,7 @@ lidar_odometry_node:
     T_imu_to_lidar/qw: 1.0
 
     # IMU
-    imu/enable: true                    # If true, unuse motion_prediction.
+    imu/enable: false                    # If true, unuse motion_prediction.
     imu/accel_unit: "m_s2"             # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
     imu/buffer_duration_sec: 1.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew (applied before downsampling and ICP)
@@ -121,14 +121,12 @@ lidar_odometry_node:
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
     # Motion Predict without IMU
-    motion_prediction/static_factor: 0.2
     motion_prediction/verbose: false
-    motion_prediction/adaptive/rotation/enable: true
+    motion_prediction/velocity/ema_alpha: 1.0
     motion_prediction/adaptive/rotation/factor/min: 0.2
     motion_prediction/adaptive/rotation/factor/max: 1.0
     motion_prediction/adaptive/rotation/min_eigenvalue/low: 5.0
     motion_prediction/adaptive/rotation/min_eigenvalue/high: 10.0
-    motion_prediction/adaptive/translation/enable: true
     motion_prediction/adaptive/translation/factor/min: 0.2
     motion_prediction/adaptive/translation/factor/max: 1.0
     motion_prediction/adaptive/translation/min_eigenvalue/low: 1.0
