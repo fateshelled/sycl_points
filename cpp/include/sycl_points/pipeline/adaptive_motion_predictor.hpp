@@ -100,8 +100,8 @@ public:
 
         const Eigen::Vector3f predicted_trans = odom.translation() + odom.rotation() * (delta_trans * trans_factor);
         const Eigen::Quaternionf predicted_rot =
-            Eigen::AngleAxisf(delta_angle_axis.angle() * rot_factor, delta_angle_axis.axis()) *
-            Eigen::Quaternionf(odom.rotation());
+            Eigen::Quaternionf(odom.rotation()) *
+            Eigen::AngleAxisf(delta_angle_axis.angle() * rot_factor, delta_angle_axis.axis());
 
         Eigen::Isometry3f init_T = Eigen::Isometry3f::Identity();
         init_T.translation() = predicted_trans;
