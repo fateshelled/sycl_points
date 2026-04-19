@@ -203,8 +203,6 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         {
             solver.max_correspondence_distance = node->declare_parameter<double>(
                 "registration/max_correspondence_distance", solver.max_correspondence_distance);
-            solver.mahalanobis_distance_threshold = node->declare_parameter<double>(
-                "registration/mahalanobis_distance_threshold", solver.mahalanobis_distance_threshold);
         }
 
         // robust

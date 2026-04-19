@@ -17,6 +17,7 @@
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/imu/imu_preintegration.hpp"
+#include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
@@ -269,6 +270,8 @@ private:
 
     Parameters params_;
 
+    AdaptiveMotionPredictor::Ptr motion_predictor_ = nullptr;
+
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> imu_buffer_;
     mutable std::mutex imu_mutex_;  ///< Guards imu_preintegration_ and imu_buffer_.
@@ -408,6 +411,11 @@ private:
             this->clear_total_processing_times();
         }
 
+        // Motion predictor
+        {
+            this->motion_predictor_ = std::make_shared<AdaptiveMotionPredictor>(this->params_.motion_prediction);
+        }
+
         // IMU preintegration (optional)
         if (this->params_.imu.enable) {
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
@@ -508,75 +516,6 @@ private:
         }
     }
 
-    /// Predict initial pose by applying the previous motion model
-    Eigen::Isometry3f adaptive_motion_prediction() {
-        float rot_factor = this->params_.motion_prediction.static_factor;
-        float trans_factor = this->params_.motion_prediction.static_factor;
-
-        if (this->registrated_ && this->reg_result_->inlier > 0) {
-            if (this->params_.motion_prediction.adaptive.rotation.enable) {
-                // Calculates the degeneracy score from the minimum eigenvalue of the Hessian in the registration result
-                // of the previous frame.
-                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(this->reg_result_->H_raw.block<3, 3>(0, 0));
-                if (solver_rot.info() == Eigen::Success) {
-                    const float low = this->params_.motion_prediction.adaptive.rotation.min_eigenvalue_low;
-                    const float high = this->params_.motion_prediction.adaptive.rotation.min_eigenvalue_high;
-                    const float max_factor = this->params_.motion_prediction.adaptive.rotation.factor_max;
-                    const float min_factor = this->params_.motion_prediction.adaptive.rotation.factor_min;
-
-                    const float min_eig_ratio = solver_rot.eigenvalues().minCoeff() / this->reg_result_->inlier;
-
-                    // score == 1.0: Degenerate, score == 0.0: Non-degenerate
-                    const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
-
-                    // Derive the coefficient from the degeneracy score.
-                    rot_factor = max_factor * (1.0f - score) + min_factor * score;
-
-                    if (this->params_.motion_prediction.verbose) {
-                        std::cout << "[motion predictor] rot: factor=" << rot_factor << ", eigen value=["
-                                  << solver_rot.eigenvalues().transpose() / this->reg_result_->inlier << "]"
-                                  << std::endl;
-                    }
-                }
-            }
-
-            if (this->params_.motion_prediction.adaptive.translation.enable) {
-                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(this->reg_result_->H_raw.block<3, 3>(3, 3));
-                if (solver_trans.info() == Eigen::Success) {
-                    const float low = this->params_.motion_prediction.adaptive.translation.min_eigenvalue_low;
-                    const float high = this->params_.motion_prediction.adaptive.translation.min_eigenvalue_high;
-                    const float max_factor = this->params_.motion_prediction.adaptive.translation.factor_max;
-                    const float min_factor = this->params_.motion_prediction.adaptive.translation.factor_min;
-
-                    const float min_eig_ratio = solver_trans.eigenvalues().minCoeff() / this->reg_result_->inlier;
-                    const float score = std::clamp((min_eig_ratio - low) / (high - low), 0.0f, 1.0f);
-                    trans_factor = max_factor * (1.0f - score) + min_factor * score;
-                }
-                if (this->params_.motion_prediction.verbose) {
-                    std::cout << "[motion predictor] trans: factor=" << trans_factor << ", eigen value=["
-                              << solver_trans.eigenvalues().transpose() / this->reg_result_->inlier << "]" << std::endl;
-                }
-            }
-        }
-
-        // Computes the displacement from the previous frame using the velocity derived from previous odometry data,
-        // then multiplies this by the coefficient to predict the current position.
-        const Eigen::Vector3f delta_trans = this->linear_velocity_ * this->dt_;
-        const Eigen::AngleAxisf delta_angle_axis(this->angular_velocity_.angle() * this->dt_,
-                                                 this->angular_velocity_.axis());
-
-        const Eigen::Vector3f predicted_trans =
-            this->odom_.translation() + this->odom_.rotation() * (delta_trans * trans_factor);
-        const Eigen::Quaternionf predicted_rot =
-            Eigen::AngleAxisf(delta_angle_axis.angle() * rot_factor, delta_angle_axis.axis()) *
-            Eigen::Quaternionf(this->odom_.rotation());
-
-        Eigen::Isometry3f init_T = Eigen::Isometry3f::Identity();
-        init_T.translation() = predicted_trans;
-        init_T.rotate(predicted_rot.normalized());
-        return init_T;
-    }
-
     /// @brief Predict the initial ICP pose using IMU preintegration.
     /// @return Absolute predicted pose T_odom_to_lidar_curr (Isometry3f).
     Eigen::Isometry3f imu_motion_prediction() {
@@ -610,14 +549,18 @@ private:
                 if (this->imu_preintegration_->get_dt_total() > 0.0) {
                     init_T = this->imu_motion_prediction();
                 } else {
-                    init_T = this->adaptive_motion_prediction();
+                    init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_,
+                                                              this->odom_, this->dt_, this->reg_result_,
+                                                              this->registrated_);
                 }
                 const Eigen::Matrix3f R_world_imu =
                     this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 const Eigen::Vector3f v_world = this->odom_.rotation() * this->linear_velocity_;
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_world);
             } else {
-                init_T = this->adaptive_motion_prediction();
+                init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_,
+                                                          this->odom_, this->dt_, this->reg_result_,
+                                                          this->registrated_);
             }
         }
 

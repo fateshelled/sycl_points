@@ -141,7 +141,6 @@ lidar_odometry_node:
     registration/random_sampling/num: 2048
     registration/max_iterations: 4
     registration/max_correspondence_distance: 2.0
-    registration/mahalanobis_distance_threshold: 10.0
     registration/criteria/translation: 1.0e-3  # [m]
     registration/criteria/rotation: 1.0e-6     # [rad]
 

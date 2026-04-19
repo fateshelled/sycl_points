@@ -91,8 +91,6 @@ struct RegistrationParams {
     size_t max_iterations = 20;                // max iteration
     float lambda = 1e-6f;                      // damping factor
     float max_correspondence_distance = 2.0f;  // max correspondence distance
-    float mahalanobis_distance_threshold =
-        100.0f;  // Mahalanobis distance threshold (for GICP and Point to Distribution)
 
     Criteria criteria;
     Robust robust;

@@ -366,7 +366,6 @@ private:
 
             const float max_corr_dist_squared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
-            const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
             auto weights_ptr = out.data();
@@ -388,13 +387,7 @@ private:
                         genz_alpha, genz_weight, genz_planarity_threshold);
                     const float residual_norm = sycl::sqrt(squared_error);
 
-                    if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
-                        if (residual_norm <= mahalanobis_dist_threshold) {
-                            weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
-                        }
-                    } else {
-                        weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
-                    }
+                    weight = robust::kernel::compute_robust_weight<loss>(residual_norm, robust_scale);
                 }
 
                 weights_ptr[index] = weight;
@@ -502,7 +495,6 @@ private:
 
             const float max_corr_dist_squared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
-            const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
 
@@ -571,12 +563,6 @@ private:
                                                             target_ptr[target_idx], target_cov, target_normal,  //
                                                             residual_norm,                                      //
                                                             genz_alpha, genz_weight, genz_planarity_threshold);
-
-                        if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
-                            if (residual_norm > mahalanobis_dist_threshold) {
-                                return;
-                            }
-                        }
 
                         // Apply robust kernel
                         const float robust_weight =
@@ -728,7 +714,6 @@ private:
 
             const float max_corr_dist_squared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
-            const float mahalanobis_dist_threshold = this->params_.mahalanobis_distance_threshold;
 
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
@@ -781,12 +766,7 @@ private:
                             genz_alpha, genz_weight, genz_planarity_threshold);
                         const float residual_norm = sycl::sqrt(squared_error);
 
-                        if constexpr (reg == RegType::GICP || reg == RegType::POINT_TO_DISTRIBUTION) {
-                            if (residual_norm > mahalanobis_dist_threshold) return;
-                        }
-
                         // Apply robust kernel
-
                         if constexpr (reg == RegType::GENZ) {
                             total_error =
                                 genz_weight * robust::kernel::compute_robust_error<loss>(residual_norm, robust_scale);

@@ -9,6 +9,7 @@
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 #include "sycl_points/imu/imu_preintegration.hpp"
+#include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 
 namespace sycl_points {
 namespace pipeline {
@@ -147,28 +148,7 @@ struct Parameters {
         MEstimation m_estimation;
     };
 
-    struct MotionPrediction {
-        struct AdaptiveAxis {
-            bool enable = true;
-            float factor_min = 0.2f;
-            float factor_max = 1.0f;
-            float min_eigenvalue_low = 1.0f;
-            float min_eigenvalue_high = 10.0f;
-        };
-
-        struct Adaptive {
-            AdaptiveAxis rotation = {.enable = true,
-                                     .factor_min = 0.2f,
-                                     .factor_max = 1.0f,
-                                     .min_eigenvalue_low = 5.0f,
-                                     .min_eigenvalue_high = 10.0f};
-            AdaptiveAxis translation;
-        };
-
-        float static_factor = 0.5f;
-        bool verbose = false;
-        Adaptive adaptive;
-    };
+    using MotionPrediction = AdaptiveMotionPredictor::Params;
 
     struct IMU {
         bool enable = false;
