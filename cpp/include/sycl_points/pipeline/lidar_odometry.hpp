@@ -17,6 +17,7 @@
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/imu/imu_preintegration.hpp"
+#include "sycl_points/imu/imu_velocity_corrector.hpp"
 #include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
@@ -227,6 +228,13 @@ public:
             this->linear_velocity_ = delta_pose.translation() / this->dt_;
             this->angular_velocity_ = Eigen::AngleAxisf(delta_angle_axis.angle() / this->dt_, delta_angle_axis.axis());
 
+            if (this->imu_preintegration_) {
+                const Eigen::Matrix3f R_world_imu_prev =
+                    this->prev_odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+                this->imu_velocity_corrector_.update(this->odom_.translation() - this->prev_odom_.translation(),
+                                                     R_world_imu_prev, this->params_.imu.preintegration.gravity);
+            }
+
             this->registrated_ = true;
         }
         return ResultType::success;
@@ -273,6 +281,7 @@ private:
     AdaptiveMotionPredictor::Ptr motion_predictor_ = nullptr;
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
+    imu::IMUVelocityCorrector imu_velocity_corrector_;
     std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> imu_buffer_;
     mutable std::mutex imu_mutex_;  ///< Guards imu_preintegration_ and imu_buffer_.
 
@@ -540,8 +549,9 @@ private:
         // integrator so the next window starts from this scan's arrival time.  Resetting
         // here (before ICP) ensures:
         //   1. The IMU window covers exactly [t_{k-1}, t_k] with no gap from ICP latency.
-        //   2. The velocity used is the window-start velocity (previous frame's result),
-        //      not the window-end velocity that would only be available after ICP.
+        //   2. The reset velocity is the IMU-corrected instantaneous velocity from the
+        //      previous frame (computed post-ICP), falling back to the LiDAR average
+        //      velocity on the first frame or when no correction is available.
         Eigen::Isometry3f init_T;
         {
             std::lock_guard<std::mutex> lock(imu_mutex_);
@@ -549,18 +559,20 @@ private:
                 if (this->imu_preintegration_->get_dt_total() > 0.0) {
                     init_T = this->imu_motion_prediction();
                 } else {
-                    init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_,
-                                                              this->odom_, this->dt_, this->reg_result_,
-                                                              this->registrated_);
+                    init_T =
+                        this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
+                                                         this->dt_, this->reg_result_, this->registrated_);
                 }
                 const Eigen::Matrix3f R_world_imu =
                     this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-                const Eigen::Vector3f v_world = this->odom_.rotation() * this->linear_velocity_;
-                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_world);
+
+                const Eigen::Vector3f v_reset =
+                    this->imu_velocity_corrector_.get_reset_velocity(*this->imu_preintegration_, this->params_.imu.bias,
+                                                                     this->odom_.rotation() * this->linear_velocity_);
+                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_reset);
             } else {
-                init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_,
-                                                          this->odom_, this->dt_, this->reg_result_,
-                                                          this->registrated_);
+                init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
+                                                          this->dt_, this->reg_result_, this->registrated_);
             }
         }
 
