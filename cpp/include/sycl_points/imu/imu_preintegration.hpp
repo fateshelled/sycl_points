@@ -250,6 +250,7 @@ public:
 
     double get_dt_total() const { return result_.dt_total; }
     bool has_measurements() const { return num_measurements_ > 0; }
+    const IMUPreintegrationParams& get_params() const { return params_; }
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
