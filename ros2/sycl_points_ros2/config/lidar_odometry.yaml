@@ -49,13 +49,13 @@ lidar_odometry_node:
     T_imu_to_lidar/qw: 1.0
 
     # IMU
-    imu/enable: false                    # If true, unuse motion_prediction.
-    imu/accel_unit: "m_s2"             # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
+    imu/enable: false                   # If true, unuse motion_prediction.
+    imu/accel_unit: "m_s2"              # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
     imu/buffer_duration_sec: 1.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew (applied before downsampling and ICP)
     imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
     imu/preintegration/gravity/y: 0.0
-    imu/preintegration/gravity/z: -9.81
+    imu/preintegration/gravity/z: -9.80665
     imu/bias/gyro/x: 0.0  # Initial gyroscope bias [rad/s]
     imu/bias/gyro/y: 0.0
     imu/bias/gyro/z: 0.0

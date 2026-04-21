@@ -91,7 +91,7 @@ TEST(LidarOdometryIMU, IMUParamDefaults) {
     lo::Parameters p;
     EXPECT_FALSE(p.imu.enable);
     EXPECT_TRUE(p.imu.T_imu_to_lidar.isApprox(Eigen::Isometry3f::Identity()));
-    EXPECT_NEAR(p.imu.preintegration.gravity.norm(), 9.81f, 1e-3f);
+    EXPECT_NEAR(p.imu.preintegration.gravity.norm(), 9.80665f, 1e-3f);
     EXPECT_TRUE(p.imu.bias.gyro_bias.isZero());
     EXPECT_TRUE(p.imu.bias.accel_bias.isZero());
 }

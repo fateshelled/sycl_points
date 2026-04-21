@@ -3,7 +3,7 @@
 #include <Eigen/Dense>
 #include <cmath>
 #include <memory>
-#include <vector>
+#include <ranges>
 
 #include "sycl_points/points/types.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -163,7 +163,10 @@ public:
     }
 
     /// @brief Convenience wrapper to integrate a batch of measurements.
-    void integrate_batch(const std::vector<IMUMeasurement, Eigen::aligned_allocator<IMUMeasurement>>& measurements) {
+    ///        Accepts any range whose value type is IMUMeasurement (e.g. std::vector, std::deque).
+    template <std::ranges::range Range>
+        requires std::same_as<std::ranges::range_value_t<Range>, IMUMeasurement>
+    void integrate_batch(const Range& measurements) {
         for (const auto& m : measurements) {
             integrate(m);
         }
@@ -247,6 +250,7 @@ public:
 
     double get_dt_total() const { return result_.dt_total; }
     bool has_measurements() const { return num_measurements_ > 0; }
+    const IMUPreintegrationParams& get_params() const { return params_; }
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 

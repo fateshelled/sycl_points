@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 
+#include "sycl_points/algorithms//deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/registration/pipeline/aligner.hpp"
 
 namespace sycl_points {
