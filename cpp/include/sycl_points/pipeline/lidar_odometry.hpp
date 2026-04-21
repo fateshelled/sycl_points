@@ -96,7 +96,7 @@ public:
 
     /// @brief Return a snapshot of the current IMU buffer (for deskewing etc.).
     ///        Thread-safe.
-    std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> get_imu_buffer() const {
+    std::deque<imu::IMUMeasurement> get_imu_buffer() const {
         std::lock_guard<std::mutex> lock(imu_mutex_);
         return this->imu_buffer_;
     }
@@ -296,7 +296,7 @@ private:
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     imu::IMUVelocityCorrector imu_velocity_corrector_;
-    std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> imu_buffer_;
+    std::deque<imu::IMUMeasurement> imu_buffer_;
     mutable std::mutex imu_mutex_;            ///< Guards imu_buffer_ (written by IMU callback, read by LiDAR callback).
     double last_imu_reset_timestamp_ = -1.0;  ///< LiDAR timestamp of the last IMU reset.
     std::vector<imu::IMUMeasurement> imu_batch_;  ///< Reusable buffer for per-frame IMU snapshots.
