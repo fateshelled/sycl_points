@@ -2,7 +2,7 @@
 
 #include <Eigen/Geometry>
 #include <algorithm>
-#include <deque>
+#include <ranges>
 #include <vector>
 
 #include "sycl_points/imu/imu_preintegration.hpp"
@@ -114,12 +114,13 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 ///                              Typically: odom.rotation() * T_imu_to_lidar.rotation().
 /// @param[out] status           Optional detailed result code.
 /// @return true on success, false if prerequisites are not met.
-inline bool deskew_point_cloud_imu(
-    const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
-    const std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>>& imu_buffer,
-    double scan_start_time_sec, const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
-    const imu::IMUPreintegrationParams& preintegration_params, const Eigen::Matrix3f& R_world_body_i,
-    IMUDeskewStatus* status = nullptr) {
+template <std::ranges::range Range>
+    requires std::same_as<std::ranges::range_value_t<Range>, imu::IMUMeasurement>
+inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
+                                   const Range& imu_buffer, double scan_start_time_sec,
+                                   const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
+                                   const imu::IMUPreintegrationParams& preintegration_params,
+                                   const Eigen::Matrix3f& R_world_body_i, IMUDeskewStatus* status = nullptr) {
     auto set_status = [&](IMUDeskewStatus s) {
         if (status) *status = s;
     };
@@ -153,7 +154,7 @@ inline bool deskew_point_cloud_imu(
     // Step 1: Filter IMU buffer to the scan window with a generous margin.
     // -----------------------------------------------------------------------
     constexpr double kMarginSec = 0.05;  // 50 ms — covers up to 50 Hz IMU
-    std::vector<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> filtered;
+    std::vector<imu::IMUMeasurement> filtered;
     filtered.reserve(256);
     for (const auto& m : imu_buffer) {
         if (m.timestamp >= scan_start_time_sec - kMarginSec && m.timestamp <= scan_end_sec + kMarginSec) {
