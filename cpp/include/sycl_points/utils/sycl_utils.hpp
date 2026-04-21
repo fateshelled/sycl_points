@@ -6,6 +6,7 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <Eigen/Dense>  // Must include before <sycl/sycl.hpp>
 #include <sycl/sycl.hpp>
 
 #ifdef SYCL_IMPL_ADAPTIVECPP
