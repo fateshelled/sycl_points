@@ -3,6 +3,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <vector>
 
 #include "sycl_points/algorithms/deskew/imu_deskew.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
@@ -91,15 +92,11 @@ public:
         while (latest_timestamp - this->imu_buffer_.front().timestamp > this->params_.imu.buffer_duration_sec) {
             this->imu_buffer_.pop_front();
         }
-
-        if (this->imu_preintegration_) {
-            this->imu_preintegration_->integrate(meas);
-        }
     }
 
     /// @brief Return a snapshot of the current IMU buffer (for deskewing etc.).
     ///        Thread-safe.
-    std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> get_imu_buffer() const {
+    std::deque<imu::IMUMeasurement> get_imu_buffer() const {
         std::lock_guard<std::mutex> lock(imu_mutex_);
         return this->imu_buffer_;
     }
@@ -184,9 +181,25 @@ public:
                     this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, Eigen::Vector3f::Zero());
+                this->last_imu_reset_timestamp_ = timestamp;
             }
 
             return ResultType::first_frame;
+        }
+
+        // Integrate IMU buffer for the current window [last_reset, timestamp].
+        if (this->imu_preintegration_) {
+            this->imu_batch_.clear();
+            {
+                std::lock_guard<std::mutex> lock(imu_mutex_);
+                this->imu_batch_.reserve(this->imu_buffer_.size());
+                for (const auto& meas : this->imu_buffer_) {
+                    if (meas.timestamp <= this->last_imu_reset_timestamp_) continue;
+                    if (meas.timestamp > timestamp) break;
+                    this->imu_batch_.push_back(meas);
+                }
+            }
+            this->imu_preintegration_->integrate_batch(this->imu_batch_);
         }
 
         // Registration
@@ -201,6 +214,7 @@ public:
             }
             this->add_delta_time(ProcessName::registration, dt_registration);
         }
+        this->last_imu_reset_timestamp_ = timestamp;
 
         // Submapping
         {
@@ -282,8 +296,10 @@ private:
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     imu::IMUVelocityCorrector imu_velocity_corrector_;
-    std::deque<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> imu_buffer_;
-    mutable std::mutex imu_mutex_;  ///< Guards imu_preintegration_ and imu_buffer_.
+    std::deque<imu::IMUMeasurement> imu_buffer_;
+    mutable std::mutex imu_mutex_;            ///< Guards imu_buffer_ (written by IMU callback, read by LiDAR callback).
+    double last_imu_reset_timestamp_ = -1.0;  ///< LiDAR timestamp of the last IMU reset.
+    std::vector<imu::IMUMeasurement> imu_batch_;  ///< Reusable buffer for per-frame IMU snapshots.
 
     std::string error_message_;
 
@@ -545,35 +561,24 @@ private:
     }
 
     algorithms::registration::RegistrationResult registration() {
-        // Snapshot the IMU-based initial guess under the lock, then immediately reset the
-        // integrator so the next window starts from this scan's arrival time.  Resetting
-        // here (before ICP) ensures:
-        //   1. The IMU window covers exactly [t_{k-1}, t_k] with no gap from ICP latency.
-        //   2. The reset velocity is the IMU-corrected instantaneous velocity from the
-        //      previous frame (computed post-ICP), falling back to the LiDAR average
-        //      velocity on the first frame or when no correction is available.
         Eigen::Isometry3f init_T;
-        {
-            std::lock_guard<std::mutex> lock(imu_mutex_);
-            if (this->imu_preintegration_) {
-                if (this->imu_preintegration_->get_dt_total() > 0.0) {
-                    init_T = this->imu_motion_prediction();
-                } else {
-                    init_T =
-                        this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
-                                                         this->dt_, this->reg_result_, this->registrated_);
-                }
-                const Eigen::Matrix3f R_world_imu =
-                    this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-
-                const Eigen::Vector3f v_reset =
-                    this->imu_velocity_corrector_.get_reset_velocity(*this->imu_preintegration_, this->params_.imu.bias,
-                                                                     this->odom_.rotation() * this->linear_velocity_);
-                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_reset);
+        if (this->imu_preintegration_) {
+            if (this->imu_preintegration_->get_dt_total() > 0.0) {
+                init_T = this->imu_motion_prediction();
             } else {
                 init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
                                                           this->dt_, this->reg_result_, this->registrated_);
             }
+            const Eigen::Matrix3f R_world_imu = this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+
+            // linear_velocity_ is in the prev_odom_ body frame, so use prev_odom_.rotation() to convert to world frame.
+            const Eigen::Vector3f v_reset =
+                this->imu_velocity_corrector_.get_reset_velocity(*this->imu_preintegration_, this->params_.imu.bias,
+                                                                 this->prev_odom_.rotation() * this->linear_velocity_);
+            this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_reset);
+        } else {
+            init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
+                                                      this->dt_, this->reg_result_, this->registrated_);
         }
 
         algorithms::registration::Registration::ExecutionOptions options;

@@ -15,9 +15,9 @@ static constexpr float kEps = 1e-4f;       // loose tolerance for float integrat
 static constexpr float kEpsTight = 1e-5f;  // tight tolerance for algebraic checks
 
 /// Build a batch of IMU measurements with constant gyro/accel over [t0, t0+T].
-static std::vector<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> make_constant_imu(
-    double t0, double T, int n_steps, const Eigen::Vector3f& gyro, const Eigen::Vector3f& accel) {
-    std::vector<imu::IMUMeasurement, Eigen::aligned_allocator<imu::IMUMeasurement>> meas;
+static std::vector<imu::IMUMeasurement> make_constant_imu(double t0, double T, int n_steps, const Eigen::Vector3f& gyro,
+                                                          const Eigen::Vector3f& accel) {
+    std::vector<imu::IMUMeasurement> meas;
     meas.reserve(n_steps + 1);
     const double dt = T / n_steps;
     for (int i = 0; i <= n_steps; ++i) {
