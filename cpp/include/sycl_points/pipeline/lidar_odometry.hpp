@@ -571,8 +571,10 @@ private:
             }
             const Eigen::Matrix3f R_world_imu = this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
 
-            const Eigen::Vector3f v_reset = this->imu_velocity_corrector_.get_reset_velocity(
-                *this->imu_preintegration_, this->params_.imu.bias, this->odom_.rotation() * this->linear_velocity_);
+            // linear_velocity_ is in the prev_odom_ body frame, so use prev_odom_.rotation() to convert to world frame.
+            const Eigen::Vector3f v_reset =
+                this->imu_velocity_corrector_.get_reset_velocity(*this->imu_preintegration_, this->params_.imu.bias,
+                                                                 this->prev_odom_.rotation() * this->linear_velocity_);
             this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_reset);
         } else {
             init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
