@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -236,6 +237,7 @@ private:
     sycl_utils::DeviceQueue::Ptr queue_ptr_;
 
     PointCloudShared::Ptr preprocessed_pc_;
+    PointCloudShared::Ptr registration_input_pc_;  // random-sampled source for ICP linearization
     PointCloudShared::Ptr keyframe_pc_;
     PointCloudShared::Ptr submap_pc_ptr_;
     PointCloudShared::Ptr submap_pc_tmp_;
@@ -357,6 +359,15 @@ private:
         Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
         bool imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_pred, P_pred_lidar, H_imu, b_imu);
 
+        // ---- Prepare ICP source (random sampling) ----
+        // Respects registration/random_sampling params, same as RegistrationPipeline::align().
+        const auto& rs = params_.registration.pipeline.random_sampling;
+        const PointCloudShared* source =
+            (rs.enable && preprocessed_pc_->size() > rs.num)
+                ? (preprocess_filter_->random_sampling(*preprocessed_pc_, *registration_input_pc_, rs.num),
+                   registration_input_pc_.get())
+                : preprocessed_pc_.get();
+
         // ---- Gauss-Newton loop ----
         imu::State x_op = x_pred;
 
@@ -365,6 +376,8 @@ private:
         options.prev_pose = odom_.matrix();
 
         auto* reg = registration_pipeline_->registration().get();
+        const TransformMatrix T_initial = state_to_pose(x_pred).matrix();
+        const auto& robust = params_.registration.pipeline.robust;
 
         algorithms::registration::LinearizedResult last_icp;
         last_icp.inlier = 0;
@@ -373,14 +386,20 @@ private:
         for (size_t iter = 0; iter < params_.lio.max_iterations; ++iter) {
             ++actual_iterations;
 
+            // Robust scale: geometric decay init_scale → min_scale across LIO iterations,
+            // mirroring RobustAligner. When auto_scale=false, default_scale is used throughout.
+            if (robust.auto_scale && params_.lio.max_iterations > 1) {
+                const float t = static_cast<float>(iter) / static_cast<float>(params_.lio.max_iterations - 1);
+                options.robust_scale =
+                    std::max(robust.init_scale * std::pow(robust.min_scale / robust.init_scale, t), robust.min_scale);
+            }
+
             // ICP Hessian/gradient at current operating point (SYCL device).
-            // Pass x_pred pose as initial_pose so degenerate regularization uses the same
-            // reference as align() does — this prevents unbounded yaw updates when the
-            // rotation Hessian from ICP is near-zero (e.g. during turning).
+            // T_initial (IMU-predicted pose) is passed for degenerate regularization — consistent
+            // with RegistrationPipeline::align() and prevents unbounded degenerate-direction updates.
             const TransformMatrix T_op = state_to_pose(x_op).matrix();
-            const TransformMatrix T_initial = state_to_pose(x_pred).matrix();
-            last_icp = reg->compute_linearized_result(*preprocessed_pc_, *submap_pc_ptr_, *submap_tree_, T_op,
-                                                      T_initial, options);
+            last_icp =
+                reg->compute_linearized_result(*source, *submap_pc_ptr_, *submap_tree_, T_op, T_initial, options);
 
             // Update IMU factor at current operating point (skip on first: already computed above)
             if (iter > 0) {
@@ -458,6 +477,7 @@ private:
 
         // Point cloud buffers
         preprocessed_pc_.reset(new PointCloudShared(*queue_ptr_));
+        registration_input_pc_.reset(new PointCloudShared(*queue_ptr_));
         keyframe_pc_.reset(new PointCloudShared(*queue_ptr_));
         submap_pc_ptr_.reset(new PointCloudShared(*queue_ptr_));
         submap_pc_tmp_.reset(new PointCloudShared(*queue_ptr_));
