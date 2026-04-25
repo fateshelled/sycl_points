@@ -49,7 +49,6 @@ lidar_inertial_odometry_node:
     T_imu_to_lidar/qw: 1.0
 
     # IMU (always enabled for LIO)
-    imu/enable: true
     imu/accel_unit: "m_s2"              # "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
     imu/buffer_duration_sec: 1.0
     imu/deskew/enable: true             # IMU-based pre-processing deskew
@@ -70,11 +69,6 @@ lidar_inertial_odometry_node:
     imu/bias/accel/x: 0.0  # Initial accelerometer bias [m/s^2]
     imu/bias/accel/y: 0.0
     imu/bias/accel/z: 0.0
-
-    # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
-    lio/max_iterations: 10
-    lio/rotation_convergence: 1.0e-4  # [rad]
-    lio/position_convergence: 1.0e-4  # [m]
 
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
@@ -132,17 +126,10 @@ lidar_inertial_odometry_node:
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
-    # Motion prediction (not used by LIO but params must be declared)
-    motion_prediction/verbose: false
-    motion_prediction/velocity/ema_alpha: 1.0
-    motion_prediction/adaptive/rotation/factor/min: 0.2
-    motion_prediction/adaptive/rotation/factor/max: 1.0
-    motion_prediction/adaptive/rotation/min_eigenvalue/low: 5.0
-    motion_prediction/adaptive/rotation/min_eigenvalue/high: 10.0
-    motion_prediction/adaptive/translation/factor/min: 0.2
-    motion_prediction/adaptive/translation/factor/max: 1.0
-    motion_prediction/adaptive/translation/min_eigenvalue/low: 1.0
-    motion_prediction/adaptive/translation/min_eigenvalue/high: 10.0
+    # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
+    lio/max_iterations: 10
+    lio/rotation_convergence: 1.0e-4  # [rad]
+    lio/position_convergence: 1.0e-4  # [m]
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/max_iterations is unused; outer loop count is lio/max_iterations.
@@ -154,10 +141,6 @@ lidar_inertial_odometry_node:
     registration/max_correspondence_distance: 2.0
     registration/criteria/translation: 1.0e-3
     registration/criteria/rotation: 1.0e-6
-
-    # Always disabled in LIO (pipeline controls its own update loop)
-    registration/velocity_update/enable: false
-    registration/velocity_update/iter: 1
 
     registration/robust/type: GEMAN_MCCLURE
     registration/robust/default_scale: 10.0
@@ -182,20 +165,7 @@ lidar_inertial_odometry_node:
     registration/anderson/window_size: 5
     registration/anderson/beta: 1.0
 
-    registration/optimization_method: GN  # GN, LM, DOGLEG (unused in LIO, but required param)
     registration/gn/lambda: 1.0
-    registration/lm/max_inner_iterations: 5
-    registration/lm/lambda_factor: 2.0
-    registration/lm/init_lambda: 1.0
-    registration/lm/max_lambda: 1.0e+3
-    registration/lm/min_lambda: 1.0e-3
-    registration/dogleg/initial_trust_region_radius: 2.0
-    registration/dogleg/max_trust_region_radius: 10.0
-    registration/dogleg/min_trust_region_radius: 1.0e-3
-    registration/dogleg/eta1: 0.25
-    registration/dogleg/eta2: 0.75
-    registration/dogleg/gamma_decrease: 0.80
-    registration/dogleg/gamma_increase: 1.25
 
     registration/degenerate_regularization/type: "NL_REG"
     registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold: 10.0
