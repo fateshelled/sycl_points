@@ -153,6 +153,67 @@ inline imu::State retract(const imu::State& state, const Eigen::Matrix<float, 15
     return updated;
 }
 
+// ---------------------------------------------------------------------------
+// imu_to_lidar_jacobian / transform_covariance_imu_to_lidar
+// ---------------------------------------------------------------------------
+
+/// @brief Jacobian that maps the 15-D IMU error-state to the 15-D LiDAR error-state.
+///
+/// The IMU preintegration covariance P_pred is expressed in the IMU body error-state
+/// [δp_imu, δφ_imu, δv_imu, δb_a, δb_g].  When the LIO optimisation maintains the
+/// state in the LiDAR body convention [δp_lidar, δφ_lidar, …] the two frames are
+/// related by the rigid extrinsic T_imu_to_lidar.
+///
+/// First-order relationships (right-perturbation convention):
+///   δφ_lidar = R_lidar_imu · δφ_imu          (rotation of the tangent vector)
+///   δp_lidar = δp_imu − R_world_lidar · skew(t_lidar_in_imu) · δφ_imu   (lever-arm)
+///   δv_lidar = δv_imu,  δb_a, δb_g unchanged
+///
+/// where:
+///   R_lidar_imu    = T_imu_to_lidar.rotation()
+///   t_lidar_in_imu = T_imu_to_lidar.inverse().translation()
+///
+/// @param T_imu_to_lidar  Extrinsic: pose of IMU body expressed in LiDAR body frame.
+/// @param R_world_lidar   Current LiDAR-to-world rotation from the LIO state.
+/// @return 15×15 Jacobian  J  such that  δx_lidar = J · δx_imu.
+inline Eigen::Matrix<float, 15, 15> imu_to_lidar_jacobian(const Eigen::Isometry3f& T_imu_to_lidar,
+                                                            const Eigen::Matrix3f& R_world_lidar) {
+    Eigen::Matrix<float, 15, 15> J = Eigen::Matrix<float, 15, 15>::Identity();
+
+    const Eigen::Matrix3f R_lidar_imu  = T_imu_to_lidar.rotation();
+    const Eigen::Vector3f t_lidar_in_imu = T_imu_to_lidar.inverse().translation();
+    // R_world_imu = R_world_lidar * R_lidar_imu  (existing convention in the pipeline)
+    const Eigen::Matrix3f R_world_imu = R_world_lidar * R_lidar_imu;
+
+    // J[φ, φ]: rotation error transforms by R_lidar_imu
+    J.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) = R_lidar_imu;
+
+    // J[p, φ]: lever-arm coupling (zero when IMU and LiDAR are co-located)
+    J.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) =
+        -R_world_imu * eigen_utils::lie::skew(t_lidar_in_imu);
+
+    return J;
+}
+
+/// @brief Transform IMU preintegration covariance from IMU error-state to LiDAR error-state.
+///
+///   P_lidar = J · P_imu · Jᵀ
+///
+/// Pass the result as P_pred to compute_imu_hessian_gradient() together with
+/// LiDAR-frame states (x_pred_lidar, x_op_lidar) so that the information matrix
+/// and gradient are consistent with the LiDAR-frame 15-DOF LIO optimisation.
+///
+/// @param P_imu           15×15 covariance from IMUPreintegration::get_raw().covariance.
+/// @param T_imu_to_lidar  Extrinsic.
+/// @param R_world_lidar   Current LiDAR rotation from the LIO state.
+/// @return 15×15 covariance expressed in the LiDAR error-state frame.
+inline Eigen::Matrix<float, 15, 15> transform_covariance_imu_to_lidar(
+    const Eigen::Matrix<float, 15, 15>& P_imu, const Eigen::Isometry3f& T_imu_to_lidar,
+    const Eigen::Matrix3f& R_world_lidar) {
+    const Eigen::Matrix<float, 15, 15> J = imu_to_lidar_jacobian(T_imu_to_lidar, R_world_lidar);
+    return J * P_imu * J.transpose();
+}
+
 }  // namespace lio
 }  // namespace algorithms
 }  // namespace sycl_points

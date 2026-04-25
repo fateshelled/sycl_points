@@ -346,11 +346,18 @@ private:
     algorithms::registration::RegistrationResult lio_registration() {
         // ---- Build prior from IMU preintegration ----
         const imu::State x_pred = predict_state();
-        const Eigen::Matrix<float, 15, 15> P_pred = imu_preintegration_->get_raw().covariance;
+
+        // Transform P_pred from IMU error-state to LiDAR error-state.
+        // P_pred from preintegration is expressed in IMU body frame [δp_imu, δφ_imu, …],
+        // but our LIO state uses LiDAR body frame [δp_lidar, δφ_lidar, …].
+        // The Jacobian J is evaluated at x_pred (the prior mean) and is constant per frame.
+        const Eigen::Matrix<float, 15, 15> P_pred_lidar =
+            algorithms::lio::transform_covariance_imu_to_lidar(imu_preintegration_->get_raw().covariance,
+                                                                params_.imu.T_imu_to_lidar, x_pred.rotation);
 
         Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
-        bool imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_pred, P_pred, H_imu, b_imu);
+        bool imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_pred, P_pred_lidar, H_imu, b_imu);
 
         // ---- Gauss-Newton loop ----
         imu::State x_op = x_pred;
@@ -374,7 +381,7 @@ private:
 
             // Update IMU factor at current operating point (skip on first: already computed above)
             if (iter > 0) {
-                imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_op, P_pred, H_imu, b_imu);
+                imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_op, P_pred_lidar, H_imu, b_imu);
             }
 
             // Combine ICP + IMU into 15×15 normal equations
