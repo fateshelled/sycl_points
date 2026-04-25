@@ -133,13 +133,28 @@ inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<floa
 /// @param[in]  lio_result  Combined LIO Hessian/gradient.
 /// @param[out] delta       15-D state update δx on success; zero on failure.
 /// @return true on success; false if H is ill-conditioned.
-inline bool solve_ldlt(const LIOLinearizedResult& lio_result, Eigen::Matrix<float, 15, 1>& delta) {
+/// Optionally computes the posterior covariance P_post = H⁻¹.  Passing this
+/// as the initial_covariance of the next IMUPreintegration::reset() enables
+/// IEKF-style bias accumulation: P_post[ba,ba] and P_post[bg,bg] decrease
+/// over frames, yielding increasingly precise bias corrections.
+///
+/// @param[in]  lio_result  Combined LIO Hessian/gradient.
+/// @param[out] delta       15-D state update δx on success; zero on failure.
+/// @param[out] P_post      Posterior covariance H⁻¹ (optional, pass nullptr to skip).
+/// @return true on success; false if H is ill-conditioned.
+inline bool solve_ldlt(const LIOLinearizedResult& lio_result, Eigen::Matrix<float, 15, 1>& delta,
+                       Eigen::Matrix<float, 15, 15>* P_post = nullptr) {
     Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(lio_result.H);
     if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) {
         delta.setZero();
+        if (P_post) P_post->setZero();
         return false;
     }
     delta = ldlt.solve(-lio_result.b);
+    if (P_post) {
+        P_post->setIdentity();
+        ldlt.solveInPlace(*P_post);  // P_post = H⁻¹
+    }
     return true;
 }
 

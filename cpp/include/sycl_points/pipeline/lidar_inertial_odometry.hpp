@@ -406,11 +406,16 @@ private:
                 lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) += kReg * Eigen::Matrix3f::Identity();
             }
 
-            // Solve H·δx = −b
+            // Solve H·δx = −b and compute P_post = H⁻¹ from the same LDLT.
+            // P_post is saved every iteration; on convergence or at max_iterations
+            // the final value is carried into reset_imu_preintegration() below,
+            // completing the IEKF-style posterior→prior propagation.
             Eigen::Matrix<float, 15, 1> delta;
-            if (!algorithms::lio::solve_ldlt(lio, delta)) break;
+            Eigen::Matrix<float, 15, 15> P_post_candidate;
+            if (!algorithms::lio::solve_ldlt(lio, delta, &P_post_candidate)) break;
 
-            x_op = algorithms::lio::retract(x_op, delta);
+            P_post_ = P_post_candidate;
+            x_op    = algorithms::lio::retract(x_op, delta);
 
             if (is_lio_converged(delta)) break;
         }
