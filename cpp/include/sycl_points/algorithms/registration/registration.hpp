@@ -293,6 +293,30 @@ public:
         events.wait_and_throw();
     }
 
+    /// @brief Compute ICP Hessian and gradient at a given pose without running the full optimization.
+    ///
+    /// Performs one KNN search followed by the SYCL parallel-reduction linearization kernel and
+    /// returns the raw 6×6 Hessian / 6×1 gradient.  The result can be combined with an IMU prior
+    /// term (e.g. in a LIO back-end) before solving the normal equations externally.
+    ///
+    /// @param source     Source point cloud (sensor frame).
+    /// @param target     Target point cloud (map/submap frame).
+    /// @param target_knn KNN structure built on @p target.
+    /// @param pose       Current pose estimate T_world_sensor (4×4 matrix).
+    /// @param options    Per-call execution overrides (robust scale etc.).
+    /// @return Linearized ICP result: 6×6 H, 6×1 b, error, inlier count.
+    LinearizedResult compute_linearized_result(const PointCloudShared& source, const PointCloudShared& target,
+                                               const knn::KNNBase& target_knn, const TransformMatrix& pose,
+                                               const ExecutionOptions& options = ExecutionOptions()) {
+        const float robust_scale =
+            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
+        const float rotation_robust_scale = options.rotation_robust_scale > 0.0f
+                                                ? options.rotation_robust_scale
+                                                : this->params_.rotation_constraint.robust.default_scale;
+        auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, pose);
+        return this->linearize(source, target, pose, robust_scale, rotation_robust_scale, knn_event.evs);
+    }
+
 private:
     RegistrationParams params_;
     sycl_utils::DeviceQueue queue_;
