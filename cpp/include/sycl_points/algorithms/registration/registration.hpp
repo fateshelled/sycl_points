@@ -114,8 +114,8 @@ public:
     }
 
     /// @brief validate parameters
-    void validate_params(const PointCloudShared& source, const PointCloudShared& target) {
-        if (this->params_.reg_type == RegType::POINT_TO_PLANE) {
+    void validate_params(const PointCloudShared& source, const PointCloudShared& target, RegistrationParams & params) const {
+        if (params.reg_type == RegType::POINT_TO_PLANE) {
             if (!target.has_normal()) {
                 if (!target.has_cov()) {
                     throw std::runtime_error(
@@ -128,14 +128,14 @@ public:
                 covariance::compute_normals_from_covariances(target);
             }
         }
-        if (this->params_.reg_type == RegType::GICP) {
+        if (params.reg_type == RegType::GICP) {
             if (!source.has_cov() || !target.has_cov()) {
                 throw std::runtime_error(
                     "[Registration::validate_params] "
                     "Covariance matrices of source and target must be pre-computed before performing GICP matching.");
             }
         }
-        if (this->params_.reg_type == RegType::GENZ) {
+        if (params.reg_type == RegType::GENZ) {
             if (!target.has_cov()) {
                 throw std::runtime_error(
                     "[Registration::validate_params] "
@@ -150,7 +150,7 @@ public:
                 }
             }
         }
-        if (this->params_.reg_type == RegType::POINT_TO_DISTRIBUTION) {
+        if (params.reg_type == RegType::POINT_TO_DISTRIBUTION) {
             if (!target.has_cov()) {
                 throw std::runtime_error(
                     "[Registration::validate_params] "
@@ -158,7 +158,7 @@ public:
                     "matching.");
             }
         }
-        if (this->params_.photometric.enable) {
+        if (params.photometric.enable) {
             if (!target.has_normal()) {
                 throw std::runtime_error(
                     "[Registration::validate_params] "
@@ -176,7 +176,7 @@ public:
                     "matching.");
             }
         }
-        if (this->params_.rotation_constraint.enable) {
+        if (params.rotation_constraint.enable) {
             if (!source.has_cov()) {
                 throw std::runtime_error(
                     "[Registration::validate_params] "
@@ -188,11 +188,11 @@ public:
                     "Covariance matrices of target are required for performing rotation constraint matching.");
             }
         }
-        if (this->params_.robust.type != robust::RobustLossType::NONE) {
-            if (this->params_.robust.default_scale <= 0.0f) {
+        if (params.robust.type != robust::RobustLossType::NONE) {
+            if (params.robust.default_scale <= 0.0f) {
                 std::cout << "[Caution] `robust.default_scale` must be greater than zero. Disable robust loss."
                           << std::endl;
-                this->params_.robust.type = robust::RobustLossType::NONE;
+                params.robust.type = robust::RobustLossType::NONE;
             }
         }
     }
@@ -215,7 +215,7 @@ public:
             return result;
         }
 
-        this->validate_params(source, target);
+        this->validate_params(source, target, this->params_);
 
         {
             float trust_region_radius = this->params_.dogleg.initial_trust_region_radius;
@@ -398,7 +398,7 @@ private:
 
     float compute_genz_alpha(const PointCloudShared& source,  //
                              const PointCloudShared& target,  //
-                             float max_correspondence_distance, const std::vector<sycl::event>& depends = {}) {
+                             float max_correspondence_distance, const std::vector<sycl::event>& depends = {}) const {
         sycl_points::shared_vector<uint32_t> counter_inlier(1, 0, *this->queue_.ptr);
         sycl_points::shared_vector<uint32_t> counter_plane(1, 0, *this->queue_.ptr);
 
@@ -679,7 +679,7 @@ private:
                                                                  const PointCloudShared& target,
                                                                  const knn::KNNResult& knn_results,
                                                                  const Eigen::Matrix4f transT, float robust_scale,
-                                                                 float rotation_robust_scale) {
+                                                                 float rotation_robust_scale) const {
         // The robust_scale argument ensures error reduction uses the caller-provided loss scale.
         shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
         shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
@@ -816,7 +816,7 @@ private:
 
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
                                               const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
-                                              float robust_scale, float rotation_robust_scale) {
+                                              float robust_scale, float rotation_robust_scale) const {
         std::tuple<float, uint32_t> result = {0.0f, 0};
         this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
             result = this->compute_error_parallel_reduction<reg, loss>(source, target, knn_results, transT,
@@ -827,7 +827,7 @@ private:
     }
 
     bool solve_linear_system(const Eigen::Matrix<float, 6, 6>& H, const Eigen::Vector<float, 6>& b,
-                             Eigen::Vector<float, 6>& solution) {
+                             Eigen::Vector<float, 6>& solution) const {
         Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt;
         ldlt.compute(H);
         if (ldlt.info() == Eigen::Success) {
@@ -874,7 +874,8 @@ private:
         }
     }
 
-    void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result, size_t iter) {
+    void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result,
+                               size_t iter) const {
         Eigen::Vector<float, 6> delta;
         const bool success = this->solve_linear_system(
             linearized_result.H + this->params_.gn.lambda * Eigen::Matrix<float, 6, 6>::Identity(), linearized_result.b,
@@ -902,7 +903,8 @@ private:
 
     bool optimize_levenberg_marquardt(const PointCloudShared& source, const PointCloudShared& target,
                                       RegistrationResult& result, const LinearizedResult& linearized_result,
-                                      float& lambda, size_t iter, float robust_scale, float rotation_robust_scale) {
+                                      float& lambda, size_t iter, float robust_scale,
+                                      float rotation_robust_scale) const {
         const auto& H = linearized_result.H;
         const auto& g = linearized_result.b;
         const float current_error = linearized_result.error;
@@ -968,7 +970,7 @@ private:
     bool optimize_powell_dogleg(const PointCloudShared& source, const PointCloudShared& target,
                                 RegistrationResult& result, const LinearizedResult& linearized_result,
                                 float& trust_region_radius, size_t iter, float robust_scale,
-                                float rotation_robust_scale) {
+                                float rotation_robust_scale) const {
         bool updated = false;
         const auto& H = linearized_result.H;
         const auto& g = linearized_result.b;
