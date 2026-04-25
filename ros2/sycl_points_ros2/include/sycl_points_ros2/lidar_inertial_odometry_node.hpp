@@ -60,12 +60,12 @@ private:
     // Node parameters (ROS2 / TF)
     // -----------------------------------------------------------------------
     std::string points_topic_ = "points";
-    std::string imu_topic_    = "imu/data";
+    std::string imu_topic_ = "imu/data";
     std::string odom_frame_id_ = "odom";
-    std::string base_link_id_  = "base_link";
+    std::string base_link_id_ = "base_link";
     Eigen::Isometry3f T_base_link_to_lidar_ = Eigen::Isometry3f::Identity();
     Eigen::Isometry3f T_lidar_to_base_link_ = Eigen::Isometry3f::Identity();
-    bool input_convert_rgb_       = true;
+    bool input_convert_rgb_ = true;
     bool input_convert_intensity_ = true;
 
     LiDAROdometryBaseNode::SubscriptionQoSParams points_qos_params_{"keep_last", 1, "best_effort"};
@@ -85,8 +85,7 @@ private:
     // -----------------------------------------------------------------------
     // Helpers (same logic as LiDAROdometryBaseNode)
     // -----------------------------------------------------------------------
-    nav_msgs::msg::Odometry make_odom_message(const std_msgs::msg::Header& header,
-                                              const Eigen::Isometry3f& odom) const;
+    nav_msgs::msg::Odometry make_odom_message(const std_msgs::msg::Header& header, const Eigen::Isometry3f& odom) const;
     geometry_msgs::msg::PoseStamped make_pose_message(const std_msgs::msg::Header& header,
                                                       const Eigen::Isometry3f& odom) const;
     nav_msgs::msg::Odometry make_keyframe_pose_message(const std_msgs::msg::Header& header,

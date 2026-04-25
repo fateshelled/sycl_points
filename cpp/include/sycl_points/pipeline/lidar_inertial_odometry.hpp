@@ -350,9 +350,8 @@ private:
         // P_pred from preintegration is expressed in IMU body frame [δp_imu, δφ_imu, …],
         // but our LIO state uses LiDAR body frame [δp_lidar, δφ_lidar, …].
         // The Jacobian J is evaluated at x_pred (the prior mean) and is constant per frame.
-        const Eigen::Matrix<float, 15, 15> P_pred_lidar =
-            algorithms::lio::transform_covariance_imu_to_lidar(imu_preintegration_->get_raw().covariance,
-                                                                params_.imu.T_imu_to_lidar, x_pred.rotation);
+        const Eigen::Matrix<float, 15, 15> P_pred_lidar = algorithms::lio::transform_covariance_imu_to_lidar(
+            imu_preintegration_->get_raw().covariance, params_.imu.T_imu_to_lidar, x_pred.rotation);
 
         Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
@@ -378,10 +377,10 @@ private:
             // Pass x_pred pose as initial_pose so degenerate regularization uses the same
             // reference as align() does — this prevents unbounded yaw updates when the
             // rotation Hessian from ICP is near-zero (e.g. during turning).
-            const TransformMatrix T_op      = state_to_pose(x_op).matrix();
+            const TransformMatrix T_op = state_to_pose(x_op).matrix();
             const TransformMatrix T_initial = state_to_pose(x_pred).matrix();
-            last_icp = reg->compute_linearized_result(*preprocessed_pc_, *submap_pc_ptr_, *submap_tree_,
-                                                      T_op, T_initial, options);
+            last_icp = reg->compute_linearized_result(*preprocessed_pc_, *submap_pc_ptr_, *submap_tree_, T_op,
+                                                      T_initial, options);
 
             // Update IMU factor at current operating point (skip on first: already computed above)
             if (iter > 0) {
@@ -401,9 +400,11 @@ private:
                 // 15×15 system remains full-rank and ICP can still correct the pose.
                 // The large information value (small σ) keeps v / b near their predicted values.
                 constexpr float kReg = 1e4f;
-                lio.H.block<3, 3>(imu::State::kIdxVel,     imu::State::kIdxVel)     += kReg * Eigen::Matrix3f::Identity();
-                lio.H.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) += kReg * Eigen::Matrix3f::Identity();
-                lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) += kReg * Eigen::Matrix3f::Identity();
+                lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += kReg * Eigen::Matrix3f::Identity();
+                lio.H.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) +=
+                    kReg * Eigen::Matrix3f::Identity();
+                lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) +=
+                    kReg * Eigen::Matrix3f::Identity();
             }
 
             // Solve H·δx = −b and compute P_post = H⁻¹ from the same LDLT.
@@ -415,7 +416,7 @@ private:
             if (!algorithms::lio::solve_ldlt(lio, delta, &P_post_candidate)) break;
 
             P_post_ = P_post_candidate;
-            x_op    = algorithms::lio::retract(x_op, delta);
+            x_op = algorithms::lio::retract(x_op, delta);
 
             if (is_lio_converged(delta)) break;
         }
@@ -429,11 +430,11 @@ private:
         // during fast turning.  Displacement-based velocity is simple and always consistent
         // with the pose update.
         const Eigen::Vector3f prev_position = x_.position;
-        x_.position   = x_op.position;
-        x_.rotation   = x_op.rotation;
+        x_.position = x_op.position;
+        x_.rotation = x_op.rotation;
         x_.accel_bias = x_op.accel_bias;
-        x_.gyro_bias  = x_op.gyro_bias;
-        x_.velocity   = (dt_ > 0.0f) ? (x_.position - prev_position) / dt_ : x_op.velocity;
+        x_.gyro_bias = x_op.gyro_bias;
+        x_.velocity = (dt_ > 0.0f) ? (x_.position - prev_position) / dt_ : x_op.velocity;
         reset_imu_preintegration();
 
         // Fill RegistrationResult for compatibility with submapping

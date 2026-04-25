@@ -87,18 +87,15 @@ inline void add_icp_factor(LIOLinearizedResult& result, const registration::Line
 
     // Translation block: rotate ICP body-frame δt into LIO world-frame δp
     const Eigen::Matrix3f& R = R_world_lidar;
-    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) +=
-        R * icp.H.block<3, 3>(3, 3) * R.transpose();
+    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) += R * icp.H.block<3, 3>(3, 3) * R.transpose();
     result.b.segment<3>(imu::State::kIdxPos) += R * icp.b.segment<3>(3);
 
     // Cross terms: φ remains body-frame, p becomes world-frame
-    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) +=
-        R * icp.H.block<3, 3>(3, 0);
-    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) +=
-        icp.H.block<3, 3>(0, 3) * R.transpose();
+    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) += R * icp.H.block<3, 3>(3, 0);
+    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) += icp.H.block<3, 3>(0, 3) * R.transpose();
 
     result.error_icp += icp.error;
-    result.inlier    += icp.inlier;
+    result.inlier += icp.inlier;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,10 +209,10 @@ inline imu::State retract(const imu::State& state, const Eigen::Matrix<float, 15
 /// @param R_world_lidar   Current LiDAR-to-world rotation from the LIO state.
 /// @return 15×15 Jacobian  J  such that  δx_lidar = J · δx_imu.
 inline Eigen::Matrix<float, 15, 15> imu_to_lidar_jacobian(const Eigen::Isometry3f& T_imu_to_lidar,
-                                                            const Eigen::Matrix3f& R_world_lidar) {
+                                                          const Eigen::Matrix3f& R_world_lidar) {
     Eigen::Matrix<float, 15, 15> J = Eigen::Matrix<float, 15, 15>::Identity();
 
-    const Eigen::Matrix3f R_lidar_imu  = T_imu_to_lidar.rotation();
+    const Eigen::Matrix3f R_lidar_imu = T_imu_to_lidar.rotation();
     const Eigen::Vector3f t_lidar_in_imu = T_imu_to_lidar.inverse().translation();
     // R_world_imu = R_world_lidar * R_lidar_imu  (existing convention in the pipeline)
     const Eigen::Matrix3f R_world_imu = R_world_lidar * R_lidar_imu;
@@ -224,8 +221,7 @@ inline Eigen::Matrix<float, 15, 15> imu_to_lidar_jacobian(const Eigen::Isometry3
     J.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) = R_lidar_imu;
 
     // J[p, φ]: lever-arm coupling (zero when IMU and LiDAR are co-located)
-    J.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) =
-        -R_world_imu * eigen_utils::lie::skew(t_lidar_in_imu);
+    J.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) = -R_world_imu * eigen_utils::lie::skew(t_lidar_in_imu);
 
     return J;
 }
@@ -242,9 +238,9 @@ inline Eigen::Matrix<float, 15, 15> imu_to_lidar_jacobian(const Eigen::Isometry3
 /// @param T_imu_to_lidar  Extrinsic.
 /// @param R_world_lidar   Current LiDAR rotation from the LIO state.
 /// @return 15×15 covariance expressed in the LiDAR error-state frame.
-inline Eigen::Matrix<float, 15, 15> transform_covariance_imu_to_lidar(
-    const Eigen::Matrix<float, 15, 15>& P_imu, const Eigen::Isometry3f& T_imu_to_lidar,
-    const Eigen::Matrix3f& R_world_lidar) {
+inline Eigen::Matrix<float, 15, 15> transform_covariance_imu_to_lidar(const Eigen::Matrix<float, 15, 15>& P_imu,
+                                                                      const Eigen::Isometry3f& T_imu_to_lidar,
+                                                                      const Eigen::Matrix3f& R_world_lidar) {
     const Eigen::Matrix<float, 15, 15> J = imu_to_lidar_jacobian(T_imu_to_lidar, R_world_lidar);
     return J * P_imu * J.transpose();
 }
