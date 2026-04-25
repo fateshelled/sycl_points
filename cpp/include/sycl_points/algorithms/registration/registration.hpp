@@ -295,18 +295,23 @@ public:
 
     /// @brief Compute ICP Hessian and gradient at a given pose without running the full optimization.
     ///
-    /// Performs one KNN search followed by the SYCL parallel-reduction linearization kernel and
-    /// returns the raw 6×6 Hessian / 6×1 gradient.  The result can be combined with an IMU prior
-    /// term (e.g. in a LIO back-end) before solving the normal equations externally.
+    /// Performs one KNN search followed by the SYCL parallel-reduction linearization kernel.
+    /// Degenerate regularization is applied when @p initial_pose is provided, which prevents
+    /// unbounded updates in ill-conditioned directions (e.g. yaw in outdoor LiDAR).
+    /// Without regularization a near-zero Hessian eigenvalue combined with a non-zero gradient
+    /// can produce arbitrarily large updates — particularly dangerous for rotation during turning.
     ///
-    /// @param source     Source point cloud (sensor frame).
-    /// @param target     Target point cloud (map/submap frame).
-    /// @param target_knn KNN structure built on @p target.
-    /// @param pose       Current pose estimate T_world_sensor (4×4 matrix).
-    /// @param options    Per-call execution overrides (robust scale etc.).
+    /// @param source        Source point cloud (sensor frame).
+    /// @param target        Target point cloud (map/submap frame).
+    /// @param target_knn    KNN structure built on @p target.
+    /// @param pose          Current pose estimate T_world_sensor (4×4 matrix).
+    /// @param initial_pose  Pose at the start of the optimisation window (used for degenerate
+    ///                      regularization).  Pass TransformMatrix::Identity() to skip.
+    /// @param options       Per-call execution overrides (robust scale etc.).
     /// @return Linearized ICP result: 6×6 H, 6×1 b, error, inlier count.
     LinearizedResult compute_linearized_result(const PointCloudShared& source, const PointCloudShared& target,
                                                const knn::KNNBase& target_knn, const TransformMatrix& pose,
+                                               const TransformMatrix& initial_pose,
                                                const ExecutionOptions& options = ExecutionOptions()) {
         const float robust_scale =
             options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
@@ -314,7 +319,15 @@ public:
                                                 ? options.rotation_robust_scale
                                                 : this->params_.rotation_constraint.robust.default_scale;
         auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, pose);
-        return this->linearize(source, target, pose, robust_scale, rotation_robust_scale, knn_event.evs);
+        const auto raw  = this->linearize(source, target, pose, robust_scale, rotation_robust_scale, knn_event.evs);
+        return this->degenerate_reg_.regularize(raw, Eigen::Isometry3f(pose), Eigen::Isometry3f(initial_pose));
+    }
+
+    /// @brief Overload without degenerate regularization (backward-compatible).
+    LinearizedResult compute_linearized_result(const PointCloudShared& source, const PointCloudShared& target,
+                                               const knn::KNNBase& target_knn, const TransformMatrix& pose,
+                                               const ExecutionOptions& options = ExecutionOptions()) {
+        return compute_linearized_result(source, target, target_knn, pose, pose, options);
     }
 
 private:

@@ -375,9 +375,14 @@ private:
         for (size_t iter = 0; iter < params_.lio.max_iterations; ++iter) {
             ++actual_iterations;
 
-            // ICP Hessian/gradient at current operating point (SYCL device)
-            const TransformMatrix T_op = state_to_pose(x_op).matrix();
-            last_icp = reg->compute_linearized_result(*preprocessed_pc_, *submap_pc_ptr_, *submap_tree_, T_op, options);
+            // ICP Hessian/gradient at current operating point (SYCL device).
+            // Pass x_pred pose as initial_pose so degenerate regularization uses the same
+            // reference as align() does — this prevents unbounded yaw updates when the
+            // rotation Hessian from ICP is near-zero (e.g. during turning).
+            const TransformMatrix T_op      = state_to_pose(x_op).matrix();
+            const TransformMatrix T_initial = state_to_pose(x_pred).matrix();
+            last_icp = reg->compute_linearized_result(*preprocessed_pc_, *submap_pc_ptr_, *submap_tree_,
+                                                      T_op, T_initial, options);
 
             // Update IMU factor at current operating point (skip on first: already computed above)
             if (iter > 0) {
@@ -389,6 +394,15 @@ private:
             algorithms::lio::add_icp_factor(lio, last_icp);
             if (imu_valid) {
                 algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
+            } else {
+                // IMU factor unavailable (P_pred singular or zero noise densities).
+                // Add weak identity regularization to velocity and bias blocks so the
+                // 15×15 system remains full-rank and ICP can still correct the pose.
+                // The large information value (small σ) keeps v / b near their predicted values.
+                constexpr float kReg = 1e4f;
+                lio.H.block<3, 3>(imu::State::kIdxVel,     imu::State::kIdxVel)     += kReg * Eigen::Matrix3f::Identity();
+                lio.H.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) += kReg * Eigen::Matrix3f::Identity();
+                lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) += kReg * Eigen::Matrix3f::Identity();
             }
 
             // Solve H·δx = −b
