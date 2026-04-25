@@ -59,15 +59,10 @@ lidar_inertial_odometry_node:
 
     # IMU noise densities for 15x15 covariance propagation.
     # Set non-zero to enable covariance propagation (required for IMU prior weighting).
-    # Typical MEMS IMU values (order-of-magnitude):
-    #   gyro_noise_density    ~ 1e-3 rad/s/sqrt(Hz)
-    #   accel_noise_density   ~ 1e-2 m/s^2/sqrt(Hz)
-    #   gyro_bias_rw_density  ~ 1e-5 rad/s^2/sqrt(Hz)
-    #   accel_bias_rw_density ~ 1e-4 m/s^3/sqrt(Hz)
-    imu/preintegration/gyro_noise_density: 1.0e-3
-    imu/preintegration/accel_noise_density: 1.0e-2
-    imu/preintegration/gyro_bias_rw_density: 1.0e-5
-    imu/preintegration/accel_bias_rw_density: 1.0e-4
+    imu/preintegration/gyro_noise_density: 1.0       # rad/s/sqrt(Hz)
+    imu/preintegration/accel_noise_density: 1.0      # m/s^2/sqrt(Hz)
+    imu/preintegration/gyro_bias_rw_density: 1.0e-5  # rad/s^2/sqrt(Hz)
+    imu/preintegration/accel_bias_rw_density: 1.0e-4 # m/s^3/sqrt(Hz)
 
     imu/bias/gyro/x: 0.0  # Initial gyroscope bias [rad/s]
     imu/bias/gyro/y: 0.0
