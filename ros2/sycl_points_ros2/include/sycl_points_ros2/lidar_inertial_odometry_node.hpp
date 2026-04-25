@@ -92,6 +92,8 @@ private:
                                                        const Eigen::Isometry3f& odom) const;
     geometry_msgs::msg::TransformStamped make_transform_message(const std_msgs::msg::Header& header,
                                                                 const Eigen::Isometry3f& odom) const;
+    void record_processing_times(double dt_from_msg, double dt_publish);
+    void print_processing_times(const std::string& name, double dt);
     void add_delta_time(const std::string& name, double dt);
     void log_processing_times();
 };

@@ -1,5 +1,7 @@
 #include "sycl_points_ros2/lidar_inertial_odometry_node.hpp"
 
+#include <algorithm>
+#include <numeric>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sycl_points/ros2/convert.hpp>
 #include <sycl_points/utils/time_utils.hpp>
@@ -144,41 +146,34 @@ void LidarInertialOdometryNode::point_cloud_callback(const sensor_msgs::msg::Poi
         return;
     }
 
-    const auto& header   = msg->header;
-    const auto& odom     = pipeline_->get_odom();
-    const auto& kf_pose  = pipeline_->get_last_keyframe_pose();
+    const auto& header  = msg->header;
+    const auto& odom    = pipeline_->get_odom();
+    const auto& kf_pose = pipeline_->get_last_keyframe_pose();
 
-    // TF
-    tf_broadcaster_->sendTransform(make_transform_message(header, odom));
+    // Publish (timed, matching "5. publish ROS 2 msg" in the base node)
+    double dt_publish = 0.0;
+    time_utils::measure_execution(
+        [&]() {
+            tf_broadcaster_->sendTransform(make_transform_message(header, odom));
+            pub_odom_->publish(make_odom_message(header, odom));
+            pub_pose_->publish(make_pose_message(header, odom));
+            pub_keyframe_pose_->publish(make_keyframe_pose_message(header, kf_pose));
 
-    // Odometry / Pose
-    pub_odom_->publish(make_odom_message(header, odom));
-    pub_pose_->publish(make_pose_message(header, odom));
-    pub_keyframe_pose_->publish(make_keyframe_pose_message(header, kf_pose));
+            if (pub_preprocessed_->get_subscription_count() > 0) {
+                const auto pc_msg = toROS2msg(pipeline_->get_preprocessed_point_cloud(), header);
+                if (pc_msg) pub_preprocessed_->publish(*pc_msg);
+            }
+            if (pub_submap_->get_subscription_count() > 0) {
+                auto submap_msg = toROS2msg(pipeline_->get_submap_point_cloud(), header);
+                if (submap_msg) {
+                    submap_msg->header.frame_id = odom_frame_id_;
+                    pub_submap_->publish(*submap_msg);
+                }
+            }
+        },
+        dt_publish);
 
-    // Debug clouds
-    if (pub_preprocessed_->get_subscription_count() > 0) {
-        const auto pc_msg = toROS2msg(pipeline_->get_preprocessed_point_cloud(), header);
-        if (pc_msg) pub_preprocessed_->publish(*pc_msg);
-    }
-    if (pub_submap_->get_subscription_count() > 0) {
-        auto submap_msg = toROS2msg(pipeline_->get_submap_point_cloud(), header);
-        if (submap_msg) {
-            submap_msg->header.frame_id = odom_frame_id_;
-            pub_submap_->publish(*submap_msg);
-        }
-    }
-
-    // Processing times
-    double total = dt_convert;
-    add_delta_time("0. from ROS 2 msg", dt_convert);
-    for (const auto& [name, dt] : pipeline_->get_current_processing_time()) {
-        add_delta_time(name, dt);
-        total += dt;
-    }
-    add_delta_time("6. total", total);
-
-    RCLCPP_INFO(this->get_logger(), "dt: %.2f us", total);
+    record_processing_times(dt_convert, dt_publish);
 }
 
 void LidarInertialOdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
@@ -249,28 +244,68 @@ geometry_msgs::msg::TransformStamped LidarInertialOdometryNode::make_transform_m
     return tf;
 }
 
+void LidarInertialOdometryNode::record_processing_times(double dt_from_msg, double dt_publish) {
+    double total = dt_from_msg + dt_publish;
+
+    add_delta_time("0. from ROS 2 msg", dt_from_msg);
+    print_processing_times("0. from ROS 2 msg", dt_from_msg);
+
+    for (const auto& [name, dt] : pipeline_->get_current_processing_time()) {
+        add_delta_time(name, dt);
+        print_processing_times(name, dt);
+        total += dt;
+    }
+
+    add_delta_time("5. publish ROS 2 msg", dt_publish);
+    print_processing_times("5. publish ROS 2 msg", dt_publish);
+
+    add_delta_time("6. total", total);
+    print_processing_times("6. total", total);
+
+    RCLCPP_INFO(this->get_logger(), "");
+}
+
+void LidarInertialOdometryNode::print_processing_times(const std::string& name, double dt) {
+    constexpr size_t LENGTH = 24;
+    std::string log = name + ": ";
+    if (name.length() < LENGTH) {
+        log += std::string(LENGTH - name.length(), ' ');
+    }
+    log += "%9.2f us";
+    RCLCPP_INFO(this->get_logger(), log.c_str(), dt);
+}
+
 void LidarInertialOdometryNode::add_delta_time(const std::string& name, double dt) {
     processing_times_[name].push_back(dt);
 }
 
 void LidarInertialOdometryNode::log_processing_times() {
-    const auto& pipeline_times = pipeline_->get_total_processing_times();
-    processing_times_.insert(pipeline_times.begin(), pipeline_times.end());
+    RCLCPP_INFO(this->get_logger(), "");
+    processing_times_.insert(pipeline_->get_total_processing_times().begin(),
+                              pipeline_->get_total_processing_times().end());
 
-    auto print = [&](const std::string& label, double dt) {
-        RCLCPP_INFO(this->get_logger(), "  %-28s %9.2f us", label.c_str(), dt);
-    };
-
-    RCLCPP_INFO(this->get_logger(), "MAX processing time:");
+    RCLCPP_INFO(this->get_logger(), "MAX processing time");
     for (auto& [name, times] : processing_times_) {
         if (times.empty()) continue;
-        print(name, *std::max_element(times.begin(), times.end()));
+        print_processing_times(name, *std::max_element(times.begin(), times.end()));
     }
-    RCLCPP_INFO(this->get_logger(), "MEAN processing time:");
+
+    RCLCPP_INFO(this->get_logger(), "");
+    RCLCPP_INFO(this->get_logger(), "MEAN processing time");
     for (auto& [name, times] : processing_times_) {
         if (times.empty()) continue;
-        print(name, std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size()));
+        print_processing_times(name, std::accumulate(times.begin(), times.end(), 0.0) /
+                                         static_cast<double>(times.size()));
     }
+
+    RCLCPP_INFO(this->get_logger(), "");
+    RCLCPP_INFO(this->get_logger(), "MEDIAN processing time");
+    for (auto& [name, times] : processing_times_) {
+        if (times.empty()) continue;
+        std::sort(times.begin(), times.end());
+        print_processing_times(name, times[times.size() / 2]);
+    }
+    RCLCPP_INFO(this->get_logger(), "");
 }
 
 }  // namespace ros2
