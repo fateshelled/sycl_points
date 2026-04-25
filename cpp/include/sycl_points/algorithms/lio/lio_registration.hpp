@@ -53,32 +53,52 @@ struct LIOLinearizedResult {
 
 /// @brief Embed ICP 6×6 Hessian/gradient into the LIO 15×15 system.
 ///
-/// The ICP result lives in the 6-D pose tangent space [δω, δt], while the
-/// LIO state is ordered [δp, δφ, δv, δb_a, δb_g].  Only the (δp, δφ) 6×6
-/// block of the LIO Hessian is updated; velocity and bias rows/cols are
-/// unaffected.
+/// Perturbation-convention mismatch and how it is resolved here:
 ///
-/// @param result  LIO system to accumulate into.
-/// @param icp     ICP linearized result from registration::Registration.
-inline void add_icp_factor(LIOLinearizedResult& result, const registration::LinearizedResult& icp) {
-    // Permutation: ICP[ω=0:3, t=3:6] → LIO[φ=3:6, p=0:3]
-    //
-    // H_lio[p, p] += H_icp[t, t]
-    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) += icp.H.block<3, 3>(3, 3);
-    // H_lio[p, φ] += H_icp[t, ω]
-    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) += icp.H.block<3, 3>(3, 0);
-    // H_lio[φ, p] += H_icp[ω, t]
-    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) += icp.H.block<3, 3>(0, 3);
-    // H_lio[φ, φ] += H_icp[ω, ω]
+///   GICP uses SE(3) right-perturbation  T_new = T * Exp([δω; δt])
+///     δω  — rotation increment in the LiDAR body frame
+///     δt  — translation increment in the LiDAR body frame
+///             (p_new = p + R * δt,  NOT  p + δt)
+///
+///   LIO state uses:
+///     δφ  — rotation increment in the LiDAR body frame  (same as δω) ✓
+///     δp  — position increment in the WORLD frame
+///             (p_new = p + δp)
+///
+///   For rotation the conventions match directly.
+///   For translation they differ by R_world_lidar:
+///     δp_world = R * δt_body
+///
+///   Therefore the ICP translation gradient / Hessian must be rotated
+///   into the world frame before accumulation:
+///     b_lio[p]   = R * b_icp[t]
+///     H_lio[p,p] = R * H_icp[t,t] * Rᵀ
+///     H_lio[p,φ] = R * H_icp[t,ω]   (φ stays in body frame)
+///     H_lio[φ,p] = H_icp[ω,t] * Rᵀ
+///
+/// @param result          LIO system to accumulate into.
+/// @param icp             ICP linearized result from registration::Registration.
+/// @param R_world_lidar   Current LiDAR-to-world rotation (x_op.rotation).
+inline void add_icp_factor(LIOLinearizedResult& result, const registration::LinearizedResult& icp,
+                           const Eigen::Matrix3f& R_world_lidar) {
+    // Rotation block: δω (ICP body frame) == δφ (LIO body frame) — embed directly
     result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += icp.H.block<3, 3>(0, 0);
-
-    // b_lio[p] += b_icp[t]
-    result.b.segment<3>(imu::State::kIdxPos) += icp.b.segment<3>(3);
-    // b_lio[φ] += b_icp[ω]
     result.b.segment<3>(imu::State::kIdxRot) += icp.b.segment<3>(0);
 
+    // Translation block: rotate ICP body-frame δt into LIO world-frame δp
+    const Eigen::Matrix3f& R = R_world_lidar;
+    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) +=
+        R * icp.H.block<3, 3>(3, 3) * R.transpose();
+    result.b.segment<3>(imu::State::kIdxPos) += R * icp.b.segment<3>(3);
+
+    // Cross terms: φ remains body-frame, p becomes world-frame
+    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) +=
+        R * icp.H.block<3, 3>(3, 0);
+    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) +=
+        icp.H.block<3, 3>(0, 3) * R.transpose();
+
     result.error_icp += icp.error;
-    result.inlier += icp.inlier;
+    result.inlier    += icp.inlier;
 }
 
 // ---------------------------------------------------------------------------

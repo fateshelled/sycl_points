@@ -19,7 +19,6 @@
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
-#include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 #include "sycl_points/pipeline/lidar_inertial_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
@@ -389,9 +388,11 @@ private:
                 imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_op, P_pred_lidar, H_imu, b_imu);
             }
 
-            // Combine ICP + IMU into 15×15 normal equations
+            // Combine ICP + IMU into 15×15 normal equations.
+            // Pass x_op.rotation so add_icp_factor can rotate the body-frame ICP
+            // translation gradient/Hessian into the world-frame LIO position space.
             algorithms::lio::LIOLinearizedResult lio;
-            algorithms::lio::add_icp_factor(lio, last_icp);
+            algorithms::lio::add_icp_factor(lio, last_icp, x_op.rotation);
             if (imu_valid) {
                 algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
             } else {
@@ -415,7 +416,19 @@ private:
         }
 
         // ---- Update state and reset IMU preintegration ----
-        x_ = x_op;
+        // Pose and biases come from the LIO optimisation.
+        // Velocity is derived from the LiDAR displacement (finite difference) rather than
+        // the LDLT solution: the velocity block of the 15×15 system is only weakly
+        // constrained by the IMU (large accel noise → small H_imu[v,v]), and the
+        // P_pred cross-terms between rotation and velocity can drive large, wrong δv
+        // during fast turning.  Displacement-based velocity is simple and always consistent
+        // with the pose update.
+        const Eigen::Vector3f prev_position = x_.position;
+        x_.position   = x_op.position;
+        x_.rotation   = x_op.rotation;
+        x_.accel_bias = x_op.accel_bias;
+        x_.gyro_bias  = x_op.gyro_bias;
+        x_.velocity   = (dt_ > 0.0f) ? (x_.position - prev_position) / dt_ : x_op.velocity;
         reset_imu_preintegration();
 
         // Fill RegistrationResult for compatibility with submapping
