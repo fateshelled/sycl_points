@@ -309,13 +309,13 @@ private:
         P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
 
         this->imu_preintegration_->reset(               //
-            {this->x_.accel_bias, this->x_.gyro_bias},  //
+            {this->x_.gyro_bias, this->x_.accel_bias},  //
             R_world_imu, this->x_.velocity, P_initial);
     }
 
     /// @brief Predict the full 15-DOF state from IMU preintegration.
     imu::State predict_state() const {
-        const imu::IMUBias current_bias{this->x_.accel_bias, this->x_.gyro_bias};
+        const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
         const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
 
         // Relative pose prediction (gravity + initial velocity already compensated)
@@ -457,7 +457,7 @@ private:
         this->x_.gyro_bias = x_op.gyro_bias;
         if (this->dt_ > 0.0f) {
             const Eigen::Vector3f v_fd = (this->x_.position - prev_position) / this->dt_;
-            const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.accel_bias, x_op.gyro_bias});
+            const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.gyro_bias, x_op.accel_bias});
             if (c.dt_total > 1e-6) {
                 // a_world = g + R * Delta_v / dt_imu  (gravity self-cancels at rest)
                 const Eigen::Matrix3f R_world_imu_prev = prev_rotation * this->params_.imu.T_imu_to_lidar.rotation();
@@ -558,7 +558,7 @@ private:
             const Eigen::Matrix3f R_world_imu = this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
             algorithms::deskew::deskew_point_cloud_imu(
                 *scan, *scan, imu_buf, scan_start_sec, this->params_.imu.T_imu_to_lidar,
-                imu::IMUBias{this->x_.accel_bias, this->x_.gyro_bias}, this->params_.imu.preintegration, R_world_imu);
+                imu::IMUBias{this->x_.gyro_bias, this->x_.accel_bias}, this->params_.imu.preintegration, R_world_imu);
         }
 
         if (this->params_.scan.preprocess.box_filter.enable) {
