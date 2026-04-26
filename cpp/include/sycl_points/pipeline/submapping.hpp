@@ -30,9 +30,9 @@ public:
     const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
 
     Submap(const sycl_utils::DeviceQueue& queue, const LidarOdometryParams& params) : queue_(queue) {
-        this->keyframe_pc_.reset(new PointCloudShared(this->queue_));
-        this->submap_pc_ptr_.reset(new PointCloudShared(this->queue_));
-        this->submap_pc_tmp_.reset(new PointCloudShared(this->queue_));
+        this->keyframe_pc_ = std::make_shared<PointCloudShared>(this->queue_);
+        this->submap_pc_ptr_ = std::make_shared<PointCloudShared>(this->queue_);
+        this->submap_pc_tmp_ = std::make_shared<PointCloudShared>(this->queue_);
 
         this->submap_params_ = params.submap;
         this->cov_params_ = params.covariance_estimation;

@@ -96,8 +96,8 @@ void LiDAROdometryBaseNode::initialize_processing() {
     this->pipeline_ = std::make_unique<pipeline::lidar_odometry::LiDAROdometryPipeline>(this->params_);
     this->pipeline_->get_device_queue()->print_device_info();
 
-    this->msg_data_buffer_.reset(new shared_vector<uint8_t>(*this->pipeline_->get_device_queue()->ptr));
-    this->scan_pc_.reset(new PointCloudShared(*this->pipeline_->get_device_queue()));
+    this->msg_data_buffer_ = std::make_shared<shared_vector<uint8_t>>(*this->pipeline_->get_device_queue()->ptr);
+    this->scan_pc_ = std::make_shared<PointCloudShared>(*this->pipeline_->get_device_queue());
     this->processing_initialized_ = true;
 
     RCLCPP_INFO(this->get_logger(), "Input conversion - RGB: %s, intensity: %s",

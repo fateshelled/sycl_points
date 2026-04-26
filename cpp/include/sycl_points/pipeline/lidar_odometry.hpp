@@ -342,7 +342,7 @@ private:
 
         // initialize buffer
         {
-            this->preprocessed_pc_.reset(new PointCloudShared(*this->queue_ptr_));
+            this->preprocessed_pc_ = std::make_shared<PointCloudShared>(*this->queue_ptr_);
         }
 
         // set Initial pose
