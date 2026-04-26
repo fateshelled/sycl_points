@@ -118,7 +118,6 @@ private:
     LidarOdometryParams::Registration reg_params_;
 
     algorithms::knn::KNNResult knn_result_;
-    algorithms::knn::KNNResult knn_result_grad_;
 
     double last_keyframe_time_;             // [s]
     Eigen::Isometry3f last_keyframe_pose_;  // keyframe T_odom_to_lidar

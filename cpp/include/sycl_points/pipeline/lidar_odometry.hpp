@@ -260,7 +260,6 @@ private:
     bool is_first_frame_ = true;
 
     algorithms::knn::KNNResult knn_result_;
-    algorithms::knn::KNNResult knn_result_grad_;
     shared_vector_ptr<float> icp_weights_ = nullptr;
 
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
