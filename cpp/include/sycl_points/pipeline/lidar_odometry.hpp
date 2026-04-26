@@ -13,12 +13,12 @@
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
+#include "sycl_points/algorithms/imu/imu_preintegration.hpp"
+#include "sycl_points/algorithms/imu/imu_velocity_corrector.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
-#include "sycl_points/algorithms/imu/imu_preintegration.hpp"
-#include "sycl_points/algorithms/imu/imu_velocity_corrector.hpp"
 #include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/utils/time_utils.hpp"
@@ -164,7 +164,7 @@ public:
         // first frame processing
         if (this->is_first_frame_) {
             try {
-                this->build_submap(this->preprocessed_pc_, this->params_.pose.initial);
+                this->build_submap(this->preprocessed_pc_, this->params_.pose.initial, this->params_);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
@@ -589,51 +589,35 @@ private:
                                                    init_T.matrix(), options);
     }
 
-    void build_submap(const PointCloudShared::Ptr& cloud, const Eigen::Isometry3f& current_pose) {
+    void build_submap(const PointCloudShared::Ptr& cloud, const Eigen::Isometry3f& current_pose,
+                      const Parameters& params) {
         // sampling
         {
             // If velocity update is disabled, get the registration input point cloud.
             auto reg_pc = this->registration_pipeline_->get_deskewed_point_cloud();
-            if (reg_pc) {
-                const size_t total_samples = this->params_.submap.point_random_sampling_num;
-                if (reg_pc->size() <= total_samples) {
-                    *this->keyframe_pc_ = *reg_pc;
-                } else {
-                    // Robust ICP weighted mixed random sampling
-                    const auto robust_auto_scale = this->params_.registration.pipeline.robust.auto_scale;
-                    const float robust_scale =
-                        robust_auto_scale ? this->params_.registration.pipeline.robust.min_scale
-                                          : this->params_.registration.pipeline.registration.robust.default_scale;
-                    this->registration_pipeline_->compute_icp_robust_weights(*this->submap_pc_ptr_, *this->submap_tree_,
-                                                                             current_pose.matrix(), robust_scale,
-                                                                             *this->icp_weights_);
-                    this->preprocess_filter_->mixed_random_sampling(*reg_pc, *this->keyframe_pc_, *this->icp_weights_,
-                                                                    total_samples,
-                                                                    this->params_.submap.weighted_sampling_ratio);
-                }
-            } else {
-                // uniform random sampling
-                this->preprocess_filter_->random_sampling(*cloud, *this->keyframe_pc_,
-                                                          this->params_.submap.point_random_sampling_num);
-            }
+
+            // uniform random sampling
+            const PointCloudShared* input_cloud_ptr = reg_pc ? reg_pc : cloud.get();
+            this->preprocess_filter_->random_sampling(*input_cloud_ptr, *this->keyframe_pc_,
+                                                      this->params_.submap.point_random_sampling_num);
         }
 
         // add to grid map
-        const auto submap_type = this->params_.submap.map_type;
+        const auto submap_type = params.submap.map_type;
         if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
             this->occupancy_grid_->add_point_cloud(*this->keyframe_pc_, current_pose);
             this->occupancy_grid_->extract_occupied_points(*this->submap_pc_tmp_, current_pose,
-                                                           this->params_.submap.max_distance_range);
+                                                           params.submap.max_distance_range);
         } else {
             this->submap_voxel_->add_point_cloud(*this->keyframe_pc_, current_pose);
             this->submap_voxel_->downsampling(*this->submap_pc_tmp_, current_pose.translation(),
-                                              this->params_.submap.max_distance_range);
+                                              params.submap.max_distance_range);
         }
 
         if (this->is_first_frame_) {
             // transform
             *this->submap_pc_ptr_ = sycl_points::algorithms::transform::transform_copy(*cloud, current_pose.matrix());
-        } else if (this->submap_pc_tmp_->size() >= this->params_.registration.min_num_points) {
+        } else if (this->submap_pc_tmp_->size() >= params.registration.min_num_points) {
             // copy pointer
             this->submap_pc_ptr_ = this->submap_pc_tmp_;
         }
@@ -641,14 +625,14 @@ private:
         // Build target search structure for registration. Neighbor queries are launched lazily only when needed.
         this->submap_tree_ = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->submap_pc_ptr_);
 
-        const auto reg_type = this->params_.registration.pipeline.registration.reg_type;
-        const bool photometric_enabled = this->params_.registration.pipeline.registration.photometric.enable;
+        const auto reg_type = params.registration.pipeline.registration.reg_type;
+        const bool photometric_enabled = params.registration.pipeline.registration.photometric.enable;
         sycl_utils::events knn_events;
         bool knn_ready = false;
         auto ensure_knn = [&]() {
             if (!knn_ready) {
                 knn_events = this->submap_tree_->knn_search_async(
-                    *this->submap_pc_ptr_, this->params_.covariance_estimation.neighbor_num, this->knn_result_);
+                    *this->submap_pc_ptr_, params.covariance_estimation.neighbor_num, this->knn_result_);
                 knn_ready = true;
             }
         };
@@ -673,7 +657,7 @@ private:
             const bool need_covariances = reg_type == algorithms::registration::RegType::GICP ||
                                           reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
                                           reg_type == algorithms::registration::RegType::GENZ ||
-                                          this->params_.registration.pipeline.registration.rotation_constraint.enable;
+                                          params.registration.pipeline.registration.rotation_constraint.enable;
             const bool need_normals = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
                                        reg_type == algorithms::registration::RegType::GENZ ||  //
                                        photometric_enabled);
@@ -743,7 +727,7 @@ private:
         if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
             /* for occupancy grid map */
             // add point every frame
-            build_submap(this->preprocessed_pc_, reg_result.T);
+            build_submap(this->preprocessed_pc_, reg_result.T, this->params_);
             return true;
         } else {
             /* for voxel grid map (keyframe base) */
@@ -767,7 +751,7 @@ private:
                 this->last_keyframe_time_ = timestamp;
                 this->keyframe_poses_.push_back(reg_result.T);
 
-                build_submap(this->preprocessed_pc_, reg_result.T);
+                build_submap(this->preprocessed_pc_, reg_result.T, this->params_);
                 return true;
             }
             return false;
