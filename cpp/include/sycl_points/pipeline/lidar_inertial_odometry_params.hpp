@@ -18,6 +18,8 @@ struct Parameters : public lidar_odometry::Parameters {
         float rotation_convergence = 1e-4f;
         /// Convergence threshold on the position update norm [m].
         float position_convergence = 1e-4f;
+        /// Regularization factor for velocity and bias
+        float invalid_regularization_factor = 1e4f;
     };
 
     LIO lio;

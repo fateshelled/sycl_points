@@ -130,6 +130,7 @@ lidar_inertial_odometry_node:
     lio/max_iterations: 10
     lio/rotation_convergence: 1.0e-4  # [rad]
     lio/position_convergence: 1.0e-4  # [m]
+    lio/invalid_regularization_factor: 1.0e4
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/max_iterations is unused; outer loop count is lio/max_iterations.

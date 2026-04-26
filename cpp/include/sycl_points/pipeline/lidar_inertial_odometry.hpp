@@ -418,7 +418,7 @@ private:
                 // Add weak identity regularization to velocity and bias blocks so the
                 // 15×15 system remains full-rank and ICP can still correct the pose.
                 // The large information value (small σ) keeps v / b near their predicted values.
-                constexpr float kReg = 1e4f;
+                const float kReg = this->params_.lio.invalid_regularization_factor;
                 lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += kReg * Eigen::Matrix3f::Identity();
                 lio.H.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) +=
                     kReg * Eigen::Matrix3f::Identity();
