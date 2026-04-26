@@ -262,7 +262,7 @@ private:
     Eigen::Matrix<float, 15, 15> P_post_ = Eigen::Matrix<float, 15, 15>::Zero();
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
-    ;
+
     std::deque<imu::IMUMeasurement> imu_buffer_;
     mutable std::mutex imu_mutex_;
     std::vector<imu::IMUMeasurement> imu_batch_;

@@ -96,7 +96,6 @@ public:
 
         // Complete if only one group
         if (num_groups == 1) return get_new_size(N);
-        ;
 
         // Step 2: Perform an exclusive scan on group sums
         {
