@@ -244,13 +244,6 @@ private:
 
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
-    // Degenerate-regularized ICP Hessian from the previous frame.
-    // Used for the adaptive P_initial floor in reset_imu_preintegration().
-    // Degenerate directions have large H (λ·vvᵀ added), so H⁻¹ is small →
-    // P_floor is small → H_imu stays bounded where ICP is unobservable.
-    algorithms::registration::LinearizedResult last_icp_;
-    bool has_last_icp_ = false;
-
     Eigen::Isometry3f prev_odom_;
     Eigen::Isometry3f odom_;
 
@@ -304,53 +297,16 @@ private:
 
     void reset_imu_preintegration() {
         const Eigen::Matrix3f R_world_imu = x_.rotation * this->params_.imu.T_imu_to_lidar.rotation();
+
+        // Add fixed-sigma floors to P_initial before resetting the integrator.
+        // Velocity floor: ensures P_pred[p,p] ≳ (fd_velocity_sigma × dt)², keeping
+        //   H_imu[p,p] on the same scale as H_icp regardless of accel_noise_density.
+        // Rotation floor: same mechanism for H_imu[φ,φ] vs gyro_noise_density.
         Eigen::Matrix<float, 15, 15> P_initial = this->P_post_;
-
-        if (this->has_last_icp_ && this->dt_ > 0.0f && this->last_icp_.inlier > 0) {
-            // Adaptive floor: P_floor = α × H_icp⁻¹  →  H_imu ≲ (1/α) × H_icp.
-            // H_icp is degenerate-regularized, so degenerate directions retain a
-            // meaningful scale (λ·vvᵀ added), keeping H_imu appropriately bounded.
-            // Falls back to fixed sigma if the H_icp block is ill-conditioned.
-            const float alpha = this->params_.lio.icp_floor_scale;
-
-            // Rotation floor
-            {
-                const Eigen::Matrix3f H_rot = this->last_icp_.H.block<3, 3>(0, 0);
-                Eigen::LDLT<Eigen::Matrix3f> ldlt(H_rot);
-                if (ldlt.info() == Eigen::Success && ldlt.vectorD().minCoeff() > 0.0f) {
-                    Eigen::Matrix3f P_floor = Eigen::Matrix3f::Identity();
-                    ldlt.solveInPlace(P_floor);
-                    P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += alpha * P_floor;
-                } else {
-                    const float sr2 = this->params_.lio.icp_rotation_sigma * this->params_.lio.icp_rotation_sigma;
-                    P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) +=
-                        sr2 * Eigen::Matrix3f::Identity();
-                }
-            }
-
-            // Velocity floor (H_icp[t,t] rotated to world frame)
-            {
-                const Eigen::Matrix3f H_trans_world =
-                    this->x_.rotation * this->last_icp_.H.block<3, 3>(3, 3) * this->x_.rotation.transpose();
-                Eigen::LDLT<Eigen::Matrix3f> ldlt(H_trans_world);
-                if (ldlt.info() == Eigen::Success && ldlt.vectorD().minCoeff() > 0.0f) {
-                    Eigen::Matrix3f P_floor = Eigen::Matrix3f::Identity();
-                    ldlt.solveInPlace(P_floor);
-                    P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) +=
-                        alpha * P_floor / (this->dt_ * this->dt_);
-                } else {
-                    const float sv2 = this->params_.lio.fd_velocity_sigma * this->params_.lio.fd_velocity_sigma;
-                    P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) +=
-                        sv2 * Eigen::Matrix3f::Identity();
-                }
-            }
-        } else {
-            // First frame (no H_icp yet): fall back to fixed sigma.
-            const float sv2 = this->params_.lio.fd_velocity_sigma * this->params_.lio.fd_velocity_sigma;
-            P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += sv2 * Eigen::Matrix3f::Identity();
-            const float sr2 = this->params_.lio.icp_rotation_sigma * this->params_.lio.icp_rotation_sigma;
-            P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
-        }
+        const float sv2 = this->params_.lio.fd_velocity_sigma * this->params_.lio.fd_velocity_sigma;
+        P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += sv2 * Eigen::Matrix3f::Identity();
+        const float sr2 = this->params_.lio.icp_rotation_sigma * this->params_.lio.icp_rotation_sigma;
+        P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
 
         this->imu_preintegration_->reset(               //
             {this->x_.accel_bias, this->x_.gyro_bias},  //
@@ -514,9 +470,6 @@ private:
         } else {
             this->x_.velocity = x_op.velocity;
         }
-        // Cache degenerate-regularized H_icp for the adaptive P_initial floor.
-        this->last_icp_ = last_icp;
-        this->has_last_icp_ = true;
         reset_imu_preintegration();
 
         // Fill RegistrationResult for compatibility with submapping

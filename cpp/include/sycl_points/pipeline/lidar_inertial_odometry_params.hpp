@@ -19,28 +19,16 @@ struct Parameters : public lidar_odometry::Parameters {
         algorithms::registration::RegistrationParams::Criteria criteria;
         /// Regularization factor for velocity and bias when P_pred is singular.
         float invalid_regularization_factor = 1e4f;
-        /// Scale factor α for the H_icp-based P_initial floor (dimensionless).
-        ///
-        /// At each IMU reset, P_initial is augmented by:
-        ///   P_floor[φ,φ] = α × H_icp[rot,rot]⁻¹
-        ///   P_floor[v,v] = α × (R × H_icp[t,t] × Rᵀ)⁻¹ / dt²
-        ///
-        /// This ensures H_imu ≲ (1/α) × H_icp in each direction, automatically
-        /// adapting to scene geometry and point density without manual tuning.
-        /// In degenerate directions (H_icp small), the inverse is large so H_imu
-        /// is weakened — allowing the IMU to compensate where ICP cannot.
-        ///
-        ///   α = 1.0  → H_imu ≈ H_icp  (balanced)
-        ///   α > 1.0  → ICP dominates
-        ///   α < 1.0  → IMU can dominate
-        float icp_floor_scale = 1.0f;
-
-        /// Fallback velocity std-dev [m/s] used on the first frame (before H_icp
-        /// is available) and when the H_icp translation block is ill-conditioned.
+        /// Velocity std-dev [m/s] for the P_initial floor at each IMU reset.
+        /// Ensures P_pred[p,p] ≳ (fd_velocity_sigma × dt)² so H_imu[p,p]
+        /// stays on the same scale as H_icp regardless of accel_noise_density.
+        /// Rule of thumb: σ_icp_position / dt  (e.g. 0.01 m / 0.1 s = 0.1 m/s)
         float fd_velocity_sigma = 0.1f;
 
-        /// Fallback rotation std-dev [rad] used on the first frame (before H_icp
-        /// is available) and when the H_icp rotation block is ill-conditioned.
+        /// Rotation std-dev [rad] for the P_initial floor at each IMU reset.
+        /// Same mechanism as fd_velocity_sigma for H_imu[φ,φ] vs gyro_noise_density.
+        /// Choose so that 1/icp_rotation_sigma² ≲ H_icp[rot,rot]
+        /// (≈ 1e4–1e5 for outdoor LiDAR with ~1000 inliers → σ ≈ 0.003–0.01 rad).
         float icp_rotation_sigma = 0.01f;
     };
 
