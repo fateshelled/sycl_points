@@ -297,9 +297,20 @@ private:
 
     void reset_imu_preintegration() {
         const Eigen::Matrix3f R_world_imu = x_.rotation * this->params_.imu.T_imu_to_lidar.rotation();
+
+        // Add finite-difference velocity uncertainty to the initial covariance.
+        // v = Δp/dt has inherent uncertainty σ_v ≈ σ_icp/dt.  Adding σ_v² to
+        // P_initial[v,v] propagates through preintegration as
+        //   P_pred[p,p] += dt² × σ_v²  ≈  σ_icp²
+        // which keeps H_imu on the same scale as H_icp, preventing H_imu from
+        // dominating the LIO optimization when accel_noise_density is small.
+        Eigen::Matrix<float, 15, 15> P_initial = this->P_post_;
+        const float sv2 = this->params_.lio.fd_velocity_sigma * this->params_.lio.fd_velocity_sigma;
+        P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += sv2 * Eigen::Matrix3f::Identity();
+
         this->imu_preintegration_->reset(               //
             {this->x_.accel_bias, this->x_.gyro_bias},  //
-            R_world_imu, this->x_.velocity, this->P_post_);
+            R_world_imu, this->x_.velocity, P_initial);
     }
 
     /// @brief Predict the full 15-DOF state from IMU preintegration.
