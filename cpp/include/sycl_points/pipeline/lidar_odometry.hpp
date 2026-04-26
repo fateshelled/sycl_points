@@ -8,7 +8,6 @@
 #include "sycl_points/algorithms/deskew/imu_deskew.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
-#include "sycl_points/algorithms/feature/photometric_gradient.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
@@ -16,11 +15,11 @@
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/imu/imu_velocity_corrector.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
-#include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
-#include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
 #include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
+#include "sycl_points/pipeline/submapping.hpp"
+#include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
 namespace sycl_points {
@@ -54,12 +53,12 @@ public:
 
     const auto& get_odom() const { return this->odom_; }
     const auto& get_prev_odom() const { return this->prev_odom_; }
-    const auto& get_last_keyframe_pose() const { return this->last_keyframe_pose_; }
-    const auto& get_keyframe_poses() const { return this->keyframe_poses_; }
+    const auto& get_last_keyframe_pose() const { return this->submap_->get_last_keyframe_pose(); }
+    const auto& get_keyframe_poses() const { return this->submap_->get_keyframe_poses(); }
 
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
-    const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
-    const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
+    const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
+    const PointCloudShared& get_keyframe_point_cloud() const { return this->submap_->get_keyframe_point_cloud(); }
     const PointCloudShared* get_registration_input_point_cloud() const {
         return this->registration_pipeline_->get_registration_input_point_cloud();
     }
@@ -164,7 +163,7 @@ public:
         // first frame processing
         if (this->is_first_frame_) {
             try {
-                this->build_submap(this->preprocessed_pc_, this->params_.pose.initial, this->params_);
+                this->submap_->add_first_frame(*this->preprocessed_pc_, timestamp);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
@@ -172,7 +171,6 @@ public:
             }
 
             this->is_first_frame_ = false;
-            this->last_keyframe_time_ = timestamp;
             this->last_frame_time_ = timestamp;
 
             // Reset IMU integrator so the next window starts from the initial pose.
@@ -259,14 +257,8 @@ private:
     sycl_utils::DeviceQueue::Ptr queue_ptr_ = nullptr;
 
     PointCloudShared::Ptr preprocessed_pc_ = nullptr;  // Sensor coordinate
-    PointCloudShared::Ptr keyframe_pc_ = nullptr;      // Sensor coordinate
-    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;    // Odom/World coordinate
-    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;    // Odom/World coordinate
     bool is_first_frame_ = true;
 
-    algorithms::mapping::VoxelHashMap::Ptr submap_voxel_ = nullptr;
-    algorithms::mapping::OccupancyGridMap::Ptr occupancy_grid_ = nullptr;
-    algorithms::knn::KDTree::Ptr submap_tree_ = nullptr;
     algorithms::knn::KNNResult knn_result_;
     algorithms::knn::KNNResult knn_result_grad_;
     shared_vector_ptr<float> icp_weights_ = nullptr;
@@ -279,14 +271,13 @@ private:
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
-    Eigen::Vector3f linear_velocity_;       // [m/s] in previous LiDAR body frame
-    Eigen::AngleAxisf angular_velocity_;    // [rad/s]
-    Eigen::Isometry3f prev_odom_;           // prev T_odom_to_lidar
-    Eigen::Isometry3f odom_;                // current T_odom_to_lidar
-    Eigen::Isometry3f last_keyframe_pose_;  // keyframe T_odom_to_lidar
-    std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> keyframe_poses_;
+    Eigen::Vector3f linear_velocity_;     // [m/s] in previous LiDAR body frame
+    Eigen::AngleAxisf angular_velocity_;  // [rad/s]
+    Eigen::Isometry3f prev_odom_;         // prev T_odom_to_lidar
+    Eigen::Isometry3f odom_;              // current T_odom_to_lidar
 
-    double last_keyframe_time_;      // [s]
+    submapping::Submap::Ptr submap_;
+
     double last_frame_time_ = -1.0;  // [s]
     float dt_ = -1.0f;               // [s]
 
@@ -353,9 +344,6 @@ private:
         // initialize buffer
         {
             this->preprocessed_pc_.reset(new PointCloudShared(*this->queue_ptr_));
-            this->keyframe_pc_.reset(new PointCloudShared(*this->queue_ptr_));
-            this->submap_pc_ptr_.reset(new PointCloudShared(*this->queue_ptr_));
-            this->submap_pc_tmp_.reset(new PointCloudShared(*this->queue_ptr_));
         }
 
         // set Initial pose
@@ -365,14 +353,6 @@ private:
 
             this->linear_velocity_ = Eigen::Vector3f::Zero();
             this->angular_velocity_ = Eigen::AngleAxisf::Identity();
-        }
-
-        // initialize keyframe
-        {
-            this->last_keyframe_pose_ = this->params_.pose.initial;
-            this->last_keyframe_time_ = -1.0;
-            this->keyframe_poses_.clear();
-            this->keyframe_poses_.push_back(this->last_keyframe_pose_);
         }
 
         // Point cloud processor
@@ -394,31 +374,9 @@ private:
 
         // Submapping
         {
-            const auto submap_type = this->params_.submap.map_type;
-            if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
-                this->occupancy_grid_ = std::make_shared<algorithms::mapping::OccupancyGridMap>(
-                    *this->queue_ptr_, this->params_.submap.voxel_size);
-
-                this->occupancy_grid_->set_log_odds_hit(this->params_.submap.occupancy_grid_map.log_odds_hit);
-                this->occupancy_grid_->set_log_odds_miss(this->params_.submap.occupancy_grid_map.log_odds_miss);
-                this->occupancy_grid_->set_log_odds_limits(this->params_.submap.occupancy_grid_map.log_odds_limits_min,
-                                                           this->params_.submap.occupancy_grid_map.log_odds_limits_max);
-                this->occupancy_grid_->set_occupancy_threshold(
-                    this->params_.submap.occupancy_grid_map.occupied_threshold);
-                this->occupancy_grid_->set_free_space_updates_enabled(
-                    this->params_.submap.occupancy_grid_map.enable_free_space_updates);
-                this->occupancy_grid_->set_voxel_pruning_enabled(
-                    this->params_.submap.occupancy_grid_map.enable_pruning);
-                this->occupancy_grid_->set_stale_frame_threshold(
-                    this->params_.submap.occupancy_grid_map.stale_frame_threshold);
-                this->occupancy_grid_->set_covariance_aggregation_mode(
-                    this->params_.submap.covariance_aggregation_mode);
-            } else {
-                this->submap_voxel_ = std::make_shared<algorithms::mapping::VoxelHashMap>(
-                    *this->queue_ptr_, this->params_.submap.voxel_size);
-                this->submap_voxel_->set_covariance_aggregation_mode(this->params_.submap.covariance_aggregation_mode);
-            }
+            this->submap_ = std::make_shared<submapping::Submap>(*this->queue_ptr_, this->params_);
         }
+
         // Registration
         {
             auto reg_pipeline_params = this->params_.registration.pipeline;
@@ -585,177 +543,27 @@ private:
         options.dt = this->dt_;
         options.prev_pose = this->odom_.matrix();
 
-        return this->registration_pipeline_->align(*this->preprocessed_pc_, *this->submap_pc_ptr_, *this->submap_tree_,
-                                                   init_T.matrix(), options);
-    }
-
-    void build_submap(const PointCloudShared::Ptr& cloud, const Eigen::Isometry3f& current_pose,
-                      const Parameters& params) {
-        // sampling
-        {
-            // If velocity update is disabled, get the registration input point cloud.
-            auto reg_pc = this->registration_pipeline_->get_deskewed_point_cloud();
-
-            // uniform random sampling
-            const PointCloudShared* input_cloud_ptr = reg_pc ? reg_pc : cloud.get();
-            this->preprocess_filter_->random_sampling(*input_cloud_ptr, *this->keyframe_pc_,
-                                                      this->params_.submap.point_random_sampling_num);
-        }
-
-        // add to grid map
-        const auto submap_type = params.submap.map_type;
-        if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
-            this->occupancy_grid_->add_point_cloud(*this->keyframe_pc_, current_pose);
-            this->occupancy_grid_->extract_occupied_points(*this->submap_pc_tmp_, current_pose,
-                                                           params.submap.max_distance_range);
-        } else {
-            this->submap_voxel_->add_point_cloud(*this->keyframe_pc_, current_pose);
-            this->submap_voxel_->downsampling(*this->submap_pc_tmp_, current_pose.translation(),
-                                              params.submap.max_distance_range);
-        }
-
-        if (this->is_first_frame_) {
-            // transform
-            *this->submap_pc_ptr_ = sycl_points::algorithms::transform::transform_copy(*cloud, current_pose.matrix());
-        } else if (this->submap_pc_tmp_->size() >= params.registration.min_num_points) {
-            // copy pointer
-            this->submap_pc_ptr_ = this->submap_pc_tmp_;
-        }
-
-        // Build target search structure for registration. Neighbor queries are launched lazily only when needed.
-        this->submap_tree_ = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->submap_pc_ptr_);
-
-        const auto reg_type = params.registration.pipeline.registration.reg_type;
-        const bool photometric_enabled = params.registration.pipeline.registration.photometric.enable;
-        sycl_utils::events knn_events;
-        bool knn_ready = false;
-        auto ensure_knn = [&]() {
-            if (!knn_ready) {
-                knn_events = this->submap_tree_->knn_search_async(
-                    *this->submap_pc_ptr_, params.covariance_estimation.neighbor_num, this->knn_result_);
-                knn_ready = true;
-            }
-        };
-
-        // compute grad
-        sycl_utils::events grad_events;
-        if (photometric_enabled) {
-            if (this->submap_pc_ptr_->has_rgb()) {
-                ensure_knn();
-                grad_events += algorithms::color_gradient::compute_color_gradients_async(
-                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
-            } else if (this->submap_pc_ptr_->has_intensity()) {
-                ensure_knn();
-                grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
-                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
-            }
-        }
-
-        // compute covariances and normals
-        sycl_utils::events cov_events;
-        {
-            const bool need_covariances = reg_type == algorithms::registration::RegType::GICP ||
-                                          reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
-                                          reg_type == algorithms::registration::RegType::GENZ ||
-                                          params.registration.pipeline.registration.rotation_constraint.enable;
-            const bool need_normals = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
-                                       reg_type == algorithms::registration::RegType::GENZ ||  //
-                                       photometric_enabled);
-
-            const bool submap_has_cov = this->submap_pc_ptr_->has_cov();
-            bool normals_are_ready = false;
-            bool covariances_are_ready = submap_has_cov;
-            if (need_normals) {
-                normals_are_ready = true;
-                if (submap_has_cov) {
-                    ensure_knn();
-                    cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                                 knn_events.evs);
-                } else {
-                    ensure_knn();
-                    cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
-                                                                                *this->submap_pc_ptr_, knn_events.evs);
-                }
-            }
-            if (need_covariances && !submap_has_cov) {
-                covariances_are_ready = true;
-                ensure_knn();
-                cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
-                                                                                *this->submap_pc_ptr_, knn_events.evs);
-            }
-
-            if (photometric_enabled && !normals_are_ready) {
-                if (covariances_are_ready) {
-                    cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                                 cov_events.evs);
-                } else {
-                    ensure_knn();
-                    cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
-                                                                                *this->submap_pc_ptr_, knn_events.evs);
-                }
-            }
-        }
-        if (knn_ready) {
-            knn_events.wait_and_throw();
-        }
-        grad_events.wait_and_throw();
-        cov_events.wait_and_throw();
+        return this->registration_pipeline_->align(*this->preprocessed_pc_, this->submap_->get_submap_point_cloud(),
+                                                   this->submap_->get_submap_kdtree(), init_T.matrix(), options);
     }
 
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
-        if (this->params_.registration.pipeline.velocity_update.enable &&  //
-            !this->is_imu_deskew_enabled()) {
-            algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
-                                                                     this->odom_, reg_result.T);
-        }
-
-        // check inlier ratio for registration success or not.
-        const auto* registration_input_pc = this->registration_pipeline_->get_registration_input_point_cloud();
-        if (registration_input_pc == nullptr || registration_input_pc->size() == 0) {
-            return false;
-        }
-        if (this->params_.submap.keyframe.inlier_ratio_threshold > 0.0f) {
-            const float inlier_ratio =
-                static_cast<float>(reg_result.inlier) / static_cast<float>(registration_input_pc->size());
-            if (inlier_ratio <= this->params_.submap.keyframe.inlier_ratio_threshold) {
-                // registration is failed
-                return false;
-            }
-        }
-
-        const auto submap_type = this->params_.submap.map_type;
-        if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
-            /* for occupancy grid map */
-            // add point every frame
-            build_submap(this->preprocessed_pc_, reg_result.T, this->params_);
-            return true;
+        // If velocity update is disabled, get the registration input point cloud.
+        auto reg_pc_ptr = this->registration_pipeline_->get_deskewed_point_cloud();
+        const PointCloudShared* cloud_ptr = nullptr;
+        if (reg_pc_ptr) {
+            cloud_ptr = reg_pc_ptr;
         } else {
-            /* for voxel grid map (keyframe base) */
-            // calculate delta pose
-            const auto delta_pose = this->last_keyframe_pose_.inverse() * reg_result.T;
-
-            // calculate moving distance and angle
-            const auto distance = delta_pose.translation().norm();
-            const auto angle = std::fabs(Eigen::AngleAxisf(delta_pose.rotation()).angle()) * (180.0f / M_PIf);
-
-            // calculate delta time
-            const auto delta_time = this->last_keyframe_time_ > 0.0 ? timestamp - this->last_keyframe_time_
-                                                                    : std::numeric_limits<double>::max();
-
-            const bool is_keyframe = distance >= this->params_.submap.keyframe.distance_threshold ||
-                                     angle >= this->params_.submap.keyframe.angle_threshold_degrees ||
-                                     delta_time >= this->params_.submap.keyframe.time_threshold_seconds;
-            // update submap
-            if (is_keyframe) {
-                this->last_keyframe_pose_ = reg_result.T;
-                this->last_keyframe_time_ = timestamp;
-                this->keyframe_poses_.push_back(reg_result.T);
-
-                build_submap(this->preprocessed_pc_, reg_result.T, this->params_);
-                return true;
+            if (this->params_.registration.pipeline.velocity_update.enable &&  //
+                !this->is_imu_deskew_enabled()) {
+                algorithms::deskew::deskew_point_cloud_constant_velocity(
+                    *this->preprocessed_pc_, *this->preprocessed_pc_, this->odom_, reg_result.T);
             }
-            return false;
+            cloud_ptr = this->preprocessed_pc_.get();
         }
+        const float inlier_ratio = this->registration_pipeline_->get_inlier_ratio(reg_result);
+
+        return this->submap_->add_frame(*cloud_ptr, reg_result, inlier_ratio, timestamp);
     }
 };
 
