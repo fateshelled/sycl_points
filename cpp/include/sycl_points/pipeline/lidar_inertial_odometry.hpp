@@ -291,8 +291,8 @@ private:
     }
 
     bool is_lio_converged(const Eigen::Matrix<float, 15, 1>& delta) const {
-        return delta.segment<3>(imu::State::kIdxRot).norm() < params_.lio.rotation_convergence &&
-               delta.segment<3>(imu::State::kIdxPos).norm() < params_.lio.position_convergence;
+        return delta.segment<3>(imu::State::kIdxRot).norm() < params_.lio.criteria.rotation &&
+               delta.segment<3>(imu::State::kIdxPos).norm() < params_.lio.criteria.translation;
     }
 
     void reset_imu_preintegration() {

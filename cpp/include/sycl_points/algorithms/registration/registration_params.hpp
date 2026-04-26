@@ -36,7 +36,7 @@ inline OptimizationMethod OptimizationMethod_from_string(const std::string& str)
 
 struct RegistrationParams {
     struct Criteria {
-        float translation = 1e-3f;  // translation tolerance
+        float translation = 1e-3f;  // translation tolerance [m]
         float rotation = 1e-3f;     // rotation tolerance [rad]
     };
     struct Robust {
