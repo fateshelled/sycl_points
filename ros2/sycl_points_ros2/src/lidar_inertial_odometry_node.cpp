@@ -138,9 +138,6 @@ void LidarInertialOdometryNode::point_cloud_callback(const sensor_msgs::msg::Poi
         }
         if (result != ResultType::success && result != ResultType::first_frame) return;
     }
-    std::cout << "BIAS:" << std::endl;
-    std::cout << "  acc:  " << this->pipeline_->get_lio_state().accel_bias.transpose() << std::endl;
-    std::cout << "  gyro: " << this->pipeline_->get_lio_state().gyro_bias.transpose() << std::endl;
 
     const auto& header = msg->header;
     const auto& odom = pipeline_->get_odom();
