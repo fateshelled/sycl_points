@@ -424,18 +424,41 @@ private:
 
         // ---- Update state and reset IMU preintegration ----
         // Pose and biases come from the LIO optimisation.
-        // Velocity is derived from the LiDAR displacement (finite difference) rather than
-        // the LDLT solution: the velocity block of the 15×15 system is only weakly
-        // constrained by the IMU (large accel noise → small H_imu[v,v]), and the
-        // P_pred cross-terms between rotation and velocity can drive large, wrong δv
-        // during fast turning.  Displacement-based velocity is simple and always consistent
-        // with the pose update.
+        //
+        // Velocity update: finite difference (ICP anchor) + IMU half-step correction.
+        //
+        // Finite difference  v_fd = Δp / dt  gives the *average* velocity over the
+        // frame interval.  Under constant acceleration, the endpoint velocity is:
+        //   v_end = v_fd + 0.5 * a_world * dt
+        //
+        // The world-frame acceleration is estimated from the IMU preintegration:
+        //   a_world = gravity + R_world_imu * (Delta_v / dt_imu)
+        //
+        // Gravity cancels exactly when stationary (Delta_v absorbs -g in body frame),
+        // so the correction is zero at rest — preventing the z-drift that arises when
+        // IMU integration is used directly for velocity (unanchored to ICP position).
+        // When moving, the correction converts average to endpoint velocity.
         const Eigen::Vector3f prev_position = this->x_.position;
+        const Eigen::Matrix3f prev_rotation = this->x_.rotation;  // rotation at window start (before update)
         this->x_.position = x_op.position;
         this->x_.rotation = x_op.rotation;
         this->x_.accel_bias = x_op.accel_bias;
         this->x_.gyro_bias = x_op.gyro_bias;
-        this->x_.velocity = (this->dt_ > 0.0f) ? (this->x_.position - prev_position) / this->dt_ : x_op.velocity;
+        if (this->dt_ > 0.0f) {
+            const Eigen::Vector3f v_fd = (this->x_.position - prev_position) / this->dt_;
+            const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.accel_bias, x_op.gyro_bias});
+            if (c.dt_total > 1e-6) {
+                // a_world = g + R * Delta_v / dt_imu  (gravity self-cancels at rest)
+                const Eigen::Matrix3f R_world_imu_prev = prev_rotation * this->params_.imu.T_imu_to_lidar.rotation();
+                const Eigen::Vector3f a_world = this->params_.imu.preintegration.gravity +
+                                                R_world_imu_prev * c.Delta_v / static_cast<float>(c.dt_total);
+                this->x_.velocity = v_fd + 0.5f * a_world * this->dt_;
+            } else {
+                this->x_.velocity = v_fd;
+            }
+        } else {
+            this->x_.velocity = x_op.velocity;
+        }
         reset_imu_preintegration();
 
         // Fill RegistrationResult for compatibility with submapping
