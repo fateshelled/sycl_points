@@ -603,7 +603,9 @@ private:
             computed_icp_weights = true;
         }
 
-        const float inlier_ratio = static_cast<float>(reg_result.inlier) / static_cast<float>(reg_pc_ptr->size());
+        const float inlier_ratio = reg_pc_ptr->size() > 0
+                                       ? static_cast<float>(reg_result.inlier) / static_cast<float>(reg_pc_ptr->size())
+                                       : 0.0f;
 
         if (computed_icp_weights) {
             return this->submap_->add_frame(*this->registration_input_pc_, reg_result, inlier_ratio, timestamp,
