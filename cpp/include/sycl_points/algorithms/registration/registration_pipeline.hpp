@@ -87,6 +87,14 @@ public:
         return this->registration_input_pc_.get();
     }
 
+    float get_inlier_ratio(const RegistrationResult& result) const {
+        const auto* input_cloud_ptr = this->get_registration_input_point_cloud();
+        if (input_cloud_ptr && input_cloud_ptr->size() > 0) {
+            return static_cast<float>(result.inlier) / static_cast<float>(input_cloud_ptr->size());
+        }
+        return 0.0f;
+    }
+
 private:
     void wrap_aligner() {
         // Execution order:

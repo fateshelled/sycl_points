@@ -18,54 +18,50 @@ LidarInertialOdometryNode::LidarInertialOdometryNode(const rclcpp::NodeOptions& 
     // -----------------------------------------------------------------------
     params_ = declare_lidar_inertial_odometry_parameters(this);
 
-    points_topic_             = this->declare_parameter<std::string>("points_topic", points_topic_);
-    imu_topic_                = this->declare_parameter<std::string>("imu_topic", imu_topic_);
-    input_convert_rgb_        = this->declare_parameter<bool>("input/convert_rgb", true);
-    input_convert_intensity_  = this->declare_parameter<bool>("input/convert_intensity", true);
+    points_topic_ = this->declare_parameter<std::string>("points_topic", points_topic_);
+    imu_topic_ = this->declare_parameter<std::string>("imu_topic", imu_topic_);
+    input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
+    input_convert_intensity_ = this->declare_parameter<bool>("input/convert_intensity", true);
 
-    points_qos_params_.history =
-        this->declare_parameter<std::string>("points_qos/history", points_qos_params_.history);
-    points_qos_params_.depth =
-        this->declare_parameter<int64_t>("points_qos/depth", points_qos_params_.depth);
+    points_qos_params_.history = this->declare_parameter<std::string>("points_qos/history", points_qos_params_.history);
+    points_qos_params_.depth = this->declare_parameter<int64_t>("points_qos/depth", points_qos_params_.depth);
     points_qos_params_.reliability =
         this->declare_parameter<std::string>("points_qos/reliability", points_qos_params_.reliability);
-    imu_qos_params_.history =
-        this->declare_parameter<std::string>("imu_qos/history", imu_qos_params_.history);
-    imu_qos_params_.depth =
-        this->declare_parameter<int64_t>("imu_qos/depth", imu_qos_params_.depth);
+    imu_qos_params_.history = this->declare_parameter<std::string>("imu_qos/history", imu_qos_params_.history);
+    imu_qos_params_.depth = this->declare_parameter<int64_t>("imu_qos/depth", imu_qos_params_.depth);
     imu_qos_params_.reliability =
         this->declare_parameter<std::string>("imu_qos/reliability", imu_qos_params_.reliability);
 
     odom_frame_id_ = this->declare_parameter<std::string>("odom_frame_id", odom_frame_id_);
-    base_link_id_  = this->declare_parameter<std::string>("base_link_id", base_link_id_);
+    base_link_id_ = this->declare_parameter<std::string>("base_link_id", base_link_id_);
 
     {
-        const auto x  = this->declare_parameter<double>("T_base_link_to_lidar/x", 0.0);
-        const auto y  = this->declare_parameter<double>("T_base_link_to_lidar/y", 0.0);
-        const auto z  = this->declare_parameter<double>("T_base_link_to_lidar/z", 0.0);
+        const auto x = this->declare_parameter<double>("T_base_link_to_lidar/x", 0.0);
+        const auto y = this->declare_parameter<double>("T_base_link_to_lidar/y", 0.0);
+        const auto z = this->declare_parameter<double>("T_base_link_to_lidar/z", 0.0);
         const auto qx = this->declare_parameter<double>("T_base_link_to_lidar/qx", 0.0);
         const auto qy = this->declare_parameter<double>("T_base_link_to_lidar/qy", 0.0);
         const auto qz = this->declare_parameter<double>("T_base_link_to_lidar/qz", 0.0);
         const auto qw = this->declare_parameter<double>("T_base_link_to_lidar/qw", 1.0);
         T_base_link_to_lidar_.setIdentity();
         T_base_link_to_lidar_.translation() << static_cast<float>(x), static_cast<float>(y), static_cast<float>(z);
-        const Eigen::Quaternionf q(static_cast<float>(qw), static_cast<float>(qx),
-                                   static_cast<float>(qy), static_cast<float>(qz));
+        const Eigen::Quaternionf q(static_cast<float>(qw), static_cast<float>(qx), static_cast<float>(qy),
+                                   static_cast<float>(qz));
         T_base_link_to_lidar_.matrix().block<3, 3>(0, 0) = q.normalized().matrix();
         T_lidar_to_base_link_ = T_base_link_to_lidar_.inverse();
     }
     {
-        const auto x  = this->declare_parameter<double>("initial_base_link_pose/x", 0.0);
-        const auto y  = this->declare_parameter<double>("initial_base_link_pose/y", 0.0);
-        const auto z  = this->declare_parameter<double>("initial_base_link_pose/z", 0.0);
+        const auto x = this->declare_parameter<double>("initial_base_link_pose/x", 0.0);
+        const auto y = this->declare_parameter<double>("initial_base_link_pose/y", 0.0);
+        const auto z = this->declare_parameter<double>("initial_base_link_pose/z", 0.0);
         const auto qx = this->declare_parameter<double>("initial_base_link_pose/qx", 0.0);
         const auto qy = this->declare_parameter<double>("initial_base_link_pose/qy", 0.0);
         const auto qz = this->declare_parameter<double>("initial_base_link_pose/qz", 0.0);
         const auto qw = this->declare_parameter<double>("initial_base_link_pose/qw", 1.0);
         Eigen::Isometry3f init = Eigen::Isometry3f::Identity();
         init.translation() << static_cast<float>(x), static_cast<float>(y), static_cast<float>(z);
-        const Eigen::Quaternionf q(static_cast<float>(qw), static_cast<float>(qx),
-                                   static_cast<float>(qy), static_cast<float>(qz));
+        const Eigen::Quaternionf q(static_cast<float>(qw), static_cast<float>(qx), static_cast<float>(qy),
+                                   static_cast<float>(qz));
         init.matrix().block<3, 3>(0, 0) = q.normalized().matrix();
         params_.pose.initial = init * T_base_link_to_lidar_;
     }
@@ -82,18 +78,18 @@ LidarInertialOdometryNode::LidarInertialOdometryNode(const rclcpp::NodeOptions& 
     // -----------------------------------------------------------------------
     // Publishers
     // -----------------------------------------------------------------------
-    pub_preprocessed_  = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lo/preprocessed", rclcpp::QoS(5));
-    pub_submap_        = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lo/submap", rclcpp::QoS(5));
-    pub_pose_          = this->create_publisher<geometry_msgs::msg::PoseStamped>("sycl_lo/pose", rclcpp::QoS(5));
-    pub_odom_          = this->create_publisher<nav_msgs::msg::Odometry>("sycl_lo/odom", rclcpp::QoS(5));
+    pub_preprocessed_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lo/preprocessed", rclcpp::QoS(5));
+    pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lo/submap", rclcpp::QoS(5));
+    pub_pose_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("sycl_lo/pose", rclcpp::QoS(5));
+    pub_odom_ = this->create_publisher<nav_msgs::msg::Odometry>("sycl_lo/odom", rclcpp::QoS(5));
     pub_keyframe_pose_ = this->create_publisher<nav_msgs::msg::Odometry>("sycl_lo/keyframe/pose", rclcpp::QoS(5));
-    tf_broadcaster_    = std::make_unique<tf2_ros::TransformBroadcaster>(*this, tf2_ros::DynamicBroadcasterQoS(1000));
+    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this, tf2_ros::DynamicBroadcasterQoS(1000));
 
     // -----------------------------------------------------------------------
     // Subscriptions
     // -----------------------------------------------------------------------
     cb_group_lidar_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    cb_group_imu_   = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cb_group_imu_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     rclcpp::SubscriptionOptions lidar_opts;
     lidar_opts.callback_group = cb_group_lidar_;
@@ -110,9 +106,7 @@ LidarInertialOdometryNode::LidarInertialOdometryNode(const rclcpp::NodeOptions& 
     RCLCPP_INFO(this->get_logger(), "Subscribe IMU: %s", sub_imu_->get_topic_name());
 }
 
-LidarInertialOdometryNode::~LidarInertialOdometryNode() {
-    log_processing_times();
-}
+LidarInertialOdometryNode::~LidarInertialOdometryNode() { log_processing_times(); }
 
 // ---------------------------------------------------------------------------
 // Callbacks
@@ -135,19 +129,18 @@ void LidarInertialOdometryNode::point_cloud_callback(const sensor_msgs::msg::Poi
         return;
     }
 
-    const auto result = pipeline_->process(scan_pc_, timestamp);
-    if (result >= pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline::ResultType::error) {
-        RCLCPP_WARN(this->get_logger(), "LIO failed: %s", pipeline_->get_error_message().c_str());
-        return;
+    {
+        using ResultType = pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline::ResultType;
+        const auto result = pipeline_->process(scan_pc_, timestamp);
+        if (result >= ResultType::error) {
+            RCLCPP_WARN(this->get_logger(), "LIO failed: %s", pipeline_->get_error_message().c_str());
+            return;
+        }
+        if (result != ResultType::success && result != ResultType::first_frame) return;
     }
 
-    if (result != pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline::ResultType::success &&
-        result != pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline::ResultType::first_frame) {
-        return;
-    }
-
-    const auto& header  = msg->header;
-    const auto& odom    = pipeline_->get_odom();
+    const auto& header = msg->header;
+    const auto& odom = pipeline_->get_odom();
     const auto& kf_pose = pipeline_->get_last_keyframe_pose();
 
     // Publish (timed, matching "5. publish ROS 2 msg" in the base node)
@@ -179,12 +172,12 @@ void LidarInertialOdometryNode::point_cloud_callback(const sensor_msgs::msg::Poi
 void LidarInertialOdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
     imu::IMUMeasurement meas;
     meas.timestamp = rclcpp::Time(msg->header.stamp).seconds();
-    meas.gyro  = Eigen::Vector3f(static_cast<float>(msg->angular_velocity.x),
-                                  static_cast<float>(msg->angular_velocity.y),
-                                  static_cast<float>(msg->angular_velocity.z));
-    meas.accel = Eigen::Vector3f(static_cast<float>(msg->linear_acceleration.x),
-                                  static_cast<float>(msg->linear_acceleration.y),
-                                  static_cast<float>(msg->linear_acceleration.z));
+    meas.gyro =
+        Eigen::Vector3f(static_cast<float>(msg->angular_velocity.x), static_cast<float>(msg->angular_velocity.y),
+                        static_cast<float>(msg->angular_velocity.z));
+    meas.accel =
+        Eigen::Vector3f(static_cast<float>(msg->linear_acceleration.x), static_cast<float>(msg->linear_acceleration.y),
+                        static_cast<float>(msg->linear_acceleration.z));
     pipeline_->add_imu_measurement(meas);
 }
 
@@ -193,17 +186,17 @@ void LidarInertialOdometryNode::imu_callback(const sensor_msgs::msg::Imu::Shared
 // ---------------------------------------------------------------------------
 
 nav_msgs::msg::Odometry LidarInertialOdometryNode::make_odom_message(const std_msgs::msg::Header& header,
-                                                                      const Eigen::Isometry3f& odom) const {
+                                                                     const Eigen::Isometry3f& odom) const {
     const Eigen::Isometry3f T = odom * T_lidar_to_base_link_;
     const Eigen::Quaternionf q(T.rotation());
 
     nav_msgs::msg::Odometry msg;
-    msg.header.stamp    = header.stamp;
+    msg.header.stamp = header.stamp;
     msg.header.frame_id = odom_frame_id_;
-    msg.child_frame_id  = base_link_id_;
-    msg.pose.pose.position.x    = T.translation().x();
-    msg.pose.pose.position.y    = T.translation().y();
-    msg.pose.pose.position.z    = T.translation().z();
+    msg.child_frame_id = base_link_id_;
+    msg.pose.pose.position.x = T.translation().x();
+    msg.pose.pose.position.y = T.translation().y();
+    msg.pose.pose.position.z = T.translation().z();
     msg.pose.pose.orientation.x = q.x();
     msg.pose.pose.orientation.y = q.y();
     msg.pose.pose.orientation.z = q.z();
@@ -212,16 +205,16 @@ nav_msgs::msg::Odometry LidarInertialOdometryNode::make_odom_message(const std_m
 }
 
 geometry_msgs::msg::PoseStamped LidarInertialOdometryNode::make_pose_message(const std_msgs::msg::Header& header,
-                                                                              const Eigen::Isometry3f& odom) const {
+                                                                             const Eigen::Isometry3f& odom) const {
     const auto odom_msg = make_odom_message(header, odom);
     geometry_msgs::msg::PoseStamped pose;
     pose.header = odom_msg.header;
-    pose.pose   = odom_msg.pose.pose;
+    pose.pose = odom_msg.pose.pose;
     return pose;
 }
 
 nav_msgs::msg::Odometry LidarInertialOdometryNode::make_keyframe_pose_message(const std_msgs::msg::Header& header,
-                                                                               const Eigen::Isometry3f& odom) const {
+                                                                              const Eigen::Isometry3f& odom) const {
     return make_odom_message(header, odom);
 }
 
@@ -231,9 +224,9 @@ geometry_msgs::msg::TransformStamped LidarInertialOdometryNode::make_transform_m
     const Eigen::Quaternionf q(T.rotation());
 
     geometry_msgs::msg::TransformStamped tf;
-    tf.header.stamp    = header.stamp;
+    tf.header.stamp = header.stamp;
     tf.header.frame_id = odom_frame_id_;
-    tf.child_frame_id  = base_link_id_;
+    tf.child_frame_id = base_link_id_;
     tf.transform.translation.x = T.translation().x();
     tf.transform.translation.y = T.translation().y();
     tf.transform.translation.z = T.translation().z();
@@ -282,7 +275,7 @@ void LidarInertialOdometryNode::add_delta_time(const std::string& name, double d
 void LidarInertialOdometryNode::log_processing_times() {
     RCLCPP_INFO(this->get_logger(), "");
     processing_times_.insert(pipeline_->get_total_processing_times().begin(),
-                              pipeline_->get_total_processing_times().end());
+                             pipeline_->get_total_processing_times().end());
 
     RCLCPP_INFO(this->get_logger(), "MAX processing time");
     for (auto& [name, times] : processing_times_) {
@@ -294,8 +287,8 @@ void LidarInertialOdometryNode::log_processing_times() {
     RCLCPP_INFO(this->get_logger(), "MEAN processing time");
     for (auto& [name, times] : processing_times_) {
         if (times.empty()) continue;
-        print_processing_times(name, std::accumulate(times.begin(), times.end(), 0.0) /
-                                         static_cast<double>(times.size()));
+        print_processing_times(name,
+                               std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size()));
     }
 
     RCLCPP_INFO(this->get_logger(), "");

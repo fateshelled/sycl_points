@@ -26,10 +26,10 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     // LIO-specific optimization parameters
     params.lio.max_iterations =
         static_cast<size_t>(node->declare_parameter<int64_t>("lio/max_iterations", params.lio.max_iterations));
-    params.lio.rotation_convergence =
-        node->declare_parameter<double>("lio/rotation_convergence", params.lio.rotation_convergence);
-    params.lio.position_convergence =
-        node->declare_parameter<double>("lio/position_convergence", params.lio.position_convergence);
+    params.lio.criteria.rotation =
+        node->declare_parameter<double>("lio/criteria/rotation", params.lio.criteria.rotation);
+    params.lio.criteria.translation =
+        node->declare_parameter<double>("lio/criteria/translation", params.lio.criteria.translation);
     params.lio.invalid_regularization_factor =
         node->declare_parameter<double>("lio/invalid_regularization_factor", params.lio.invalid_regularization_factor);
 

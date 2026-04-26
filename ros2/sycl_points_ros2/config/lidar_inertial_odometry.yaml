@@ -127,10 +127,10 @@ lidar_inertial_odometry_node:
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
     # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
-    lio/max_iterations: 10
-    lio/rotation_convergence: 1.0e-4  # [rad]
-    lio/position_convergence: 1.0e-4  # [m]
-    lio/invalid_regularization_factor: 1.0e4
+    lio/max_iterations: 12
+    lio/criteria/translation: 1.0e-3  # [m]
+    lio/criteria/rotation: 1.0e-6  # [rad]
+    lio/invalid_regularization_factor: 1.0e+4
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/max_iterations is unused; outer loop count is lio/max_iterations.
@@ -138,10 +138,7 @@ lidar_inertial_odometry_node:
     registration/min_num_points: 300
     registration/random_sampling/enable: true
     registration/random_sampling/num: 2048
-    registration/max_iterations: 1
     registration/max_correspondence_distance: 2.0
-    registration/criteria/translation: 1.0e-3
-    registration/criteria/rotation: 1.0e-6
 
     registration/robust/type: GEMAN_MCCLURE
     registration/robust/default_scale: 10.0

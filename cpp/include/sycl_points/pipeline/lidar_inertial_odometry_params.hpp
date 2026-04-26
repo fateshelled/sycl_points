@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 
 namespace sycl_points {
@@ -14,10 +15,8 @@ struct Parameters : public lidar_odometry::Parameters {
     struct LIO {
         /// Maximum number of Gauss-Newton iterations per frame.
         size_t max_iterations = 10;
-        /// Convergence threshold on the rotation update norm [rad].
-        float rotation_convergence = 1e-4f;
-        /// Convergence threshold on the position update norm [m].
-        float position_convergence = 1e-4f;
+        // Convergence threshold
+        algorithms::registration::RegistrationParams::Criteria criteria;
         /// Regularization factor for velocity and bias
         float invalid_regularization_factor = 1e4f;
     };

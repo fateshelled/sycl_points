@@ -141,9 +141,8 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
     {
         params.motion_prediction.verbose =
             node->declare_parameter<bool>("motion_prediction/verbose", params.motion_prediction.verbose);
-        params.motion_prediction.velocity_ema_alpha =
-            node->declare_parameter<double>("motion_prediction/velocity/ema_alpha",
-                                            params.motion_prediction.velocity_ema_alpha);
+        params.motion_prediction.velocity_ema_alpha = node->declare_parameter<double>(
+            "motion_prediction/velocity/ema_alpha", params.motion_prediction.velocity_ema_alpha);
 
         params.motion_prediction.adaptive.rotation.factor_min = node->declare_parameter<double>(
             "motion_prediction/adaptive/rotation/factor/min", params.motion_prediction.adaptive.rotation.factor_min);
@@ -266,12 +265,10 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         {
             auto& anderson = solver.anderson;
 
-            anderson.enabled =
-                node->declare_parameter<bool>("registration/anderson/enabled", anderson.enabled);
-            anderson.window_size = node->declare_parameter<int64_t>(
-                "registration/anderson/window_size", anderson.window_size);
-            anderson.beta =
-                node->declare_parameter<double>("registration/anderson/beta", anderson.beta);
+            anderson.enabled = node->declare_parameter<bool>("registration/anderson/enabled", anderson.enabled);
+            anderson.window_size =
+                node->declare_parameter<int64_t>("registration/anderson/window_size", anderson.window_size);
+            anderson.beta = node->declare_parameter<double>("registration/anderson/beta", anderson.beta);
         }
 
         // Optimization
@@ -350,7 +347,8 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         // IMU acceleration unit: "m_s2" (default) or "G" (1G = 9.80665 m/s^2)
         {
             std::string accel_unit = node->declare_parameter<std::string>("imu/accel_unit", "m_s2");
-            std::transform(accel_unit.begin(), accel_unit.end(), accel_unit.begin(), [](unsigned char c) { return std::toupper(c); });
+            std::transform(accel_unit.begin(), accel_unit.end(), accel_unit.begin(),
+                           [](unsigned char c) { return std::toupper(c); });
             params.imu.preintegration.accel_scale = (accel_unit == "G") ? 9.80665f : 1.0f;
         }
 
