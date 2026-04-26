@@ -34,6 +34,8 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         node->declare_parameter<double>("lio/invalid_regularization_factor", params.lio.invalid_regularization_factor);
     params.lio.fd_velocity_sigma =
         static_cast<float>(node->declare_parameter<double>("lio/fd_velocity_sigma", params.lio.fd_velocity_sigma));
+    params.lio.icp_rotation_sigma =
+        static_cast<float>(node->declare_parameter<double>("lio/icp_rotation_sigma", params.lio.icp_rotation_sigma));
 
     return params;
 }

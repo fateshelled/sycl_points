@@ -31,6 +31,18 @@ struct Parameters : public lidar_odometry::Parameters {
         ///
         /// Typical value: σ_icp / dt  (e.g. 0.01m / 0.1s = 0.1 m/s)
         float fd_velocity_sigma = 0.1f;
+
+        /// Standard deviation of the ICP rotation estimate [rad].
+        ///
+        /// Added to the rotation block of the initial covariance at every
+        /// IMU preintegration reset, providing the same floor mechanism as
+        /// fd_velocity_sigma does for the position block:
+        ///   P_pred[φ,φ] ≥ icp_rotation_sigma²
+        /// prevents H_imu[φ,φ] from overwhelming H_icp when gyro_noise_density
+        /// is set to a small physical value.
+        ///
+        /// Typical value: ICP angular accuracy in rad (e.g. 0.001 rad ≈ 0.06°)
+        float icp_rotation_sigma = 0.001f;
     };
 
     LIO lio;

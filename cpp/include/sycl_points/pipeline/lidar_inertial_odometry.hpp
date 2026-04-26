@@ -305,8 +305,12 @@ private:
         // which keeps H_imu on the same scale as H_icp, preventing H_imu from
         // dominating the LIO optimization when accel_noise_density is small.
         Eigen::Matrix<float, 15, 15> P_initial = this->P_post_;
+        // Velocity floor: prevents H_imu[p,p] from dominating when accel_noise_density is small.
         const float sv2 = this->params_.lio.fd_velocity_sigma * this->params_.lio.fd_velocity_sigma;
         P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += sv2 * Eigen::Matrix3f::Identity();
+        // Rotation floor: prevents H_imu[φ,φ] from dominating when gyro_noise_density is small.
+        const float sr2 = this->params_.lio.icp_rotation_sigma * this->params_.lio.icp_rotation_sigma;
+        P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
 
         this->imu_preintegration_->reset(               //
             {this->x_.accel_bias, this->x_.gyro_bias},  //
