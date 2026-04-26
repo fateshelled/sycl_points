@@ -139,50 +139,13 @@ void LiDAROdometryBagEvalNode::run() {
 }
 
 std::string LiDAROdometryBagEvalNode::detect_storage_id(const std::string& uri) const {
-    namespace fs = std::filesystem;
-
-    const fs::path path(uri);
-    if (path.extension() == ".mcap") {
-        return "mcap";
+    rosbag2_storage::MetadataIo io;
+    try {
+        const auto metadata = io.read_metadata(uri);
+        return metadata.storage_identifier;
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to detect storage id from metadata: " + std::string(e.what()));
     }
-    if (path.extension() == ".db3") {
-        return "sqlite3";
-    }
-
-    const fs::path metadata_path = path / "metadata.yaml";
-    if (!fs::exists(metadata_path)) {
-        throw std::runtime_error("failed to detect storage id: metadata.yaml not found at " + metadata_path.string());
-    }
-
-    std::ifstream metadata_stream(metadata_path);
-    if (!metadata_stream.is_open()) {
-        throw std::runtime_error("failed to open metadata.yaml: " + metadata_path.string());
-    }
-
-    std::string line;
-    while (std::getline(metadata_stream, line)) {
-        constexpr std::string_view key = "  storage_identifier:";
-        const auto pos = line.find(key);
-        if (pos == std::string::npos) {
-            continue;
-        }
-
-        std::string value = line.substr(pos + key.size());
-        const auto first = value.find_first_not_of(" \t");
-        if (first == std::string::npos) {
-            break;
-        }
-        value = value.substr(first);
-        const auto last = value.find_last_not_of(" \t\r\n");
-        if (last != std::string::npos) {
-            value = value.substr(0, last + 1);
-        }
-        if (!value.empty()) {
-            return value;
-        }
-    }
-
-    throw std::runtime_error("failed to detect storage identifier from metadata: " + metadata_path.string());
 }
 
 void LiDAROdometryBagEvalNode::write_tum_line(const geometry_msgs::msg::PoseStamped& pose_msg) {
