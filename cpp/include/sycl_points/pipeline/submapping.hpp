@@ -83,8 +83,8 @@ public:
     }
 
     bool add_frame(const PointCloudShared& preprocessed_cloud,
-                   const algorithms::registration::RegistrationResult& reg_result, float inlier_ratio,
-                   double timestamp) {
+                   const algorithms::registration::RegistrationResult& reg_result, float inlier_ratio, double timestamp,
+                   shared_vector_ptr<float> random_sampling_weights = nullptr) {
         // check inlier ratio for registration success or not.
         if (this->submap_params_.keyframe.inlier_ratio_threshold > 0.0f &&
             inlier_ratio <= this->submap_params_.keyframe.inlier_ratio_threshold) {
@@ -94,7 +94,7 @@ public:
 
         const auto submap_type = this->submap_params_.map_type;
         if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
-            this->build_submap(preprocessed_cloud, reg_result.T, false);
+            this->build_submap(preprocessed_cloud, reg_result.T, false, random_sampling_weights);
             return true;
         } else {
             if (this->is_keyframe(reg_result, timestamp)) {
@@ -102,7 +102,7 @@ public:
                 this->last_keyframe_time_ = timestamp;
                 this->keyframe_poses_.push_back(reg_result.T);
 
-                this->build_submap(preprocessed_cloud, reg_result.T, false);
+                this->build_submap(preprocessed_cloud, reg_result.T, false, random_sampling_weights);
                 return true;
             }
         }
@@ -149,9 +149,15 @@ private:
         return is_keyframe;
     }
 
-    void build_submap(const PointCloudShared& cloud, const Eigen::Isometry3f& current_pose, bool is_first_frame) {
-        // uniform random sampling
-        {
+    void build_submap(const PointCloudShared& cloud, const Eigen::Isometry3f& current_pose, bool is_first_frame,
+                      shared_vector_ptr<float> random_sampling_weights = nullptr) {
+        if (random_sampling_weights &&
+            random_sampling_weights->size() == cloud.size()) {  // weighted/uniform mixed random sampling
+            this->preprocess_filter_->mixed_random_sampling(cloud, *this->keyframe_pc_, *random_sampling_weights,
+                                                            this->submap_params_.point_random_sampling_num,
+                                                            this->submap_params_.weighted_sampling_ratio);
+        } else {
+            // uniform random sampling
             this->preprocess_filter_->random_sampling(cloud, *this->keyframe_pc_,
                                                       this->submap_params_.point_random_sampling_num);
         }
