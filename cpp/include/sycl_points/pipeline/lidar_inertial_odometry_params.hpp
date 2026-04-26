@@ -1,7 +1,6 @@
 #pragma once
 
-#include <sycl_points/algorithms/registration/registration_params.hpp>
-
+#include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 
 namespace sycl_points {
