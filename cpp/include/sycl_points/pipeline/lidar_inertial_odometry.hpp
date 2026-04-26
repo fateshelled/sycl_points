@@ -506,6 +506,11 @@ private:
             this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
         }
 
+        // Initialize state biases from params so preprocess() uses the correct bias
+        // before the first frame's state initialization runs.
+        this->x_.accel_bias = this->params_.imu.bias.accel_bias;
+        this->x_.gyro_bias = this->params_.imu.bias.gyro_bias;
+
         this->clear_total_processing_times();
     }
 
@@ -517,9 +522,9 @@ private:
             const auto imu_buf = this->get_imu_buffer();
             const double scan_start_sec = scan->start_time_ms * 1e-3;
             const Eigen::Matrix3f R_world_imu = this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            algorithms::deskew::deskew_point_cloud_imu(*scan, *scan, imu_buf, scan_start_sec,
-                                                       this->params_.imu.T_imu_to_lidar, this->params_.imu.bias,
-                                                       this->params_.imu.preintegration, R_world_imu);
+            algorithms::deskew::deskew_point_cloud_imu(
+                *scan, *scan, imu_buf, scan_start_sec, this->params_.imu.T_imu_to_lidar,
+                imu::IMUBias{this->x_.accel_bias, this->x_.gyro_bias}, this->params_.imu.preintegration, R_world_imu);
         }
 
         if (this->params_.scan.preprocess.box_filter.enable) {
