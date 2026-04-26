@@ -272,7 +272,7 @@ inline PointCloudShared::Ptr fromROS2msg(const sycl_points::sycl_utils::DeviceQu
     return ret;
 }
 
-sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloudShared& cloud,
+inline sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::PointCloudShared& cloud,
                                                    const std_msgs::msg::Header& header) {
     sensor_msgs::msg::PointCloud2::SharedPtr msg = std::make_shared<sensor_msgs::msg::PointCloud2>();
     msg->header = header;

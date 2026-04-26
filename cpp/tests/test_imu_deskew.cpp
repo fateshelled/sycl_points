@@ -6,7 +6,7 @@
 
 #include "sycl_points/algorithms/deskew/imu_deskew.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
-#include "sycl_points/imu/imu_preintegration.hpp"
+#include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"

@@ -1,0 +1,187 @@
+lidar_inertial_odometry_node:
+  ros__parameters:
+    sycl/device_type: gpu      # gpu, cpu
+    sycl/device_vendor: intel  # intel, nvidia, amd, omp(for AdaptiveCpp CPU backend)
+
+    points_topic: points
+    imu_topic: imu/data
+
+    # QoS settings for subscriptions
+    # history:      "keep_last" (queue up to depth messages) or "keep_all".
+    #               If using intraprocess communication, set to keep_last.
+    # depth:        queue depth used only when history == "keep_last" (ignored for "keep_all")
+    # reliability:  "best_effort" or "reliable"
+    points_qos/history: "keep_last"
+    points_qos/depth: 10
+    points_qos/reliability: "best_effort"
+    imu_qos/history: "keep_last"
+    imu_qos/depth: 100
+    imu_qos/reliability: "best_effort"
+
+    odom_frame_id: odom
+    base_link_id: base_link
+    lidar_frame_id: os_sensor
+    rviz2: true
+    use_sim_time: false
+
+    initial_base_link_pose/x: 0.0
+    initial_base_link_pose/y: 0.0
+    initial_base_link_pose/z: 0.0
+    initial_base_link_pose/qx: 0.0
+    initial_base_link_pose/qy: 0.0
+    initial_base_link_pose/qz: 0.0
+    initial_base_link_pose/qw: 1.0
+
+    T_base_link_to_lidar/x: 0.0
+    T_base_link_to_lidar/y: 0.0
+    T_base_link_to_lidar/z: 0.0
+    T_base_link_to_lidar/qx: 0.0
+    T_base_link_to_lidar/qy: 0.0
+    T_base_link_to_lidar/qz: 0.0
+    T_base_link_to_lidar/qw: 1.0
+
+    T_imu_to_lidar/x: 0.0
+    T_imu_to_lidar/y: 0.0
+    T_imu_to_lidar/z: 0.0
+    T_imu_to_lidar/qx: 0.0
+    T_imu_to_lidar/qy: 0.0
+    T_imu_to_lidar/qz: 0.0
+    T_imu_to_lidar/qw: 1.0
+
+    # IMU (always enabled for LIO)
+    imu/accel_unit: "m_s2"              # "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
+    imu/buffer_duration_sec: 1.0
+    imu/deskew/enable: true             # IMU-based pre-processing deskew
+    imu/preintegration/gravity/x: 0.0  # Gravity vector in world frame [m/s^2]
+    imu/preintegration/gravity/y: 0.0
+    imu/preintegration/gravity/z: -9.80665
+
+    # IMU noise densities for 15x15 covariance propagation.
+    # Set non-zero to enable covariance propagation (required for IMU prior weighting).
+    imu/preintegration/gyro_noise_density: 1.0       # rad/s/sqrt(Hz)
+    imu/preintegration/accel_noise_density: 1.0      # m/s^2/sqrt(Hz)
+    imu/preintegration/gyro_bias_rw_density: 1.0e-5  # rad/s^2/sqrt(Hz)
+    imu/preintegration/accel_bias_rw_density: 1.0e-4 # m/s^3/sqrt(Hz)
+
+    imu/bias/gyro/x: 0.0  # Initial gyroscope bias [rad/s]
+    imu/bias/gyro/y: 0.0
+    imu/bias/gyro/z: 0.0
+    imu/bias/accel/x: 0.0  # Initial accelerometer bias [m/s^2]
+    imu/bias/accel/y: 0.0
+    imu/bias/accel/z: 0.0
+
+    # Select whether additional point attributes are copied from input PointCloud2.
+    input/convert_rgb: true
+    input/convert_intensity: false
+
+    # Scan PointCloud preprocessing
+    scan/preprocess/box_filter/enable: true
+    scan/preprocess/box_filter/max: 100.0
+    scan/preprocess/box_filter/min: 0.4
+    scan/preprocess/angle_incidence_filter/enable: false
+    scan/preprocess/angle_incidence_filter/min_angle: 0.0
+    scan/preprocess/angle_incidence_filter/max_angle: 1.396  # 80 degrees
+
+    scan/intensity_correction/enable: false
+    scan/intensity_correction/exp: 2.0
+    scan/intensity_correction/scale: 1.0e-3
+    scan/intensity_correction/min_intensity: 0.0
+    scan/intensity_correction/max_intensity: 1.0
+
+    scan/downsampling/voxel/enable: false
+    scan/downsampling/voxel/voxel_size: 0.3
+    scan/downsampling/polar/enable: true
+    scan/downsampling/polar/distance_size: 0.5
+    scan/downsampling/polar/elevation_size: 0.017453292519943295  # 1 degree
+    scan/downsampling/polar/azimuth_size: 0.017453292519943295    # 1 degree
+    scan/downsampling/polar/coord_system: LIDAR
+    scan/downsampling/random/enable: false
+    scan/downsampling/random/num: 4096
+
+    # Covariance estimator
+    covariance_estimation/neighbor_num: 15
+    covariance_estimation/m_estimation/enable: false
+    covariance_estimation/m_estimation/type: GEMAN_MCCLURE
+    covariance_estimation/m_estimation/mad_scale: 2.0
+    covariance_estimation/m_estimation/min_robust_scale: 5.0
+    covariance_estimation/m_estimation/max_iterations: 1
+
+    # PointCloud Submapping
+    submap/voxel_size: 0.4
+    submap/max_distance_range: 50.0
+    submap/point_random_sampling_num: 512
+    submap/weighted_sampling_ratio: 0.8
+    submap/map_type: OCCUPANCY_GRID_MAP  # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
+    submap/covariance_aggregation_mode: LOG_EUCLIDEAN
+    submap/keyframe/inlier_ratio_threshold: 0.3
+    submap/keyframe/distance_threshold: 2.0
+    submap/keyframe/angle_threshold_degrees: 20.0
+    submap/keyframe/time_threshold_seconds: 1.0
+    submap/occupancy_grid_map/log_odds_hit: 0.5
+    submap/occupancy_grid_map/log_odds_miss: -0.03
+    submap/occupancy_grid_map/log_odds_limits/min: -10.0
+    submap/occupancy_grid_map/log_odds_limits/max: 10.0
+    submap/occupancy_grid_map/occupied_threshold: 0.5
+    submap/occupancy_grid_map/enable_free_space_update: true
+    submap/occupancy_grid_map/enable_pruning: true
+    submap/occupancy_grid_map/stale_frame_threshold: 600
+
+    # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
+    lio/max_iterations: 10
+    lio/rotation_convergence: 1.0e-4  # [rad]
+    lio/position_convergence: 1.0e-4  # [m]
+    lio/invalid_regularization_factor: 1.0e4
+
+    # ICP registration backend (used for linearization inside the LIO loop)
+    # registration/max_iterations is unused; outer loop count is lio/max_iterations.
+    registration/type: gicp
+    registration/min_num_points: 300
+    registration/random_sampling/enable: true
+    registration/random_sampling/num: 2048
+    registration/max_iterations: 1
+    registration/max_correspondence_distance: 2.0
+    registration/criteria/translation: 1.0e-3
+    registration/criteria/rotation: 1.0e-6
+
+    registration/robust/type: GEMAN_MCCLURE
+    registration/robust/default_scale: 10.0
+    registration/robust/auto_scale: true
+    registration/robust/auto_scaling_iter: 4
+    registration/robust/init_scale: 10.0
+    registration/robust/min_scale: 1.25
+
+    registration/photometric/enable: false
+    registration/photometric/weight: 0.2
+    registration/photometric/robust_scale: 5.0
+
+    registration/rotation_constraint/enable: false
+    registration/rotation_constraint/weight: 1.0
+    registration/rotation_constraint/robust/init_scale: 5.0
+    registration/rotation_constraint/robust/min_scale: 2.5
+    registration/rotation_constraint/robust/default_scale: 5.0
+
+    registration/genz/planarity_threshold: 0.2
+
+    registration/anderson/enabled: false
+    registration/anderson/window_size: 5
+    registration/anderson/beta: 1.0
+
+    registration/gn/lambda: 1.0
+
+    registration/degenerate_regularization/type: "NL_REG"
+    registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold: 10.0
+    registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold: 10.0
+    registration/degenerate_regularization/nl_reg/base_factor: 0.2
+    registration/verbose: false
+
+    # Visualization
+    vis/covariance_markers/scan/topic_name: "sycl_lo/scan_covariance_markers"
+    vis/covariance_markers/scan/marker_ns: "covariance_ellipsoids"
+    vis/covariance_markers/scan/scale_factor: 0.5
+    vis/covariance_markers/scan/min_scale: 0.0
+    vis/covariance_markers/scan/max_scale: 1.0
+    vis/covariance_markers/scan/alpha: 0.2
+    vis/covariance_markers/scan/color_by_planarity: false
+    vis/covariance_markers/scan/default_r: 0.0
+    vis/covariance_markers/scan/default_g: 1.0
+    vis/covariance_markers/scan/default_b: 0.2

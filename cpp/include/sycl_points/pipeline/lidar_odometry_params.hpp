@@ -8,7 +8,7 @@
 
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
-#include "sycl_points/imu/imu_preintegration.hpp"
+#include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 
 namespace sycl_points {

@@ -3,7 +3,7 @@
 #include <Eigen/Dense>
 #include <memory>
 
-#include "sycl_points/imu/imu_preintegration.hpp"
+#include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 
 namespace sycl_points {
 namespace imu {

@@ -3,7 +3,7 @@
 #include <Eigen/Dense>
 #include <cmath>
 
-#include "sycl_points/imu/imu_factor.hpp"
+#include "sycl_points/algorithms/imu/imu_factor.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
 namespace imu = sycl_points::imu;
