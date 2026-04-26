@@ -276,7 +276,7 @@ private:
     Eigen::Isometry3f prev_odom_;         // prev T_odom_to_lidar
     Eigen::Isometry3f odom_;              // current T_odom_to_lidar
 
-    submapping::Submap::Ptr submap_;
+    submapping::Submap::Ptr submap_ = nullptr;;
 
     double last_frame_time_ = -1.0;  // [s]
     float dt_ = -1.0f;               // [s]
