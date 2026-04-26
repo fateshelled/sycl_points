@@ -3,6 +3,7 @@
 #include <cmath>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -460,8 +461,8 @@ private:
         this->queue_ptr_ = std::make_shared<sycl_utils::DeviceQueue>(dev);
 
         // Point cloud buffers
-        this->preprocessed_pc_.reset(new PointCloudShared(*this->queue_ptr_));
-        this->registration_input_pc_.reset(new PointCloudShared(*this->queue_ptr_));
+        this->preprocessed_pc_ = std::make_shared<PointCloudShared>(*this->queue_ptr_);
+        this->registration_input_pc_ = std::make_shared<PointCloudShared>(*this->queue_ptr_);
 
         this->icp_weights_ = std::make_shared<shared_vector<float>>(*this->queue_ptr_->ptr);
 

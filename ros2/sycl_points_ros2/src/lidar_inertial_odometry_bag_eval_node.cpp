@@ -1,4 +1,4 @@
-#include "sycl_points_ros2/lidar_odometry_bag_eval_node.hpp"
+#include "sycl_points_ros2/lidar_inertial_odometry_bag_eval_node.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -16,11 +16,11 @@
 namespace sycl_points {
 namespace ros2 {
 
-LiDAROdometryBagEvalNode::LiDAROdometryBagEvalNode(const rclcpp::NodeOptions& options)
-    : LiDAROdometryBaseNode("lidar_odometry_bag_eval", options) {
+LidarInertialOdometryBagEvalNode::LidarInertialOdometryBagEvalNode(const rclcpp::NodeOptions& options)
+    : LidarInertialOdometryBaseNode("lidar_inertial_odometry_bag_eval", options) {
     this->bag_uri_ = this->declare_parameter<std::string>("rosbag/uri", "");
     this->start_offset_sec_ = this->declare_parameter<double>("rosbag/start_offset/sec", 0.0);
-    this->output_tum_ = this->declare_parameter<std::string>("eval/output_tum", "sycl_lo_odom.tum");
+    this->output_tum_ = this->declare_parameter<std::string>("eval/output_tum", "sycl_lio_odom.tum");
     this->write_first_frame_ = this->declare_parameter<bool>("eval/write_first_frame", true);
     this->exit_on_end_ = this->declare_parameter<bool>("eval/exit_on_end", true);
 
@@ -29,14 +29,14 @@ LiDAROdometryBagEvalNode::LiDAROdometryBagEvalNode(const rclcpp::NodeOptions& op
     this->start_timer_ = this->create_wall_timer(std::chrono::milliseconds(10), [this]() { this->run(); });
 }
 
-LiDAROdometryBagEvalNode::~LiDAROdometryBagEvalNode() {
+LidarInertialOdometryBagEvalNode::~LidarInertialOdometryBagEvalNode() {
     if (this->tum_stream_.is_open()) {
         this->tum_stream_.flush();
         this->tum_stream_.close();
     }
 }
 
-void LiDAROdometryBagEvalNode::run() {
+void LidarInertialOdometryBagEvalNode::run() {
     if (this->start_timer_ != nullptr) {
         this->start_timer_->cancel();
     }
@@ -44,6 +44,9 @@ void LiDAROdometryBagEvalNode::run() {
     try {
         if (this->points_topic_.empty()) {
             throw std::runtime_error("`points_topic` must not be empty");
+        }
+        if (this->imu_topic_.empty()) {
+            throw std::runtime_error("`imu_topic` must not be empty");
         }
         if (this->bag_uri_.empty()) {
             throw std::runtime_error("`rosbag/uri` must not be empty");
@@ -86,8 +89,8 @@ void LiDAROdometryBagEvalNode::run() {
             auto bag_message = reader->read_next();
             if (bag_message == nullptr) continue;
 
-            // Feed IMU measurements to the pipeline
-            if (this->params_.imu.enable && bag_message->topic_name == this->imu_topic_) {
+            // IMU is always required for LIO — feed all IMU measurements to the pipeline
+            if (bag_message->topic_name == this->imu_topic_) {
                 sensor_msgs::msg::Imu imu_msg;
                 rclcpp::SerializedMessage serialized_imu(*bag_message->serialized_data);
                 imu_serializer.deserialize_message(&serialized_imu, &imu_msg);
@@ -138,7 +141,7 @@ void LiDAROdometryBagEvalNode::run() {
     }
 }
 
-std::string LiDAROdometryBagEvalNode::detect_storage_id(const std::string& uri) const {
+std::string LidarInertialOdometryBagEvalNode::detect_storage_id(const std::string& uri) const {
     rosbag2_storage::MetadataIo io;
     try {
         const auto metadata = io.read_metadata(uri);
@@ -148,7 +151,7 @@ std::string LiDAROdometryBagEvalNode::detect_storage_id(const std::string& uri) 
     }
 }
 
-void LiDAROdometryBagEvalNode::write_tum_line(const geometry_msgs::msg::PoseStamped& pose_msg) {
+void LidarInertialOdometryBagEvalNode::write_tum_line(const geometry_msgs::msg::PoseStamped& pose_msg) {
     const double timestamp =
         static_cast<double>(pose_msg.header.stamp.sec) + static_cast<double>(pose_msg.header.stamp.nanosec) * 1.0e-9;
 
@@ -161,4 +164,4 @@ void LiDAROdometryBagEvalNode::write_tum_line(const geometry_msgs::msg::PoseStam
 }  // namespace ros2
 }  // namespace sycl_points
 
-RCLCPP_COMPONENTS_REGISTER_NODE(sycl_points::ros2::LiDAROdometryBagEvalNode)
+RCLCPP_COMPONENTS_REGISTER_NODE(sycl_points::ros2::LidarInertialOdometryBagEvalNode)
