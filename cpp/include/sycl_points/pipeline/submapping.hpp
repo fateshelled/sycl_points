@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Eigen/Geometry>
-#include <sycl_points/algorithms/registration/registration_params.hpp>
+#include <utility>
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/feature/photometric_gradient.hpp"
@@ -9,6 +9,7 @@
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
+#include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 
 namespace sycl_points {
@@ -178,8 +179,8 @@ private:
             // transform
             *this->submap_pc_ptr_ = sycl_points::algorithms::transform::transform_copy(cloud, current_pose.matrix());
         } else if (this->submap_pc_tmp_->size() >= this->reg_params_.min_num_points) {
-            // copy pointer
-            this->submap_pc_ptr_ = this->submap_pc_tmp_;
+            // swap pointer
+            std::swap(this->submap_pc_ptr_, this->submap_pc_tmp_);
         }
 
         // Build target search structure for registration. Neighbor queries are launched lazily only when needed.
@@ -218,6 +219,7 @@ private:
                     *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             }
         }
+        grad_events.wait_and_throw();
     }
 
     void compute_covariances(bool& knn_ready, sycl_utils::events& knn_events) {
