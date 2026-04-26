@@ -298,14 +298,25 @@ private:
 
     void reset_imu_preintegration() {
         const Eigen::Matrix3f R_world_imu = x_.rotation * this->params_.imu.T_imu_to_lidar.rotation();
+
+        // Add fixed-sigma floors to P_initial before resetting the integrator.
+        // Velocity floor: ensures P_pred[p,p] ≳ (fd_velocity_sigma × dt)², keeping
+        //   H_imu[p,p] on the same scale as H_icp regardless of accel_noise_density.
+        // Rotation floor: same mechanism for H_imu[φ,φ] vs gyro_noise_density.
+        Eigen::Matrix<float, 15, 15> P_initial = this->P_post_;
+        const float sv2 = this->params_.lio.fd_velocity_sigma * this->params_.lio.fd_velocity_sigma;
+        P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += sv2 * Eigen::Matrix3f::Identity();
+        const float sr2 = this->params_.lio.icp_rotation_sigma * this->params_.lio.icp_rotation_sigma;
+        P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
+
         this->imu_preintegration_->reset(               //
-            {this->x_.accel_bias, this->x_.gyro_bias},  //
-            R_world_imu, this->x_.velocity, this->P_post_);
+            {this->x_.gyro_bias, this->x_.accel_bias},  //
+            R_world_imu, this->x_.velocity, P_initial);
     }
 
     /// @brief Predict the full 15-DOF state from IMU preintegration.
     imu::State predict_state() const {
-        const imu::IMUBias current_bias{this->x_.accel_bias, this->x_.gyro_bias};
+        const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
         const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
 
         // Relative pose prediction (gravity + initial velocity already compensated)
@@ -425,18 +436,41 @@ private:
 
         // ---- Update state and reset IMU preintegration ----
         // Pose and biases come from the LIO optimisation.
-        // Velocity is derived from the LiDAR displacement (finite difference) rather than
-        // the LDLT solution: the velocity block of the 15×15 system is only weakly
-        // constrained by the IMU (large accel noise → small H_imu[v,v]), and the
-        // P_pred cross-terms between rotation and velocity can drive large, wrong δv
-        // during fast turning.  Displacement-based velocity is simple and always consistent
-        // with the pose update.
+        //
+        // Velocity update: finite difference (ICP anchor) + IMU half-step correction.
+        //
+        // Finite difference  v_fd = Δp / dt  gives the *average* velocity over the
+        // frame interval.  Under constant acceleration, the endpoint velocity is:
+        //   v_end = v_fd + 0.5 * a_world * dt
+        //
+        // The world-frame acceleration is estimated from the IMU preintegration:
+        //   a_world = gravity + R_world_imu * (Delta_v / dt_imu)
+        //
+        // Gravity cancels exactly when stationary (Delta_v absorbs -g in body frame),
+        // so the correction is zero at rest — preventing the z-drift that arises when
+        // IMU integration is used directly for velocity (unanchored to ICP position).
+        // When moving, the correction converts average to endpoint velocity.
         const Eigen::Vector3f prev_position = this->x_.position;
+        const Eigen::Matrix3f prev_rotation = this->x_.rotation;  // rotation at window start (before update)
         this->x_.position = x_op.position;
         this->x_.rotation = x_op.rotation;
         this->x_.accel_bias = x_op.accel_bias;
         this->x_.gyro_bias = x_op.gyro_bias;
-        this->x_.velocity = (this->dt_ > 0.0f) ? (this->x_.position - prev_position) / this->dt_ : x_op.velocity;
+        if (this->dt_ > 0.0f) {
+            const Eigen::Vector3f v_fd = (this->x_.position - prev_position) / this->dt_;
+            const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.gyro_bias, x_op.accel_bias});
+            if (c.dt_total > 1e-6) {
+                // a_world = g + R * Delta_v / dt_imu  (gravity self-cancels at rest)
+                const Eigen::Matrix3f R_world_imu_prev = prev_rotation * this->params_.imu.T_imu_to_lidar.rotation();
+                const Eigen::Vector3f a_world = this->params_.imu.preintegration.gravity +
+                                                R_world_imu_prev * c.Delta_v / static_cast<float>(c.dt_total);
+                this->x_.velocity = v_fd + 0.5f * a_world * this->dt_;
+            } else {
+                this->x_.velocity = v_fd;
+            }
+        } else {
+            this->x_.velocity = x_op.velocity;
+        }
         reset_imu_preintegration();
 
         // Fill RegistrationResult for compatibility with submapping
@@ -507,6 +541,11 @@ private:
             this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
         }
 
+        // Initialize state biases from params so preprocess() uses the correct bias
+        // before the first frame's state initialization runs.
+        this->x_.accel_bias = this->params_.imu.bias.accel_bias;
+        this->x_.gyro_bias = this->params_.imu.bias.gyro_bias;
+
         this->clear_total_processing_times();
     }
 
@@ -518,9 +557,9 @@ private:
             const auto imu_buf = this->get_imu_buffer();
             const double scan_start_sec = scan->start_time_ms * 1e-3;
             const Eigen::Matrix3f R_world_imu = this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            algorithms::deskew::deskew_point_cloud_imu(*scan, *scan, imu_buf, scan_start_sec,
-                                                       this->params_.imu.T_imu_to_lidar, this->params_.imu.bias,
-                                                       this->params_.imu.preintegration, R_world_imu);
+            algorithms::deskew::deskew_point_cloud_imu(
+                *scan, *scan, imu_buf, scan_start_sec, this->params_.imu.T_imu_to_lidar,
+                imu::IMUBias{this->x_.gyro_bias, this->x_.accel_bias}, this->params_.imu.preintegration, R_world_imu);
         }
 
         if (this->params_.scan.preprocess.box_filter.enable) {

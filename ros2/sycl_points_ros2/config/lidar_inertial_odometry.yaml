@@ -58,8 +58,8 @@ lidar_inertial_odometry_node:
 
     # IMU noise densities for 15x15 covariance propagation.
     # Set non-zero to enable covariance propagation (required for IMU prior weighting).
-    imu/preintegration/gyro_noise_density: 1.0       # rad/s/sqrt(Hz)
-    imu/preintegration/accel_noise_density: 1.0      # m/s^2/sqrt(Hz)
+    imu/preintegration/gyro_noise_density: 1.0e-2    # rad/s/sqrt(Hz)
+    imu/preintegration/accel_noise_density: 1.0e-3   # m/s^2/sqrt(Hz)
     imu/preintegration/gyro_bias_rw_density: 1.0e-5  # rad/s^2/sqrt(Hz)
     imu/preintegration/accel_bias_rw_density: 1.0e-4 # m/s^3/sqrt(Hz)
 
@@ -131,6 +131,15 @@ lidar_inertial_odometry_node:
     lio/criteria/translation: 1.0e-3  # [m]
     lio/criteria/rotation: 1.0e-6  # [rad]
     lio/invalid_regularization_factor: 1.0e+4
+    # Fixed-sigma floors added to P_initial at each IMU reset.
+    # Prevents H_imu from dominating H_icp when noise_density is set to a small
+    # physical value (accel / gyro).
+    # fd_velocity_sigma: σ_v [m/s]  → P_pred[p,p] ≳ (σ_v × dt)²  ≈ σ_icp²
+    #   rule of thumb: σ_icp / dt  (e.g. 0.01 m / 0.1 s = 0.1 m/s)
+    lio/fd_velocity_sigma: 0.1    # [m/s]
+    # icp_rotation_sigma: σ_rot [rad]  → P_pred[φ,φ] ≳ σ_rot²
+    #   choose so 1/σ_rot² ≲ H_icp[rot,rot]  (≈ 1e4–1e5 → σ ≈ 0.003–0.01 rad)
+    lio/icp_rotation_sigma: 0.01  # [rad]
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/max_iterations is unused; outer loop count is lio/max_iterations.
