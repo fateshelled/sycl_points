@@ -244,8 +244,10 @@ private:
 
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
-    // Cached ICP linearization from the previous frame, used to compute the
-    // adaptive H_icp-based floor in reset_imu_preintegration().
+    // Degenerate-regularized ICP Hessian from the previous frame.
+    // Used for the adaptive P_initial floor in reset_imu_preintegration().
+    // Degenerate directions have large H (λ·vvᵀ added), so H⁻¹ is small →
+    // P_floor is small → H_imu stays bounded where ICP is unobservable.
     algorithms::registration::LinearizedResult last_icp_;
     bool has_last_icp_ = false;
 
@@ -305,19 +307,10 @@ private:
         Eigen::Matrix<float, 15, 15> P_initial = this->P_post_;
 
         if (this->has_last_icp_ && this->dt_ > 0.0f && this->last_icp_.inlier > 0) {
-            // ---------------------------------------------------------------
-            // Adaptive H_icp-based floor.
-            //
-            // P_floor[φ,φ] = α × H_icp[rot,rot]⁻¹
-            //   → H_imu[φ,φ] ≲ (1/α) × H_icp[rot,rot]
-            //
-            // P_floor[v,v] = α × (R × H_icp[t,t] × Rᵀ)⁻¹ / dt²
-            //   → P_pred[p,p] ≳ α × H_icp[t,t]⁻¹  (ICP position accuracy scale)
-            //
-            // In degenerate directions the floor is large (H_icp⁻¹ → ∞),
-            // so H_imu is unconstrained and can compensate where ICP cannot.
-            // Falls back to fixed sigma when the H_icp block is ill-conditioned.
-            // ---------------------------------------------------------------
+            // Adaptive floor: P_floor = α × H_icp⁻¹  →  H_imu ≲ (1/α) × H_icp.
+            // H_icp is degenerate-regularized, so degenerate directions retain a
+            // meaningful scale (λ·vvᵀ added), keeping H_imu appropriately bounded.
+            // Falls back to fixed sigma if the H_icp block is ill-conditioned.
             const float alpha = this->params_.lio.icp_floor_scale;
 
             // Rotation floor
@@ -521,7 +514,7 @@ private:
         } else {
             this->x_.velocity = x_op.velocity;
         }
-        // Cache H_icp for the adaptive floor in the next reset.
+        // Cache degenerate-regularized H_icp for the adaptive P_initial floor.
         this->last_icp_ = last_icp;
         this->has_last_icp_ = true;
         reset_imu_preintegration();
