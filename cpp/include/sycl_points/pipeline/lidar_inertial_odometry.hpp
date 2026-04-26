@@ -223,7 +223,6 @@ public:
         prev_odom_ = odom_;
         odom_ = reg_result_->T;
         last_frame_time_ = timestamp;
-        registrated_ = true;
 
         return ResultType::success;
     }
@@ -242,7 +241,6 @@ private:
     PointCloudShared::Ptr submap_pc_ptr_;
     PointCloudShared::Ptr submap_pc_tmp_;
     bool is_first_frame_ = true;
-    bool registrated_ = false;
 
     algorithms::mapping::VoxelHashMap::Ptr submap_voxel_;
     algorithms::mapping::OccupancyGridMap::Ptr occupancy_grid_;
@@ -268,6 +266,7 @@ private:
     float dt_ = -1.0f;
 
     Parameters params_;
+    Eigen::Isometry3f T_lidar_to_imu_;  // cached inverse of params_.imu.T_imu_to_lidar
 
     // LIO state (LiDAR frame convention)
     imu::State x_;
@@ -308,9 +307,7 @@ private:
     }
 
     void reset_imu_preintegration() {
-        const Eigen::Isometry3f& T_i2l = params_.imu.T_imu_to_lidar;
-        // R_world_imu = R_world_lidar * R_lidar_imu  (T_imu_to_lidar.rotation() = R_lidar_imu)
-        const Eigen::Matrix3f R_world_imu = x_.rotation * T_i2l.rotation();
+        const Eigen::Matrix3f R_world_imu = x_.rotation * params_.imu.T_imu_to_lidar.rotation();
         imu_preintegration_->reset({x_.accel_bias, x_.gyro_bias}, R_world_imu, x_.velocity, P_post_);
     }
 
@@ -414,27 +411,18 @@ private:
             if (imu_valid) {
                 algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
             } else {
-                // IMU factor unavailable (P_pred singular or zero noise densities).
-                // Add weak identity regularization to velocity and bias blocks so the
-                // 15×15 system remains full-rank and ICP can still correct the pose.
-                // The large information value (small σ) keeps v / b near their predicted values.
+                // P_pred is singular: pin velocity and biases to their predicted values so the
+                // 15×15 system stays full-rank and ICP can still correct pose.
                 const float kReg = this->params_.lio.invalid_regularization_factor;
-                lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += kReg * Eigen::Matrix3f::Identity();
-                lio.H.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) +=
-                    kReg * Eigen::Matrix3f::Identity();
-                lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) +=
-                    kReg * Eigen::Matrix3f::Identity();
+                lio.H.block<3, 3>(imu::State::kIdxVel,     imu::State::kIdxVel)     += kReg * Eigen::Matrix3f::Identity();
+                lio.H.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) += kReg * Eigen::Matrix3f::Identity();
+                lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) += kReg * Eigen::Matrix3f::Identity();
             }
 
-            // Solve H·δx = −b and compute P_post = H⁻¹ from the same LDLT.
-            // P_post is saved every iteration; on convergence or at max_iterations
-            // the final value is carried into reset_imu_preintegration() below,
-            // completing the IEKF-style posterior→prior propagation.
-            Eigen::Matrix<float, 15, 1> delta;
-            Eigen::Matrix<float, 15, 15> P_post_candidate;
-            if (!algorithms::lio::solve_ldlt(lio, delta, &P_post_candidate)) break;
+            // P_post = H⁻¹: posterior covariance for IEKF-style bias accumulation.
+            // Reuses the LDLT already factored for delta — negligible extra cost.
+            if (!algorithms::lio::solve_ldlt(lio, delta, &P_post_)) break;
 
-            P_post_ = P_post_candidate;
             x_op = algorithms::lio::retract(x_op, delta);
 
             if (is_lio_converged(delta)) break;
@@ -470,10 +458,11 @@ private:
     // Initialization
     // -------------------------------------------------------------------------
     void initialize() {
+        T_lidar_to_imu_ = params_.imu.T_imu_to_lidar.inverse();
+
         // SYCL queue
         const auto dev = sycl_utils::device_selector::select_device(params_.device.vendor, params_.device.type);
         queue_ptr_ = std::make_shared<sycl_utils::DeviceQueue>(dev);
-        icp_weights_ = std::make_shared<shared_vector<float>>(*queue_ptr_->ptr);
 
         // Point cloud buffers
         preprocessed_pc_.reset(new PointCloudShared(*queue_ptr_));

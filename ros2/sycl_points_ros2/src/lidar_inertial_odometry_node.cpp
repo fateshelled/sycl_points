@@ -135,15 +135,14 @@ void LidarInertialOdometryNode::point_cloud_callback(const sensor_msgs::msg::Poi
         return;
     }
 
-    const auto result = pipeline_->process(scan_pc_, timestamp);
-    if (result >= pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline::ResultType::error) {
-        RCLCPP_WARN(this->get_logger(), "LIO failed: %s", pipeline_->get_error_message().c_str());
-        return;
-    }
-
-    if (result != pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline::ResultType::success &&
-        result != pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline::ResultType::first_frame) {
-        return;
+    {
+        using ResultType = pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline::ResultType;
+        const auto result = pipeline_->process(scan_pc_, timestamp);
+        if (result >= ResultType::error) {
+            RCLCPP_WARN(this->get_logger(), "LIO failed: %s", pipeline_->get_error_message().c_str());
+            return;
+        }
+        if (result != ResultType::success && result != ResultType::first_frame) return;
     }
 
     const auto& header  = msg->header;
