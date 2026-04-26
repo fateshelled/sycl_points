@@ -19,30 +19,29 @@ struct Parameters : public lidar_odometry::Parameters {
         algorithms::registration::RegistrationParams::Criteria criteria;
         /// Regularization factor for velocity and bias when P_pred is singular.
         float invalid_regularization_factor = 1e4f;
-        /// Standard deviation of the finite-difference velocity estimate [m/s].
+        /// Scale factor α for the H_icp-based P_initial floor (dimensionless).
         ///
-        /// Added to the velocity block of the initial covariance at every
-        /// IMU preintegration reset to reflect that finite-difference velocity
-        ///   v = Δp / dt
-        /// has an inherent uncertainty of roughly σ_icp / dt, where σ_icp is
-        /// the ICP position accuracy.  This prevents H_imu from overwhelming
-        /// H_icp in the LIO optimization when accel_noise_density is small,
-        /// because P_pred[p,p] ≈ dt² × fd_velocity_sigma² ≈ σ_icp².
+        /// At each IMU reset, P_initial is augmented by:
+        ///   P_floor[φ,φ] = α × H_icp[rot,rot]⁻¹
+        ///   P_floor[v,v] = α × (R × H_icp[t,t] × Rᵀ)⁻¹ / dt²
         ///
-        /// Typical value: σ_icp / dt  (e.g. 0.01m / 0.1s = 0.1 m/s)
+        /// This ensures H_imu ≲ (1/α) × H_icp in each direction, automatically
+        /// adapting to scene geometry and point density without manual tuning.
+        /// In degenerate directions (H_icp small), the inverse is large so H_imu
+        /// is weakened — allowing the IMU to compensate where ICP cannot.
+        ///
+        ///   α = 1.0  → H_imu ≈ H_icp  (balanced)
+        ///   α > 1.0  → ICP dominates
+        ///   α < 1.0  → IMU can dominate
+        float icp_floor_scale = 1.0f;
+
+        /// Fallback velocity std-dev [m/s] used on the first frame (before H_icp
+        /// is available) and when the H_icp translation block is ill-conditioned.
         float fd_velocity_sigma = 0.1f;
 
-        /// Standard deviation of the ICP rotation estimate [rad].
-        ///
-        /// Added to the rotation block of the initial covariance at every
-        /// IMU preintegration reset, providing the same floor mechanism as
-        /// fd_velocity_sigma does for the position block:
-        ///   P_pred[φ,φ] ≥ icp_rotation_sigma²
-        /// prevents H_imu[φ,φ] from overwhelming H_icp when gyro_noise_density
-        /// is set to a small physical value.
-        ///
-        /// Typical value: ICP angular accuracy in rad (e.g. 0.001 rad ≈ 0.06°)
-        float icp_rotation_sigma = 0.001f;
+        /// Fallback rotation std-dev [rad] used on the first frame (before H_icp
+        /// is available) and when the H_icp rotation block is ill-conditioned.
+        float icp_rotation_sigma = 0.01f;
     };
 
     LIO lio;
