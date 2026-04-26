@@ -29,7 +29,7 @@ public:
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
 
-    Submap(const sycl_utils::DeviceQueue queue, const LidarOdometryParams& params) : queue_(queue) {
+    Submap(const sycl_utils::DeviceQueue& queue, const LidarOdometryParams& params) : queue_(queue) {
         this->keyframe_pc_.reset(new PointCloudShared(this->queue_));
         this->submap_pc_ptr_.reset(new PointCloudShared(this->queue_));
         this->submap_pc_tmp_.reset(new PointCloudShared(this->queue_));
