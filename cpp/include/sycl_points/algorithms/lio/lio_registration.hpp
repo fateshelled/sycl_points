@@ -124,17 +124,6 @@ inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<floa
 
 /// @brief Solve the combined LIO normal equation H·δx = −b with LDLT.
 ///
-/// Uses Eigen's Bunch-Kaufman LDLT, which is robust for positive semi-definite
-/// matrices and detects numerical failures via vectorD().minCoeff().
-///
-/// @param[in]  lio_result  Combined LIO Hessian/gradient.
-/// @param[out] delta       15-D state update δx on success; zero on failure.
-/// @return true on success; false if H is ill-conditioned.
-/// Optionally computes the posterior covariance P_post = H⁻¹.  Passing this
-/// as the initial_covariance of the next IMUPreintegration::reset() enables
-/// IEKF-style bias accumulation: P_post[ba,ba] and P_post[bg,bg] decrease
-/// over frames, yielding increasingly precise bias corrections.
-///
 /// @param[in]  lio_result  Combined LIO Hessian/gradient.
 /// @param[out] delta       15-D state update δx on success; zero on failure.
 /// @param[out] P_post      Posterior covariance H⁻¹ (optional, pass nullptr to skip).
