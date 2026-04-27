@@ -5,7 +5,6 @@
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/feature/photometric_gradient.hpp"
-#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
@@ -215,11 +214,8 @@ private:
                     *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             } else if (this->submap_pc_ptr_->has_intensity()) {
                 ensure_knn();
-                knn_events.wait_and_throw();
-                const float sigma_min = this->reg_params_.pipeline.registration.photometric.zscore_sigma_min;
-                algorithms::intensity_zscore::compute(*this->submap_pc_ptr_, this->knn_result_, sigma_min);
                 grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
-                    *this->submap_pc_ptr_, this->knn_result_);
+                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             }
         }
         grad_events.wait_and_throw();
