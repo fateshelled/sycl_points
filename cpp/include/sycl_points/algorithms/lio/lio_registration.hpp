@@ -234,6 +234,40 @@ inline Eigen::Matrix<float, 15, 15> transform_covariance_imu_to_lidar(const Eige
     return J * P_imu * J.transpose();
 }
 
+/// @brief Transform LiDAR error-state covariance back to IMU error-state (inverse of imu_to_lidar).
+///
+///   P_imu = J⁻¹ · P_lidar · J⁻ᵀ
+///
+/// J has the block structure  [I  A  0; 0  C  0; 0  0  I₉]  (position/rotation rows only),
+/// so its analytical inverse is  [I  -A·C⁻¹  0; 0  C⁻¹  0; 0  0  I₉].
+///
+/// Use this to convert P_post (LiDAR frame, output of solve_ldlt) back to IMU frame
+/// before passing it as initial_covariance to IMUPreintegration::reset().
+///
+/// @param P_lidar         15×15 covariance in the LiDAR error-state frame.
+/// @param T_imu_to_lidar  Extrinsic.
+/// @param R_world_lidar   Current LiDAR rotation from the LIO state.
+/// @return 15×15 covariance expressed in the IMU error-state frame.
+inline Eigen::Matrix<float, 15, 15> transform_covariance_lidar_to_imu(const Eigen::Matrix<float, 15, 15>& P_lidar,
+                                                                      const Eigen::Isometry3f& T_imu_to_lidar,
+                                                                      const Eigen::Matrix3f& R_world_lidar) {
+    // J⁻¹ shares the same sparsity pattern as J with:
+    //   J⁻¹[φ, φ] = R_imu_lidar  (= R_lidar_imu^T)
+    //   J⁻¹[p, φ] = R_world_imu · skew(t_lidar_in_imu) · R_imu_lidar
+    Eigen::Matrix<float, 15, 15> Jinv = Eigen::Matrix<float, 15, 15>::Identity();
+
+    const Eigen::Matrix3f R_lidar_imu = T_imu_to_lidar.rotation();
+    const Eigen::Matrix3f R_imu_lidar = R_lidar_imu.transpose();
+    const Eigen::Vector3f t_lidar_in_imu = T_imu_to_lidar.inverse().translation();
+    const Eigen::Matrix3f R_world_imu = R_world_lidar * R_lidar_imu;
+
+    Jinv.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) = R_imu_lidar;
+    Jinv.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) =
+        R_world_imu * eigen_utils::lie::skew(t_lidar_in_imu) * R_imu_lidar;
+
+    return Jinv * P_lidar * Jinv.transpose();
+}
+
 }  // namespace lio
 }  // namespace algorithms
 }  // namespace sycl_points
