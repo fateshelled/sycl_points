@@ -401,7 +401,7 @@ public:
             });
         });
 
-        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
             const uint32_t final_count = counter.at(0);
             result.resize_points(final_count);
             if (this->has_cov_data_) {
@@ -778,7 +778,7 @@ private:
             }
         });
 
-        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
             if (failure_flag.at(0) != 0U) {
                 std::cerr << "Could not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
                 // throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
@@ -1242,7 +1242,7 @@ private:
             }
         });
 
-        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
             this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
         });
         host_event.wait_and_throw();
@@ -1351,7 +1351,7 @@ private:
         });
 
         size_t expected_voxel_visits = 0;
-        auto expected_voxel_event = sycl_utils::submit_host_task(*this->queue_.ptr, {estimate_event}, [&]() {
+        auto expected_voxel_event = sycl_utils::submit_host_task(*this->queue_.ptr, {estimate_event}, [&]() {  //
             expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0));
         });
         expected_voxel_event.wait_and_throw();
@@ -1449,21 +1449,22 @@ private:
                 }
 
                 // Mirror the visibility traversal so that free-space updates exclude the hit voxel.
-                traverse_ray_exclusive_impl(sensor_x, sensor_y, sensor_z, world_x, world_y, world_z, inv_voxel_size,
-                                            [=](int64_t grid_x, int64_t grid_y, int64_t grid_z) {
-                                                uint64_t key = VoxelConstants::invalid_coord;
-                                                if (!grid_to_key_device(grid_x, grid_y, grid_z, key)) {
-                                                    return true;
-                                                }
+                traverse_ray_exclusive_impl(  //
+                    sensor_x, sensor_y, sensor_z, world_x, world_y, world_z, inv_voxel_size,
+                    [=](int64_t grid_x, int64_t grid_y, int64_t grid_z) {
+                        uint64_t key = VoxelConstants::invalid_coord;
+                        if (!grid_to_key_device(grid_x, grid_y, grid_z, key)) {
+                            return true;
+                        }
 
-                                                // Accumulate a miss observation for the current voxel on the device.
-                                                accumulate_miss(key);
-                                                return true;
-                                            });
+                        // Accumulate a miss observation for the current voxel on the device.
+                        accumulate_miss(key);
+                        return true;
+                    });
             });
         });
 
-        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
             this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
         });
         host_event.wait_and_throw();
@@ -1536,7 +1537,7 @@ private:
                 counter += 1U;
             });
         });
-        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
             this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
         });
         host_event.wait_and_throw();
@@ -1638,7 +1639,7 @@ private:
             });
         });
 
-        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {
+        auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
             const uint32_t final_count = counter.at(0);
             result.resize_points(final_count);
             if (this->has_cov_data_) {
