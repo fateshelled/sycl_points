@@ -106,7 +106,8 @@ protected:
 
     std::string points_topic_ = "points";
     bool input_convert_rgb_ = true;
-    bool input_convert_intensity_ = true;
+    bool input_convert_intensity_ = false;
+    bool input_use_reflectivity_as_intensity = true;
 
     // ROS2/TF frame parameters
     std::string odom_frame_id_ = "odom";

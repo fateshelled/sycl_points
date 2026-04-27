@@ -87,7 +87,8 @@ protected:
     std::string points_topic_ = "points";
     std::string imu_topic_ = "imu/data";
     bool input_convert_rgb_ = true;
-    bool input_convert_intensity_ = true;
+    bool input_convert_intensity_ = false;
+    bool input_use_reflectivity_as_intensity = true;
 
     std::string odom_frame_id_ = "odom";
     std::string base_link_id_ = "base_link";
