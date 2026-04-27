@@ -47,6 +47,7 @@ struct RegistrationParams {
         bool enable = false;  // If true, use photometric term.
         float weight = 0.2f;  // Scaling factor to balance photometric error with geometric error
         float robust_scale = 5.0f;
+        float zscore_sigma_min = 0.01f;  // Points with local σ below this are set to z=0 (flat region)
     };
     struct GenZ {
         float planarity_threshold = 0.2f;
