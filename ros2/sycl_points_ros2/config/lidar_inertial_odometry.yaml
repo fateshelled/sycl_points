@@ -73,6 +73,7 @@ lidar_inertial_odometry_node:
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
     input/convert_intensity: false
+    input/use_reflectivity_as_intensity: true
 
     # Scan PointCloud preprocessing
     scan/preprocess/box_filter/enable: true
