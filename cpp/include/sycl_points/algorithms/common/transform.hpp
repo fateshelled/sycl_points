@@ -111,16 +111,35 @@ inline PointCloudShared transform_copy(const PointCloudShared& cloud, const Tran
         return *ret;
     }
 
+    const size_t N = cloud.size();
     sycl_utils::events events;
+
+    events += cloud.queue.ptr->memcpy(ret->points_ptr(), cloud.points_ptr(), N * sizeof(PointType));
+
     if (cloud.has_cov()) {
-        ret->resize_covs(cloud.size());
-        events += cloud.queue.ptr->submit([&](sycl::handler& h) {
-            const auto covs = cloud.covs_ptr();
-            const auto output_covs = ret->covs_ptr();
-            h.memcpy(output_covs, covs, cloud.size() * sizeof(Covariance));
-        });
+        ret->resize_covs(N);
+        events += cloud.queue.ptr->memcpy(ret->covs_ptr(), cloud.covs_ptr(), N * sizeof(Covariance));
     }
-    events += cloud.queue.ptr->memcpy(ret->points_ptr(), cloud.points_ptr(), cloud.size() * sizeof(PointType));
+    if (cloud.has_normal()) {
+        ret->resize_normals(N);
+        events += cloud.queue.ptr->memcpy(ret->normals_ptr(), cloud.normals_ptr(), N * sizeof(Normal));
+    }
+    if (cloud.has_intensity()) {
+        ret->resize_intensities(N);
+        events += cloud.queue.ptr->memcpy(ret->intensities_ptr(), cloud.intensities_ptr(), N * sizeof(float));
+    }
+    if (cloud.has_rgb()) {
+        ret->resize_rgb(N);
+        events += cloud.queue.ptr->memcpy(ret->rgb_ptr(), cloud.rgb_ptr(), N * sizeof(RGBType));
+    }
+    if (cloud.has_timestamps()) {
+        ret->resize_timestamps(N);
+        events += cloud.queue.ptr->memcpy(ret->timestamp_offsets_ptr(), cloud.timestamp_offsets_ptr(),
+                                          N * sizeof(TimestampOffset));
+        ret->start_time_ms = cloud.start_time_ms;
+        ret->end_time_ms = cloud.end_time_ms;
+    }
+
     events.wait();
 
     transform(*ret, trans);
@@ -141,6 +160,12 @@ inline void transform_cpu(PointCloudShared& cloud, const TransformMatrix& trans)
         const TransformMatrix trans_T = trans.transpose();
         for (size_t i = 0; i < N; ++i) {
             (*cloud.covs)[i] = trans * (*cloud.covs)[i] * trans_T;
+        }
+    }
+    if (cloud.has_normal()) {
+        const Eigen::Matrix3f R = trans.block<3, 3>(0, 0);
+        for (size_t i = 0; i < N; ++i) {
+            (*cloud.normals)[i].head<3>() = (R * (*cloud.normals)[i].head<3>()).normalized();
         }
     }
 }
