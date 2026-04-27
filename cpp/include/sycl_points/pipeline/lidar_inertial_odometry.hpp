@@ -254,11 +254,10 @@ private:
     float dt_ = -1.0f;
 
     Parameters params_;
-    Eigen::Isometry3f T_lidar_to_imu_;  // cached inverse of params_.imu.T_imu_to_lidar
 
     // LIO state (LiDAR frame convention)
     imu::State x_;
-    // Posterior covariance passed as initial covariance to the next IMU reset window.
+    // Posterior covariance passed as initial covariance to the next IMU reset window. (LiDAR frame)
     Eigen::Matrix<float, 15, 15> P_post_ = Eigen::Matrix<float, 15, 15>::Zero();
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
@@ -308,9 +307,15 @@ private:
         const float sr2 = this->params_.lio.icp_rotation_sigma * this->params_.lio.icp_rotation_sigma;
         P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
 
+        // P_post_ is in LiDAR error-state frame; IMUPreintegration expects IMU body frame.
+        // Convert before passing so that get_raw().covariance → transform_covariance_imu_to_lidar
+        // yields the correct P_pred_lidar without double-transformation.
+        const Eigen::Matrix<float, 15, 15> P_initial_imu = algorithms::lio::transform_covariance_lidar_to_imu(
+            P_initial, this->params_.imu.T_imu_to_lidar, this->x_.rotation);
+
         this->imu_preintegration_->reset(               //
             {this->x_.gyro_bias, this->x_.accel_bias},  //
-            R_world_imu, this->x_.velocity, P_initial);
+            R_world_imu, this->x_.velocity, P_initial_imu);
     }
 
     /// @brief Predict the full 15-DOF state from IMU preintegration.
@@ -486,8 +491,6 @@ private:
     // Initialization
     // -------------------------------------------------------------------------
     void initialize() {
-        this->T_lidar_to_imu_ = this->params_.imu.T_imu_to_lidar.inverse();
-
         // SYCL queue
         const auto dev =
             sycl_utils::device_selector::select_device(this->params_.device.vendor, this->params_.device.type);
