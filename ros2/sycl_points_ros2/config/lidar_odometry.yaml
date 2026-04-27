@@ -156,8 +156,9 @@ lidar_odometry_node:
     registration/robust/min_scale: 1.25
 
     registration/photometric/enable: false
-    registration/photometric/weight: 0.2        # Scaling factor to balance photometric error with geometric error
-    registration/photometric/robust_scale: 5.0  # Robust kernel is same as registration/robust/type
+    registration/photometric/weight: 0.2             # Scaling factor to balance photometric error with geometric error
+    registration/photometric/robust_scale: 5.0       # Robust kernel is same as registration/robust/type
+    registration/photometric/zscore_sigma_min: 0.01  # Points with local σ below this are set to z=0 (flat region)
 
     registration/rotation_constraint/enable: true            # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
                                                              # If enable rotation_constraint, recommended optimization_method is LM
