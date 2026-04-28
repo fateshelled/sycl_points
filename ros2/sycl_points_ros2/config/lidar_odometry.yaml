@@ -83,6 +83,9 @@ lidar_odometry_node:
     scan/intensity_correction/min_intensity: 0.0
     scan/intensity_correction/max_intensity: 100.0
 
+    scan/intensity_zscore/enable: true
+    scan/intensity_zscore/sigma_min: 0.0  # Points with local σ below this are set to z=0 (flat region)
+
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
     scan/downsampling/polar/enable: true
@@ -158,7 +161,6 @@ lidar_odometry_node:
     registration/photometric/enable: false
     registration/photometric/weight: 0.2             # Scaling factor to balance photometric error with geometric error
     registration/photometric/robust_scale: 5.0       # Robust kernel is same as registration/robust/type
-    registration/photometric/zscore_sigma_min: 0.0   # Points with local σ below this are set to z=0 (flat region)
 
     registration/rotation_constraint/enable: true            # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
                                                              # If enable rotation_constraint, recommended optimization_method is LM
