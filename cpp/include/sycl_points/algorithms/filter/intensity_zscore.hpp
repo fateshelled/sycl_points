@@ -13,6 +13,7 @@ namespace kernel {
 /// @brief Compute intensity z-score for one point using its KNN neighborhood.
 ///        Uses the one-pass variance formula: Var = E[X²] - E[X]²
 ///        Returns 0 if the local standard deviation is below sigma_min (flat region).
+///        sigma_min must be specified in the same units as the intensity values.
 SYCL_EXTERNAL inline float compute_zscore(const float* intensities, const int32_t* index_ptr, size_t k, size_t i,
                                           float sigma_min) {
     float sum_I = 0.0f;
@@ -36,6 +37,7 @@ SYCL_EXTERNAL inline float compute_zscore(const float* intensities, const int32_
 ///        Uses a temporary buffer to avoid read/write race conditions.
 ///        After this call, cloud.intensities contains z-score values.
 ///        Call before intensity gradient computation so gradients represent ∇z.
+/// @param sigma_min  Minimum σ threshold in the same units as the intensity values.
 inline void compute(PointCloudShared& cloud, const knn::KNNResult& neighbors, float sigma_min = 0.01f) {
     const size_t N = cloud.size();
     if (N == 0) return;
