@@ -18,15 +18,18 @@ namespace deskew {
 /// @brief Deskew a point cloud assuming constant body velocity between two poses.
 ///
 /// Points are transformed from the sensor frame at their sampling time into the
-/// frame of @p previous_relative_pose, compensating both rotation and
+/// frame of @p current_relative_pose, compensating both rotation and
 /// translation. Normals, covariances, and photometric gradients are rotated
 /// using the angular velocity model to keep them aligned with the deskewed
 /// points.
+/// The body-frame velocity is estimated from the motion between
+/// @p previous_relative_pose and @p current_relative_pose and then
+/// extrapolated over each point's per-point timestamp offset.
 /// @param input_cloud Point cloud with timestamps. The data in this cloud is modified during in-place operation (i.e.
 /// `&input_cloud == &output_cloud`).
 /// @param output_cloud Point cloud receiving the deskewed data. Containers will be resized as needed.
-/// @param previous_relative_pose Relative pose at the start of the scan interval.
-/// @param current_relative_pose Relative pose at the end of the scan interval.
+/// @param previous_relative_pose Sensor pose at the previous scan's reference time (used to derive body velocity).
+/// @param current_relative_pose Sensor pose at the current scan's reference time (output reference frame).
 /// @param inter_scan_duration_seconds Time between the two pose estimates in seconds (i.e. the inter-scan period).
 ///        When <= 0, falls back to deriving the duration from the point cloud's own start/end timestamps.
 /// @return true when deskewing succeeds, false if prerequisites are not met.
@@ -162,7 +165,7 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
                     return;
                 }
 
-                // Normalize with respect to the scan duration derived from the point cloud timestamps.
+                // Normalize the per-point offset against the inter-scan duration to get τ ∈ [0, 1].
                 const float normalized_time = sycl::clamp(timestamp_seconds / scan_duration_seconds, 0.0f, 1.0f);
 
                 Eigen::Vector<float, 6> scaled_twist;
