@@ -47,7 +47,6 @@ struct RegistrationParams {
         bool enable = false;  // If true, use photometric term.
         float weight = 0.2f;  // Scaling factor to balance photometric error with geometric error
         float robust_scale = 5.0f;
-        float zscore_sigma_min = 0.01f;  // Points with local σ below this are set to z=0 (flat region)
     };
     struct GenZ {
         float planarity_threshold = 0.2f;
@@ -83,9 +82,9 @@ struct RegistrationParams {
     };
 
     struct AndersonAcceleration {
-        bool enabled = false;     // If true, apply Anderson acceleration to the outer iteration
-        size_t window_size = 5;   // History window size m (Anderson(m))
-        float beta = 1.0f;        // Mixing parameter: 1.0 = pure Anderson acceleration
+        bool enabled = false;    // If true, apply Anderson acceleration to the outer iteration
+        size_t window_size = 5;  // History window size m (Anderson(m))
+        float beta = 1.0f;       // Mixing parameter: 1.0 = pure Anderson acceleration
     };
 
     RegType reg_type = RegType::GICP;          // Registration Type

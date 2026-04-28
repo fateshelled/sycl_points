@@ -614,8 +614,7 @@ private:
         const bool needs_covs = (reg_type == algorithms::registration::RegType::GICP ||
                                  this->params_.registration.pipeline.registration.rotation_constraint.enable ||
                                  this->params_.scan.preprocess.angle_incidence_filter.enable);
-        const bool needs_zscore = this->params_.registration.pipeline.registration.photometric.enable &&
-                                  this->preprocessed_pc_->has_intensity();
+        const bool needs_zscore = this->params_.scan.intensity_zscore.enable && this->preprocessed_pc_->has_intensity();
 
         if (!needs_covs && !needs_zscore) return;
 
@@ -639,8 +638,8 @@ private:
         events.wait_and_throw();
 
         if (needs_zscore) {
-            const float sigma_min = this->params_.registration.pipeline.registration.photometric.zscore_sigma_min;
-            algorithms::intensity_zscore::compute(*this->preprocessed_pc_, this->knn_result_, sigma_min);
+            algorithms::intensity_zscore::compute(*this->preprocessed_pc_, this->knn_result_,
+                                                  this->params_.scan.intensity_zscore.sigma_min);
         }
     }
 

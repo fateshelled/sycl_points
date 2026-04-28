@@ -8,8 +8,8 @@
 #include "sycl_points/algorithms/deskew/imu_deskew.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
-#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
+#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
@@ -481,14 +481,13 @@ private:
             (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GICP ||
              this->params_.registration.pipeline.registration.rotation_constraint.enable ||
              this->params_.scan.preprocess.angle_incidence_filter.enable);
-        const bool needs_zscore = this->params_.registration.pipeline.registration.photometric.enable &&
-                                  this->preprocessed_pc_->has_intensity();
+        const bool needs_zscore = this->params_.scan.intensity_zscore.enable && this->preprocessed_pc_->has_intensity();
 
         if (!needs_covs && !needs_zscore) return;
 
         const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
-        auto events = src_tree->knn_search_async(
-            *this->preprocessed_pc_, this->params_.covariance_estimation.neighbor_num, this->knn_result_);
+        auto events = src_tree->knn_search_async(*this->preprocessed_pc_,
+                                                 this->params_.covariance_estimation.neighbor_num, this->knn_result_);
 
         if (needs_covs) {
             if (this->params_.covariance_estimation.m_estimation.enable) {
@@ -506,9 +505,8 @@ private:
         events.wait_and_throw();
 
         if (needs_zscore) {
-            const float sigma_min =
-                this->params_.registration.pipeline.registration.photometric.zscore_sigma_min;
-            algorithms::intensity_zscore::compute(*this->preprocessed_pc_, this->knn_result_, sigma_min);
+            algorithms::intensity_zscore::compute(*this->preprocessed_pc_, this->knn_result_,
+                                                  this->params_.scan.intensity_zscore.sigma_min);
         }
     }
 

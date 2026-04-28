@@ -6,9 +6,9 @@
 #include <stdexcept>
 #include <string>
 
+#include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
-#include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 
 namespace sycl_points {
@@ -100,7 +100,13 @@ struct Parameters {
             AngleIncidenceFilter angle_incidence_filter;
         };
 
+        struct IntensityZScore {
+            bool enable = false;
+            float sigma_min = 0.0f;  // Points with local σ below this are set to z=0 (flat region)
+        };
+
         IntensityCorrection intensity_correction;
+        IntensityZScore intensity_zscore;
         Downsampling downsampling;
         Preprocess preprocess;
     };
