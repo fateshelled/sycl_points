@@ -114,7 +114,8 @@ public:
     }
 
     /// @brief validate parameters
-    void validate_params(const PointCloudShared& source, const PointCloudShared& target, RegistrationParams & params) const {
+    void validate_params(const PointCloudShared& source, const PointCloudShared& target,
+                         RegistrationParams& params) const {
         if (params.reg_type == RegType::POINT_TO_PLANE) {
             if (!target.has_normal()) {
                 if (!target.has_cov()) {
@@ -319,7 +320,7 @@ public:
                                                 ? options.rotation_robust_scale
                                                 : this->params_.rotation_constraint.robust.default_scale;
         auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, pose);
-        const auto raw  = this->linearize(source, target, pose, robust_scale, rotation_robust_scale, knn_event.evs);
+        const auto raw = this->linearize(source, target, pose, robust_scale, rotation_robust_scale, knn_event.evs);
         return this->degenerate_reg_.regularize(raw, Eigen::Isometry3f(pose), Eigen::Isometry3f(initial_pose));
     }
 

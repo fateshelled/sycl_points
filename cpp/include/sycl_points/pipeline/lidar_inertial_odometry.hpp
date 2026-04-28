@@ -9,8 +9,8 @@
 
 #include "sycl_points/algorithms/deskew/imu_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
-#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
+#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
@@ -433,7 +433,10 @@ private:
             // P_post = H⁻¹: posterior covariance for IEKF-style bias accumulation.
             // Reuses the LDLT already factored for delta — negligible extra cost.
             Eigen::Matrix<float, 15, 1> delta;
-            if (!algorithms::lio::solve_ldlt(lio, delta, &this->P_post_)) break;
+            const float lambda = this->params_.registration.pipeline.registration.gn.lambda;
+            if (!algorithms::lio::solve_ldlt(lio.H + lambda * Eigen::Matrix<float, 15, 15>::Identity(), lio.b, delta,
+                                             &this->P_post_))
+                break;
 
             x_op = algorithms::lio::retract(x_op, delta);
 
@@ -608,10 +611,9 @@ private:
 
     void compute_covariances() {
         const auto reg_type = params_.registration.pipeline.registration.reg_type;
-        const bool needs_covs =
-            (reg_type == algorithms::registration::RegType::GICP ||
-             this->params_.registration.pipeline.registration.rotation_constraint.enable ||
-             this->params_.scan.preprocess.angle_incidence_filter.enable);
+        const bool needs_covs = (reg_type == algorithms::registration::RegType::GICP ||
+                                 this->params_.registration.pipeline.registration.rotation_constraint.enable ||
+                                 this->params_.scan.preprocess.angle_incidence_filter.enable);
         const bool needs_zscore = this->params_.registration.pipeline.registration.photometric.enable &&
                                   this->preprocessed_pc_->has_intensity();
 
@@ -637,8 +639,7 @@ private:
         events.wait_and_throw();
 
         if (needs_zscore) {
-            const float sigma_min =
-                this->params_.registration.pipeline.registration.photometric.zscore_sigma_min;
+            const float sigma_min = this->params_.registration.pipeline.registration.photometric.zscore_sigma_min;
             algorithms::intensity_zscore::compute(*this->preprocessed_pc_, this->knn_result_, sigma_min);
         }
     }
