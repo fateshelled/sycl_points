@@ -581,7 +581,7 @@ private:
             if (this->params_.registration.pipeline.velocity_update.enable &&  //
                 !this->is_imu_deskew_enabled()) {
                 algorithms::deskew::deskew_point_cloud_constant_velocity(
-                    *this->preprocessed_pc_, *this->preprocessed_pc_, this->odom_, reg_result.T);
+                    *this->preprocessed_pc_, *this->preprocessed_pc_, this->odom_, reg_result.T, this->dt_);
             }
             cloud_ptr = this->preprocessed_pc_.get();
         }
