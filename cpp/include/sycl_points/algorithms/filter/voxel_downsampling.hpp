@@ -104,6 +104,13 @@ private:
 
     shared_vector_ptr<uint64_t> bit_ptr_ = nullptr;
 
+    // Work buffers reused across calls to avoid per-frame heap allocation.
+    std::vector<PointType> work_points_;
+    std::vector<RGBType> work_rgb_;
+    std::vector<float> work_intensities_;
+    std::vector<float> work_timestamps_;
+    std::vector<float> work_intensity_values_;
+
     void compute_voxel_bit(const PointContainerShared& points) {
         const size_t N = points.size();
 
@@ -172,15 +179,17 @@ private:
     }
 
     void sorted_voxel_indices_to_cloud(const PointContainerShared& points, const std::vector<size_t>& sorted_indices,
-                                       PointContainerShared& result) const {
+                                       PointContainerShared& result) {
         const size_t N = sorted_indices.size();
-        result.clear();
-        result.reserve(N);
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
 
         // mem_advise set to host
         this->queue_.set_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
 
+        // Accumulate into a reused work buffer so that in-place calls (points == result) are safe
+        // and per-frame heap allocation is avoided.
+        work_points_.clear();
+        work_points_.reserve(N);
         size_t group_begin = 0;
         while (group_begin < N) {
             const auto key = (*this->bit_ptr_)[sorted_indices[group_begin]];
@@ -192,83 +201,90 @@ private:
                 ++group_end;
             }
 
-            const auto point_count = point_sum.w();
-            if (point_count >= min_voxel_count) {
-                result.push_back(point_sum / point_count);
+            if (point_sum.w() >= min_voxel_count) {
+                work_points_.push_back(point_sum / point_sum.w());
             }
             group_begin = group_end;
         }
 
         // mem_advise clear
         this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
+
+        result.clear();
+        result.reserve(work_points_.size());
+        for (const auto& p : work_points_) {
+            result.push_back(p);
+        }
     }
 
     void sorted_voxel_indices_to_cloud(const PointCloudShared& cloud, const std::vector<size_t>& sorted_indices,
-                                       PointCloudShared& result) const {
+                                       PointCloudShared& result) {
         const size_t N = sorted_indices.size();
         const bool has_rgb = cloud.has_rgb();
         const bool has_intensity = cloud.has_intensity();
         const bool has_timestamp = cloud.has_timestamps();
-        result.clear();
-        result.reserve_points(N);
-        if (has_rgb) {
-            result.reserve_rgb(N);
-        }
-        if (has_intensity) {
-            result.reserve_intensities(N);
-        }
-        if (has_timestamp) {
-            result.reserve_timestamps(N);
-        }
 
         // mem_advise set to host
         this->queue_.set_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
 
+        // Accumulate into reused work buffers so that in-place calls (cloud == result) are safe
+        // and per-frame heap allocation is avoided.
+        work_points_.clear();
+        work_rgb_.clear();
+        work_intensities_.clear();
+        work_timestamps_.clear();
+        work_points_.reserve(N);
+        if (has_rgb) work_rgb_.reserve(N);
+        if (has_intensity) work_intensities_.reserve(N);
+        if (has_timestamp) work_timestamps_.reserve(N);
+
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
         size_t group_begin = 0;
-        std::vector<float> intensity_values;
         while (group_begin < N) {
             const auto key = (*this->bit_ptr_)[sorted_indices[group_begin]];
             PointType point_sum = PointType::Zero();
             RGBType rgb_sum = RGBType::Zero();
             float timestamp_sum = 0.0f;
-            intensity_values.clear();
+            work_intensity_values_.clear();
 
             size_t group_end = group_begin;
             while (group_end < N && (*this->bit_ptr_)[sorted_indices[group_end]] == key) {
                 const size_t idx = sorted_indices[group_end];
                 point_sum += (*cloud.points)[idx];
-                if (has_rgb) {
-                    rgb_sum += (*cloud.rgb)[idx];
-                }
-                if (has_intensity) {
-                    intensity_values.push_back((*cloud.intensities)[idx]);
-                }
-                if (has_timestamp) {
-                    timestamp_sum += (*cloud.timestamp_offsets)[idx];
-                }
+                if (has_rgb) rgb_sum += (*cloud.rgb)[idx];
+                if (has_intensity) work_intensity_values_.push_back((*cloud.intensities)[idx]);
+                if (has_timestamp) timestamp_sum += (*cloud.timestamp_offsets)[idx];
                 ++group_end;
             }
 
             const auto point_count = point_sum.w();
             if (point_count >= min_voxel_count) {
-                result.points->emplace_back(point_sum / point_count);
-                if (has_rgb) {
-                    result.rgb->emplace_back(rgb_sum / point_count);
-                }
-                if (has_intensity) {
-                    // Use the median intensity as a robust representative value for the voxel.
-                    result.intensities->emplace_back(compute_median(intensity_values));
-                }
-                if (has_timestamp) {
-                    result.timestamp_offsets->emplace_back(timestamp_sum / point_count);
-                }
+                work_points_.emplace_back(point_sum / point_count);
+                if (has_rgb) work_rgb_.emplace_back(rgb_sum / point_count);
+                if (has_intensity) work_intensities_.emplace_back(compute_median(work_intensity_values_));
+                if (has_timestamp) work_timestamps_.emplace_back(timestamp_sum / point_count);
             }
             group_begin = group_end;
         }
 
         // mem_advise clear
         this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
+
+        result.clear();
+        result.reserve_points(work_points_.size());
+        for (const auto& p : work_points_) result.points->emplace_back(p);
+        if (has_rgb) {
+            result.reserve_rgb(work_rgb_.size());
+            for (const auto& c : work_rgb_) result.rgb->emplace_back(c);
+        }
+        if (has_intensity) {
+            result.reserve_intensities(work_intensities_.size());
+            for (const auto& v : work_intensities_) result.intensities->emplace_back(v);
+        }
+        if (has_timestamp) {
+            result.reserve_timestamps(work_timestamps_.size());
+            for (const auto& t : work_timestamps_) result.timestamp_offsets->emplace_back(t);
+        }
     }
 };
 
