@@ -462,11 +462,10 @@ private:
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
         // If velocity update is disabled, get the registration input point cloud.
         const auto reg_pc_ptr = this->registration_pipeline_->get_deskewed_point_cloud();
-        const PointCloudShared* cloud_ptr = nullptr;
         bool computed_icp_weights = false;
         if (reg_pc_ptr) {
             const size_t total_samples = this->params_.submap.point_random_sampling_num;
-            cloud_ptr = reg_pc_ptr;
+            *this->preprocessed_pc_ = *reg_pc_ptr;
             if (reg_pc_ptr->size() > total_samples) {
                 // Robust ICP weighted mixed random sampling
                 const auto robust_auto_scale = this->params_.registration.pipeline.robust.auto_scale;
@@ -484,14 +483,14 @@ private:
                 algorithms::deskew::deskew_point_cloud_constant_velocity(
                     *this->preprocessed_pc_, *this->preprocessed_pc_, this->odom_, reg_result.T, this->dt_);
             }
-            cloud_ptr = this->preprocessed_pc_.get();
         }
         const float inlier_ratio = this->registration_pipeline_->get_inlier_ratio(reg_result);
 
         if (computed_icp_weights) {
-            return this->submap_->add_frame(*cloud_ptr, reg_result, inlier_ratio, timestamp, this->icp_weights_);
+            return this->submap_->add_frame(*this->preprocessed_pc_, reg_result, inlier_ratio, timestamp,
+                                            this->icp_weights_);
         }
-        return this->submap_->add_frame(*cloud_ptr, reg_result, inlier_ratio, timestamp);
+        return this->submap_->add_frame(*this->preprocessed_pc_, reg_result, inlier_ratio, timestamp);
     }
 };
 
