@@ -9,6 +9,7 @@
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
+#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
@@ -476,25 +477,36 @@ private:
     }
 
     void compute_covariances() {
-        if (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GICP ||
-            this->params_.registration.pipeline.registration.rotation_constraint.enable ||
-            this->params_.scan.preprocess.angle_incidence_filter.enable) {
-            // build KDTree
-            const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
-            auto events = src_tree->knn_search_async(
-                *this->preprocessed_pc_, this->params_.covariance_estimation.neighbor_num, this->knn_result_);
+        const bool needs_covs =
+            (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GICP ||
+             this->params_.registration.pipeline.registration.rotation_constraint.enable ||
+             this->params_.scan.preprocess.angle_incidence_filter.enable);
+        const bool needs_zscore = this->params_.scan.intensity_zscore.enable && this->preprocessed_pc_->has_intensity();
+
+        if (!needs_covs && !needs_zscore) return;
+
+        const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
+        auto events = src_tree->knn_search_async(*this->preprocessed_pc_,
+                                                 this->params_.covariance_estimation.neighbor_num, this->knn_result_);
+
+        if (needs_covs) {
             if (this->params_.covariance_estimation.m_estimation.enable) {
                 events += algorithms::covariance::compute_covariances_with_m_estimation_async(
                     this->knn_result_, *this->preprocessed_pc_, this->params_.covariance_estimation.m_estimation.type,
                     this->params_.covariance_estimation.m_estimation.mad_scale,
                     this->params_.covariance_estimation.m_estimation.min_robust_scale,
                     this->params_.covariance_estimation.m_estimation.max_iterations, events.evs);
-
             } else {
                 events += algorithms::covariance::compute_covariances_async(this->knn_result_, *this->preprocessed_pc_,
                                                                             events.evs);
             }
-            events.wait_and_throw();
+        }
+
+        events.wait_and_throw();
+
+        if (needs_zscore) {
+            algorithms::intensity_zscore::compute(*this->preprocessed_pc_, this->knn_result_,
+                                                  this->params_.scan.intensity_zscore.sigma_min);
         }
     }
 
@@ -569,7 +581,7 @@ private:
             if (this->params_.registration.pipeline.velocity_update.enable &&  //
                 !this->is_imu_deskew_enabled()) {
                 algorithms::deskew::deskew_point_cloud_constant_velocity(
-                    *this->preprocessed_pc_, *this->preprocessed_pc_, this->odom_, reg_result.T);
+                    *this->preprocessed_pc_, *this->preprocessed_pc_, this->odom_, reg_result.T, this->dt_);
             }
             cloud_ptr = this->preprocessed_pc_.get();
         }

@@ -49,10 +49,10 @@ lidar_inertial_odometry_node:
     T_imu_to_lidar/qw: 1.0
 
     # IMU (always enabled for LIO)
-    imu/accel_unit: "m_s2"              # "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
-    imu/buffer_duration_sec: 1.0
+    imu/accel_unit: "m_s2"              # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
+    imu/buffer_duration_sec: 1.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew
-    imu/preintegration/gravity/x: 0.0  # Gravity vector in world frame [m/s^2]
+    imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
     imu/preintegration/gravity/y: 0.0
     imu/preintegration/gravity/z: -9.80665
 
@@ -73,6 +73,7 @@ lidar_inertial_odometry_node:
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
     input/convert_intensity: false
+    input/use_reflectivity_as_intensity: false
 
     # Scan PointCloud preprocessing
     scan/preprocess/box_filter/enable: true
@@ -82,26 +83,31 @@ lidar_inertial_odometry_node:
     scan/preprocess/angle_incidence_filter/min_angle: 0.0
     scan/preprocess/angle_incidence_filter/max_angle: 1.396  # 80 degrees
 
-    scan/intensity_correction/enable: false
+    scan/intensity_correction/enable: true
     scan/intensity_correction/exp: 2.0
-    scan/intensity_correction/scale: 1.0e-3
+    scan/intensity_correction/scale: 1.0e-4
     scan/intensity_correction/min_intensity: 0.0
-    scan/intensity_correction/max_intensity: 1.0
+    scan/intensity_correction/max_intensity: 100.0
+    scan/intensity_correction/ref_distance: 1.0
+    scan/intensity_correction/angle_exponent: 0.0
+
+    scan/intensity_zscore/enable: true
+    scan/intensity_zscore/sigma_min: 0.0  # Points with local σ below this are set to z=0 (flat region)
 
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
     scan/downsampling/polar/enable: true
-    scan/downsampling/polar/distance_size: 0.5
-    scan/downsampling/polar/elevation_size: 0.017453292519943295  # 1 degree
-    scan/downsampling/polar/azimuth_size: 0.017453292519943295    # 1 degree
-    scan/downsampling/polar/coord_system: LIDAR
+    scan/downsampling/polar/distance_size: 0.5 # meters
+    scan/downsampling/polar/elevation_size: 0.017453292519943295 # 1 degrees
+    scan/downsampling/polar/azimuth_size: 0.017453292519943295   # 1 degrees
+    scan/downsampling/polar/coord_system: LIDAR # CAMERA or LIDAR
     scan/downsampling/random/enable: false
     scan/downsampling/random/num: 4096
 
     # Covariance estimator
     covariance_estimation/neighbor_num: 15
-    covariance_estimation/m_estimation/enable: false
-    covariance_estimation/m_estimation/type: GEMAN_MCCLURE
+    covariance_estimation/m_estimation/enable: false # EXPERIMENTAL
+    covariance_estimation/m_estimation/type: GEMAN_MCCLURE # HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     covariance_estimation/m_estimation/mad_scale: 2.0
     covariance_estimation/m_estimation/min_robust_scale: 5.0
     covariance_estimation/m_estimation/max_iterations: 1
@@ -111,8 +117,8 @@ lidar_inertial_odometry_node:
     submap/max_distance_range: 50.0
     submap/point_random_sampling_num: 512
     submap/weighted_sampling_ratio: 0.8
-    submap/map_type: OCCUPANCY_GRID_MAP  # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
-    submap/covariance_aggregation_mode: LOG_EUCLIDEAN
+    submap/map_type: OCCUPANCY_GRID_MAP # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
+    submap/covariance_aggregation_mode: LOG_EUCLIDEAN # ARITHMETIC, LOG_EUCLIDEAN
     submap/keyframe/inlier_ratio_threshold: 0.3
     submap/keyframe/distance_threshold: 2.0
     submap/keyframe/angle_threshold_degrees: 20.0
@@ -143,13 +149,13 @@ lidar_inertial_odometry_node:
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/max_iterations is unused; outer loop count is lio/max_iterations.
-    registration/type: gicp
+    registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
     registration/random_sampling/enable: true
     registration/random_sampling/num: 2048
     registration/max_correspondence_distance: 2.0
 
-    registration/robust/type: GEMAN_MCCLURE
+    registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     registration/robust/default_scale: 10.0
     registration/robust/auto_scale: true
     registration/robust/auto_scaling_iter: 4
@@ -160,7 +166,8 @@ lidar_inertial_odometry_node:
     registration/photometric/weight: 0.2
     registration/photometric/robust_scale: 5.0
 
-    registration/rotation_constraint/enable: false
+    registration/rotation_constraint/enable:
+      true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
     registration/rotation_constraint/weight: 1.0
     registration/rotation_constraint/robust/init_scale: 5.0
     registration/rotation_constraint/robust/min_scale: 2.5
@@ -168,13 +175,14 @@ lidar_inertial_odometry_node:
 
     registration/genz/planarity_threshold: 0.2
 
+    # Anderson Acceleration
     registration/anderson/enabled: false
     registration/anderson/window_size: 5
     registration/anderson/beta: 1.0
 
-    registration/gn/lambda: 1.0
+    registration/gn/lambda: 1.0e-3
 
-    registration/degenerate_regularization/type: "NL_REG"
+    registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
     registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/nl_reg/base_factor: 0.2

@@ -27,6 +27,14 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             "scan/intensity_correction/min_intensity", params.scan.intensity_correction.min_intensity);
         params.scan.intensity_correction.max_intensity = node->declare_parameter<double>(
             "scan/intensity_correction/max_intensity", params.scan.intensity_correction.max_intensity);
+        params.scan.intensity_correction.ref_distance = node->declare_parameter<double>(
+            "scan/intensity_correction/ref_distance", params.scan.intensity_correction.ref_distance);
+        params.scan.intensity_correction.angle_exponent = node->declare_parameter<double>(
+            "scan/intensity_correction/angle_exponent", params.scan.intensity_correction.angle_exponent);
+        params.scan.intensity_zscore.enable =
+            node->declare_parameter<bool>("scan/intensity_zscore/enable", params.scan.intensity_zscore.enable);
+        params.scan.intensity_zscore.sigma_min =
+            node->declare_parameter<double>("scan/intensity_zscore/sigma_min", params.scan.intensity_zscore.sigma_min);
         params.scan.downsampling.voxel.enable =
             node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan.downsampling.voxel.enable);
         params.scan.downsampling.voxel.size =

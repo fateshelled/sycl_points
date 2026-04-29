@@ -20,6 +20,11 @@ struct IMUMeasurement {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
+template <typename Range>
+concept imu_measurement_range = std::ranges::range<Range> && requires(Range& r) {
+    { *std::begin(r) } -> std::convertible_to<IMUMeasurement>;
+};
+
 /// @brief Gyroscope and accelerometer biases.
 struct IMUBias {
     Eigen::Vector3f gyro_bias = Eigen::Vector3f::Zero();   ///< [rad/s]

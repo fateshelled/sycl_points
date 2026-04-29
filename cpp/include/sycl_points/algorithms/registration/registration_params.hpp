@@ -82,9 +82,9 @@ struct RegistrationParams {
     };
 
     struct AndersonAcceleration {
-        bool enabled = false;     // If true, apply Anderson acceleration to the outer iteration
-        size_t window_size = 5;   // History window size m (Anderson(m))
-        float beta = 1.0f;        // Mixing parameter: 1.0 = pure Anderson acceleration
+        bool enabled = false;    // If true, apply Anderson acceleration to the outer iteration
+        size_t window_size = 5;  // History window size m (Anderson(m))
+        float beta = 1.0f;       // Mixing parameter: 1.0 = pure Anderson acceleration
     };
 
     RegType reg_type = RegType::GICP;          // Registration Type

@@ -66,6 +66,7 @@ lidar_odometry_node:
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
     input/convert_intensity: false
+    input/use_reflectivity_as_intensity: false
 
     # Scan PointCloud preprocessing
     scan/preprocess/box_filter/enable: true
@@ -76,11 +77,16 @@ lidar_odometry_node:
     scan/preprocess/angle_incidence_filter/max_angle: 1.396 # 80 degrees
     # scan/preprocess/angle_incidence_filter/max_angle: 1.570796 # 90 degrees (upper limit)
 
-    scan/intensity_correction/enable: false
+    scan/intensity_correction/enable: true
     scan/intensity_correction/exp: 2.0
-    scan/intensity_correction/scale: 1.0e-3
+    scan/intensity_correction/scale: 1.0e-4
     scan/intensity_correction/min_intensity: 0.0
-    scan/intensity_correction/max_intensity: 1.0
+    scan/intensity_correction/max_intensity: 100.0
+    scan/intensity_correction/ref_distance: 1.0
+    scan/intensity_correction/angle_exponent: 0.0
+
+    scan/intensity_zscore/enable: true
+    scan/intensity_zscore/sigma_min: 0.0  # Points with local σ below this are set to z=0 (flat region)
 
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
@@ -155,8 +161,8 @@ lidar_odometry_node:
     registration/robust/min_scale: 1.25
 
     registration/photometric/enable: false
-    registration/photometric/weight: 0.2        # Scaling factor to balance photometric error with geometric error
-    registration/photometric/robust_scale: 5.0  # Robust kernel is same as registration/robust/type
+    registration/photometric/weight: 0.2             # Scaling factor to balance photometric error with geometric error
+    registration/photometric/robust_scale: 5.0       # Robust kernel is same as registration/robust/type
 
     registration/rotation_constraint/enable: true            # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
                                                              # If enable rotation_constraint, recommended optimization_method is LM

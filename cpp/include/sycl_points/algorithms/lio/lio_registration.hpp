@@ -124,19 +124,20 @@ inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<floa
 
 /// @brief Solve the combined LIO normal equation H·δx = −b with LDLT.
 ///
-/// @param[in]  lio_result  Combined LIO Hessian/gradient.
-/// @param[out] delta       15-D state update δx on success; zero on failure.
-/// @param[out] P_post      Posterior covariance H⁻¹ (optional, pass nullptr to skip).
+/// @param[in]  H      Combined LIO Hessian.
+/// @param[in]  b      Combined LIO gradient.
+/// @param[out] delta  15-D state update δx on success; zero on failure.
+/// @param[out] P_post Posterior covariance H⁻¹ (optional, pass nullptr to skip).
 /// @return true on success; false if H is ill-conditioned.
-inline bool solve_ldlt(const LIOLinearizedResult& lio_result, Eigen::Matrix<float, 15, 1>& delta,
-                       Eigen::Matrix<float, 15, 15>* P_post = nullptr) {
-    Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(lio_result.H);
+inline bool solve_ldlt(const Eigen::Matrix<float, 15, 15>& H, const Eigen::Vector<float, 15>& b,
+                       Eigen::Matrix<float, 15, 1>& delta, Eigen::Matrix<float, 15, 15>* P_post = nullptr) {
+    Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(H);
     if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) {
         delta.setZero();
         if (P_post) P_post->setZero();
         return false;
     }
-    delta = ldlt.solve(-lio_result.b);
+    delta = ldlt.solve(-b);
     if (P_post) {
         P_post->setIdentity();
         ldlt.solveInPlace(*P_post);  // P_post = H⁻¹

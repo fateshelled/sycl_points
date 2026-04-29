@@ -114,8 +114,7 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 ///                              Typically: odom.rotation() * T_imu_to_lidar.rotation().
 /// @param[out] status           Optional detailed result code.
 /// @return true on success, false if prerequisites are not met.
-template <std::ranges::range Range>
-    requires std::same_as<std::ranges::range_value_t<Range>, imu::IMUMeasurement>
+template <imu::imu_measurement_range Range>
 inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
                                    const Range& imu_buffer, double scan_start_time_sec,
                                    const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,

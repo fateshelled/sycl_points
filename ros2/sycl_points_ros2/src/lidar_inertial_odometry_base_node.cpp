@@ -27,6 +27,8 @@ void LidarInertialOdometryBaseNode::initialize_processing() {
     this->imu_topic_ = this->declare_parameter<std::string>("imu_topic", this->imu_topic_);
     this->input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
     this->input_convert_intensity_ = this->declare_parameter<bool>("input/convert_intensity", true);
+    this->input_use_reflectivity_as_intensity =
+        this->declare_parameter<bool>("input/use_reflectivity_as_intensity", true);
 
     // QoS settings
     this->points_qos_params_.history =
@@ -85,6 +87,10 @@ void LidarInertialOdometryBaseNode::initialize_processing() {
     RCLCPP_INFO(this->get_logger(), "Input conversion - RGB: %s, intensity: %s",
                 this->input_convert_rgb_ ? "enabled" : "disabled",
                 this->input_convert_intensity_ ? "enabled" : "disabled");
+    if (this->input_convert_intensity_) {
+        RCLCPP_INFO(this->get_logger(), "  use reflectivity as intensity: %s",
+                    this->input_use_reflectivity_as_intensity ? "enabled" : "disabled");
+    }
 }
 
 void LidarInertialOdometryBaseNode::initialize_publishers(const PublishOptions& options) {
@@ -136,7 +142,8 @@ LidarInertialOdometryBaseNode::ProcessedFrame LidarInertialOdometryBaseNode::pro
     time_utils::measure_execution(
         [&]() {
             converted = fromROS2msg(*this->pipeline_->get_device_queue(), msg, this->scan_pc_, this->msg_data_buffer_,
-                                    this->input_convert_rgb_, this->input_convert_intensity_);
+                                    this->input_convert_rgb_, this->input_convert_intensity_,
+                                    this->input_use_reflectivity_as_intensity);
         },
         dt_from_ros2_msg);
 
