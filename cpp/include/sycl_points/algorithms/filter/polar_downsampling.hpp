@@ -330,9 +330,8 @@ private:
             }
         }
 
-        std::sort(sorted_indices.begin(), sorted_indices.end(), [&](size_t lhs, size_t rhs) {
-            return (*this->bit_ptr_)[lhs] < (*this->bit_ptr_)[rhs];
-        });
+        std::sort(sorted_indices.begin(), sorted_indices.end(),
+                  [&](size_t lhs, size_t rhs) { return (*this->bit_ptr_)[lhs] < (*this->bit_ptr_)[rhs]; });
 
         // mem_advise clear
         this->queue_.clear_accessed_by_host(this->bit_ptr_->data(), N);
