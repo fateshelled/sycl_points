@@ -32,7 +32,13 @@ public:
     template <imu::imu_measurement_range Range>
     void deskew_with_imu(const PointCloudShared& src, PointCloudShared& dst, const Range& imu_buffer,
                          const Eigen::Isometry3f& current_pose) const {
-        this->deskew_with_imu_impl(src, dst, imu_buffer, current_pose);
+        this->deskew_with_imu_impl(src, dst, imu_buffer, current_pose, this->imu_params_.bias);
+    }
+
+    template <imu::imu_measurement_range Range>
+    void deskew_with_imu(const PointCloudShared& src, PointCloudShared& dst, const Range& imu_buffer,
+                         const Eigen::Isometry3f& current_pose, const imu::IMUBias& bias) const {
+        this->deskew_with_imu_impl(src, dst, imu_buffer, current_pose, bias);
     }
 
     algorithms::knn::KNNResult compute_covariances(PointCloudShared& scan) const {
@@ -40,6 +46,10 @@ public:
     }
 
     void prefilter(const PointCloudShared& src, PointCloudShared& dst) const { this->prefilter_impl(src, dst); }
+
+    void random_sampling(const PointCloudShared& src, PointCloudShared& dst, size_t num) const {
+        this->preprocess_filter_->random_sampling(src, dst, num);
+    }
 
     void refine_filter(PointCloudShared& scan, const algorithms::knn::KNNResult& knn_result) const {
         this->refine_filter_impl(scan, knn_result);
@@ -72,12 +82,12 @@ private:
 
     template <imu::imu_measurement_range Range>
     void deskew_with_imu_impl(const PointCloudShared& src, PointCloudShared& dst, const Range& imu_buffer,
-                              const Eigen::Isometry3f& current_pose) const {
+                              const Eigen::Isometry3f& current_pose, const imu::IMUBias& bias) const {
         const double scan_start_sec = src.start_time_ms * 1e-3;
         // R_world_imu = R_world_lidar * R_lidar_imu
         const Eigen::Matrix3f R_world_imu = current_pose.rotation() * this->imu_params_.T_imu_to_lidar.rotation();
         algorithms::deskew::deskew_point_cloud_imu(src, dst, imu_buffer, scan_start_sec,
-                                                   this->imu_params_.T_imu_to_lidar, this->imu_params_.bias,
+                                                   this->imu_params_.T_imu_to_lidar, bias,
                                                    this->imu_params_.preintegration, R_world_imu);
     }
 
