@@ -30,6 +30,17 @@ struct Parameters : public lidar_odometry::Parameters {
         /// Choose so that 1/icp_rotation_sigma² ≲ H_icp[rot,rot]
         /// (≈ 1e4–1e5 for outdoor LiDAR with ~1000 inliers → σ ≈ 0.003–0.01 rad).
         float icp_rotation_sigma = 0.01f;
+
+        /// Enable online extrinsic calibration (LiDAR-IMU offset_R_L_I / offset_T_L_I).
+        /// When true the extrinsic is part of the 21-DOF IEKF state and updated each frame.
+        /// When false the extrinsic is fixed to T_imu_to_lidar (15-DOF equivalent behaviour).
+        bool estimate_extrinsic = false;
+
+        /// Initial 1-sigma uncertainty for the extrinsic rotation [rad].
+        float extrinsic_rotation_sigma = 0.01f;  ///< ≈ 0.57°
+
+        /// Initial 1-sigma uncertainty for the extrinsic translation [m].
+        float extrinsic_translation_sigma = 0.01f;  ///< ≈ 1 cm
     };
 
     LIO lio;
