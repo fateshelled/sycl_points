@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sycl_points/algorithms/knn/knn.hpp"
+#include "sycl_points/algorithms/knn/result.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
@@ -49,6 +49,9 @@ inline void compute(PointCloudShared& cloud, const knn::KNNResult& neighbors, fl
     const size_t global_size = cloud.queue.get_global_size(N);
     const auto indices = neighbors.indices;
     const size_t k = neighbors.k;
+    if (k < 3) {
+        throw std::runtime_error("[intensity_zscore::compute] neighbors.k must be >= 3");
+    }
 
     // Write z-scores into a temporary buffer to avoid in-place race conditions.
     auto tmp = std::make_shared<shared_vector<float>>(N, 0.0f, *cloud.queue.ptr);
