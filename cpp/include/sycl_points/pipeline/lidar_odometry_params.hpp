@@ -57,6 +57,8 @@ struct Parameters {
             float scale = 1e-3f;
             float min_intensity = 0.0f;
             float max_intensity = 1.0f;
+            float ref_distance = 1.0f;
+            float angle_exponent = 0.0f;
         };
 
         struct Downsampling {

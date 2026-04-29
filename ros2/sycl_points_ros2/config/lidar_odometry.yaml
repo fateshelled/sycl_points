@@ -82,6 +82,8 @@ lidar_odometry_node:
     scan/intensity_correction/scale: 1.0e-4
     scan/intensity_correction/min_intensity: 0.0
     scan/intensity_correction/max_intensity: 100.0
+    scan/intensity_correction/ref_distance: 1.0
+    scan/intensity_correction/angle_exponent: 0.0
 
     scan/intensity_zscore/enable: true
     scan/intensity_zscore/sigma_min: 0.0  # Points with local σ below this are set to z=0 (flat region)
