@@ -7,19 +7,12 @@
 #include <mutex>
 #include <vector>
 
-#include "sycl_points/algorithms/deskew/imu_deskew.hpp"
-#include "sycl_points/algorithms/feature/covariance.hpp"
-#include "sycl_points/algorithms/filter/intensity_correction.hpp"
-#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
-#include "sycl_points/algorithms/filter/polar_downsampling.hpp"
-#include "sycl_points/algorithms/filter/preprocess_filter.hpp"
-#include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
-#include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/lio/lio_registration.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/pipeline/lidar_inertial_odometry_params.hpp"
+#include "sycl_points/pipeline/pointcloud_processing.hpp"
 #include "sycl_points/pipeline/submapping.hpp"
 #include "sycl_points/utils/time_utils.hpp"
 
@@ -120,17 +113,15 @@ public:
         this->clear_current_processing_time();
 
         // Preprocessing
+        double dt_preprocessing = 0.0;
         {
-            double dt_pre = 0.0, dt_aif = 0.0;
             try {
-                time_utils::measure_execution([&]() { this->preprocess(scan); }, dt_pre);
-                time_utils::measure_execution([&]() { this->angle_incidence_filter(this->preprocessed_pc_); }, dt_aif);
+                time_utils::measure_execution([&]() { this->preprocess(scan); }, dt_preprocessing);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("preprocess: ") + e.what();
                 std::cerr << "[LidarInertialOdometry] " << this->error_message_ << std::endl;
                 return ResultType::error;
             }
-            this->add_delta_time(ProcessName::preprocessing, dt_pre + dt_aif);
         }
 
         // Covariance estimation
@@ -144,6 +135,20 @@ public:
                 return ResultType::error;
             }
             this->add_delta_time(ProcessName::compute_covariances, dt_cov);
+        }
+
+        // Refine filter (angle incidence filter + intensity zscore)
+        {
+            double dt_refine = 0.0;
+            try {
+                time_utils::measure_execution([&]() { this->refine_filter(this->preprocessed_pc_); }, dt_refine);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("refine_filter: ") + e.what();
+                std::cerr << "[LidarInertialOdometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
+            dt_preprocessing += dt_refine;
+            this->add_delta_time(ProcessName::preprocessing, dt_preprocessing);
         }
 
         if (this->preprocessed_pc_->size() <= this->params_.registration.min_num_points) {
@@ -239,9 +244,7 @@ private:
     algorithms::knn::KNNResult knn_result_;
     shared_vector_ptr<float> icp_weights_ = nullptr;
 
-    algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
-    algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
-    algorithms::filter::PolarGrid::Ptr polar_filter_ = nullptr;
+    pointcloud_processing::PCProcessor::Ptr pc_processor_ = nullptr;
     algorithms::registration::Registration::Ptr registration_ = nullptr;
 
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
@@ -368,11 +371,11 @@ private:
         // ---- Prepare ICP source (random sampling) ----
         // Respects registration/random_sampling params, same as RegistrationPipeline::align().
         const auto& rs = this->params_.registration.pipeline.random_sampling;
-        const PointCloudShared* source = (rs.enable && this->preprocessed_pc_->size() > rs.num)
-                                             ? (this->preprocess_filter_->random_sampling(
-                                                    *this->preprocessed_pc_, *this->registration_input_pc_, rs.num),
-                                                this->registration_input_pc_.get())
-                                             : this->preprocessed_pc_.get();
+        const PointCloudShared* source =
+            (rs.enable && this->preprocessed_pc_->size() > rs.num)
+                ? (this->pc_processor_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_, rs.num),
+                   this->registration_input_pc_.get())
+                : this->preprocessed_pc_.get();
 
         // ---- Gauss-Newton loop ----
         imu::State x_op = x_pred;
@@ -511,20 +514,9 @@ private:
         this->odom_ = this->params_.pose.initial;
         this->prev_odom_ = this->params_.pose.initial;
 
-        // Filters
-        this->preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(*this->queue_ptr_);
-        if (this->params_.scan.downsampling.voxel.enable) {
-            this->voxel_filter_ = std::make_shared<algorithms::filter::VoxelGrid>(
-                *this->queue_ptr_, this->params_.scan.downsampling.voxel.size);
-        }
-        if (this->params_.scan.downsampling.polar.enable) {
-            const auto coord =
-                algorithms::coordinate_system_from_string(this->params_.scan.downsampling.polar.coord_system);
-            this->polar_filter_ = std::make_shared<algorithms::filter::PolarGrid>(
-                *this->queue_ptr_, this->params_.scan.downsampling.polar.distance_size,
-                this->params_.scan.downsampling.polar.elevation_size,
-                this->params_.scan.downsampling.polar.azimuth_size, coord);
-        }
+        // Point cloud processor
+        this->pc_processor_ = std::make_shared<pointcloud_processing::PCProcessor>(
+            *this->queue_ptr_, this->params_.scan, this->params_.covariance_estimation, this->params_.imu);
 
         // Submapping
         {
@@ -557,56 +549,20 @@ private:
     }
 
     // -------------------------------------------------------------------------
-    // Preprocessing (same as LiDAROdometryPipeline)
+    // Preprocessing
     // -------------------------------------------------------------------------
     void preprocess(const PointCloudShared::Ptr scan) {
+        // LIO passes the current state bias (x_) to deskew, not the static params bias.
         if (this->params_.imu.deskew.enable) {
-            const auto imu_buf = this->get_imu_buffer();
-            const double scan_start_sec = scan->start_time_ms * 1e-3;
-            const Eigen::Matrix3f R_world_imu = this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            algorithms::deskew::deskew_point_cloud_imu(
-                *scan, *scan, imu_buf, scan_start_sec, this->params_.imu.T_imu_to_lidar,
-                imu::IMUBias{this->x_.gyro_bias, this->x_.accel_bias}, this->params_.imu.preintegration, R_world_imu);
+            auto imu_buf = this->get_imu_buffer();
+            const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
+            this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf, this->odom_, current_bias);
         }
-
-        if (this->params_.scan.preprocess.box_filter.enable) {
-            this->preprocess_filter_->box_filter(*scan, this->params_.scan.preprocess.box_filter.min,
-                                                 this->params_.scan.preprocess.box_filter.max);
-        }
-
-        auto input_ptr = scan;
-        auto output_ptr = this->preprocessed_pc_;
-        bool grid_ds = false;
-        if (this->params_.scan.downsampling.polar.enable) {
-            grid_ds = true;
-            this->polar_filter_->downsampling(*input_ptr, *output_ptr);
-            input_ptr = output_ptr = this->preprocessed_pc_;
-        }
-        if (this->params_.scan.downsampling.voxel.enable) {
-            grid_ds = true;
-            this->voxel_filter_->downsampling(*input_ptr, *output_ptr);
-            input_ptr = output_ptr = this->preprocessed_pc_;
-        }
-        if (!grid_ds) *this->preprocessed_pc_ = *scan;
-
-        if (this->params_.scan.downsampling.random.enable) {
-            this->preprocess_filter_->random_sampling(*this->preprocessed_pc_, *this->preprocessed_pc_,
-                                                      this->params_.scan.downsampling.random.num);
-        }
-        if (this->params_.scan.intensity_correction.enable && this->preprocessed_pc_->has_intensity()) {
-            algorithms::intensity_correction::correct_intensity(
-                *this->preprocessed_pc_, this->params_.scan.intensity_correction.exp,
-                this->params_.scan.intensity_correction.scale, this->params_.scan.intensity_correction.min_intensity,
-                this->params_.scan.intensity_correction.max_intensity);
-        }
+        this->pc_processor_->prefilter(*scan, *this->preprocessed_pc_);
     }
 
-    void angle_incidence_filter(const PointCloudShared::Ptr scan) {
-        if (this->params_.scan.preprocess.angle_incidence_filter.enable) {
-            this->preprocess_filter_->angle_incidence_filter(
-                *scan, this->params_.scan.preprocess.angle_incidence_filter.min_angle,
-                this->params_.scan.preprocess.angle_incidence_filter.max_angle);
-        }
+    void refine_filter(const PointCloudShared::Ptr scan) {
+        this->pc_processor_->refine_filter(*scan, this->knn_result_);
     }
 
     void compute_covariances() {
@@ -618,29 +574,7 @@ private:
 
         if (!needs_covs && !needs_zscore) return;
 
-        const auto src_tree = algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
-        auto events = src_tree->knn_search_async(*this->preprocessed_pc_,
-                                                 this->params_.covariance_estimation.neighbor_num, knn_result_);
-
-        if (needs_covs) {
-            if (params_.covariance_estimation.m_estimation.enable) {
-                events += algorithms::covariance::compute_covariances_with_m_estimation_async(
-                    this->knn_result_, *this->preprocessed_pc_, this->params_.covariance_estimation.m_estimation.type,
-                    this->params_.covariance_estimation.m_estimation.mad_scale,
-                    this->params_.covariance_estimation.m_estimation.min_robust_scale,
-                    this->params_.covariance_estimation.m_estimation.max_iterations, events.evs);
-            } else {
-                events += algorithms::covariance::compute_covariances_async(this->knn_result_, *this->preprocessed_pc_,
-                                                                            events.evs);
-            }
-        }
-
-        events.wait_and_throw();
-
-        if (needs_zscore) {
-            algorithms::intensity_zscore::compute(*this->preprocessed_pc_, this->knn_result_,
-                                                  this->params_.scan.intensity_zscore.sigma_min);
-        }
+        this->knn_result_ = this->pc_processor_->compute_covariances(*this->preprocessed_pc_);
     }
 
     // -------------------------------------------------------------------------
