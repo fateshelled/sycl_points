@@ -54,9 +54,12 @@ private:
     lidar_odometry::Parameters::Scan scan_params_;
     lidar_odometry::Parameters::CovarianceEstimation covs_params_;
     lidar_odometry::Parameters::IMU imu_params_;
+    /// @brief Temporary buffer used by prefilter to avoid in-place downsampling (src == dst breaks grid filters)
+    mutable PointCloudShared::Ptr tmp_pc_ = nullptr;
 
     void initialize() {
         this->preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(this->queue_);
+        this->tmp_pc_ = std::make_shared<PointCloudShared>(this->queue_);
         if (this->scan_params_.downsampling.voxel.enable) {
             this->voxel_filter_ = std::make_shared<algorithms::filter::VoxelGrid>(
                 this->queue_, this->scan_params_.downsampling.voxel.size);
@@ -85,21 +88,39 @@ private:
     void prefilter_impl(const PointCloudShared& src, PointCloudShared& dst) const {
         // Process Order:
         //   box filter -> polar grid -> voxel grid -> random sampling -> intensity correct
+        //
+        // Grid downsampling (PolarGrid / VoxelGrid) calls result.clear() before writing, so src == dst
+        // (in-place) corrupts the source data. We use tmp_pc_ to ensure src != dst for the
+        // first grid pass, mirroring the original LO design where box-filtered *scan and
+        // *preprocessed_pc_ were always separate objects.
 
-        // Box filter
+        // Box filter: src → tmp_pc_ (or just point grid_input at src to skip the copy)
+        const PointCloudShared* grid_input;
         if (this->scan_params_.preprocess.box_filter.enable) {
-            this->preprocess_filter_->box_filter(src, dst, this->scan_params_.preprocess.box_filter.min,
+            this->preprocess_filter_->box_filter(src, *this->tmp_pc_, this->scan_params_.preprocess.box_filter.min,
                                                  this->scan_params_.preprocess.box_filter.max);
+            grid_input = this->tmp_pc_.get();
         } else {
-            dst = src;
+            grid_input = &src;
         }
 
-        // Grid downsampling
+        // Grid downsampling: first pass always uses grid_input → dst (different objects)
+        bool grid_done = false;
         if (this->scan_params_.downsampling.polar.enable) {
-            this->polar_filter_->downsampling(dst, dst);
+            this->polar_filter_->downsampling(*grid_input, dst);
+            grid_done = true;
         }
         if (this->scan_params_.downsampling.voxel.enable) {
-            this->voxel_filter_->downsampling(dst, dst);
+            if (grid_done) {
+                // Second pass: dst → dst mirrors original LO behavior when both filters are enabled.
+                this->voxel_filter_->downsampling(dst, dst);
+            } else {
+                this->voxel_filter_->downsampling(*grid_input, dst);
+                grid_done = true;
+            }
+        }
+        if (!grid_done) {
+            dst = *grid_input;
         }
 
         // Random sampling
