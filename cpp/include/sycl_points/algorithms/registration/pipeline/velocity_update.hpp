@@ -86,7 +86,7 @@ public:
     }
 
     /// @brief Returns the deskewed source point cloud used by the most recent align() call
-    const PointCloudShared* get_deskewed_point_cloud() const { return this->deskewed_pc_.get(); }
+    const PointCloudShared::Ptr get_deskewed_point_cloud() const { return this->deskewed_pc_; }
 
     /// @brief Exposes this aligner as a RegistrationAligner
     RegistrationAligner make_aligner() const {

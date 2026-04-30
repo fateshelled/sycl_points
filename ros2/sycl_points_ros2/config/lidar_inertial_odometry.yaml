@@ -133,9 +133,9 @@ lidar_inertial_odometry_node:
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
     # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
-    lio/max_iterations: 12
-    lio/criteria/translation: 1.0e-3  # [m]
-    lio/criteria/rotation: 1.0e-6  # [rad]
+    lio/max_iterations: 8
+    lio/criteria/translation: 0.01  # [m]
+    lio/criteria/rotation: 0.01  # [rad]
     lio/invalid_regularization_factor: 1.0e+4
     # Fixed-sigma floors added to P_initial at each IMU reset.
     # Prevents H_imu from dominating H_icp when noise_density is set to a small
@@ -146,6 +146,10 @@ lidar_inertial_odometry_node:
     # icp_rotation_sigma: σ_rot [rad]  → P_pred[φ,φ] ≳ σ_rot²
     #   choose so 1/σ_rot² ≲ H_icp[rot,rot]  (≈ 1e4–1e5 → σ ≈ 0.003–0.01 rad)
     lio/icp_rotation_sigma: 0.01  # [rad]
+    # Online extrinsic calibration (LiDAR-IMU offset_R_L_I / offset_T_L_I)
+    lio/estimate_extrinsic: true
+    lio/extrinsic_rotation_sigma: 0.01     # Initial 1-sigma uncertainty [rad] (~0.57°)
+    lio/extrinsic_translation_sigma: 0.01  # Initial 1-sigma uncertainty [m]  (~1 cm)
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/max_iterations is unused; outer loop count is lio/max_iterations.
@@ -174,11 +178,6 @@ lidar_inertial_odometry_node:
     registration/rotation_constraint/robust/default_scale: 5.0
 
     registration/genz/planarity_threshold: 0.2
-
-    # Anderson Acceleration
-    registration/anderson/enabled: false
-    registration/anderson/window_size: 5
-    registration/anderson/beta: 1.0
 
     registration/gn/lambda: 1.0e-3
 
