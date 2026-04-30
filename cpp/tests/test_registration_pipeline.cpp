@@ -255,7 +255,7 @@ TEST(RegistrationPipelineTest, VelocityUpdateAlignerExposesMostRecentDeskewedPoi
 
     pipeline.align(source, target, knn, TransformMatrix::Identity(), options);
 
-    const auto* deskewed = pipeline.get_deskewed_point_cloud();
+    const auto deskewed = pipeline.get_deskewed_point_cloud();
     ASSERT_NE(deskewed, nullptr);
     EXPECT_EQ(deskewed->size(), source.size());
     EXPECT_TRUE(deskewed->has_timestamps());
@@ -295,7 +295,7 @@ TEST(RegistrationPipelineTest, VelocityUpdateAlignerFallsBackWithoutTimestamps) 
     EXPECT_EQ(result.inlier, source.size());
     EXPECT_EQ(aligned_source_size, source.size());
     EXPECT_FALSE(aligned_source_has_timestamps);
-    const auto* deskewed = pipeline.get_deskewed_point_cloud();
+    const auto deskewed = pipeline.get_deskewed_point_cloud();
     ASSERT_NE(deskewed, nullptr);
     EXPECT_EQ(deskewed->size(), source.size());
     EXPECT_FALSE(deskewed->has_timestamps());
@@ -325,7 +325,7 @@ TEST(RegistrationPipelineTest, RegistrationPipelineExposesDeskewedPointCloud) {
 
     pipeline.align(source, make_cloud(queue, 3), knn, TransformMatrix::Identity(), options);
 
-    const auto* deskewed = pipeline.get_deskewed_point_cloud();
+    const auto deskewed = pipeline.get_deskewed_point_cloud();
     ASSERT_NE(deskewed, nullptr);
     EXPECT_EQ(deskewed->size(), 5U);
     EXPECT_NE(deskewed->points.get(), source.points.get());
@@ -531,7 +531,7 @@ TEST(RegistrationPipelineTest, PipelineLazyWeightsMatchDeskewedPointCloudSize) {
 
     pipeline.align(source, target, knn, TransformMatrix::Identity(), options);
 
-    const auto* deskewed = pipeline.get_deskewed_point_cloud();
+    const auto deskewed = pipeline.get_deskewed_point_cloud();
     ASSERT_NE(deskewed, nullptr);
     shared_vector<float> weights(*queue.ptr);
     pipeline.compute_icp_robust_weights(target, knn, TransformMatrix::Identity(),

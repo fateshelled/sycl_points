@@ -73,6 +73,37 @@ struct State {
 };
 
 // ---------------------------------------------------------------------------
+// compute_manifold_residual
+// ---------------------------------------------------------------------------
+
+/// @brief Compute the 21-D manifold residual r = x_op ⊖ x_pred.
+///
+/// Vector quantities use plain subtraction; SO(3) quantities use the group
+/// logarithm (right-perturbation convention).  Shared by both
+/// compute_imu_hessian_gradient() and compute_imu_gradient().
+inline Eigen::Matrix<float, 21, 1> compute_manifold_residual(const State& x_pred, const State& x_op) {
+    Eigen::Matrix<float, 21, 1> r;
+
+    r.segment<3>(State::kIdxPos) = x_op.position - x_pred.position;
+
+    const Eigen::Matrix3f R_relative = x_pred.rotation.transpose() * x_op.rotation;
+    const Eigen::Vector4f q_relative = eigen_utils::geometry::rotation_matrix_to_quaternion(R_relative);
+    r.segment<3>(State::kIdxRot) = eigen_utils::lie::so3_log(q_relative);
+
+    r.segment<3>(State::kIdxVel) = x_op.velocity - x_pred.velocity;
+    r.segment<3>(State::kIdxAccBias) = x_op.accel_bias - x_pred.accel_bias;
+    r.segment<3>(State::kIdxGyrBias) = x_op.gyro_bias - x_pred.gyro_bias;
+
+    const Eigen::Matrix3f R_ex_rel = x_pred.offset_R_L_I.transpose() * x_op.offset_R_L_I;
+    const Eigen::Vector4f q_ex_rel = eigen_utils::geometry::rotation_matrix_to_quaternion(R_ex_rel);
+    r.segment<3>(State::kIdxExRot) = eigen_utils::lie::so3_log(q_ex_rel);
+
+    r.segment<3>(State::kIdxExTrans) = x_op.offset_T_L_I - x_pred.offset_T_L_I;
+
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // compute_imu_hessian_gradient
 // ---------------------------------------------------------------------------
 
@@ -124,30 +155,29 @@ inline bool compute_imu_hessian_gradient(const State& x_pred, const State& x_op,
     // ------------------------------------------------------------------
     // 2. Manifold residual  r = x_op ⊖ x_pred  (21×1)
     // ------------------------------------------------------------------
-    Eigen::Matrix<float, 21, 1> r;
-
-    r.segment<3>(State::kIdxPos) = x_op.position - x_pred.position;
-
-    const Eigen::Matrix3f R_relative = x_pred.rotation.transpose() * x_op.rotation;
-    const Eigen::Vector4f q_relative = eigen_utils::geometry::rotation_matrix_to_quaternion(R_relative);
-    r.segment<3>(State::kIdxRot) = eigen_utils::lie::so3_log(q_relative);
-
-    r.segment<3>(State::kIdxVel) = x_op.velocity - x_pred.velocity;
-    r.segment<3>(State::kIdxAccBias) = x_op.accel_bias - x_pred.accel_bias;
-    r.segment<3>(State::kIdxGyrBias) = x_op.gyro_bias - x_pred.gyro_bias;
-
-    // Extrinsic rotation residual on SO(3)
-    const Eigen::Matrix3f R_ex_rel = x_pred.offset_R_L_I.transpose() * x_op.offset_R_L_I;
-    const Eigen::Vector4f q_ex_rel = eigen_utils::geometry::rotation_matrix_to_quaternion(R_ex_rel);
-    r.segment<3>(State::kIdxExRot) = eigen_utils::lie::so3_log(q_ex_rel);
-
-    r.segment<3>(State::kIdxExTrans) = x_op.offset_T_L_I - x_pred.offset_T_L_I;
+    const Eigen::Matrix<float, 21, 1> r = compute_manifold_residual(x_pred, x_op);
 
     // ------------------------------------------------------------------
-    // 3. Gradient  b_imu = P_pred⁻¹ · r
+    // 3. Gradient  b_imu = P_pred⁻¹ · r  (via LDLT for numerical stability)
     // ------------------------------------------------------------------
     b_imu = ldlt.solve(r);
     return true;
+}
+
+/// @brief Update only the gradient b_imu given a pre-computed information matrix H_imu.
+///
+/// Inner-loop companion to compute_imu_hessian_gradient().  P_pred is constant
+/// within a single Gauss-Newton frame, so H_imu = P_pred⁻¹ need only be
+/// computed once.  Subsequent iterations reuse H_imu and only update b_imu as
+/// x_op changes — this avoids repeated LDLT factorisation of the 21×21 matrix.
+///
+/// @param x_pred  IMU-preintegration prediction (prior mean, fixed for the frame).
+/// @param x_op    Current Gauss-Newton operating point (linearisation point).
+/// @param H_imu   21×21 information matrix from compute_imu_hessian_gradient().
+/// @param[out] b_imu  21×1 updated gradient vector (= H_imu · r).
+inline void compute_imu_gradient(const State& x_pred, const State& x_op, const Eigen::Matrix<float, 21, 21>& H_imu,
+                                 Eigen::Matrix<float, 21, 1>& b_imu) {
+    b_imu = H_imu * compute_manifold_residual(x_pred, x_op);
 }
 
 }  // namespace imu

@@ -498,33 +498,44 @@ private:
                                                                       this->submap_->get_submap_kdtree(), T_op,
                                                                       T_initial, options);
 
-            // Update IMU factor at current operating point (skip on first: already computed above).
-            // When extrinsic estimation is enabled, re-predict with the current x_op extrinsic.
-            if (iter > 0) {
+            // Update gradient b_imu at the current operating point.
+            // H_imu = P_pred_21^{-1} is constant for this frame, so we only recompute
+            // the residual r and b_imu = H_imu · r (no LDLT inversion needed).
+            // When extrinsic estimation is enabled, also re-linearise the navigation
+            // prediction using the current x_op extrinsic — but keep x_pred's extrinsic
+            // fixed to the prior mean so that the extrinsic prior term is correctly enforced.
+            if (iter > 0 && imu_valid) {
                 if (this->params_.lio.estimate_extrinsic) {
-                    x_pred = predict_state_with(effective_extrinsic_from(x_op));
+                    const imu::State x_nav_pred = predict_state_with(effective_extrinsic_from(x_op));
+                    x_pred.position = x_nav_pred.position;
+                    x_pred.rotation = x_nav_pred.rotation;
+                    x_pred.velocity = x_nav_pred.velocity;
+                    // x_pred.offset_R_L_I / offset_T_L_I stay as the prior mean
                 }
-                imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_op, P_pred_21, H_imu, b_imu);
-            }
-
-            // Add cross-terms: coupling between navigation state residual and extrinsic update.
-            // Without these the extrinsic is unobservable through the IMU factor.
-            if (this->params_.lio.estimate_extrinsic && imu_valid) {
-                const Eigen::Matrix<float, 15, 6> J_nav_ex = compute_extrinsic_jacobian(x_op);
-                const Eigen::Matrix<float, 15, 15> Omega_nav = H_imu.block<15, 15>(0, 0);
-                const Eigen::Matrix<float, 15, 6> OJ = Omega_nav * J_nav_ex;
-
-                H_imu.block<15, 6>(0, imu::State::kIdxExRot) += OJ;
-                H_imu.block<6, 15>(imu::State::kIdxExRot, 0) += OJ.transpose();
-                H_imu.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot) += J_nav_ex.transpose() * OJ;
-                b_imu.segment<6>(imu::State::kIdxExRot) += J_nav_ex.transpose() * b_imu.segment<15>(0);
+                imu::compute_imu_gradient(x_pred, x_op, H_imu, b_imu);
             }
 
             // Combine ICP + IMU into 21×21 normal equations.
+            // When extrinsic estimation is enabled, add cross-terms that make the
+            // extrinsic observable through the navigation-state residual. The copies
+            // are only made in that case to avoid the 21×21 allocation on the common path.
             algorithms::lio::LIOLinearizedResult lio;
             algorithms::lio::add_icp_factor(lio, last_icp, x_op.rotation);
             if (imu_valid) {
-                algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
+                if (this->params_.lio.estimate_extrinsic) {
+                    Eigen::Matrix<float, 21, 21> H_cross = H_imu;
+                    Eigen::Matrix<float, 21, 1> b_cross = b_imu;
+                    const Eigen::Matrix<float, 15, 6> J_nav_ex = compute_extrinsic_jacobian(x_op);
+                    const Eigen::Matrix<float, 15, 15> Omega_nav = H_imu.block<15, 15>(0, 0);
+                    const Eigen::Matrix<float, 15, 6> OJ = Omega_nav * J_nav_ex;
+                    H_cross.block<15, 6>(0, imu::State::kIdxExRot) += OJ;
+                    H_cross.block<6, 15>(imu::State::kIdxExRot, 0) += OJ.transpose();
+                    H_cross.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot) += J_nav_ex.transpose() * OJ;
+                    b_cross.segment<6>(imu::State::kIdxExRot) += J_nav_ex.transpose() * b_imu.segment<15>(0);
+                    algorithms::lio::add_imu_factor(lio, H_cross, b_cross);
+                } else {
+                    algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
+                }
             } else {
                 const float kReg = this->params_.lio.invalid_regularization_factor;
                 lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += kReg * Eigen::Matrix3f::Identity();
@@ -532,12 +543,10 @@ private:
                     kReg * Eigen::Matrix3f::Identity();
                 lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) +=
                     kReg * Eigen::Matrix3f::Identity();
-                // Pin extrinsic when IMU is invalid to prevent drift
-                if (!this->params_.lio.estimate_extrinsic) {
-                    constexpr float kPin = 1e6f;
-                    lio.H.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot) +=
-                        kPin * Eigen::Matrix<float, 6, 6>::Identity();
-                }
+                // Always pin extrinsic when IMU is invalid — ICP provides no extrinsic information.
+                constexpr float kPin = 1e6f;
+                lio.H.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot) +=
+                    kPin * Eigen::Matrix<float, 6, 6>::Identity();
             }
 
             Eigen::Matrix<float, 21, 1> delta;
