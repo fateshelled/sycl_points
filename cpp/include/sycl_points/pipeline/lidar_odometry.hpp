@@ -461,11 +461,10 @@ private:
 
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
         // If velocity update is disabled, get the registration input point cloud.
-        const auto reg_pc_ptr = this->registration_pipeline_->get_deskewed_point_cloud();
+        auto reg_pc_ptr = this->registration_pipeline_->get_deskewed_point_cloud();
         bool computed_icp_weights = false;
         if (reg_pc_ptr) {
             const size_t total_samples = this->params_.submap.point_random_sampling_num;
-            *this->preprocessed_pc_ = *reg_pc_ptr;
             if (reg_pc_ptr->size() > total_samples) {
                 // Robust ICP weighted mixed random sampling
                 const auto robust_auto_scale = this->params_.registration.pipeline.robust.auto_scale;
@@ -477,6 +476,7 @@ private:
                     robust_scale, *this->icp_weights_);
                 computed_icp_weights = true;
             }
+            std::swap(this->preprocessed_pc_, reg_pc_ptr);
         } else {
             if (this->params_.registration.pipeline.velocity_update.enable &&  //
                 !this->is_imu_deskew_enabled()) {

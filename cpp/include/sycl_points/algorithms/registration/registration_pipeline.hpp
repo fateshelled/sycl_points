@@ -67,7 +67,7 @@ public:
             throw std::runtime_error(
                 "[RegistrationPipeline::compute_icp_robust_weights] Registration backend is not available.");
         }
-        const auto* source = this->get_deskewed_point_cloud();
+        const auto source = this->get_deskewed_point_cloud();
         if (source == nullptr) {
             throw std::runtime_error(
                 "[RegistrationPipeline::compute_icp_robust_weights] Registration input point cloud is not available.");
@@ -80,11 +80,11 @@ public:
 
     /// @brief Returns the deskewed source point cloud from the most recent align() call
     /// @note If velocity update is disabled, this returns the registration input point cloud.
-    const PointCloudShared* get_deskewed_point_cloud() const {
+    const PointCloudShared::Ptr get_deskewed_point_cloud() const {
         if (this->velocity_update_pipeline_ != nullptr) {
             return this->velocity_update_pipeline_->get_deskewed_point_cloud();
         }
-        return this->registration_input_pc_.get();
+        return this->registration_input_pc_;
     }
 
     float get_inlier_ratio(const RegistrationResult& result) const {
