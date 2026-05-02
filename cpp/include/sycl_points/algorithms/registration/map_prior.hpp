@@ -11,10 +11,10 @@ namespace registration {
 
 struct MapPriorParams {
     bool enabled = false;
-    /// @brief Process noise added to each rotation diagonal of H_raw^{-1} before inverting.
+    /// @brief Process noise for each rotation axis (diagonal of Q).
     ///        Larger value = weaker (more permissive) prior on rotation.
     float rot_process_noise = 0.01f;
-    /// @brief Process noise added to each translation diagonal of H_raw^{-1} before inverting.
+    /// @brief Process noise for each translation axis (diagonal of Q).
     ///        Larger value = weaker (more permissive) prior on translation.
     float trans_process_noise = 0.01f;
 };
@@ -22,12 +22,14 @@ struct MapPriorParams {
 /// @brief MAP estimation prior using the previous frame's Hessian as the information matrix.
 ///
 /// Adds a Gaussian prior N(T_pred, Omega_prior^{-1}) to the GICP normal equations each
-/// iteration.  The information matrix is computed once per frame as:
+/// iteration.  The information matrix is computed once per frame via the Matrix Inversion
+/// Lemma to avoid directly inverting H_raw_prev (which may be singular in degenerate cases):
 ///
-///   Omega_prior = (H_raw_prev^{-1} + Q)^{-1}
+///   R = Q^{-1}  (trivial: diagonal)
+///   Omega_prior = (H^{-1} + Q)^{-1} = R - R(H + R)^{-1}R
 ///
-/// where Q is a diagonal process-noise matrix that prevents the prior from being too
-/// tight in directions that were well-constrained in the previous frame.
+/// Since R is positive-definite, (H + R) is always invertible even when H is singular,
+/// making this formulation robust to degenerate environments.
 ///
 /// The resulting updates to the normal equations (H * delta = -b, solve(-b) convention):
 ///
@@ -43,7 +45,7 @@ class MapPrior {
 public:
     void set_params(const MapPriorParams& params) { params_ = params; }
 
-    /// @brief Precompute Omega_prior for the upcoming align() call.
+    /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align() call.
     ///        Call this once per frame, after motion prediction and before align().
     /// @param H_raw_prev  Unregularized Hessian (RegistrationResult::H_raw) from the previous frame.
     /// @param T_pred      Predicted pose used as the initial guess for the current frame.
@@ -51,23 +53,20 @@ public:
         has_prior_ = false;
         if (!params_.enabled) return;
 
-        // Q = diag(rot_noise * I_3, trans_noise * I_3)
-        Eigen::Matrix<float, 6, 6> Q = Eigen::Matrix<float, 6, 6>::Zero();
-        Q.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity() * params_.rot_process_noise;
-        Q.block<3, 3>(3, 3) = Eigen::Matrix3f::Identity() * params_.trans_process_noise;
+        // R = Q^{-1}: diagonal, trivially computed from process-noise parameters
+        const float inv_rot = 1.0f / std::max(params_.rot_process_noise, 1e-6f);
+        const float inv_trans = 1.0f / std::max(params_.trans_process_noise, 1e-6f);
+        Eigen::Matrix<float, 6, 6> R = Eigen::Matrix<float, 6, 6>::Zero();
+        R.diagonal() << inv_rot, inv_rot, inv_rot, inv_trans, inv_trans, inv_trans;
 
-        // Sigma_prior = H_raw_prev^{-1} + Q
-        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt_h(H_raw_prev);
-        if (ldlt_h.info() != Eigen::Success || ldlt_h.vectorD().minCoeff() <= 0.0f) return;
-        const Eigen::Matrix<float, 6, 6> Sigma_prior =
-            ldlt_h.solve(Eigen::Matrix<float, 6, 6>::Identity()) + Q;
+        // Omega_prior = (H^{-1} + Q)^{-1} = R - R(H + R)^{-1}R
+        // (H + R) is always PD since R is PD, so this is robust to singular H.
+        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt(H_raw_prev + R);
+        if (ldlt.info() != Eigen::Success) return;
+        Omega_prior_ = R - R * ldlt.solve(R);
 
-        // Omega_prior = Sigma_prior^{-1}
-        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt_s(Sigma_prior);
-        if (ldlt_s.info() != Eigen::Success || ldlt_s.vectorD().minCoeff() <= 0.0f) return;
-        Omega_prior_ = ldlt_s.solve(Eigen::Matrix<float, 6, 6>::Identity());
-
-        T_pred_ = T_pred;
+        // Precompute inverse once; reused every iteration inside apply()
+        T_pred_inv_ = T_pred.inverse();
         has_prior_ = true;
     }
 
@@ -79,7 +78,7 @@ public:
         if (!is_active()) return in;
 
         // e_prior = Log(T_pred^{-1} * T_est): deviation of the current estimate from the prediction
-        const Eigen::Vector<float, 6> e_prior = eigen_utils::lie::se3_log(T_pred_.inverse() * T_est);
+        const Eigen::Vector<float, 6> e_prior = eigen_utils::lie::se3_log(T_pred_inv_ * T_est);
 
         LinearizedResult ret = in;
         ret.H += Omega_prior_;
@@ -93,7 +92,7 @@ private:
     MapPriorParams params_;
     bool has_prior_ = false;
     Eigen::Matrix<float, 6, 6> Omega_prior_ = Eigen::Matrix<float, 6, 6>::Zero();
-    Eigen::Isometry3f T_pred_ = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f T_pred_inv_ = Eigen::Isometry3f::Identity();
 };
 
 }  // namespace registration
