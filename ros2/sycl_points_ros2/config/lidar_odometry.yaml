@@ -148,6 +148,10 @@ lidar_odometry_node:
     registration/criteria/translation: 1.0e-3  # [m]
     registration/criteria/rotation: 1.0e-6     # [rad]
 
+    registration/map_prior/enabled: true
+    registration/map_prior/rot_process_noise: 0.01
+    registration/map_prior/trans_process_noise: 0.01
+
     # Deskew pointcloud without IMU.
     # Automatically disabled when imu/deskew/enable is true.
     registration/velocity_update/enable: true
