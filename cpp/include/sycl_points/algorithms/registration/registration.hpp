@@ -118,8 +118,10 @@ public:
     ///        Must be called once per frame, after motion prediction and before align().
     /// @param H_raw_prev  Unregularized Hessian (RegistrationResult::H_raw) from the previous frame.
     /// @param T_pred      Predicted pose used as the initial guess for the current frame.
-    void set_map_prior_state(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_pred) {
-        this->map_prior_.update(H_raw_prev, T_pred);
+    /// @param T_prev      Previous odometry pose (used to compute relative rotation for Adjoint).
+    void set_map_prior_state(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_pred,
+                             const Eigen::Isometry3f& T_prev) {
+        this->map_prior_.update(H_raw_prev, T_pred, T_prev);
     }
 
     /// @brief validate parameters
@@ -904,11 +906,13 @@ private:
         if (this->params_.optimization_method == OptimizationMethod::GAUSS_NEWTON) {
             std::tie(baseline_error, baseline_inlier) = compute_error(
                 source, target, this->neighbors_->at(0), result.T.matrix(), robust_scale, rotation_robust_scale);
+            baseline_error += this->map_prior_.prior_error(result.T);
         }
 
         const Eigen::Isometry3f T_anderson = this->anderson_acc_.apply(result.T, T_initial);
-        const auto [anderson_error, anderson_inlier] = compute_error(
+        const auto [anderson_gicp_error, anderson_inlier] = compute_error(
             source, target, this->neighbors_->at(0), T_anderson.matrix(), robust_scale, rotation_robust_scale);
+        const float anderson_error = anderson_gicp_error + this->map_prior_.prior_error(T_anderson);
 
         const bool accepted = anderson_error <= baseline_error;
         if (this->params_.verbose) {
@@ -974,8 +978,9 @@ private:
             }
             const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
 
-            const auto [new_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
-                                                           robust_scale, rotation_robust_scale);
+            const auto [new_gicp_error, inlier] = compute_error(source, target, this->neighbors_->at(0),
+                                                                 new_T.matrix(), robust_scale, rotation_robust_scale);
+            const float new_error = new_gicp_error + this->map_prior_.prior_error(new_T);
 
             if (this->params_.verbose) {
                 std::cout << "iter [" << iter << "] ";
@@ -1104,8 +1109,9 @@ private:
         }
 
         const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(p_dl));
-        const auto [new_error, inlier] =
+        const auto [new_gicp_error, inlier] =
             compute_error(source, target, this->neighbors_->at(0), new_T.matrix(), robust_scale, rotation_robust_scale);
+        const float new_error = new_gicp_error + this->map_prior_.prior_error(new_T);
 
         const float actual_reduction = current_error - new_error;
         const float rho = actual_reduction / predicted_reduction;
