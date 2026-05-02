@@ -978,8 +978,8 @@ private:
             }
             const Eigen::Isometry3f new_T = result.T * Eigen::Isometry3f(eigen_utils::lie::se3_exp(delta));
 
-            const auto [new_gicp_error, inlier] = compute_error(source, target, this->neighbors_->at(0),
-                                                                 new_T.matrix(), robust_scale, rotation_robust_scale);
+            const auto [new_gicp_error, inlier] = compute_error(source, target, this->neighbors_->at(0), new_T.matrix(),
+                                                                robust_scale, rotation_robust_scale);
             const float new_error = new_gicp_error + this->map_prior_.prior_error(new_T);
 
             if (this->params_.verbose) {

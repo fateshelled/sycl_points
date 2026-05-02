@@ -333,8 +333,8 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         {
             auto& map_prior = solver.map_prior;
             map_prior.enabled = node->declare_parameter<bool>("registration/map_prior/enabled", map_prior.enabled);
-            map_prior.rot_process_noise = node->declare_parameter<double>(
-                "registration/map_prior/rot_process_noise", map_prior.rot_process_noise);
+            map_prior.rot_process_noise = node->declare_parameter<double>("registration/map_prior/rot_process_noise",
+                                                                          map_prior.rot_process_noise);
             map_prior.trans_process_noise = node->declare_parameter<double>(
                 "registration/map_prior/trans_process_noise", map_prior.trans_process_noise);
         }
