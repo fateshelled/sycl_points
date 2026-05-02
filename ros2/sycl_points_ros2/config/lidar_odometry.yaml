@@ -149,8 +149,10 @@ lidar_odometry_node:
     registration/criteria/rotation: 1.0e-6     # [rad]
 
     registration/map_prior/enabled: true
-    registration/map_prior/rot_process_noise: 1.0e-2    # [rad^2]
-    registration/map_prior/trans_process_noise: 1.0e-2  # [m^2]
+    registration/map_prior/rot_vel_scale: 1.0        # Q_rot   = max(rot_min_noise,   rot_vel_scale   * delta_rot^2)
+    registration/map_prior/trans_vel_scale: 1.0      # Q_trans = max(trans_min_noise, trans_vel_scale * delta_trans^2)
+    registration/map_prior/rot_min_noise: 1.0e-3     # floor [rad^2]: prevents over-constraining on sudden acceleration
+    registration/map_prior/trans_min_noise: 1.0e-4   # floor [m^2]:   prevents over-constraining on sudden acceleration
 
     # Deskew pointcloud without IMU.
     # Automatically disabled when imu/deskew/enable is true.

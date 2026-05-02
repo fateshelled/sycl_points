@@ -116,12 +116,11 @@ public:
 
     /// @brief Set the MAP prior state for the upcoming align() call.
     ///        Must be called once per frame, after motion prediction and before align().
+    ///        The previous pose and inter-frame delta are maintained internally by MapPrior.
     /// @param H_raw_prev  Unregularized Hessian (RegistrationResult::H_raw) from the previous frame.
     /// @param T_pred      Predicted pose used as the initial guess for the current frame.
-    /// @param T_prev      Previous odometry pose (used to compute relative rotation for Adjoint).
-    void set_map_prior_state(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_pred,
-                             const Eigen::Isometry3f& T_prev) {
-        this->map_prior_.update(H_raw_prev, T_pred, T_prev);
+    void set_map_prior_state(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_pred) {
+        this->map_prior_.update(H_raw_prev, T_pred);
     }
 
     /// @brief validate parameters
