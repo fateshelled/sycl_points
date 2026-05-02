@@ -451,6 +451,12 @@ private:
                                                       this->dt_, this->reg_result_, this->registrated_);
         }
 
+        // Provide the previous frame's unregularized Hessian as a MAP prior so the optimizer
+        // stays anchored to init_T in directions with weak geometric constraints.
+        if (this->registrated_) {
+            this->registration_pipeline_->registration()->set_map_prior_state(this->reg_result_->H_raw, init_T);
+        }
+
         algorithms::registration::Registration::ExecutionOptions options;
         options.dt = this->dt_;
         options.prev_pose = this->odom_.matrix();

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
+#include "sycl_points/algorithms/registration/map_prior.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/robust/robust.hpp"
 
@@ -104,6 +105,7 @@ struct RegistrationParams {
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
 
     DegenerateRegularizationParams degenerate_reg;  // Degenerate Regularization
+    MapPriorParams map_prior;                        // MAP estimation prior using previous-frame Hessian
 
     bool verbose = false;  // If true, print debug messages
 };
