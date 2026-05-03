@@ -148,7 +148,7 @@ lidar_odometry_node:
     registration/criteria/translation: 1.0e-3  # [m]
     registration/criteria/rotation: 1.0e-6     # [rad]
 
-    registration/map_prior/enabled: true
+    registration/map_prior/enabled: false            # EXPERIMENTAL
     registration/map_prior/rot_vel_scale: 1.0        # Q_rot   = max(rot_min_noise,   rot_vel_scale   * delta_rot^2)
     registration/map_prior/trans_vel_scale: 1.0      # Q_trans = max(trans_min_noise, trans_vel_scale * delta_trans^2)
     registration/map_prior/rot_min_noise: 1.0e-3     # floor [rad^2]: prevents over-constraining on sudden acceleration
