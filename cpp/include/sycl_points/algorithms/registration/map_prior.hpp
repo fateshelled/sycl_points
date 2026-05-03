@@ -24,6 +24,10 @@ struct MapPriorParams {
     /// @brief Floor for translation process noise [m^2].
     ///        Prevents over-constraining during sudden acceleration.
     float trans_min_noise = 1e-4f;
+    /// @brief EMA smoothing factor for the Hessian across frames.
+    ///        H_ema = exp(alpha * log(H_curr) + (1-alpha) * log(Ad^T * H_ema_prev * Ad))
+    ///        1.0 = current frame only (no smoothing), smaller = more temporal smoothing.
+    float hessian_ema_alpha = 1.0f;
 };
 
 /// @brief MAP estimation prior using the previous frame's Hessian as the information matrix.
@@ -43,6 +47,16 @@ struct MapPriorParams {
 ///
 ///   Ad = block_diag(R_rel, R_rel),  R_rel = R_prev^T * R_pred
 ///   H_curr = Ad^T * H_raw_prev * Ad
+///
+/// When hessian_ema_alpha < 1.0, H_curr is blended with the history in Log-Euclidean space:
+///
+///   H_ema_rotated = Ad^T * H_ema_prev * Ad   (rotate stored EMA into current frame)
+///   H_smoothed    = exp(alpha * log(H_curr) + (1-alpha) * log(H_ema_rotated))
+///
+/// H_smoothed is then stored for the next frame and used in place of H_curr.
+/// Because H_ema_prev was stored in the body frame of T_pred at the previous call,
+/// and T_opt_prev ≈ T_pred_prev for a converged registration, the same Ad that rotates
+/// H_raw_prev also approximately rotates H_ema_prev — the approximation error is O(correction²).
 ///
 /// The resulting updates to the normal equations (H * delta = -b, solve(-b) convention):
 ///
@@ -67,6 +81,8 @@ public:
     void set_params(const MapPriorParams& params) {
         params_ = params;
         has_prior_ = false;
+        has_hessian_ema_ = false;
+        H_ema_ = Eigen::Matrix<float, 6, 6>::Zero();
     }
 
     /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align() call.
@@ -104,6 +120,20 @@ public:
         Ad.block<3, 3>(3, 3) = R_rel;
         const Eigen::Matrix<float, 6, 6> H_curr = Ad.transpose() * prev_result.H_raw * Ad;
 
+        // Log-Euclidean EMA: blend H_curr with the rotated history in log space.
+        // H_ema_ is stored in the body frame of T_pred from the previous call;
+        // the same Ad approximately rotates it into the current frame (O(correction^2) error).
+        Eigen::Matrix<float, 6, 6> H_smoothed;
+        if (has_hessian_ema_ && params_.hessian_ema_alpha < 1.0f) {
+            const Eigen::Matrix<float, 6, 6> H_ema_rotated = Ad.transpose() * H_ema_ * Ad;
+            H_smoothed = spd_exp(params_.hessian_ema_alpha * spd_log(H_curr) +
+                                 (1.0f - params_.hessian_ema_alpha) * spd_log(H_ema_rotated));
+        } else {
+            H_smoothed = H_curr;
+        }
+        H_ema_ = H_smoothed;
+        has_hessian_ema_ = true;
+
         // R = Q^{-1}: per-axis diagonal (safe because q >= min_noise > 0)
         Eigen::Vector<float, 6> R_diag;
         R_diag.head<3>() = q_rot.cwiseInverse();
@@ -112,7 +142,7 @@ public:
 
         // Omega_prior = (H^{-1} + Q)^{-1} = R - R(H + R)^{-1}R
         // (H + R) is always PD since R is PD, so this is robust to singular H.
-        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt(H_curr + R);
+        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt(H_smoothed + R);
         if (ldlt.info() != Eigen::Success) return;
         Omega_prior_ = R - R * ldlt.solve(R);
 
@@ -151,9 +181,25 @@ public:
     bool is_active() const { return params_.enabled && has_prior_; }
 
 private:
+    // Eigenvalues are clamped to 1e-9 before log to guard against near-zero or slightly
+    // negative values caused by floating-point rounding in near-singular H matrices.
+    static Eigen::Matrix<float, 6, 6> spd_log(const Eigen::Matrix<float, 6, 6>& A) {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(A);
+        const auto log_eigs = eig.eigenvalues().cwiseMax(1e-9f).array().log().matrix();
+        return eig.eigenvectors() * log_eigs.asDiagonal() * eig.eigenvectors().transpose();
+    }
+
+    static Eigen::Matrix<float, 6, 6> spd_exp(const Eigen::Matrix<float, 6, 6>& A) {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(A);
+        return eig.eigenvectors() * eig.eigenvalues().array().exp().matrix().asDiagonal() *
+               eig.eigenvectors().transpose();
+    }
+
     MapPriorParams params_;
     bool has_prior_ = false;
+    bool has_hessian_ema_ = false;
     Eigen::Matrix<float, 6, 6> Omega_prior_ = Eigen::Matrix<float, 6, 6>::Zero();
+    Eigen::Matrix<float, 6, 6> H_ema_ = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Isometry3f T_pred_inv_ = Eigen::Isometry3f::Identity();
 };
 
