@@ -3,6 +3,7 @@
 #include <Eigen/Dense>
 
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
+#include "sycl_points/algorithms/registration/result.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
@@ -70,25 +71,23 @@ public:
 
     /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align() call.
     ///        Call this once per frame, after motion prediction and before align().
-    /// @param H_raw_prev   Unregularized Hessian (RegistrationResult::H_raw) from the previous frame.
-    ///                     This was computed at T_opt_prev, so the Adjoint must use T_opt_prev.
-    /// @param T_opt_prev   Optimized pose of the previous frame (= odom_ in LiDAROdometryPipeline).
+    /// @param prev_result  Registration result of the previous frame.
+    ///                     Uses H_raw (unregularized Hessian) and T (optimized pose).
     /// @param T_pred       Predicted pose used as the initial guess for the current frame.
-    void update(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_opt_prev,
-                const Eigen::Isometry3f& T_pred) {
+    void update(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
         has_prior_ = false;
         if (!params_.enabled) return;
 
         // R_rel = R_opt_prev^T * R_pred: relative rotation from the optimized previous frame
-        // to the predicted current frame.  H_raw_prev was built at T_opt_prev, so this is
+        // to the predicted current frame.  H_raw was built at prev_result.T, so this is
         // the correct rotation for the Adjoint transformation and for the per-axis delta.
-        const Eigen::Matrix3f R_rel = T_opt_prev.rotation().transpose() * T_pred.rotation();
+        const Eigen::Matrix3f R_rel = prev_result.T.rotation().transpose() * T_pred.rotation();
 
         // Per-axis inter-frame delta expressed in T_pred body frame.
         const Eigen::AngleAxisf aa(R_rel);
         const Eigen::Vector3f delta_rot_body = aa.axis() * aa.angle();
         const Eigen::Vector3f delta_trans_body =
-            T_pred.rotation().transpose() * (T_pred.translation() - T_opt_prev.translation());
+            T_pred.rotation().transpose() * (T_pred.translation() - prev_result.T.translation());
 
         // Per-axis process noise Q: velocity-proportional with a floor for sudden acceleration.
         //   Q_rot[i]   = max(rot_min_noise,   rot_vel_scale   * delta_rot_body[i]^2)
@@ -103,7 +102,7 @@ public:
         Eigen::Matrix<float, 6, 6> Ad = Eigen::Matrix<float, 6, 6>::Zero();
         Ad.block<3, 3>(0, 0) = R_rel;
         Ad.block<3, 3>(3, 3) = R_rel;
-        const Eigen::Matrix<float, 6, 6> H_curr = Ad.transpose() * H_raw_prev * Ad;
+        const Eigen::Matrix<float, 6, 6> H_curr = Ad.transpose() * prev_result.H_raw * Ad;
 
         // R = Q^{-1}: per-axis diagonal (safe because q >= min_noise > 0)
         Eigen::Vector<float, 6> R_diag;
