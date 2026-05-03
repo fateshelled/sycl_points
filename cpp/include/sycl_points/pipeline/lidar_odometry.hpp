@@ -454,7 +454,10 @@ private:
         // Provide the previous frame's unregularized Hessian as a MAP prior so the optimizer
         // stays anchored to init_T in directions with weak geometric constraints.
         if (this->registrated_) {
-            this->registration_pipeline_->registration()->set_map_prior_state(this->reg_result_->H_raw, init_T);
+            // odom_ is the optimized pose of the previous frame, which is the frame at which
+            // H_raw was built. Passing it explicitly ensures the Adjoint rotation is correct.
+            this->registration_pipeline_->registration()->set_map_prior_state(this->reg_result_->H_raw, this->odom_,
+                                                                              init_T);
         }
 
         algorithms::registration::Registration::ExecutionOptions options;

@@ -66,46 +66,40 @@ public:
     void set_params(const MapPriorParams& params) {
         params_ = params;
         has_prior_ = false;
-        has_prev_pose_ = false;
     }
 
     /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align() call.
     ///        Call this once per frame, after motion prediction and before align().
-    ///        The previous pose is maintained internally: no external delta computation needed.
-    /// @param H_raw_prev  Unregularized Hessian (RegistrationResult::H_raw) from the previous frame.
-    /// @param T_pred      Predicted pose used as the initial guess for the current frame.
-    void update(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_pred) {
+    /// @param H_raw_prev   Unregularized Hessian (RegistrationResult::H_raw) from the previous frame.
+    ///                     This was computed at T_opt_prev, so the Adjoint must use T_opt_prev.
+    /// @param T_opt_prev   Optimized pose of the previous frame (= odom_ in LiDAROdometryPipeline).
+    /// @param T_pred       Predicted pose used as the initial guess for the current frame.
+    void update(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_opt_prev,
+                const Eigen::Isometry3f& T_pred) {
         has_prior_ = false;
         if (!params_.enabled) return;
 
-        // Relative rotation from the stored previous pose to T_pred (for Adjoint and delta_rot).
-        // On the first call has_prev_pose_ is false, so we use Identity (no rotation change).
-        Eigen::Matrix3f R_rel = Eigen::Matrix3f::Identity();
-        if (has_prev_pose_) {
-            R_rel = T_prev_.rotation().transpose() * T_pred.rotation();
-        }
+        // R_rel = R_opt_prev^T * R_pred: relative rotation from the optimized previous frame
+        // to the predicted current frame.  H_raw_prev was built at T_opt_prev, so this is
+        // the correct rotation for the Adjoint transformation and for the per-axis delta.
+        const Eigen::Matrix3f R_rel = T_opt_prev.rotation().transpose() * T_pred.rotation();
 
-        // Per-axis inter-frame delta in T_pred body frame.
-        // Zero on first call; floor noise takes effect instead of velocity scaling.
-        Eigen::Vector3f delta_rot_body   = Eigen::Vector3f::Zero();
-        Eigen::Vector3f delta_trans_body = Eigen::Vector3f::Zero();
-        if (has_prev_pose_) {
-            delta_rot_body   = Eigen::AngleAxisf(R_rel).axis() * Eigen::AngleAxisf(R_rel).angle();
-            delta_trans_body = T_pred.rotation().transpose() * (T_pred.translation() - T_prev_.translation());
-        }
+        // Per-axis inter-frame delta expressed in T_pred body frame.
+        const Eigen::AngleAxisf aa(R_rel);
+        const Eigen::Vector3f delta_rot_body = aa.axis() * aa.angle();
+        const Eigen::Vector3f delta_trans_body =
+            T_pred.rotation().transpose() * (T_pred.translation() - T_opt_prev.translation());
 
         // Per-axis process noise Q: velocity-proportional with a floor for sudden acceleration.
         //   Q_rot[i]   = max(rot_min_noise,   rot_vel_scale   * delta_rot_body[i]^2)
         //   Q_trans[i] = max(trans_min_noise, trans_vel_scale * delta_trans_body[i]^2)
         const Eigen::Vector3f q_rot =
-            (delta_rot_body.cwiseProduct(delta_rot_body) * params_.rot_vel_scale)
-                .cwiseMax(params_.rot_min_noise);
-        const Eigen::Vector3f q_trans =
-            (delta_trans_body.cwiseProduct(delta_trans_body) * params_.trans_vel_scale)
-                .cwiseMax(params_.trans_min_noise);
+            (delta_rot_body.cwiseProduct(delta_rot_body) * params_.rot_vel_scale).cwiseMax(params_.rot_min_noise);
+        const Eigen::Vector3f q_trans = (delta_trans_body.cwiseProduct(delta_trans_body) * params_.trans_vel_scale)
+                                            .cwiseMax(params_.trans_min_noise);
 
-        // Rotate H_raw_prev into the T_pred body frame using the rotation-only Adjoint.
-        // Ad = block_diag(R_rel, R_rel)
+        // Rotate H_raw_prev from T_opt_prev body frame into T_pred body frame via rotation-only
+        // Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_raw_prev * Ad
         Eigen::Matrix<float, 6, 6> Ad = Eigen::Matrix<float, 6, 6>::Zero();
         Ad.block<3, 3>(0, 0) = R_rel;
         Ad.block<3, 3>(3, 3) = R_rel;
@@ -120,14 +114,12 @@ public:
         // Omega_prior = (H^{-1} + Q)^{-1} = R - R(H + R)^{-1}R
         // (H + R) is always PD since R is PD, so this is robust to singular H.
         Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt(H_curr + R);
-        T_prev_      = T_pred;
-        has_prev_pose_ = true;
         if (ldlt.info() != Eigen::Success) return;
         Omega_prior_ = R - R * ldlt.solve(R);
 
         // Precompute inverse once; reused every iteration inside apply() and prior_error()
         T_pred_inv_ = T_pred.inverse();
-        has_prior_  = true;
+        has_prior_ = true;
     }
 
     /// @brief Apply the MAP prior to the normal equations for one optimizer iteration.
@@ -161,11 +153,9 @@ public:
 
 private:
     MapPriorParams params_;
-    bool has_prior_     = false;
-    bool has_prev_pose_ = false;
+    bool has_prior_ = false;
     Eigen::Matrix<float, 6, 6> Omega_prior_ = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Isometry3f T_pred_inv_ = Eigen::Isometry3f::Identity();
-    Eigen::Isometry3f T_prev_     = Eigen::Isometry3f::Identity();
 };
 
 }  // namespace registration
