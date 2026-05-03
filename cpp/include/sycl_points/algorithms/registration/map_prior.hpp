@@ -25,7 +25,7 @@ struct MapPriorParams {
     ///        Prevents over-constraining during sudden acceleration.
     float trans_min_noise = 1e-4f;
     /// @brief EMA smoothing factor for the Hessian across frames.
-    ///        H_ema = exp(alpha * log(H_curr) + (1-alpha) * log(Ad^T * H_ema_prev * Ad))
+    ///        H_ema = exp(alpha * log(H_curr) + (1-alpha) * log(Ad_ema^T * H_ema_prev * Ad_ema))
     ///        1.0 = current frame only (no smoothing), smaller = more temporal smoothing.
     float hessian_ema_alpha = 1.0f;
 };
@@ -45,18 +45,20 @@ struct MapPriorParams {
 /// H_raw_prev is expressed in the previous sensor frame.  Before computing Omega_prior,
 /// it is rotated into the current sensor frame using the rotation-only Adjoint:
 ///
-///   Ad = block_diag(R_rel, R_rel),  R_rel = R_prev^T * R_pred
-///   H_curr = Ad^T * H_raw_prev * Ad
+///   Ad       = block_diag(R_rel, R_rel),  R_rel = R_opt_prev^T * R_pred
+///   H_curr   = Ad^T * H_raw_prev * Ad
 ///
-/// When hessian_ema_alpha < 1.0, H_curr is blended with the history in Log-Euclidean space:
+/// When hessian_ema_alpha < 1.0, H_curr is blended with the history in Log-Euclidean space.
+/// H_ema_ is stored in the body frame of T_pred from the previous update() call (T_pred_prev),
+/// so its rotation into the current frame uses a separate Adjoint Ad_ema:
 ///
-///   H_ema_rotated = Ad^T * H_ema_prev * Ad   (rotate stored EMA into current frame)
+///   Ad_ema        = block_diag(R_rel_ema, R_rel_ema),  R_rel_ema = R_pred_prev^T * R_pred
+///   H_ema_rotated = Ad_ema^T * H_ema_prev * Ad_ema
 ///   H_smoothed    = exp(alpha * log(H_curr) + (1-alpha) * log(H_ema_rotated))
 ///
-/// H_smoothed is then stored for the next frame and used in place of H_curr.
-/// Because H_ema_prev was stored in the body frame of T_pred at the previous call,
-/// and T_opt_prev ≈ T_pred_prev for a converged registration, the same Ad that rotates
-/// H_raw_prev also approximately rotates H_ema_prev — the approximation error is O(correction²).
+/// Note that Ad uses R_opt_prev (the optimised pose of the previous frame) while Ad_ema
+/// uses R_pred_prev (the predicted pose saved from the previous call).  These differ by the
+/// registration correction of the previous frame and must not be conflated.
 ///
 /// The resulting updates to the normal equations (H * delta = -b, solve(-b) convention):
 ///
@@ -113,25 +115,31 @@ public:
         const Eigen::Vector3f q_trans = (delta_trans_body.cwiseProduct(delta_trans_body) * params_.trans_vel_scale)
                                             .cwiseMax(params_.trans_min_noise);
 
-        // Rotate H_raw_prev from T_opt_prev body frame into T_pred body frame via rotation-only
-        // Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_raw_prev * Ad
+        // Rotate H_raw from T_opt_prev body frame into T_pred body frame via rotation-only
+        // Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_raw * Ad
         Eigen::Matrix<float, 6, 6> Ad = Eigen::Matrix<float, 6, 6>::Zero();
         Ad.block<3, 3>(0, 0) = R_rel;
         Ad.block<3, 3>(3, 3) = R_rel;
         const Eigen::Matrix<float, 6, 6> H_curr = Ad.transpose() * prev_result.H_raw * Ad;
 
-        // Log-Euclidean EMA: blend H_curr with the rotated history in log space.
-        // H_ema_ is stored in the body frame of T_pred from the previous call;
-        // the same Ad approximately rotates it into the current frame (O(correction^2) error).
+        // Log-Euclidean EMA: blend H_curr with the rotated history.
+        // H_ema_ is stored in the body frame of T_pred_ema_prev_ (the T_pred saved from
+        // the previous call), so its rotation uses Ad_ema built from R_pred_prev^T * R_pred,
+        // which is distinct from Ad (which uses R_opt_prev^T * R_pred).
         Eigen::Matrix<float, 6, 6> H_smoothed;
         if (has_hessian_ema_ && params_.hessian_ema_alpha < 1.0f) {
-            const Eigen::Matrix<float, 6, 6> H_ema_rotated = Ad.transpose() * H_ema_ * Ad;
+            const Eigen::Matrix3f R_rel_ema = T_pred_ema_prev_.rotation().transpose() * T_pred.rotation();
+            Eigen::Matrix<float, 6, 6> Ad_ema = Eigen::Matrix<float, 6, 6>::Zero();
+            Ad_ema.block<3, 3>(0, 0) = R_rel_ema;
+            Ad_ema.block<3, 3>(3, 3) = R_rel_ema;
+            const Eigen::Matrix<float, 6, 6> H_ema_rotated = Ad_ema.transpose() * H_ema_ * Ad_ema;
             H_smoothed = spd_exp(params_.hessian_ema_alpha * spd_log(H_curr) +
                                  (1.0f - params_.hessian_ema_alpha) * spd_log(H_ema_rotated));
         } else {
             H_smoothed = H_curr;
         }
-        H_ema_ = H_smoothed;
+        H_ema_ = H_smoothed;        // stored in T_pred body frame
+        T_pred_ema_prev_ = T_pred;  // saved for computing Ad_ema at the next call
         has_hessian_ema_ = true;
 
         // R = Q^{-1}: per-axis diagonal (safe because q >= min_noise > 0)
@@ -201,6 +209,7 @@ private:
     Eigen::Matrix<float, 6, 6> Omega_prior_ = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Matrix<float, 6, 6> H_ema_ = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Isometry3f T_pred_inv_ = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f T_pred_ema_prev_ = Eigen::Isometry3f::Identity();
 };
 
 }  // namespace registration
