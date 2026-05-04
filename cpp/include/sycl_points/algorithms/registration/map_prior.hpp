@@ -94,10 +94,10 @@ struct MapPriorParams {
 class MapPrior {
 public:
     void set_params(const MapPriorParams& params) {
-        params_ = params;
-        has_prior_ = false;
-        has_hessian_ema_ = false;
-        H_ema_ = Eigen::Matrix<float, 6, 6>::Zero();
+        this->params_ = params;
+        this->has_prior_ = false;
+        this->has_hessian_ema_ = false;
+        this->H_ema_ = Eigen::Matrix<float, 6, 6>::Zero();
     }
 
     /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align() call.
@@ -108,8 +108,8 @@ public:
     ///                     (used to scale H_raw via the reduced chi-squared statistic).
     /// @param T_pred       Predicted pose used as the initial guess for the current frame.
     void update(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
-        has_prior_ = false;
-        if (!params_.enabled) return;
+        this->has_prior_ = false;
+        if (!this->params_.enabled) return;
 
         // Reduced chi-squared scaling: convert the raw Hessian (J^T Sigma^{-1} J under
         // unit-variance residual assumption) into a calibrated information matrix.
@@ -136,10 +136,11 @@ public:
         // Per-axis process noise Q: velocity-proportional with a floor for sudden acceleration.
         //   Q_rot[i]   = max(rot_min_noise,   rot_vel_scale   * delta_rot_body[i]^2)
         //   Q_trans[i] = max(trans_min_noise, trans_vel_scale * delta_trans_body[i]^2)
-        const Eigen::Vector3f q_rot =
-            (delta_rot_body.cwiseProduct(delta_rot_body) * params_.rot_vel_scale).cwiseMax(params_.rot_min_noise);
-        const Eigen::Vector3f q_trans = (delta_trans_body.cwiseProduct(delta_trans_body) * params_.trans_vel_scale)
-                                            .cwiseMax(params_.trans_min_noise);
+        const Eigen::Vector3f q_rot = (delta_rot_body.cwiseProduct(delta_rot_body) * this->params_.rot_vel_scale)
+                                          .cwiseMax(this->params_.rot_min_noise);
+        const Eigen::Vector3f q_trans =
+            (delta_trans_body.cwiseProduct(delta_trans_body) * this->params_.trans_vel_scale)
+                .cwiseMax(this->params_.trans_min_noise);
 
         // Rotate H_calibrated from T_opt_prev body frame into T_pred body frame via
         // rotation-only Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_cal * Ad
@@ -153,20 +154,20 @@ public:
         // the previous call), so its rotation uses Ad_ema built from R_pred_prev^T * R_pred,
         // which is distinct from Ad (which uses R_opt_prev^T * R_pred).
         Eigen::Matrix<float, 6, 6> H_smoothed;
-        if (has_hessian_ema_ && params_.hessian_ema_alpha < 1.0f) {
+        if (this->has_hessian_ema_ && this->params_.hessian_ema_alpha < 1.0f) {
             const Eigen::Matrix3f R_rel_ema = T_pred_ema_prev_.rotation().transpose() * T_pred.rotation();
             Eigen::Matrix<float, 6, 6> Ad_ema = Eigen::Matrix<float, 6, 6>::Zero();
             Ad_ema.block<3, 3>(0, 0) = R_rel_ema;
             Ad_ema.block<3, 3>(3, 3) = R_rel_ema;
-            const Eigen::Matrix<float, 6, 6> H_ema_rotated = Ad_ema.transpose() * H_ema_ * Ad_ema;
-            H_smoothed = spd_exp(params_.hessian_ema_alpha * spd_log(H_curr) +
-                                 (1.0f - params_.hessian_ema_alpha) * spd_log(H_ema_rotated));
+            const Eigen::Matrix<float, 6, 6> H_ema_rotated = Ad_ema.transpose() * this->H_ema_ * Ad_ema;
+            H_smoothed = spd_exp(this->params_.hessian_ema_alpha * spd_log(H_curr) +
+                                 (1.0f - this->params_.hessian_ema_alpha) * spd_log(H_ema_rotated));
         } else {
             H_smoothed = H_curr;
         }
-        H_ema_ = H_smoothed;        // stored in T_pred body frame
-        T_pred_ema_prev_ = T_pred;  // saved for computing Ad_ema at the next call
-        has_hessian_ema_ = true;
+        this->H_ema_ = H_smoothed;        // stored in T_pred body frame
+        this->T_pred_ema_prev_ = T_pred;  // saved for computing Ad_ema at the next call
+        this->has_hessian_ema_ = true;
 
         // R = Q^{-1}: per-axis diagonal (safe because q >= min_noise > 0)
         Eigen::Vector<float, 6> R_diag;
@@ -178,11 +179,11 @@ public:
         // (H + R) is always PD since R is PD, so this is robust to singular H.
         Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt(H_smoothed + R);
         if (ldlt.info() != Eigen::Success) return;
-        Omega_prior_ = R - R * ldlt.solve(R);
+        this->Omega_prior_ = R - R * ldlt.solve(R);
 
         // Precompute inverse once; reused every iteration inside apply() and prior_error()
-        T_pred_inv_ = T_pred.inverse();
-        has_prior_ = true;
+        this->T_pred_inv_ = T_pred.inverse();
+        this->has_prior_ = true;
     }
 
     /// @brief Apply the MAP prior to the normal equations for one optimizer iteration.
@@ -194,11 +195,11 @@ public:
         if (!is_active()) return in;
 
         // e_prior = Log(T_pred^{-1} * T_est): deviation of the current estimate from the prediction
-        const Eigen::Vector<float, 6> e_prior = eigen_utils::lie::se3_log(T_pred_inv_ * T_est);
-        const Eigen::Vector<float, 6> Omega_e = Omega_prior_ * e_prior;
+        const Eigen::Vector<float, 6> e_prior = eigen_utils::lie::se3_log(this->T_pred_inv_ * T_est);
+        const Eigen::Vector<float, 6> Omega_e = this->Omega_prior_ * e_prior;
 
         LinearizedResult ret = in;
-        ret.H += Omega_prior_;
+        ret.H += this->Omega_prior_;
         ret.b += Omega_e;
         ret.error += 0.5f * e_prior.dot(Omega_e);
         return ret;
@@ -208,11 +209,11 @@ public:
     ///        Used to augment compute_error() results for LM/Dogleg step acceptance.
     float prior_error(const Eigen::Isometry3f& T_est) const {
         if (!is_active()) return 0.0f;
-        const Eigen::Vector<float, 6> e = eigen_utils::lie::se3_log(T_pred_inv_ * T_est);
-        return 0.5f * e.dot(Omega_prior_ * e);
+        const Eigen::Vector<float, 6> e = eigen_utils::lie::se3_log(this->T_pred_inv_ * T_est);
+        return 0.5f * e.dot(this->Omega_prior_ * e);
     }
 
-    bool is_active() const { return params_.enabled && has_prior_; }
+    bool is_active() const { return this->params_.enabled && this->has_prior_; }
 
 private:
     // Eigenvalues are clamped to 1e-9 before log to guard against near-zero or slightly
