@@ -149,8 +149,8 @@ lidar_odometry_node:
     registration/criteria/rotation: 1.0e-6     # [rad]
 
     registration/map_prior/enabled: true             # EXPERIMENTAL
-    registration/map_prior/rot_vel_scale: 1.0        # Q_rot   = rot_base_noise   + rot_vel_scale   * delta_rot^2
-    registration/map_prior/trans_vel_scale: 1.0      # Q_trans = trans_base_noise + trans_vel_scale * delta_trans^2
+    registration/map_prior/rot_vel_sigma: 1.0        # [rad] sigma at |delta_rot|=1 rad. Q_rot   = rot_base_noise   + rot_vel_sigma^2   * |delta_rot|
+    registration/map_prior/trans_vel_sigma: 1.0      # [m]   sigma at |delta_trans|=1 m. Q_trans = trans_base_noise + trans_vel_sigma^2 * |delta_trans|
     registration/map_prior/rot_base_noise: 1.0e-3    # baseline [rad^2]: isotropic accel-noise; loosens prior for sudden motion
     registration/map_prior/trans_base_noise: 1.0e-4  # baseline [m^2]:   isotropic accel-noise; loosens prior for sudden motion
     registration/map_prior/hessian_ema_alpha: 1.0    # Log-Euclidean EMA: 1.0 = no smoothing, smaller = more temporal smoothing

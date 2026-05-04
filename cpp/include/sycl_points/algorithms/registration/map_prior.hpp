@@ -13,12 +13,16 @@ namespace registration {
 
 struct MapPriorParams {
     bool enabled = false;
-    /// @brief Velocity-proportional scale for rotation noise.
-    ///        Q_rot = rot_base_noise + rot_vel_scale * delta_rot^2   [rad^2 / rad^2]
-    float rot_vel_scale = 1.0f;
-    /// @brief Velocity-proportional scale for translation noise.
-    ///        Q_trans = trans_base_noise + trans_vel_scale * delta_trans^2   [m^2 / m^2]
-    float trans_vel_scale = 1.0f;
+    /// @brief Sigma contribution at unit (1 rad) inter-frame rotation [rad].
+    ///        Q_rot = rot_base_noise + rot_vel_sigma^2 * |delta_rot|   [rad^2]
+    ///        Interpretation: at |delta_rot| = 1 rad the std-dev contribution is rot_vel_sigma.
+    ///        At smaller motion, the contribution scales as rot_vel_sigma * sqrt(|delta_rot|).
+    float rot_vel_sigma = 1.0f;
+    /// @brief Sigma contribution at unit (1 m) inter-frame translation [m].
+    ///        Q_trans = trans_base_noise + trans_vel_sigma^2 * |delta_trans|   [m^2]
+    ///        Interpretation: at |delta_trans| = 1 m the std-dev contribution is trans_vel_sigma.
+    ///        At smaller motion, the contribution scales as trans_vel_sigma * sqrt(|delta_trans|).
+    float trans_vel_sigma = 1.0f;
     /// @brief Isotropic baseline rotation process noise [rad^2].
     ///        Always added to Q_rot to model acceleration-induced prediction uncertainty,
     ///        which keeps the prior responsive to sudden motion regardless of current velocity.
@@ -86,12 +90,16 @@ struct MapPriorParams {
 ///
 /// The process noise Q is computed adaptively from the predicted inter-frame motion:
 ///
-///   Q_rot   = rot_base_noise   + rot_vel_scale   * delta_rot^2
-///   Q_trans = trans_base_noise + trans_vel_scale * delta_trans^2
+///   Q_rot   = rot_base_noise   + rot_vel_sigma^2   * |delta_rot|
+///   Q_trans = trans_base_noise + trans_vel_sigma^2 * |delta_trans|
 ///
 /// The velocity-proportional term loosens the prior during fast motion (CV-model uncertainty),
 /// while the additive baseline (base_noise) is an isotropic acceleration-noise term that keeps
 /// the prior responsive to sudden motion even when current velocity is small or zero.
+/// Linear (|delta|) rather than quadratic (delta^2) scaling is used to keep Q within a
+/// practical dynamic range across the typical 0.01–1.0 m/frame motion regime — quadratic
+/// scaling would make the prior nearly vanish at high speed.  vel_sigma is the std-dev
+/// contribution at unit motion (1 rad / 1 m); it appears squared in the variance formula.
 /// In degenerate directions H_raw_prev is small, so Omega_prior is also small and
 /// nl_reg's Tikhonov penalty dominates — the two mechanisms are complementary.
 class MapPrior {
@@ -137,15 +145,19 @@ public:
             T_pred.rotation().transpose() * (T_pred.translation() - prev_result.T.translation());
 
         // Per-axis process noise Q: velocity-proportional term plus an isotropic baseline.
-        // The baseline (base_noise) is always added — independent of current velocity — so the
-        // prior stays responsive to sudden acceleration that the CV prediction cannot anticipate.
-        //   Q_rot[i]   = rot_base_noise   + rot_vel_scale   * delta_rot_body[i]^2
-        //   Q_trans[i] = trans_base_noise + trans_vel_scale * delta_trans_body[i]^2
-        const Eigen::Vector3f q_rot = delta_rot_body.cwiseProduct(delta_rot_body) * this->params_.rot_vel_scale +
-                                      Eigen::Vector3f::Constant(this->params_.rot_base_noise);
-        const Eigen::Vector3f q_trans =
-            delta_trans_body.cwiseProduct(delta_trans_body) * this->params_.trans_vel_scale +
-            Eigen::Vector3f::Constant(this->params_.trans_base_noise);
+        // Linear (|delta|) rather than quadratic scaling — quadratic would make the prior
+        // nearly vanish at high speed (delta ~ 1m/frame).  vel_sigma is parameterised as the
+        // std-dev contribution at unit motion (1 rad / 1 m), so it appears squared in the
+        // variance formula.  The baseline (base_noise) is always added so the prior stays
+        // responsive to sudden acceleration regardless of current speed.
+        //   Q_rot[i]   = rot_base_noise   + rot_vel_sigma^2   * |delta_rot_body[i]|
+        //   Q_trans[i] = trans_base_noise + trans_vel_sigma^2 * |delta_trans_body[i]|
+        const float rot_var_per_unit = this->params_.rot_vel_sigma * this->params_.rot_vel_sigma;
+        const float trans_var_per_unit = this->params_.trans_vel_sigma * this->params_.trans_vel_sigma;
+        const Eigen::Vector3f q_rot =
+            delta_rot_body.cwiseAbs() * rot_var_per_unit + Eigen::Vector3f::Constant(this->params_.rot_base_noise);
+        const Eigen::Vector3f q_trans = delta_trans_body.cwiseAbs() * trans_var_per_unit +
+                                        Eigen::Vector3f::Constant(this->params_.trans_base_noise);
 
         // Rotate H_calibrated from T_opt_prev body frame into T_pred body frame via
         // rotation-only Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_cal * Ad
