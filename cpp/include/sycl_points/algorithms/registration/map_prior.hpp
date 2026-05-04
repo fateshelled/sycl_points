@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <cmath>
 
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/algorithms/registration/result.hpp"
@@ -42,11 +43,23 @@ struct MapPriorParams {
 /// Since R is positive-definite, (H + R) is always invertible even when H is singular,
 /// making this formulation robust to degenerate environments.
 ///
-/// H_raw_prev is expressed in the previous sensor frame.  Before computing Omega_prior,
-/// it is rotated into the current sensor frame using the rotation-only Adjoint:
+/// H_raw is treated as J^T * Sigma^{-1} * J under the assumption that the per-point
+/// Mahalanobis residual r^T Sigma_i^{-1} r has unit variance.  Real data deviates from
+/// this, so H_raw is calibrated by the reduced chi-squared statistic of the previous
+/// registration before being used as an information matrix:
+///
+///   DOF   = 3 * N_inlier - 6      (3 = GICP residual dim per inlier, 6 = SE(3) params)
+///   s^2   = error / DOF           (residual variance estimate; ~1.0 under perfect modelling)
+///   H_cal = H_raw_prev / s^2      (Sigma_pose ~= s^2 * H_raw^{-1}  =>  Lambda = H_raw / s^2)
+///
+/// Large s^2 (under-fit residuals or sparse inliers) loosens the prior; small s^2 tightens
+/// it.  No clamping is applied: callers should monitor degenerate inputs.
+///
+/// H_cal is expressed in the previous sensor frame.  Before computing Omega_prior, it is
+/// rotated into the current sensor frame using the rotation-only Adjoint:
 ///
 ///   Ad       = block_diag(R_rel, R_rel),  R_rel = R_opt_prev^T * R_pred
-///   H_curr   = Ad^T * H_raw_prev * Ad
+///   H_curr   = Ad^T * H_cal * Ad
 ///
 /// When hessian_ema_alpha < 1.0, H_curr is blended with the history in Log-Euclidean space.
 /// H_ema_ is stored in the body frame of T_pred from the previous update() call (T_pred_prev),
@@ -90,11 +103,24 @@ public:
     /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align() call.
     ///        Call this once per frame, after motion prediction and before align().
     /// @param prev_result  Registration result of the previous frame.
-    ///                     Uses H_raw (unregularized Hessian) and T (optimized pose).
+    ///                     Uses H_raw (unregularized Hessian), T (optimized pose), error
+    ///                     (sum of Mahalanobis-weighted squared residuals) and inlier count
+    ///                     (used to scale H_raw via the reduced chi-squared statistic).
     /// @param T_pred       Predicted pose used as the initial guess for the current frame.
     void update(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
         has_prior_ = false;
         if (!params_.enabled) return;
+
+        // Reduced chi-squared scaling: convert the raw Hessian (J^T Sigma^{-1} J under
+        // unit-variance residual assumption) into a calibrated information matrix.
+        //   DOF = 3 * N_inlier - 6   (3 = GICP residual dim, 6 = SE(3) params, both fixed)
+        //   s^2 = error / DOF        (no clamp; degenerate inputs disable the prior)
+        // Skip when DOF is non-positive (inlier <= 2) or when error is non-finite.
+        const float dof = 3.0f * static_cast<float>(prev_result.inlier) - 6.0f;
+        if (dof <= 0.0f) return;
+        if (!std::isfinite(prev_result.error) || prev_result.error <= 0.0f) return;
+        const float s_sq = prev_result.error / dof;
+        const Eigen::Matrix<float, 6, 6> H_calibrated = prev_result.H_raw / s_sq;
 
         // R_rel = R_opt_prev^T * R_pred: relative rotation from the optimized previous frame
         // to the predicted current frame.  H_raw was built at prev_result.T, so this is
@@ -115,12 +141,12 @@ public:
         const Eigen::Vector3f q_trans = (delta_trans_body.cwiseProduct(delta_trans_body) * params_.trans_vel_scale)
                                             .cwiseMax(params_.trans_min_noise);
 
-        // Rotate H_raw from T_opt_prev body frame into T_pred body frame via rotation-only
-        // Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_raw * Ad
+        // Rotate H_calibrated from T_opt_prev body frame into T_pred body frame via
+        // rotation-only Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_cal * Ad
         Eigen::Matrix<float, 6, 6> Ad = Eigen::Matrix<float, 6, 6>::Zero();
         Ad.block<3, 3>(0, 0) = R_rel;
         Ad.block<3, 3>(3, 3) = R_rel;
-        const Eigen::Matrix<float, 6, 6> H_curr = Ad.transpose() * prev_result.H_raw * Ad;
+        const Eigen::Matrix<float, 6, 6> H_curr = Ad.transpose() * H_calibrated * Ad;
 
         // Log-Euclidean EMA: blend H_curr with the rotated history.
         // H_ema_ is stored in the body frame of T_pred_ema_prev_ (the T_pred saved from
