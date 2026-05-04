@@ -341,8 +341,6 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                 node->declare_parameter<double>("registration/map_prior/rot_base_sigma", map_prior.rot_base_sigma);
             map_prior.trans_base_sigma =
                 node->declare_parameter<double>("registration/map_prior/trans_base_sigma", map_prior.trans_base_sigma);
-            map_prior.hessian_ema_alpha = node->declare_parameter<double>("registration/map_prior/hessian_ema_alpha",
-                                                                          map_prior.hessian_ema_alpha);
         }
     }
 

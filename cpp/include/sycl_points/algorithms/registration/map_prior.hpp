@@ -31,10 +31,6 @@ struct MapPriorParams {
     ///        Squared and added to Q_trans to model acceleration-induced prediction uncertainty,
     ///        which keeps the prior responsive to sudden motion regardless of current velocity.
     float trans_base_sigma = 1e-2f;  // sqrt(1e-4) m = 1 cm
-    /// @brief EMA smoothing factor for the Hessian across frames.
-    ///        H_ema = exp(alpha * log(H_curr) + (1-alpha) * log(Ad_ema^T * H_ema_prev * Ad_ema))
-    ///        1.0 = current frame only (no smoothing), smaller = more temporal smoothing.
-    float hessian_ema_alpha = 1.0f;
 };
 
 /// @brief MAP estimation prior using the previous frame's Hessian as the information matrix.
@@ -67,18 +63,6 @@ struct MapPriorParams {
 ///   Ad       = block_diag(R_rel, R_rel),  R_rel = R_opt_prev^T * R_pred
 ///   H_curr   = Ad^T * H_cal * Ad
 ///
-/// When hessian_ema_alpha < 1.0, H_curr is blended with the history in Log-Euclidean space.
-/// H_ema_ is stored in the body frame of T_pred from the previous update() call (T_pred_prev),
-/// so its rotation into the current frame uses a separate Adjoint Ad_ema:
-///
-///   Ad_ema        = block_diag(R_rel_ema, R_rel_ema),  R_rel_ema = R_pred_prev^T * R_pred
-///   H_ema_rotated = Ad_ema^T * H_ema_prev * Ad_ema
-///   H_smoothed    = exp(alpha * log(H_curr) + (1-alpha) * log(H_ema_rotated))
-///
-/// Note that Ad uses R_opt_prev (the optimised pose of the previous frame) while Ad_ema
-/// uses R_pred_prev (the predicted pose saved from the previous call).  These differ by the
-/// registration correction of the previous frame and must not be conflated.
-///
 /// The resulting updates to the normal equations (H * delta = -b, solve(-b) convention):
 ///
 ///   H_total = H_gicp + Omega_prior
@@ -108,8 +92,6 @@ public:
     void set_params(const MapPriorParams& params) {
         this->params_ = params;
         this->has_prior_ = false;
-        this->has_hessian_ema_ = false;
-        this->H_ema_ = Eigen::Matrix<float, 6, 6>::Zero();
     }
 
     /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align() call.
@@ -169,26 +151,6 @@ public:
         Ad.block<3, 3>(3, 3) = R_rel;
         const Eigen::Matrix<float, 6, 6> H_curr = Ad.transpose() * H_calibrated * Ad;
 
-        // Log-Euclidean EMA: blend H_curr with the rotated history.
-        // H_ema_ is stored in the body frame of T_pred_ema_prev_ (the T_pred saved from
-        // the previous call), so its rotation uses Ad_ema built from R_pred_prev^T * R_pred,
-        // which is distinct from Ad (which uses R_opt_prev^T * R_pred).
-        Eigen::Matrix<float, 6, 6> H_smoothed;
-        if (this->has_hessian_ema_ && this->params_.hessian_ema_alpha < 1.0f) {
-            const Eigen::Matrix3f R_rel_ema = T_pred_ema_prev_.rotation().transpose() * T_pred.rotation();
-            Eigen::Matrix<float, 6, 6> Ad_ema = Eigen::Matrix<float, 6, 6>::Zero();
-            Ad_ema.block<3, 3>(0, 0) = R_rel_ema;
-            Ad_ema.block<3, 3>(3, 3) = R_rel_ema;
-            const Eigen::Matrix<float, 6, 6> H_ema_rotated = Ad_ema.transpose() * this->H_ema_ * Ad_ema;
-            H_smoothed = spd_exp(this->params_.hessian_ema_alpha * spd_log(H_curr) +
-                                 (1.0f - this->params_.hessian_ema_alpha) * spd_log(H_ema_rotated));
-        } else {
-            H_smoothed = H_curr;
-        }
-        this->H_ema_ = H_smoothed;        // stored in T_pred body frame
-        this->T_pred_ema_prev_ = T_pred;  // saved for computing Ad_ema at the next call
-        this->has_hessian_ema_ = true;
-
         // R = Q^{-1}: per-axis diagonal (safe because q[i] >= base_sigma^2 > 0 by construction)
         Eigen::Vector<float, 6> R_diag;
         R_diag.head<3>() = q_rot.cwiseInverse();
@@ -197,7 +159,7 @@ public:
 
         // Omega_prior = (H^{-1} + Q)^{-1} = R - R(H + R)^{-1}R
         // (H + R) is always PD since R is PD, so this is robust to singular H.
-        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt(H_smoothed + R);
+        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt(H_curr + R);
         if (ldlt.info() != Eigen::Success) return;
         this->Omega_prior_ = R - R * ldlt.solve(R);
 
@@ -236,27 +198,10 @@ public:
     bool is_active() const { return this->params_.enabled && this->has_prior_; }
 
 private:
-    // Eigenvalues are clamped to 1e-9 before log to guard against near-zero or slightly
-    // negative values caused by floating-point rounding in near-singular H matrices.
-    static Eigen::Matrix<float, 6, 6> spd_log(const Eigen::Matrix<float, 6, 6>& A) {
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(A);
-        const auto log_eigs = eig.eigenvalues().cwiseMax(1e-9f).array().log().matrix();
-        return eig.eigenvectors() * log_eigs.asDiagonal() * eig.eigenvectors().transpose();
-    }
-
-    static Eigen::Matrix<float, 6, 6> spd_exp(const Eigen::Matrix<float, 6, 6>& A) {
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(A);
-        return eig.eigenvectors() * eig.eigenvalues().array().exp().matrix().asDiagonal() *
-               eig.eigenvectors().transpose();
-    }
-
     MapPriorParams params_;
     bool has_prior_ = false;
-    bool has_hessian_ema_ = false;
     Eigen::Matrix<float, 6, 6> Omega_prior_ = Eigen::Matrix<float, 6, 6>::Zero();
-    Eigen::Matrix<float, 6, 6> H_ema_ = Eigen::Matrix<float, 6, 6>::Zero();
     Eigen::Isometry3f T_pred_inv_ = Eigen::Isometry3f::Identity();
-    Eigen::Isometry3f T_pred_ema_prev_ = Eigen::Isometry3f::Identity();
 };
 
 }  // namespace registration
