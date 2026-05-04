@@ -116,7 +116,7 @@ public:
 
     /// @brief Set the MAP prior state for the upcoming align() call.
     ///        Must be called once per frame, after motion prediction and before align().
-    /// @param prev_result  Registration result of the previous frame (H_raw, T are used).
+    /// @param prev_result  Registration result of the previous frame.
     /// @param T_pred       Predicted pose used as the initial guess for the current frame.
     void set_map_prior_state(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
         this->map_prior_.update(prev_result, T_pred);
@@ -253,6 +253,7 @@ public:
 
                 result.H_raw = linearized_result.H;
                 result.b_raw = linearized_result.b;
+                result.error_raw = linearized_result.error;
 
                 // Regularization: nl_reg (Tikhonov penalty for degenerate directions)
                 const LinearizedResult regularized_result =

@@ -112,8 +112,8 @@ public:
         // Skip when DOF is non-positive (inlier <= 2) or when error is non-finite.
         const float dof = 3.0f * static_cast<float>(prev_result.inlier) - 6.0f;
         if (dof <= 0.0f) return;
-        if (!std::isfinite(prev_result.error) || prev_result.error <= 0.0f) return;
-        const float s_sq = prev_result.error / dof;
+        if (!std::isfinite(prev_result.error_raw) || prev_result.error_raw <= 0.0f) return;
+        const float s_sq = prev_result.error_raw / dof;
         const Eigen::Matrix<float, 6, 6> H_calibrated = prev_result.H_raw / s_sq;
 
         // R_rel = R_opt_prev^T * R_pred: relative rotation from the optimized previous frame
