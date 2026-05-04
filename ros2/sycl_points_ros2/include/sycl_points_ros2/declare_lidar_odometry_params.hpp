@@ -337,10 +337,10 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                 node->declare_parameter<double>("registration/map_prior/rot_vel_scale", map_prior.rot_vel_scale);
             map_prior.trans_vel_scale =
                 node->declare_parameter<double>("registration/map_prior/trans_vel_scale", map_prior.trans_vel_scale);
-            map_prior.rot_min_noise =
-                node->declare_parameter<double>("registration/map_prior/rot_min_noise", map_prior.rot_min_noise);
-            map_prior.trans_min_noise =
-                node->declare_parameter<double>("registration/map_prior/trans_min_noise", map_prior.trans_min_noise);
+            map_prior.rot_base_noise =
+                node->declare_parameter<double>("registration/map_prior/rot_base_noise", map_prior.rot_base_noise);
+            map_prior.trans_base_noise =
+                node->declare_parameter<double>("registration/map_prior/trans_base_noise", map_prior.trans_base_noise);
             map_prior.hessian_ema_alpha = node->declare_parameter<double>("registration/map_prior/hessian_ema_alpha",
                                                                           map_prior.hessian_ema_alpha);
         }

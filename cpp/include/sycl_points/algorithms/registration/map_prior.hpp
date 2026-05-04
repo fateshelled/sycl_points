@@ -14,19 +14,19 @@ namespace registration {
 struct MapPriorParams {
     bool enabled = false;
     /// @brief Velocity-proportional scale for rotation noise.
-    ///        Q_rot = rot_min_noise + rot_vel_scale * delta_rot^2   [rad^2 / rad^2]
+    ///        Q_rot = rot_base_noise + rot_vel_scale * delta_rot^2   [rad^2 / rad^2]
     float rot_vel_scale = 1.0f;
     /// @brief Velocity-proportional scale for translation noise.
-    ///        Q_trans = trans_min_noise + trans_vel_scale * delta_trans^2   [m^2 / m^2]
+    ///        Q_trans = trans_base_noise + trans_vel_scale * delta_trans^2   [m^2 / m^2]
     float trans_vel_scale = 1.0f;
     /// @brief Isotropic baseline rotation process noise [rad^2].
     ///        Always added to Q_rot to model acceleration-induced prediction uncertainty,
     ///        which keeps the prior responsive to sudden motion regardless of current velocity.
-    float rot_min_noise = 1e-3f;
+    float rot_base_noise = 1e-3f;
     /// @brief Isotropic baseline translation process noise [m^2].
     ///        Always added to Q_trans to model acceleration-induced prediction uncertainty,
     ///        which keeps the prior responsive to sudden motion regardless of current velocity.
-    float trans_min_noise = 1e-4f;
+    float trans_base_noise = 1e-4f;
     /// @brief EMA smoothing factor for the Hessian across frames.
     ///        H_ema = exp(alpha * log(H_curr) + (1-alpha) * log(Ad_ema^T * H_ema_prev * Ad_ema))
     ///        1.0 = current frame only (no smoothing), smaller = more temporal smoothing.
@@ -86,11 +86,11 @@ struct MapPriorParams {
 ///
 /// The process noise Q is computed adaptively from the predicted inter-frame motion:
 ///
-///   Q_rot   = rot_min_noise   + rot_vel_scale   * delta_rot^2
-///   Q_trans = trans_min_noise + trans_vel_scale * delta_trans^2
+///   Q_rot   = rot_base_noise   + rot_vel_scale   * delta_rot^2
+///   Q_trans = trans_base_noise + trans_vel_scale * delta_trans^2
 ///
 /// The velocity-proportional term loosens the prior during fast motion (CV-model uncertainty),
-/// while the additive baseline (min_noise) is an isotropic acceleration-noise term that keeps
+/// while the additive baseline (base_noise) is an isotropic acceleration-noise term that keeps
 /// the prior responsive to sudden motion even when current velocity is small or zero.
 /// In degenerate directions H_raw_prev is small, so Omega_prior is also small and
 /// nl_reg's Tikhonov penalty dominates — the two mechanisms are complementary.
@@ -137,15 +137,15 @@ public:
             T_pred.rotation().transpose() * (T_pred.translation() - prev_result.T.translation());
 
         // Per-axis process noise Q: velocity-proportional term plus an isotropic baseline.
-        // The baseline (min_noise) is always added — independent of current velocity — so the
+        // The baseline (base_noise) is always added — independent of current velocity — so the
         // prior stays responsive to sudden acceleration that the CV prediction cannot anticipate.
-        //   Q_rot[i]   = rot_min_noise   + rot_vel_scale   * delta_rot_body[i]^2
-        //   Q_trans[i] = trans_min_noise + trans_vel_scale * delta_trans_body[i]^2
+        //   Q_rot[i]   = rot_base_noise   + rot_vel_scale   * delta_rot_body[i]^2
+        //   Q_trans[i] = trans_base_noise + trans_vel_scale * delta_trans_body[i]^2
         const Eigen::Vector3f q_rot = delta_rot_body.cwiseProduct(delta_rot_body) * this->params_.rot_vel_scale +
-                                      Eigen::Vector3f::Constant(this->params_.rot_min_noise);
+                                      Eigen::Vector3f::Constant(this->params_.rot_base_noise);
         const Eigen::Vector3f q_trans =
             delta_trans_body.cwiseProduct(delta_trans_body) * this->params_.trans_vel_scale +
-            Eigen::Vector3f::Constant(this->params_.trans_min_noise);
+            Eigen::Vector3f::Constant(this->params_.trans_base_noise);
 
         // Rotate H_calibrated from T_opt_prev body frame into T_pred body frame via
         // rotation-only Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_cal * Ad
@@ -174,7 +174,7 @@ public:
         this->T_pred_ema_prev_ = T_pred;  // saved for computing Ad_ema at the next call
         this->has_hessian_ema_ = true;
 
-        // R = Q^{-1}: per-axis diagonal (safe because q[i] >= min_noise > 0 by construction)
+        // R = Q^{-1}: per-axis diagonal (safe because q[i] >= base_noise > 0 by construction)
         Eigen::Vector<float, 6> R_diag;
         R_diag.head<3>() = q_rot.cwiseInverse();
         R_diag.tail<3>() = q_trans.cwiseInverse();
