@@ -148,11 +148,12 @@ lidar_odometry_node:
     registration/criteria/translation: 1.0e-3  # [m]
     registration/criteria/rotation: 1.0e-6     # [rad]
 
-    registration/map_prior/enabled: true             # EXPERIMENTAL
-    registration/map_prior/rot_vel_sigma: 1.0         # [rad] sigma at |delta_rot|=1 rad. Q_rot   = rot_base_sigma^2   + rot_vel_sigma^2   * |delta_rot|
-    registration/map_prior/trans_vel_sigma: 1.0       # [m]   sigma at |delta_trans|=1 m. Q_trans = trans_base_sigma^2 + trans_vel_sigma^2 * |delta_trans|
-    registration/map_prior/rot_base_sigma: 1.75e-2    # [rad] baseline std-dev (1 deg); isotropic accel-noise; loosens prior for sudden motion
-    registration/map_prior/trans_base_sigma: 1.0e-2   # [m]   baseline std-dev (1 cm);     isotropic accel-noise; loosens prior for sudden motion
+    # Maximum A Posteriori (MAP) estimation prior using the previous frame's Hessian as the information matrix
+    registration/map_prior/enabled: true 
+    registration/map_prior/rot_vel_sigma: 0.3        # [rad] sigma at |delta_rot|=1 rad. Q_rot   = rot_base_sigma^2   + rot_vel_sigma^2   * |delta_rot|
+    registration/map_prior/trans_vel_sigma: 0.2      # [m]   sigma at |delta_trans|=1 m. Q_trans = trans_base_sigma^2 + trans_vel_sigma^2 * |delta_trans|
+    registration/map_prior/rot_base_sigma: 1.75e-2   # [rad] baseline std-dev (1 deg); isotropic accel-noise; loosens prior for sudden motion
+    registration/map_prior/trans_base_sigma: 1.0e-2  # [m]   baseline std-dev (1 cm);  isotropic accel-noise; loosens prior for sudden motion
     registration/map_prior/hessian_ema_alpha: 1.0    # Log-Euclidean EMA: 1.0 = no smoothing, smaller = more temporal smoothing
 
     # Deskew pointcloud without IMU.
