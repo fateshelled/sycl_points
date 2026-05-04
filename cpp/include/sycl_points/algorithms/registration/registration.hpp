@@ -116,12 +116,10 @@ public:
 
     /// @brief Set the MAP prior state for the upcoming align() call.
     ///        Must be called once per frame, after motion prediction and before align().
-    /// @param H_raw_prev   Unregularized Hessian (RegistrationResult::H_raw) from the previous frame.
-    /// @param T_opt_prev   Optimized pose of the previous frame (the frame at which H_raw_prev was built).
+    /// @param prev_result  Registration result of the previous frame (H_raw, T are used).
     /// @param T_pred       Predicted pose used as the initial guess for the current frame.
-    void set_map_prior_state(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_opt_prev,
-                             const Eigen::Isometry3f& T_pred) {
-        this->map_prior_.update(H_raw_prev, T_opt_prev, T_pred);
+    void set_map_prior_state(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
+        this->map_prior_.update(prev_result, T_pred);
     }
 
     /// @brief validate parameters

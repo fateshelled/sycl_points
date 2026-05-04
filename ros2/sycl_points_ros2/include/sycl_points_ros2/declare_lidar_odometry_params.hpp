@@ -333,14 +333,16 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         {
             auto& map_prior = solver.map_prior;
             map_prior.enabled = node->declare_parameter<bool>("registration/map_prior/enabled", map_prior.enabled);
-            map_prior.rot_vel_scale = node->declare_parameter<double>("registration/map_prior/rot_vel_scale",
-                                                                      map_prior.rot_vel_scale);
-            map_prior.trans_vel_scale = node->declare_parameter<double>("registration/map_prior/trans_vel_scale",
-                                                                        map_prior.trans_vel_scale);
-            map_prior.rot_min_noise = node->declare_parameter<double>("registration/map_prior/rot_min_noise",
-                                                                      map_prior.rot_min_noise);
-            map_prior.trans_min_noise = node->declare_parameter<double>("registration/map_prior/trans_min_noise",
-                                                                        map_prior.trans_min_noise);
+            map_prior.rot_vel_scale =
+                node->declare_parameter<double>("registration/map_prior/rot_vel_scale", map_prior.rot_vel_scale);
+            map_prior.trans_vel_scale =
+                node->declare_parameter<double>("registration/map_prior/trans_vel_scale", map_prior.trans_vel_scale);
+            map_prior.rot_min_noise =
+                node->declare_parameter<double>("registration/map_prior/rot_min_noise", map_prior.rot_min_noise);
+            map_prior.trans_min_noise =
+                node->declare_parameter<double>("registration/map_prior/trans_min_noise", map_prior.trans_min_noise);
+            map_prior.hessian_ema_alpha = node->declare_parameter<double>("registration/map_prior/hessian_ema_alpha",
+                                                                          map_prior.hessian_ema_alpha);
         }
     }
 
