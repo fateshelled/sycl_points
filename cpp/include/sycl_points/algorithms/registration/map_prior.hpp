@@ -14,23 +14,23 @@ namespace registration {
 struct MapPriorParams {
     bool enabled = false;
     /// @brief Sigma contribution at unit (1 rad) inter-frame rotation [rad].
-    ///        Q_rot = rot_base_noise + rot_vel_sigma^2 * |delta_rot|   [rad^2]
+    ///        Q_rot = rot_base_sigma^2 + rot_vel_sigma^2 * |delta_rot|   [rad^2]
     ///        Interpretation: at |delta_rot| = 1 rad the std-dev contribution is rot_vel_sigma.
     ///        At smaller motion, the contribution scales as rot_vel_sigma * sqrt(|delta_rot|).
     float rot_vel_sigma = 1.0f;
     /// @brief Sigma contribution at unit (1 m) inter-frame translation [m].
-    ///        Q_trans = trans_base_noise + trans_vel_sigma^2 * |delta_trans|   [m^2]
+    ///        Q_trans = trans_base_sigma^2 + trans_vel_sigma^2 * |delta_trans|   [m^2]
     ///        Interpretation: at |delta_trans| = 1 m the std-dev contribution is trans_vel_sigma.
     ///        At smaller motion, the contribution scales as trans_vel_sigma * sqrt(|delta_trans|).
     float trans_vel_sigma = 1.0f;
-    /// @brief Isotropic baseline rotation process noise [rad^2].
-    ///        Always added to Q_rot to model acceleration-induced prediction uncertainty,
+    /// @brief Isotropic baseline rotation std-dev [rad].
+    ///        Squared and added to Q_rot to model acceleration-induced prediction uncertainty,
     ///        which keeps the prior responsive to sudden motion regardless of current velocity.
-    float rot_base_noise = 1e-3f;
-    /// @brief Isotropic baseline translation process noise [m^2].
-    ///        Always added to Q_trans to model acceleration-induced prediction uncertainty,
+    float rot_base_sigma = 3.16e-2f;  // sqrt(1e-3) rad ~= 1.81 deg
+    /// @brief Isotropic baseline translation std-dev [m].
+    ///        Squared and added to Q_trans to model acceleration-induced prediction uncertainty,
     ///        which keeps the prior responsive to sudden motion regardless of current velocity.
-    float trans_base_noise = 1e-4f;
+    float trans_base_sigma = 1e-2f;  // sqrt(1e-4) m = 1 cm
     /// @brief EMA smoothing factor for the Hessian across frames.
     ///        H_ema = exp(alpha * log(H_curr) + (1-alpha) * log(Ad_ema^T * H_ema_prev * Ad_ema))
     ///        1.0 = current frame only (no smoothing), smaller = more temporal smoothing.
@@ -90,16 +90,17 @@ struct MapPriorParams {
 ///
 /// The process noise Q is computed adaptively from the predicted inter-frame motion:
 ///
-///   Q_rot   = rot_base_noise   + rot_vel_sigma^2   * |delta_rot|
-///   Q_trans = trans_base_noise + trans_vel_sigma^2 * |delta_trans|
+///   Q_rot   = rot_base_sigma^2   + rot_vel_sigma^2   * |delta_rot|
+///   Q_trans = trans_base_sigma^2 + trans_vel_sigma^2 * |delta_trans|
 ///
 /// The velocity-proportional term loosens the prior during fast motion (CV-model uncertainty),
-/// while the additive baseline (base_noise) is an isotropic acceleration-noise term that keeps
-/// the prior responsive to sudden motion even when current velocity is small or zero.
+/// while the additive baseline (base_sigma^2) is an isotropic acceleration-noise term that
+/// keeps the prior responsive to sudden motion even when current velocity is small or zero.
 /// Linear (|delta|) rather than quadratic (delta^2) scaling is used to keep Q within a
 /// practical dynamic range across the typical 0.01–1.0 m/frame motion regime — quadratic
-/// scaling would make the prior nearly vanish at high speed.  vel_sigma is the std-dev
-/// contribution at unit motion (1 rad / 1 m); it appears squared in the variance formula.
+/// scaling would make the prior nearly vanish at high speed.  Both base_sigma and vel_sigma
+/// are parameterised as std-dev (units of [rad] / [m]); vel_sigma is the σ contribution at
+/// unit motion (1 rad / 1 m).  Both appear squared in the variance formula.
 /// In degenerate directions H_raw_prev is small, so Omega_prior is also small and
 /// nl_reg's Tikhonov penalty dominates — the two mechanisms are complementary.
 class MapPrior {
@@ -146,18 +147,20 @@ public:
 
         // Per-axis process noise Q: velocity-proportional term plus an isotropic baseline.
         // Linear (|delta|) rather than quadratic scaling — quadratic would make the prior
-        // nearly vanish at high speed (delta ~ 1m/frame).  vel_sigma is parameterised as the
-        // std-dev contribution at unit motion (1 rad / 1 m), so it appears squared in the
-        // variance formula.  The baseline (base_noise) is always added so the prior stays
-        // responsive to sudden acceleration regardless of current speed.
-        //   Q_rot[i]   = rot_base_noise   + rot_vel_sigma^2   * |delta_rot_body[i]|
-        //   Q_trans[i] = trans_base_noise + trans_vel_sigma^2 * |delta_trans_body[i]|
+        // nearly vanish at high speed (delta ~ 1m/frame).  Both vel_sigma and base_sigma are
+        // parameterised as std-dev (units of [rad] / [m]) and appear squared in the variance
+        // formula.  The baseline (base_sigma^2) is always added so the prior stays responsive
+        // to sudden acceleration regardless of current speed.
+        //   Q_rot[i]   = rot_base_sigma^2   + rot_vel_sigma^2   * |delta_rot_body[i]|
+        //   Q_trans[i] = trans_base_sigma^2 + trans_vel_sigma^2 * |delta_trans_body[i]|
         const float rot_var_per_unit = this->params_.rot_vel_sigma * this->params_.rot_vel_sigma;
         const float trans_var_per_unit = this->params_.trans_vel_sigma * this->params_.trans_vel_sigma;
+        const float rot_base_var = this->params_.rot_base_sigma * this->params_.rot_base_sigma;
+        const float trans_base_var = this->params_.trans_base_sigma * this->params_.trans_base_sigma;
         const Eigen::Vector3f q_rot =
-            delta_rot_body.cwiseAbs() * rot_var_per_unit + Eigen::Vector3f::Constant(this->params_.rot_base_noise);
-        const Eigen::Vector3f q_trans = delta_trans_body.cwiseAbs() * trans_var_per_unit +
-                                        Eigen::Vector3f::Constant(this->params_.trans_base_noise);
+            delta_rot_body.cwiseAbs() * rot_var_per_unit + Eigen::Vector3f::Constant(rot_base_var);
+        const Eigen::Vector3f q_trans =
+            delta_trans_body.cwiseAbs() * trans_var_per_unit + Eigen::Vector3f::Constant(trans_base_var);
 
         // Rotate H_calibrated from T_opt_prev body frame into T_pred body frame via
         // rotation-only Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_cal * Ad
@@ -186,7 +189,7 @@ public:
         this->T_pred_ema_prev_ = T_pred;  // saved for computing Ad_ema at the next call
         this->has_hessian_ema_ = true;
 
-        // R = Q^{-1}: per-axis diagonal (safe because q[i] >= base_noise > 0 by construction)
+        // R = Q^{-1}: per-axis diagonal (safe because q[i] >= base_sigma^2 > 0 by construction)
         Eigen::Vector<float, 6> R_diag;
         R_diag.head<3>() = q_rot.cwiseInverse();
         R_diag.tail<3>() = q_trans.cwiseInverse();
