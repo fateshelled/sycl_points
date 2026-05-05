@@ -116,12 +116,10 @@ public:
 
     /// @brief Set the MAP prior state for the upcoming align() call.
     ///        Must be called once per frame, after motion prediction and before align().
-    /// @param H_raw_prev   Unregularized Hessian (RegistrationResult::H_raw) from the previous frame.
-    /// @param T_opt_prev   Optimized pose of the previous frame (the frame at which H_raw_prev was built).
+    /// @param prev_result  Registration result of the previous frame.
     /// @param T_pred       Predicted pose used as the initial guess for the current frame.
-    void set_map_prior_state(const Eigen::Matrix<float, 6, 6>& H_raw_prev, const Eigen::Isometry3f& T_opt_prev,
-                             const Eigen::Isometry3f& T_pred) {
-        this->map_prior_.update(H_raw_prev, T_opt_prev, T_pred);
+    void set_map_prior_state(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
+        this->map_prior_.update(prev_result, T_pred);
     }
 
     /// @brief validate parameters
@@ -253,8 +251,17 @@ public:
                 const LinearizedResult linearized_result = this->linearize(
                     source, target, result.T.matrix(), robust_scale, rotation_robust_scale, knn_event.evs);
 
+                /*
+                H_raw / b_raw / error_raw are updated here — at the start of each iteration, before the optimizer step.
+                This means they reflect the linearization at the current result.T, which becomes one step behind the
+                final result.T once the optimizer updates the pose.  Near convergence the step size is controlled by the
+                convergence criteria (translation/rotation thresholds), so the mismatch is negligible for practical MAP
+                prior calibration.
+                If higher accuracy is required, add one final linearize() call at the converged pose after the loop.
+                */
                 result.H_raw = linearized_result.H;
                 result.b_raw = linearized_result.b;
+                result.error_raw = linearized_result.error;
 
                 // Regularization: nl_reg (Tikhonov penalty for degenerate directions)
                 const LinearizedResult regularized_result =
