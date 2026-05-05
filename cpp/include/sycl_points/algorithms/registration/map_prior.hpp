@@ -50,12 +50,14 @@ struct MapPriorParams {
 /// this, so H_raw is calibrated by the reduced chi-squared statistic of the previous
 /// registration before being used as an information matrix:
 ///
-///   DOF   = 3 * N_inlier - 6      (3 = GICP residual dim per inlier, 6 = SE(3) params)
-///   s^2   = error / DOF           (residual variance estimate; ~1.0 under perfect modelling)
-///   H_cal = H_raw_prev / s^2      (Sigma_pose ~= s^2 * H_raw^{-1}  =>  Lambda = H_raw / s^2)
+///   DOF   = 3 * N_inlier - 6                (3 = GICP residual dim per inlier, 6 = SE(3) params)
+///   s^2   = max(1.0, 2 * error_raw / DOF)   (factor of 2 cancels the 0.5 in compute_robust_error;
+///                                            clamp >= 1.0 prevents over-confident prior)
+///   H_cal = H_raw_prev / s^2                (Sigma_pose ~= s^2 * H_raw^{-1} => Lambda = H_raw / s^2)
 ///
-/// Large s^2 (under-fit residuals or sparse inliers) loosens the prior; small s^2 tightens
-/// it.  No clamping is applied: callers should monitor degenerate inputs.
+/// Large s^2 (under-fit residuals or sparse inliers) loosens the prior; the lower clamp
+/// at 1.0 prevents over-tightening when residuals come out smaller than the model's
+/// expected unit variance (over-fit, noise-free simulation, etc.).
 ///
 /// H_cal is expressed in the previous sensor frame.  Before computing Omega_prior, it is
 /// rotated into the current sensor frame using the rotation-only Adjoint:
@@ -107,13 +109,17 @@ public:
 
         // Reduced chi-squared scaling: convert the raw Hessian (J^T Sigma^{-1} J under
         // unit-variance residual assumption) into a calibrated information matrix.
-        //   DOF = 3 * N_inlier - 6   (3 = GICP residual dim, 6 = SE(3) params, both fixed)
-        //   s^2 = error / DOF        (no clamp; degenerate inputs disable the prior)
-        // Skip when DOF is non-positive (inlier <= 2) or when error is non-finite.
+        //   DOF = 3 * N_inlier - 6                (3 = GICP residual dim, 6 = SE(3) params)
+        //   s^2 = max(1.0, 2 * error_raw / DOF)
+        // The factor of 2 undoes the 0.5 prefactor in compute_robust_error so that s^2
+        // matches the standard reduced chi-squared definition (sum of squared residuals / DOF).
+        // The lower clamp at 1.0 prevents over-tightening when fit error is below the model's
+        // expected unit-variance level (over-fit, noise-free sim).  Skip when DOF is
+        // non-positive (inlier <= 2) or when error is non-finite/negative.
         const float dof = 3.0f * static_cast<float>(prev_result.inlier) - 6.0f;
         if (dof <= 0.0f) return;
-        if (!std::isfinite(prev_result.error_raw) || prev_result.error_raw <= 0.0f) return;
-        const float s_sq = std::max(1.0f, prev_result.error_raw / dof);
+        if (!std::isfinite(prev_result.error_raw) || prev_result.error_raw < 0.0f) return;
+        const float s_sq = std::max(1.0f, 2.0f * prev_result.error_raw / dof);
         const Eigen::Matrix<float, 6, 6> H_calibrated = prev_result.H_raw / s_sq;
 
         // R_rel = R_opt_prev^T * R_pred: relative rotation from the optimized previous frame
