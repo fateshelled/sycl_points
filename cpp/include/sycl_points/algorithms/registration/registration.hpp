@@ -251,6 +251,14 @@ public:
                 const LinearizedResult linearized_result = this->linearize(
                     source, target, result.T.matrix(), robust_scale, rotation_robust_scale, knn_event.evs);
 
+                /*
+                H_raw / b_raw / error_raw are updated here — at the start of each iteration, before the optimizer step.
+                This means they reflect the linearization at the current result.T, which becomes one step behind the
+                final result.T once the optimizer updates the pose.  Near convergence the step size is controlled by the
+                convergence criteria (translation/rotation thresholds), so the mismatch is negligible for practical MAP
+                prior calibration.
+                If higher accuracy is required, add one final linearize() call at the converged pose after the loop.
+                */
                 result.H_raw = linearized_result.H;
                 result.b_raw = linearized_result.b;
                 result.error_raw = linearized_result.error;
