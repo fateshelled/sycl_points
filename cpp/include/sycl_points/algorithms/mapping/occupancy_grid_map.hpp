@@ -394,7 +394,7 @@ public:
                     if (core.hit_count > 0U) {
                         const VoxelSHData& sh = sh_data_ptr[i];
                         float coeffs[4];
-                        solve_sh_l1(sh, static_cast<float>(core.hit_count), kSHLambda, coeffs);
+                        solve_sh_l1(sh, kSHLambda, coeffs);
                         const float inv_dist = sycl::rsqrt(dist_sq + 1e-12f);
                         const float wx = dx * inv_dist;
                         const float wy = dy * inv_dist;
@@ -522,23 +522,25 @@ private:
         float sum_zz = 0.0f;
     };
 
-    /// @brief SH (l=0,1) data for view-dependent reflectance — model I(ω) = p + q·ω (48 bytes)
+    /// @brief SH (l=0,1) data for view-dependent reflectance — model I(ω) = p + q·ω (52 bytes)
     /// Stores sufficient statistics for online normal-equation accumulation.
-    /// N (observation count) is reused from VoxelCoreData::hit_count.
-    /// Q_zz is recovered via the unit-vector identity: Q_zz = N − Q_xx − Q_yy.
+    /// sh_obs_count tracks only observations with a valid (non-degenerate) direction vector;
+    /// it may be less than VoxelCoreData::hit_count when zero-distance returns are present.
+    /// Q_zz is recovered via the unit-vector identity: Q_zz = sh_obs_count − Q_xx − Q_yy.
     struct VoxelSHData {
-        float sum_wx  = 0.0f;  // Σ ωx
-        float sum_wy  = 0.0f;  // Σ ωy
-        float sum_wz  = 0.0f;  // Σ ωz
-        float sum_wxx = 0.0f;  // Σ ωx²
-        float sum_wxy = 0.0f;  // Σ ωx ωy
-        float sum_wxz = 0.0f;  // Σ ωx ωz
-        float sum_wyy = 0.0f;  // Σ ωy²
-        float sum_wyz = 0.0f;  // Σ ωy ωz
-        float sum_i   = 0.0f;  // Σ I
-        float sum_wxi = 0.0f;  // Σ ωx I
-        float sum_wyi = 0.0f;  // Σ ωy I
-        float sum_wzi = 0.0f;  // Σ ωz I
+        float sum_wx      = 0.0f;  // Σ ωx
+        float sum_wy      = 0.0f;  // Σ ωy
+        float sum_wz      = 0.0f;  // Σ ωz
+        float sum_wxx     = 0.0f;  // Σ ωx²
+        float sum_wxy     = 0.0f;  // Σ ωx ωy
+        float sum_wxz     = 0.0f;  // Σ ωx ωz
+        float sum_wyy     = 0.0f;  // Σ ωy²
+        float sum_wyz     = 0.0f;  // Σ ωy ωz
+        float sum_i       = 0.0f;  // Σ I
+        float sum_wxi     = 0.0f;  // Σ ωx I
+        float sum_wyi     = 0.0f;  // Σ ωy I
+        float sum_wzi     = 0.0f;  // Σ ωz I
+        float sh_obs_count = 0.0f;  // number of observations with a valid direction
     };
 
     /// @brief Core accumulator for position and occupancy
@@ -571,18 +573,19 @@ private:
 
     /// @brief SH accumulator for workgroup-level reduction (mirrors VoxelSHData fields)
     struct VoxelSHAccumulator {
-        float sum_wx  = 0.0f;
-        float sum_wy  = 0.0f;
-        float sum_wz  = 0.0f;
-        float sum_wxx = 0.0f;
-        float sum_wxy = 0.0f;
-        float sum_wxz = 0.0f;
-        float sum_wyy = 0.0f;
-        float sum_wyz = 0.0f;
-        float sum_i   = 0.0f;
-        float sum_wxi = 0.0f;
-        float sum_wyi = 0.0f;
-        float sum_wzi = 0.0f;
+        float sum_wx       = 0.0f;
+        float sum_wy       = 0.0f;
+        float sum_wz       = 0.0f;
+        float sum_wxx      = 0.0f;
+        float sum_wxy      = 0.0f;
+        float sum_wxz      = 0.0f;
+        float sum_wyy      = 0.0f;
+        float sum_wyz      = 0.0f;
+        float sum_i        = 0.0f;
+        float sum_wxi      = 0.0f;
+        float sum_wyi      = 0.0f;
+        float sum_wzi      = 0.0f;
+        float sh_obs_count = 0.0f;
     };
 
     /// @brief Voxel local accumulator
@@ -598,8 +601,14 @@ private:
     static constexpr float kSHLambda = 1e-3f;
 
     /// @brief Solve I(ω) = p + q·ω via Cholesky on the 4×4 normal equations.
-    /// Uses hit_count for N and recovers Q_zz = N − Q_xx − Q_yy.
-    static void solve_sh_l1(const VoxelSHData& sh, float N, float lambda, float coeffs[4]) {
+    /// Uses sh.sh_obs_count (valid-direction observations only) for N;
+    /// recovers Q_zz = N − Q_xx − Q_yy from the unit-vector identity.
+    static void solve_sh_l1(const VoxelSHData& sh, float lambda, float coeffs[4]) {
+        const float N = sh.sh_obs_count;
+        if (N < 1.0f) {
+            coeffs[0] = coeffs[1] = coeffs[2] = coeffs[3] = 0.0f;
+            return;
+        }
         // Q_zz is mathematically non-negative for unit vectors; clamp to guard against rounding.
         const float qzz = sycl::fmax(0.0f, N - sh.sum_wxx - sh.sum_wyy);
         // Build regularised 4×4 symmetric PD matrix (unrolled for device efficiency)
@@ -613,17 +622,17 @@ private:
         const float A22 = sh.sum_wyy + lambda;
         const float A23 = sh.sum_wyz;
         const float A33 = qzz        + lambda;
-        // Cholesky: A = L Lᵀ (fully unrolled 4×4)
-        const float L00 = sycl::sqrt(A00);
+        // Cholesky: A = L Lᵀ (fully unrolled 4×4); sqrt args clamped to prevent NaN on ill-conditioned systems
+        const float L00 = sycl::sqrt(sycl::fmax(1e-9f, A00));
         const float L10 = A01 / L00;
         const float L20 = A02 / L00;
         const float L30 = A03 / L00;
-        const float L11 = sycl::sqrt(A11 - L10 * L10);
+        const float L11 = sycl::sqrt(sycl::fmax(1e-9f, A11 - L10 * L10));
         const float L21 = (A12 - L20 * L10) / L11;
         const float L31 = (A13 - L30 * L10) / L11;
-        const float L22 = sycl::sqrt(A22 - L20 * L20 - L21 * L21);
+        const float L22 = sycl::sqrt(sycl::fmax(1e-9f, A22 - L20 * L20 - L21 * L21));
         const float L32 = (A23 - L30 * L20 - L31 * L21) / L22;
-        const float L33 = sycl::sqrt(A33 - L30 * L30 - L31 * L31 - L32 * L32);
+        const float L33 = sycl::sqrt(sycl::fmax(1e-9f, A33 - L30 * L30 - L31 * L31 - L32 * L32));
         // Forward substitution: L y = b
         const float y0 = sh.sum_i   / L00;
         const float y1 = (sh.sum_wxi - L10 * y0) / L11;
@@ -1070,20 +1079,21 @@ private:
             atomic_ref_float(color_dst.sum_a).fetch_add(color_src.sum_a);
         }
 
-        // SH normal-equation data (12 atomics)
+        // SH normal-equation data (13 atomics)
         if (has_intensity) {
-            atomic_ref_float(sh_dst.sum_wx ).fetch_add(sh_src.sum_wx );
-            atomic_ref_float(sh_dst.sum_wy ).fetch_add(sh_src.sum_wy );
-            atomic_ref_float(sh_dst.sum_wz ).fetch_add(sh_src.sum_wz );
-            atomic_ref_float(sh_dst.sum_wxx).fetch_add(sh_src.sum_wxx);
-            atomic_ref_float(sh_dst.sum_wxy).fetch_add(sh_src.sum_wxy);
-            atomic_ref_float(sh_dst.sum_wxz).fetch_add(sh_src.sum_wxz);
-            atomic_ref_float(sh_dst.sum_wyy).fetch_add(sh_src.sum_wyy);
-            atomic_ref_float(sh_dst.sum_wyz).fetch_add(sh_src.sum_wyz);
-            atomic_ref_float(sh_dst.sum_i  ).fetch_add(sh_src.sum_i  );
-            atomic_ref_float(sh_dst.sum_wxi).fetch_add(sh_src.sum_wxi);
-            atomic_ref_float(sh_dst.sum_wyi).fetch_add(sh_src.sum_wyi);
-            atomic_ref_float(sh_dst.sum_wzi).fetch_add(sh_src.sum_wzi);
+            atomic_ref_float(sh_dst.sum_wx      ).fetch_add(sh_src.sum_wx      );
+            atomic_ref_float(sh_dst.sum_wy      ).fetch_add(sh_src.sum_wy      );
+            atomic_ref_float(sh_dst.sum_wz      ).fetch_add(sh_src.sum_wz      );
+            atomic_ref_float(sh_dst.sum_wxx     ).fetch_add(sh_src.sum_wxx     );
+            atomic_ref_float(sh_dst.sum_wxy     ).fetch_add(sh_src.sum_wxy     );
+            atomic_ref_float(sh_dst.sum_wxz     ).fetch_add(sh_src.sum_wxz     );
+            atomic_ref_float(sh_dst.sum_wyy     ).fetch_add(sh_src.sum_wyy     );
+            atomic_ref_float(sh_dst.sum_wyz     ).fetch_add(sh_src.sum_wyz     );
+            atomic_ref_float(sh_dst.sum_i       ).fetch_add(sh_src.sum_i       );
+            atomic_ref_float(sh_dst.sum_wxi     ).fetch_add(sh_src.sum_wxi     );
+            atomic_ref_float(sh_dst.sum_wyi     ).fetch_add(sh_src.sum_wyi     );
+            atomic_ref_float(sh_dst.sum_wzi     ).fetch_add(sh_src.sum_wzi     );
+            atomic_ref_float(sh_dst.sh_obs_count).fetch_add(sh_src.sh_obs_count);
         }
     }
 
@@ -1256,18 +1266,19 @@ private:
                         const float wx = ddx * inv_dist;
                         const float wy = ddy * inv_dist;
                         const float wz = ddz * inv_dist;
-                        entry.sh_acc.sum_wx  = wx;
-                        entry.sh_acc.sum_wy  = wy;
-                        entry.sh_acc.sum_wz  = wz;
-                        entry.sh_acc.sum_wxx = wx * wx;
-                        entry.sh_acc.sum_wxy = wx * wy;
-                        entry.sh_acc.sum_wxz = wx * wz;
-                        entry.sh_acc.sum_wyy = wy * wy;
-                        entry.sh_acc.sum_wyz = wy * wz;
-                        entry.sh_acc.sum_i   = intensity;
-                        entry.sh_acc.sum_wxi = wx * intensity;
-                        entry.sh_acc.sum_wyi = wy * intensity;
-                        entry.sh_acc.sum_wzi = wz * intensity;
+                        entry.sh_acc.sum_wx       = wx;
+                        entry.sh_acc.sum_wy       = wy;
+                        entry.sh_acc.sum_wz       = wz;
+                        entry.sh_acc.sum_wxx      = wx * wx;
+                        entry.sh_acc.sum_wxy      = wx * wy;
+                        entry.sh_acc.sum_wxz      = wx * wz;
+                        entry.sh_acc.sum_wyy      = wy * wy;
+                        entry.sh_acc.sum_wyz      = wy * wz;
+                        entry.sh_acc.sum_i        = intensity;
+                        entry.sh_acc.sum_wxi      = wx * intensity;
+                        entry.sh_acc.sum_wyi      = wy * intensity;
+                        entry.sh_acc.sum_wzi      = wz * intensity;
+                        entry.sh_acc.sh_obs_count = 1.0f;
                     }
                 }
             };
@@ -1293,18 +1304,19 @@ private:
                     dst.color_acc.sum_a += src.color_acc.sum_a;
                 }
                 if (has_intensity) {
-                    dst.sh_acc.sum_wx  += src.sh_acc.sum_wx;
-                    dst.sh_acc.sum_wy  += src.sh_acc.sum_wy;
-                    dst.sh_acc.sum_wz  += src.sh_acc.sum_wz;
-                    dst.sh_acc.sum_wxx += src.sh_acc.sum_wxx;
-                    dst.sh_acc.sum_wxy += src.sh_acc.sum_wxy;
-                    dst.sh_acc.sum_wxz += src.sh_acc.sum_wxz;
-                    dst.sh_acc.sum_wyy += src.sh_acc.sum_wyy;
-                    dst.sh_acc.sum_wyz += src.sh_acc.sum_wyz;
-                    dst.sh_acc.sum_i   += src.sh_acc.sum_i;
-                    dst.sh_acc.sum_wxi += src.sh_acc.sum_wxi;
-                    dst.sh_acc.sum_wyi += src.sh_acc.sum_wyi;
-                    dst.sh_acc.sum_wzi += src.sh_acc.sum_wzi;
+                    dst.sh_acc.sum_wx       += src.sh_acc.sum_wx;
+                    dst.sh_acc.sum_wy       += src.sh_acc.sum_wy;
+                    dst.sh_acc.sum_wz       += src.sh_acc.sum_wz;
+                    dst.sh_acc.sum_wxx      += src.sh_acc.sum_wxx;
+                    dst.sh_acc.sum_wxy      += src.sh_acc.sum_wxy;
+                    dst.sh_acc.sum_wxz      += src.sh_acc.sum_wxz;
+                    dst.sh_acc.sum_wyy      += src.sh_acc.sum_wyy;
+                    dst.sh_acc.sum_wyz      += src.sh_acc.sum_wyz;
+                    dst.sh_acc.sum_i        += src.sh_acc.sum_i;
+                    dst.sh_acc.sum_wxi      += src.sh_acc.sum_wxi;
+                    dst.sh_acc.sum_wyi      += src.sh_acc.sum_wyi;
+                    dst.sh_acc.sum_wzi      += src.sh_acc.sum_wzi;
+                    dst.sh_acc.sh_obs_count += src.sh_acc.sh_obs_count;
                 }
             };
 
@@ -1756,7 +1768,7 @@ private:
                     if (core.hit_count > 0U) {
                         const VoxelSHData& sh = sh_data_ptr[i];
                         float coeffs[4];
-                        solve_sh_l1(sh, static_cast<float>(core.hit_count), kSHLambda, coeffs);
+                        solve_sh_l1(sh, kSHLambda, coeffs);
                         const float dir_x = cx - sensor_x;
                         const float dir_y = cy - sensor_y;
                         const float dir_z = cz - sensor_z;
