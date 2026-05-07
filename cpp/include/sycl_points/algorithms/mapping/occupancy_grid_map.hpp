@@ -64,8 +64,8 @@ public:
                                                            this->covariance_data_ptr_->size());
         evs += this->queue_.ptr->fill<VoxelColorData>(this->color_data_ptr_->data(), VoxelColorData{},
                                                       this->color_data_ptr_->size());
-        evs += this->queue_.ptr->fill<VoxelSHData>(this->sh_data_ptr_->data(), VoxelSHData{},
-                                                   this->sh_data_ptr_->size());
+        evs +=
+            this->queue_.ptr->fill<VoxelSHData>(this->sh_data_ptr_->data(), VoxelSHData{}, this->sh_data_ptr_->size());
         evs.wait_and_throw();
     }
 
@@ -528,18 +528,18 @@ private:
     /// it may be less than VoxelCoreData::hit_count when zero-distance returns are present.
     /// Q_zz is recovered via the unit-vector identity: Q_zz = sh_obs_count − Q_xx − Q_yy.
     struct VoxelSHData {
-        float sum_wx      = 0.0f;  // Σ ωx
-        float sum_wy      = 0.0f;  // Σ ωy
-        float sum_wz      = 0.0f;  // Σ ωz
-        float sum_wxx     = 0.0f;  // Σ ωx²
-        float sum_wxy     = 0.0f;  // Σ ωx ωy
-        float sum_wxz     = 0.0f;  // Σ ωx ωz
-        float sum_wyy     = 0.0f;  // Σ ωy²
-        float sum_wyz     = 0.0f;  // Σ ωy ωz
-        float sum_i       = 0.0f;  // Σ I
-        float sum_wxi     = 0.0f;  // Σ ωx I
-        float sum_wyi     = 0.0f;  // Σ ωy I
-        float sum_wzi     = 0.0f;  // Σ ωz I
+        float sum_wx = 0.0f;        // Σ ωx
+        float sum_wy = 0.0f;        // Σ ωy
+        float sum_wz = 0.0f;        // Σ ωz
+        float sum_wxx = 0.0f;       // Σ ωx²
+        float sum_wxy = 0.0f;       // Σ ωx ωy
+        float sum_wxz = 0.0f;       // Σ ωx ωz
+        float sum_wyy = 0.0f;       // Σ ωy²
+        float sum_wyz = 0.0f;       // Σ ωy ωz
+        float sum_i = 0.0f;         // Σ I
+        float sum_wxi = 0.0f;       // Σ ωx I
+        float sum_wyi = 0.0f;       // Σ ωy I
+        float sum_wzi = 0.0f;       // Σ ωz I
         float sh_obs_count = 0.0f;  // number of observations with a valid direction
     };
 
@@ -573,18 +573,18 @@ private:
 
     /// @brief SH accumulator for workgroup-level reduction (mirrors VoxelSHData fields)
     struct VoxelSHAccumulator {
-        float sum_wx       = 0.0f;
-        float sum_wy       = 0.0f;
-        float sum_wz       = 0.0f;
-        float sum_wxx      = 0.0f;
-        float sum_wxy      = 0.0f;
-        float sum_wxz      = 0.0f;
-        float sum_wyy      = 0.0f;
-        float sum_wyz      = 0.0f;
-        float sum_i        = 0.0f;
-        float sum_wxi      = 0.0f;
-        float sum_wyi      = 0.0f;
-        float sum_wzi      = 0.0f;
+        float sum_wx = 0.0f;
+        float sum_wy = 0.0f;
+        float sum_wz = 0.0f;
+        float sum_wxx = 0.0f;
+        float sum_wxy = 0.0f;
+        float sum_wxz = 0.0f;
+        float sum_wyy = 0.0f;
+        float sum_wyz = 0.0f;
+        float sum_i = 0.0f;
+        float sum_wxi = 0.0f;
+        float sum_wyi = 0.0f;
+        float sum_wzi = 0.0f;
         float sh_obs_count = 0.0f;
     };
 
@@ -612,7 +612,7 @@ private:
         // Q_zz is mathematically non-negative for unit vectors; clamp to guard against rounding.
         const float qzz = sycl::fmax(0.0f, N - sh.sum_wxx - sh.sum_wyy);
         // Build regularised 4×4 symmetric PD matrix (unrolled for device efficiency)
-        const float A00 = N          + lambda;
+        const float A00 = N + lambda;
         const float A01 = sh.sum_wx;
         const float A02 = sh.sum_wy;
         const float A03 = sh.sum_wz;
@@ -621,7 +621,7 @@ private:
         const float A13 = sh.sum_wxz;
         const float A22 = sh.sum_wyy + lambda;
         const float A23 = sh.sum_wyz;
-        const float A33 = qzz        + lambda;
+        const float A33 = qzz + lambda;
         // Cholesky: A = L Lᵀ (fully unrolled 4×4); sqrt args clamped to prevent NaN on ill-conditioned systems
         const float L00 = sycl::sqrt(sycl::fmax(1e-9f, A00));
         const float L10 = A01 / L00;
@@ -634,7 +634,7 @@ private:
         const float L32 = (A23 - L30 * L20 - L31 * L21) / L22;
         const float L33 = sycl::sqrt(sycl::fmax(1e-9f, A33 - L30 * L30 - L31 * L31 - L32 * L32));
         // Forward substitution: L y = b
-        const float y0 = sh.sum_i   / L00;
+        const float y0 = sh.sum_i / L00;
         const float y1 = (sh.sum_wxi - L10 * y0) / L11;
         const float y2 = (sh.sum_wyi - L20 * y0 - L21 * y1) / L22;
         const float y3 = (sh.sum_wzi - L30 * y0 - L31 * y1 - L32 * y2) / L33;
@@ -877,10 +877,9 @@ private:
 
     template <typename CounterFunc>
     static void global_reduction(const VoxelLocalData& data, uint64_t* key_ptr, VoxelCoreData* core_ptr,
-                                 VoxelCovarianceData* covariance_ptr, VoxelColorData* color_ptr,
-                                 VoxelSHData* sh_ptr, const uint32_t current_frame,
-                                 const size_t max_probe, const size_t capacity, CounterFunc counter, bool has_cov,
-                                 bool has_rgb, bool has_intensity) {
+                                 VoxelCovarianceData* covariance_ptr, VoxelColorData* color_ptr, VoxelSHData* sh_ptr,
+                                 const uint32_t current_frame, const size_t max_probe, const size_t capacity,
+                                 CounterFunc counter, bool has_cov, bool has_rgb, bool has_intensity) {
         const uint64_t voxel_hash = data.voxel_idx;
         if (voxel_hash == VoxelConstants::invalid_coord) {
             return;
@@ -1050,10 +1049,9 @@ private:
 
     static void atomic_add_voxel_data(const VoxelCoreAccumulator& core_src,
                                       const VoxelCovarianceAccumulator& covariance_src,
-                                      const VoxelColorAccumulator& color_src,
-                                      const VoxelSHAccumulator& sh_src, VoxelCoreData& core_dst,
-                                      VoxelCovarianceData& covariance_dst, VoxelColorData& color_dst,
-                                      VoxelSHData& sh_dst, bool has_cov, bool has_rgb,
+                                      const VoxelColorAccumulator& color_src, const VoxelSHAccumulator& sh_src,
+                                      VoxelCoreData& core_dst, VoxelCovarianceData& covariance_dst,
+                                      VoxelColorData& color_dst, VoxelSHData& sh_dst, bool has_cov, bool has_rgb,
                                       bool has_intensity) {
         // Core data
         atomic_ref_float(core_dst.sum_x).fetch_add(core_src.sum_x);
@@ -1081,18 +1079,18 @@ private:
 
         // SH normal-equation data (13 atomics)
         if (has_intensity) {
-            atomic_ref_float(sh_dst.sum_wx      ).fetch_add(sh_src.sum_wx      );
-            atomic_ref_float(sh_dst.sum_wy      ).fetch_add(sh_src.sum_wy      );
-            atomic_ref_float(sh_dst.sum_wz      ).fetch_add(sh_src.sum_wz      );
-            atomic_ref_float(sh_dst.sum_wxx     ).fetch_add(sh_src.sum_wxx     );
-            atomic_ref_float(sh_dst.sum_wxy     ).fetch_add(sh_src.sum_wxy     );
-            atomic_ref_float(sh_dst.sum_wxz     ).fetch_add(sh_src.sum_wxz     );
-            atomic_ref_float(sh_dst.sum_wyy     ).fetch_add(sh_src.sum_wyy     );
-            atomic_ref_float(sh_dst.sum_wyz     ).fetch_add(sh_src.sum_wyz     );
-            atomic_ref_float(sh_dst.sum_i       ).fetch_add(sh_src.sum_i       );
-            atomic_ref_float(sh_dst.sum_wxi     ).fetch_add(sh_src.sum_wxi     );
-            atomic_ref_float(sh_dst.sum_wyi     ).fetch_add(sh_src.sum_wyi     );
-            atomic_ref_float(sh_dst.sum_wzi     ).fetch_add(sh_src.sum_wzi     );
+            atomic_ref_float(sh_dst.sum_wx).fetch_add(sh_src.sum_wx);
+            atomic_ref_float(sh_dst.sum_wy).fetch_add(sh_src.sum_wy);
+            atomic_ref_float(sh_dst.sum_wz).fetch_add(sh_src.sum_wz);
+            atomic_ref_float(sh_dst.sum_wxx).fetch_add(sh_src.sum_wxx);
+            atomic_ref_float(sh_dst.sum_wxy).fetch_add(sh_src.sum_wxy);
+            atomic_ref_float(sh_dst.sum_wxz).fetch_add(sh_src.sum_wxz);
+            atomic_ref_float(sh_dst.sum_wyy).fetch_add(sh_src.sum_wyy);
+            atomic_ref_float(sh_dst.sum_wyz).fetch_add(sh_src.sum_wyz);
+            atomic_ref_float(sh_dst.sum_i).fetch_add(sh_src.sum_i);
+            atomic_ref_float(sh_dst.sum_wxi).fetch_add(sh_src.sum_wxi);
+            atomic_ref_float(sh_dst.sum_wyi).fetch_add(sh_src.sum_wyi);
+            atomic_ref_float(sh_dst.sum_wzi).fetch_add(sh_src.sum_wzi);
             atomic_ref_float(sh_dst.sh_obs_count).fetch_add(sh_src.sh_obs_count);
         }
     }
@@ -1190,7 +1188,7 @@ private:
 
         // Parallel reduction merges per-point contributions into hashed voxels.
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            const size_t local_size = this->compute_work_group_size();
+            const size_t local_size = this->queue_.get_work_group_size();
             const size_t num_work_groups = (N + local_size - 1) / local_size;
             const size_t global_size = num_work_groups * local_size;
 
@@ -1266,18 +1264,18 @@ private:
                         const float wx = ddx * inv_dist;
                         const float wy = ddy * inv_dist;
                         const float wz = ddz * inv_dist;
-                        entry.sh_acc.sum_wx       = wx;
-                        entry.sh_acc.sum_wy       = wy;
-                        entry.sh_acc.sum_wz       = wz;
-                        entry.sh_acc.sum_wxx      = wx * wx;
-                        entry.sh_acc.sum_wxy      = wx * wy;
-                        entry.sh_acc.sum_wxz      = wx * wz;
-                        entry.sh_acc.sum_wyy      = wy * wy;
-                        entry.sh_acc.sum_wyz      = wy * wz;
-                        entry.sh_acc.sum_i        = intensity;
-                        entry.sh_acc.sum_wxi      = wx * intensity;
-                        entry.sh_acc.sum_wyi      = wy * intensity;
-                        entry.sh_acc.sum_wzi      = wz * intensity;
+                        entry.sh_acc.sum_wx = wx;
+                        entry.sh_acc.sum_wy = wy;
+                        entry.sh_acc.sum_wz = wz;
+                        entry.sh_acc.sum_wxx = wx * wx;
+                        entry.sh_acc.sum_wxy = wx * wy;
+                        entry.sh_acc.sum_wxz = wx * wz;
+                        entry.sh_acc.sum_wyy = wy * wy;
+                        entry.sh_acc.sum_wyz = wy * wz;
+                        entry.sh_acc.sum_i = intensity;
+                        entry.sh_acc.sum_wxi = wx * intensity;
+                        entry.sh_acc.sum_wyi = wy * intensity;
+                        entry.sh_acc.sum_wzi = wz * intensity;
                         entry.sh_acc.sh_obs_count = 1.0f;
                     }
                 }
@@ -1304,18 +1302,18 @@ private:
                     dst.color_acc.sum_a += src.color_acc.sum_a;
                 }
                 if (has_intensity) {
-                    dst.sh_acc.sum_wx       += src.sh_acc.sum_wx;
-                    dst.sh_acc.sum_wy       += src.sh_acc.sum_wy;
-                    dst.sh_acc.sum_wz       += src.sh_acc.sum_wz;
-                    dst.sh_acc.sum_wxx      += src.sh_acc.sum_wxx;
-                    dst.sh_acc.sum_wxy      += src.sh_acc.sum_wxy;
-                    dst.sh_acc.sum_wxz      += src.sh_acc.sum_wxz;
-                    dst.sh_acc.sum_wyy      += src.sh_acc.sum_wyy;
-                    dst.sh_acc.sum_wyz      += src.sh_acc.sum_wyz;
-                    dst.sh_acc.sum_i        += src.sh_acc.sum_i;
-                    dst.sh_acc.sum_wxi      += src.sh_acc.sum_wxi;
-                    dst.sh_acc.sum_wyi      += src.sh_acc.sum_wyi;
-                    dst.sh_acc.sum_wzi      += src.sh_acc.sum_wzi;
+                    dst.sh_acc.sum_wx += src.sh_acc.sum_wx;
+                    dst.sh_acc.sum_wy += src.sh_acc.sum_wy;
+                    dst.sh_acc.sum_wz += src.sh_acc.sum_wz;
+                    dst.sh_acc.sum_wxx += src.sh_acc.sum_wxx;
+                    dst.sh_acc.sum_wxy += src.sh_acc.sum_wxy;
+                    dst.sh_acc.sum_wxz += src.sh_acc.sum_wxz;
+                    dst.sh_acc.sum_wyy += src.sh_acc.sum_wyy;
+                    dst.sh_acc.sum_wyz += src.sh_acc.sum_wyz;
+                    dst.sh_acc.sum_i += src.sh_acc.sum_i;
+                    dst.sh_acc.sum_wxi += src.sh_acc.sum_wxi;
+                    dst.sh_acc.sum_wyi += src.sh_acc.sum_wyi;
+                    dst.sh_acc.sum_wzi += src.sh_acc.sum_wzi;
                     dst.sh_acc.sh_obs_count += src.sh_acc.sh_obs_count;
                 }
             };
@@ -1350,9 +1348,8 @@ private:
 
                         const VoxelLocalData local = local_voxel_data[lid];
                         global_reduction(
-                            local, key_ptr, core_ptr, covariance_ptr, color_ptr, sh_data_ptr, current_frame,
-                            max_probe, capacity, [&](uint32_t add) { voxel_num_arg += add; }, has_cov, has_rgb,
-                            has_intensity);
+                            local, key_ptr, core_ptr, covariance_ptr, color_ptr, sh_data_ptr, current_frame, max_probe,
+                            capacity, [&](uint32_t add) { voxel_num_arg += add; }, has_cov, has_rgb, has_intensity);
                     });
             } else {
                 auto voxel_ptr_counter = voxel_counter.data();
@@ -1370,10 +1367,9 @@ private:
 
                         const VoxelLocalData local = local_voxel_data[lid];
                         global_reduction(
-                            local, key_ptr, core_ptr, covariance_ptr, color_ptr, sh_data_ptr, current_frame,
-                            max_probe, capacity,
-                            [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); }, has_cov,
-                            has_rgb, has_intensity);
+                            local, key_ptr, core_ptr, covariance_ptr, color_ptr, sh_data_ptr, current_frame, max_probe,
+                            capacity, [&](uint32_t add) { atomic_ref_uint32_t(voxel_ptr_counter[0]).fetch_add(add); },
+                            has_cov, has_rgb, has_intensity);
                     });
             }
         });
@@ -1571,9 +1567,9 @@ private:
                     local.core_acc.log_odds_delta = log_miss;
 
                     global_reduction(
-                        local, key_ptr, core_ptr, covariance_ptr, color_ptr, sh_ptr, current_frame, max_probe,
-                        capacity, [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); }, has_cov,
-                        has_rgb, has_intensity);
+                        local, key_ptr, core_ptr, covariance_ptr, color_ptr, sh_ptr, current_frame, max_probe, capacity,
+                        [=](uint32_t add) { atomic_ref_uint32_t(counter_ptr[0]).fetch_add(add); }, has_cov, has_rgb,
+                        has_intensity);
                 };
 
                 const bool skip_origin_miss = has_origin_key ? origin_hit_ptr[0] != 0U : false;
@@ -1798,22 +1794,6 @@ private:
             }
         });
         host_event.wait_and_throw();
-    }
-
-    size_t compute_work_group_size() const {
-        const size_t max_work_group_size =
-            this->queue_.get_device().get_info<sycl::info::device::max_work_group_size>();
-        const size_t compute_units = this->queue_.get_device().get_info<sycl::info::device::max_compute_units>();
-        if (this->queue_.is_nvidia()) {
-            return std::min(max_work_group_size, size_t{64});
-        }
-        if (this->queue_.is_intel() && this->queue_.is_gpu()) {
-            return std::min(max_work_group_size, compute_units * size_t{8});
-        }
-        if (this->queue_.is_cpu()) {
-            return std::min(max_work_group_size, compute_units * size_t{100});
-        }
-        return std::min<size_t>(128, max_work_group_size);
     }
 
     sycl_utils::DeviceQueue queue_;
