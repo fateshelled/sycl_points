@@ -196,9 +196,10 @@ TEST(OccupancyGridMapTest, AggregatesColorAndIntensity) {
 
         sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.1f);
 
+        // Place points away from sensor origin so the SH direction is well-defined.
         const std::vector<Eigen::Vector3f> input_positions = {
-            {0.0f, 0.0f, 0.0f},
-            {0.05f, 0.0f, 0.0f},
+            {0.50f, 0.0f, 0.0f},
+            {0.55f, 0.0f, 0.0f},
         };
         const std::vector<sycl_points::RGBType> colors = {
             sycl_points::RGBType(0.0f, 0.2f, 0.4f, 1.0f),
@@ -217,7 +218,7 @@ TEST(OccupancyGridMapTest, AggregatesColorAndIntensity) {
         ASSERT_TRUE(result.has_intensity());
 
         const auto point = (*result.points)[0];
-        EXPECT_NEAR(point.x(), 0.025f, 1e-5f);
+        EXPECT_NEAR(point.x(), 0.525f, 1e-5f);
         EXPECT_NEAR(point.y(), 0.0f, 1e-5f);
         EXPECT_NEAR(point.z(), 0.0f, 1e-5f);
 
@@ -227,8 +228,10 @@ TEST(OccupancyGridMapTest, AggregatesColorAndIntensity) {
         EXPECT_NEAR(color.z(), 0.5f, 1e-5f);
         EXPECT_NEAR(color.w(), 1.0f, 1e-5f);
 
+        // SH(l=1) evaluated at the same direction as observations: matches the mean modulo
+        // Tikhonov shrinkage (λ=1e-3 → ~19.995 instead of 20).
         const float intensity = (*result.intensities)[0];
-        EXPECT_NEAR(intensity, 20.0f, 1e-5f);
+        EXPECT_NEAR(intensity, 20.0f, 0.05f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
