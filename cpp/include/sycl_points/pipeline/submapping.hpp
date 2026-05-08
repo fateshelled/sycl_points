@@ -210,12 +210,12 @@ private:
         if (photometric_enabled) {
             if (this->submap_pc_ptr_->has_rgb()) {
                 ensure_knn();
-                grad_events += algorithms::color_gradient::compute_color_gradients_async(
-                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
+                grad_events +=
+                    algorithms::color_gradient::compute_async(*this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
             } else if (this->submap_pc_ptr_->has_intensity()) {
                 ensure_knn();
-                grad_events += algorithms::intensity_gradient::compute_intensity_gradients_async(
-                    *this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
+                grad_events += algorithms::intensity_gradient::compute_async(*this->submap_pc_ptr_, this->knn_result_,
+                                                                             knn_events.evs);
             }
         }
         grad_events.wait_and_throw();
