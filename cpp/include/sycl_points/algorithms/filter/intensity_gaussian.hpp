@@ -32,9 +32,8 @@ namespace kernel {
 /// @param sigma_azimuth  σ for the horizontal (azimuthal) scan direction [same units as coordinates]
 /// @param sigma_elevation σ for the vertical (elevation) direction [same units as coordinates]
 /// @param sigma_range    σ for the radial (depth) direction [same units as coordinates]
-SYCL_EXTERNAL inline float compute_gaussian(const PointType* points, const float* intensities, const int32_t* index_ptr,
-                                            size_t k, size_t i, float sigma_azimuth, float sigma_elevation,
-                                            float sigma_range) {
+SYCL_EXTERNAL inline float compute(const PointType* points, const float* intensities, const int32_t* index_ptr,
+                                   size_t k, size_t i, float sigma_azimuth, float sigma_elevation, float sigma_range) {
     const float px = points[i].x();
     const float py = points[i].y();
     const float pz = points[i].z();
@@ -132,7 +131,7 @@ inline void smooth_intensity(PointCloudShared& cloud, const knn::KNNResult& neig
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
-            tmp_ptr[i] = kernel::compute_gaussian(pt_ptr, int_ptr, idx_ptr, k, i, sig_az, sig_el, sig_r);
+            tmp_ptr[i] = kernel::compute(pt_ptr, int_ptr, idx_ptr, k, i, sig_az, sig_el, sig_r);
         });
     });
     event.wait_and_throw();
