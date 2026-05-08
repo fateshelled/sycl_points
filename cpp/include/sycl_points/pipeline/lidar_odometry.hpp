@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -219,6 +220,14 @@ public:
                 return ResultType::error;
             }
             this->add_delta_time(ProcessName::build_submap, dt_build_submap);
+        }
+
+        // Apply constant-velocity deskew to the full (non-sampled) preprocessed_pc_ for publishing.
+        // Submap uses the sampled reg_pc_ptr from registration; this keeps the published cloud full-resolution.
+        if (this->params_.registration.pipeline.velocity_update.enable &&  //
+            !this->is_imu_deskew_enabled()) {
+            algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
+                                                                     this->odom_, this->reg_result_->T, this->dt_);
         }
 
         // update Velocity and Odometry
@@ -465,38 +474,30 @@ private:
                                                    this->submap_->get_submap_kdtree(), init_T.matrix(), options);
     }
 
-    bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
-        // If velocity update is disabled, get the registration input point cloud.
-        auto reg_pc_ptr = this->registration_pipeline_->get_deskewed_point_cloud();
-        bool computed_icp_weights = false;
-        if (reg_pc_ptr) {
-            const size_t total_samples = this->params_.submap.point_random_sampling_num;
-            if (reg_pc_ptr->size() > total_samples) {
-                // Robust ICP weighted mixed random sampling
-                const auto robust_auto_scale = this->params_.registration.pipeline.robust.auto_scale;
-                const float robust_scale = robust_auto_scale
-                                               ? this->params_.registration.pipeline.robust.min_scale
-                                               : this->params_.registration.pipeline.registration.robust.default_scale;
-                this->registration_pipeline_->compute_icp_robust_weights(
-                    this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(), reg_result.T.matrix(),
-                    robust_scale, *this->icp_weights_);
-                computed_icp_weights = true;
-            }
-            std::swap(this->preprocessed_pc_, reg_pc_ptr);
-        } else {
-            if (this->params_.registration.pipeline.velocity_update.enable &&  //
-                !this->is_imu_deskew_enabled()) {
-                algorithms::deskew::deskew_point_cloud_constant_velocity(
-                    *this->preprocessed_pc_, *this->preprocessed_pc_, this->odom_, reg_result.T, this->dt_);
-            }
+    void submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
+        // Always non-null after align() — registration_input_pc_ / deskewed_pc_ are guaranteed to be set.
+        const auto reg_pc_ptr = this->registration_pipeline_->get_deskewed_point_cloud();
+        if (reg_pc_ptr == nullptr) {
+            std::cerr << "[LiDAR Odometry] get_deskewed_point_cloud() returned nullptr unexpectedly." << std::endl;
+            assert(false);
         }
-        const float inlier_ratio = this->registration_pipeline_->get_inlier_ratio(reg_result);
 
-        if (computed_icp_weights) {
-            return this->submap_->add_frame(*this->preprocessed_pc_, reg_result, inlier_ratio, timestamp,
-                                            this->icp_weights_);
+        shared_vector_ptr<float> icp_weights = nullptr;
+        const size_t total_samples = this->params_.submap.point_random_sampling_num;
+        if (reg_pc_ptr->size() > total_samples) {
+            // Robust ICP weighted mixed random sampling
+            const auto robust_auto_scale = this->params_.registration.pipeline.robust.auto_scale;
+            const float robust_scale = robust_auto_scale
+                                           ? this->params_.registration.pipeline.robust.min_scale
+                                           : this->params_.registration.pipeline.registration.robust.default_scale;
+            this->registration_pipeline_->compute_icp_robust_weights(
+                this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(), reg_result.T.matrix(),
+                robust_scale, *this->icp_weights_);
+            icp_weights = this->icp_weights_;
         }
-        return this->submap_->add_frame(*this->preprocessed_pc_, reg_result, inlier_ratio, timestamp);
+
+        const float inlier_ratio = this->registration_pipeline_->get_inlier_ratio(reg_result);
+        this->submap_->add_frame(*reg_pc_ptr, reg_result, inlier_ratio, timestamp, icp_weights);
     }
 };
 
