@@ -54,7 +54,7 @@ namespace kernel {
 /// @param scale Scale parameter for robust loss
 /// @return Robust weight (0.0 to 1.0)
 template <RobustLossType LossType = RobustLossType::NONE>
-SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float scale) {
+SYCL_EXTERNAL inline float compute_weight(float residual_norm, float scale) {
     if constexpr (LossType == RobustLossType::NONE) {
         return 1.0f;
     }
@@ -94,7 +94,7 @@ SYCL_EXTERNAL inline float compute_robust_weight(float residual_norm, float scal
 /// @param scale Scale parameter for robust loss
 /// @return Robust weight (0.0 to 1.0)
 template <RobustLossType LossType = RobustLossType::NONE>
-SYCL_EXTERNAL inline float compute_robust_error(float residual_norm, float scale) {
+SYCL_EXTERNAL inline float compute_error(float residual_norm, float scale) {
     if constexpr (LossType == RobustLossType::NONE) {
         return 0.5f * residual_norm * residual_norm;
     } else if constexpr (LossType == RobustLossType::HUBER) {
