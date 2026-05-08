@@ -135,7 +135,7 @@ public:
                 }
                 std::cout << "[Caution] Normal vectors for Point-to-Plane ICP are not provided. " << std::endl;
                 std::cout << "          Attempting to derive them from pre-computed covariance matrices." << std::endl;
-                covariance::compute_normals_from_covariances(target);
+                covariance::extract_normals(target);
             }
         }
         if (params.reg_type == RegType::GICP) {
@@ -156,7 +156,7 @@ public:
                     std::cout << "[Caution] Normal vectors for GenZ-ICP are not provided. " << std::endl;
                     std::cout << "          Attempting to derive them from pre-computed covariance matrices."
                               << std::endl;
-                    covariance::compute_normals_from_covariances(target);
+                    covariance::extract_normals(target);
                 }
             }
         }

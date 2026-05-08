@@ -138,12 +138,12 @@ private:
         auto events = src_tree->knn_search_async(scan, this->covs_params_.neighbor_num, knn_result);
 
         if (this->covs_params_.m_estimation.enable) {
-            events += algorithms::covariance::compute_covariances_with_m_estimation_async(
+            events += algorithms::covariance::estimate_robust_async(
                 knn_result, scan, this->covs_params_.m_estimation.type, this->covs_params_.m_estimation.mad_scale,
                 this->covs_params_.m_estimation.min_robust_scale, this->covs_params_.m_estimation.max_iterations,
                 events.evs);
         } else {
-            events += algorithms::covariance::compute_covariances_async(knn_result, scan, events.evs);
+            events += algorithms::covariance::estimate_async(knn_result, scan, events.evs);
         }
         events.wait_and_throw();
         return knn_result;

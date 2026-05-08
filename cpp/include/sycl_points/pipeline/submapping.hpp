@@ -250,29 +250,27 @@ private:
                 normals_are_ready = true;
                 if (submap_has_cov) {
                     ensure_knn();
-                    cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                                 knn_events.evs);
+                    cov_events += algorithms::covariance::extract_normals_async(*this->submap_pc_ptr_, knn_events.evs);
                 } else {
                     ensure_knn();
-                    cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
-                                                                                *this->submap_pc_ptr_, knn_events.evs);
+                    cov_events += algorithms::covariance::estimate_normals_async(this->knn_result_,
+                                                                                 *this->submap_pc_ptr_, knn_events.evs);
                 }
             }
             if (need_covariances && !submap_has_cov) {
                 covariances_are_ready = true;
                 ensure_knn();
-                cov_events += algorithms::covariance::compute_covariances_async(this->knn_result_,
-                                                                                *this->submap_pc_ptr_, knn_events.evs);
+                cov_events +=
+                    algorithms::covariance::estimate_async(this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
             }
 
             if (photometric_enabled && !normals_are_ready) {
                 if (covariances_are_ready) {
-                    cov_events += algorithms::covariance::compute_normals_from_covariances_async(*this->submap_pc_ptr_,
-                                                                                                 cov_events.evs);
+                    cov_events += algorithms::covariance::extract_normals_async(*this->submap_pc_ptr_, cov_events.evs);
                 } else {
                     ensure_knn();
-                    cov_events += algorithms::covariance::compute_normals_async(this->knn_result_,
-                                                                                *this->submap_pc_ptr_, knn_events.evs);
+                    cov_events += algorithms::covariance::estimate_normals_async(this->knn_result_,
+                                                                                 *this->submap_pc_ptr_, knn_events.evs);
                 }
             }
         }

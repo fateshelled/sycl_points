@@ -42,8 +42,7 @@ int main() {
     auto kdtree = sycl_points::algorithms::knn::KDTree::build(queue, shared_points);
     for (size_t i = 0; i < 11; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        sycl_points::algorithms::covariance::compute_covariances_async(*kdtree, shared_points,
-                                                                       k_correspondence_covariance)
+        sycl_points::algorithms::covariance::estimate_async(*kdtree, shared_points, k_correspondence_covariance)
             .wait_and_throw();
         if (i > 0) {
             dt_covariances +=
