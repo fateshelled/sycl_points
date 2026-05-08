@@ -124,6 +124,31 @@ TEST(IntensityGaussianTest, ThrowsNonPositiveSigma) {
                  std::runtime_error);
 }
 
+TEST(IntensityGaussianTest, ZenithPointsNoNaN) {
+    sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
+    sycl_points::sycl_utils::DeviceQueue queue(device);
+
+    // Points near zenith (px=py=0): az_hat degenerates; fallback basis must keep filter valid
+    std::vector<sycl_points::PointType> pts = {
+        {0.0f, 0.0f, 5.0f, 1.0f},  // exactly on Z-axis
+        {0.0f, 0.0f, 6.0f, 1.0f},
+        {0.1f, 0.0f, 5.0f, 1.0f},  // slightly off-axis neighbor
+    };
+    std::vector<float> intensities = {1.0f, 0.0f, 0.5f};
+
+    auto cloud = make_cloud(queue, pts, intensities);
+    auto kdtree = sycl_points::algorithms::knn::KDTree::build(queue, cloud);
+    auto neighbors = kdtree->knn_search(cloud, 3);
+    ASSERT_NO_THROW(sycl_points::algorithms::intensity_gaussian::smooth_intensity(cloud, neighbors, 0.3f, 0.3f, 0.3f));
+
+    // All outputs must be finite and in [0, 1]
+    for (size_t i = 0; i < pts.size(); ++i) {
+        EXPECT_TRUE(std::isfinite((*cloud.intensities)[i])) << "NaN/Inf at index " << i;
+        EXPECT_GE((*cloud.intensities)[i], 0.0f);
+        EXPECT_LE((*cloud.intensities)[i], 1.0f);
+    }
+}
+
 TEST(IntensityGaussianTest, EmptyCloudNoThrow) {
     sycl::device device(sycl_points::sycl_utils::device_selector::default_selector_v);
     sycl_points::sycl_utils::DeviceQueue queue(device);

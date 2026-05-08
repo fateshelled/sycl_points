@@ -45,18 +45,21 @@ SYCL_EXTERNAL inline float compute_gaussian(const PointType* points, const float
     // Radial direction
     const float rx = px / r, ry = py / r, rz = pz / r;
 
-    // Azimuthal tangent: cylindrical tangent in XY plane, clamped for zenith stability
-    const float rxy_safe = sycl::fmax(sycl::sqrt(px * px + py * py), 1e-6f);
-    const float inv_rxy = 1.0f / rxy_safe;
-    const float ax = -py * inv_rxy;
-    const float ay = px * inv_rxy;
-    // az_hat.z == 0, so az component of dp uses only x,y
+    // Azimuthal tangent: cylindrical tangent in XY plane.
+    // Near zenith (rxy < 1e-6), az_hat degenerates; use fallback basis (x-axis, y-axis)
+    // via branchless select to avoid warp divergence on GPU.
+    const float rxy = sycl::sqrt(px * px + py * py);
+    const bool near_zenith = rxy < 1e-6f;
+    const float inv_rxy = 1.0f / sycl::fmax(rxy, 1e-6f);
+    const float ax = near_zenith ? 1.0f : (-py * inv_rxy);
+    const float ay = near_zenith ? 0.0f : (px * inv_rxy);
+    // az_hat.z == 0 in both normal and fallback cases
 
-    // Elevation tangent: cross(r_hat, az_hat), analytically unit length
-    //   el = (-rz*ay,  rz*ax,  rxy/r)
-    const float ex = -rz * ay;
-    const float ey = rz * ax;
-    const float ez = (px * px + py * py) / (r * rxy_safe);  // = rxy/r when rxy == rxy_safe
+    // Elevation tangent: cross(r_hat, az_hat) in normal case, y-axis in fallback.
+    // Analytically unit length when rxy > 0.
+    const float ex = near_zenith ? 0.0f : (-rz * ay);
+    const float ey = near_zenith ? 1.0f : (rz * ax);
+    const float ez = near_zenith ? 0.0f : (rxy / r);
 
     const float inv2_r = 0.5f / (sigma_range * sigma_range);
     const float inv2_az = 0.5f / (sigma_azimuth * sigma_azimuth);
