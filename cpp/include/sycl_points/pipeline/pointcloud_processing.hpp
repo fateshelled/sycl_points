@@ -3,7 +3,9 @@
 #include <Eigen/Geometry>
 
 #include "sycl_points/algorithms/deskew/imu_deskew.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
+#include "sycl_points/algorithms/filter/intensity_gaussian.hpp"
 #include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
@@ -16,6 +18,14 @@
 namespace sycl_points {
 namespace pipeline {
 namespace pointcloud_processing {
+
+/// @brief Per-frame context derived from a scan's KDTree and KNN search results.
+///        Built by PCProcessor::prepare_context() and consumed by compute_covariances()
+///        and refine_filter().
+struct ProcessingContext {
+    algorithms::knn::KDTree::Ptr tree;
+    algorithms::knn::KNNResult knn_result;
+};
 
 class PCProcessor {
 public:
@@ -41,22 +51,30 @@ public:
         this->deskew_with_imu_impl(src, dst, imu_buffer, current_pose, bias);
     }
 
-    algorithms::knn::KNNResult compute_covariances(PointCloudShared& scan) const {
-        return this->compute_covariances_impl(scan);
-    }
-
     void prefilter(const PointCloudShared& src, PointCloudShared& dst) const { this->prefilter_impl(src, dst); }
 
     void random_sampling(const PointCloudShared& src, PointCloudShared& dst, size_t num) const {
         this->preprocess_filter_->random_sampling(src, dst, num);
     }
 
-    void refine_filter(PointCloudShared& scan, const algorithms::knn::KNNResult& knn_result) const {
-        this->refine_filter_impl(scan, knn_result);
+    /// @brief Build a KDTree from scan. Must be called before compute_covariances() and refine_filter().
+    ProcessingContext prepare_context(const PointCloudShared& scan) const {
+        ProcessingContext ctx;
+        ctx.tree = algorithms::knn::KDTree::build(this->queue_, scan);
+        return ctx;
+    }
+
+    /// @brief Estimate covariances using the KDTree in ctx. Populates ctx.knn_result.
+    void compute_covariances(PointCloudShared& scan, ProcessingContext& ctx) const {
+        this->compute_covariances_impl(scan, ctx);
+    }
+
+    /// @brief Apply post-KNN filters (angle incidence, z-score, Gaussian intensity smoothing).
+    void refine_filter(PointCloudShared& scan, const ProcessingContext& ctx) const {
+        this->refine_filter_impl(scan, ctx);
     }
 
 private:
-    /// @brief SYCL queue
     sycl_utils::DeviceQueue queue_;
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
     algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
@@ -64,6 +82,7 @@ private:
     lidar_odometry::Parameters::Scan scan_params_;
     lidar_odometry::Parameters::CovarianceEstimation covs_params_;
     lidar_odometry::Parameters::IMU imu_params_;
+
     void initialize() {
         this->preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(this->queue_);
         if (this->scan_params_.downsampling.voxel.enable) {
@@ -84,7 +103,6 @@ private:
     void deskew_with_imu_impl(const PointCloudShared& src, PointCloudShared& dst, const Range& imu_buffer,
                               const Eigen::Isometry3f& current_pose, const imu::IMUBias& bias) const {
         const double scan_start_sec = src.start_time_ms * 1e-3;
-        // R_world_imu = R_world_lidar * R_lidar_imu
         const Eigen::Matrix3f R_world_imu = current_pose.rotation() * this->imu_params_.T_imu_to_lidar.rotation();
         algorithms::deskew::deskew_point_cloud_imu(src, dst, imu_buffer, scan_start_sec,
                                                    this->imu_params_.T_imu_to_lidar, bias,
@@ -116,12 +134,10 @@ private:
             dst = src;
         }
 
-        // Random sampling
         if (this->scan_params_.downsampling.random.enable) {
             this->preprocess_filter_->random_sampling(dst, this->scan_params_.downsampling.random.num);
         }
 
-        // Intensity correct
         if (this->scan_params_.intensity_correction.enable && dst.has_intensity()) {
             algorithms::intensity_correction::correct_intensity(dst, this->scan_params_.intensity_correction.exp,
                                                                 this->scan_params_.intensity_correction.scale,
@@ -132,24 +148,21 @@ private:
         }
     }
 
-    algorithms::knn::KNNResult compute_covariances_impl(PointCloudShared& scan) const {
-        algorithms::knn::KNNResult knn_result;
-        const auto src_tree = algorithms::knn::KDTree::build(this->queue_, scan);
-        auto events = src_tree->knn_search_async(scan, this->covs_params_.neighbor_num, knn_result);
+    void compute_covariances_impl(PointCloudShared& scan, ProcessingContext& ctx) const {
+        auto events = ctx.tree->knn_search_async(scan, this->covs_params_.neighbor_num, ctx.knn_result);
 
         if (this->covs_params_.m_estimation.enable) {
             events += algorithms::covariance::estimate_robust_async(
-                knn_result, scan, this->covs_params_.m_estimation.type, this->covs_params_.m_estimation.mad_scale,
+                ctx.knn_result, scan, this->covs_params_.m_estimation.type, this->covs_params_.m_estimation.mad_scale,
                 this->covs_params_.m_estimation.min_robust_scale, this->covs_params_.m_estimation.max_iterations,
                 events.evs);
         } else {
-            events += algorithms::covariance::estimate_async(knn_result, scan, events.evs);
+            events += algorithms::covariance::estimate_async(ctx.knn_result, scan, events.evs);
         }
         events.wait_and_throw();
-        return knn_result;
     }
 
-    void refine_filter_impl(PointCloudShared& scan, const algorithms::knn::KNNResult& knn_result) const {
+    void refine_filter_impl(PointCloudShared& scan, const ProcessingContext& ctx) const {
         if (this->scan_params_.preprocess.angle_incidence_filter.enable) {
             this->preprocess_filter_->angle_incidence_filter(
                 scan, scan, this->scan_params_.preprocess.angle_incidence_filter.min_angle,
@@ -157,10 +170,25 @@ private:
         }
 
         if (this->scan_params_.intensity_zscore.enable && scan.has_intensity()) {
-            algorithms::intensity_zscore::compute(scan, knn_result, this->scan_params_.intensity_zscore.sigma_min);
+            algorithms::intensity_zscore::compute(scan, ctx.knn_result, this->scan_params_.intensity_zscore.sigma_min);
+        }
+
+        if (this->scan_params_.intensity_gaussian.enable && scan.has_intensity()) {
+            const auto& gp = this->scan_params_.intensity_gaussian;
+            // Reuse covariance KNN result if it has enough neighbors, avoiding a redundant search.
+            // When reusing, far neighbors contribute negligibly due to exponential weight decay.
+            if (gp.neighbor_num <= ctx.knn_result.k) {
+                algorithms::intensity_gaussian::smooth_intensity(scan, ctx.knn_result, gp.sigma_azimuth,
+                                                                 gp.sigma_elevation, gp.sigma_range);
+            } else {
+                const auto gaussian_knn = ctx.tree->knn_search(scan, gp.neighbor_num);
+                algorithms::intensity_gaussian::smooth_intensity(scan, gaussian_knn, gp.sigma_azimuth,
+                                                                 gp.sigma_elevation, gp.sigma_range);
+            }
         }
     }
 };
+
 }  // namespace pointcloud_processing
 }  // namespace pipeline
 }  // namespace sycl_points

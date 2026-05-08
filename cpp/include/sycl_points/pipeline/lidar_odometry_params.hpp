@@ -107,8 +107,17 @@ struct Parameters {
             float sigma_min = 0.0f;  // Points with local σ below this are set to z=0 (flat region)
         };
 
+        struct IntensityGaussian {
+            bool enable = false;
+            size_t neighbor_num = 10;
+            float sigma_azimuth = 0.3f;    // [m] horizontal (azimuthal) scan direction
+            float sigma_elevation = 0.5f;  // [m] vertical (elevation) direction
+            float sigma_range = 0.05f;     // [m] radial depth direction (small = edge-preserving)
+        };
+
         IntensityCorrection intensity_correction;
         IntensityZScore intensity_zscore;
+        IntensityGaussian intensity_gaussian;
         Downsampling downsampling;
         Preprocess preprocess;
     };
