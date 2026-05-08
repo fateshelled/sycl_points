@@ -35,6 +35,16 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             node->declare_parameter<bool>("scan/intensity_zscore/enable", params.scan.intensity_zscore.enable);
         params.scan.intensity_zscore.sigma_min =
             node->declare_parameter<double>("scan/intensity_zscore/sigma_min", params.scan.intensity_zscore.sigma_min);
+        params.scan.intensity_gaussian.enable =
+            node->declare_parameter<bool>("scan/intensity_gaussian/enable", params.scan.intensity_gaussian.enable);
+        params.scan.intensity_gaussian.neighbor_num = node->declare_parameter<int>(
+            "scan/intensity_gaussian/neighbor_num", params.scan.intensity_gaussian.neighbor_num);
+        params.scan.intensity_gaussian.sigma_azimuth = node->declare_parameter<double>(
+            "scan/intensity_gaussian/sigma_azimuth", params.scan.intensity_gaussian.sigma_azimuth);
+        params.scan.intensity_gaussian.sigma_elevation = node->declare_parameter<double>(
+            "scan/intensity_gaussian/sigma_elevation", params.scan.intensity_gaussian.sigma_elevation);
+        params.scan.intensity_gaussian.sigma_range = node->declare_parameter<double>(
+            "scan/intensity_gaussian/sigma_range", params.scan.intensity_gaussian.sigma_range);
         params.scan.downsampling.voxel.enable =
             node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan.downsampling.voxel.enable);
         params.scan.downsampling.voxel.size =
