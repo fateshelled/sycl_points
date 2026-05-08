@@ -209,7 +209,7 @@ SYCL_EXTERNAL Covariance estimate_robust(const PointType* point_ptr, size_t k_co
             }
 
             for (size_t j = 0; j < k_correspondences; ++j) {
-                weights[j] = robust::kernel::compute_robust_weight<robust_type>(dist_squared[j], robust_scale);
+                weights[j] = robust::kernel::compute_weight<robust_type>(dist_squared[j], robust_scale);
             }
 
             success = kernel::estimate_weighted(cov, mean, point_ptr, k_correspondences, index_ptr, weights, i);
