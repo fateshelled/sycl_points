@@ -392,8 +392,8 @@ public:
 
                 if (has_intensity && intensity_ptr) {
                     const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
-                    if (intensity_data.sum_weight > 0.0f) {
-                        intensity_ptr[index] = intensity_data.sum_weighted_intensity / intensity_data.sum_weight;
+                    if (core.hit_count > 0U) {
+                        intensity_ptr[index] = intensity_data.sum_intensity * inv_count;
                     } else {
                         intensity_ptr[index] = 0.0f;
                     }
@@ -516,12 +516,9 @@ private:
         float sum_zz = 0.0f;
     };
 
-    /// @brief Intensity data for reflectivity information (8 bytes).
-    ///        Stores distance-weighted intensity sum and the corresponding weight sum so that
-    ///        the per-voxel intensity is the weighted mean: sum_weighted_intensity / sum_weight.
+    /// @brief Intensity data for reflectivity information (4 bytes)
     struct VoxelIntensityData {
-        float sum_weighted_intensity = 0.0f;
-        float sum_weight = 0.0f;
+        float sum_intensity = 0.0f;
     };
 
     /// @brief Core accumulator for position and occupancy
@@ -552,14 +549,12 @@ private:
         float sum_zz = 0.0f;
     };
 
-    /// @brief Intensity accumulator for reflectivity information.
-    ///        Mirrors VoxelIntensityData layout for atomic accumulation.
+    /// @brief Intensity accumulator for reflectivity information
     struct VoxelIntensityAccumulator {
-        float sum_weighted_intensity = 0.0f;
-        float sum_weight = 0.0f;
+        float sum_intensity = 0.0f;
     };
 
-    /// @brief Voxel local accumulator
+    /// @brief Voxel local accumulator (64 bytes)
     struct VoxelLocalData {
         uint64_t voxel_idx = VoxelConstants::invalid_coord;
         VoxelCoreAccumulator core_acc;
@@ -999,8 +994,7 @@ private:
 
         // Intensity data (only if present)
         if (has_intensity) {
-            atomic_ref_float(intensity_dst.sum_weighted_intensity).fetch_add(intensity_src.sum_weighted_intensity);
-            atomic_ref_float(intensity_dst.sum_weight).fetch_add(intensity_src.sum_weight);
+            atomic_ref_float(intensity_dst.sum_intensity).fetch_add(intensity_src.sum_intensity);
         }
     }
 
@@ -1159,16 +1153,9 @@ private:
                 }
 
                 if (has_intensity && intensity_ptr) {
-                    // Weight by inverse-square of sensor-frame distance so that closer (more reliable)
-                    // observations dominate the per-voxel intensity estimate.
-                    const float dist_sq = local_point.x() * local_point.x() + local_point.y() * local_point.y() +
-                                          local_point.z() * local_point.z();
-                    const float weight = 1.0f / sycl::fmax(dist_sq, 1e-3f);
-                    entry.intensity_acc.sum_weighted_intensity = intensity_ptr[idx] * weight;
-                    entry.intensity_acc.sum_weight = weight;
+                    entry.intensity_acc.sum_intensity = intensity_ptr[idx];
                 } else {
-                    entry.intensity_acc.sum_weighted_intensity = 0.0f;
-                    entry.intensity_acc.sum_weight = 0.0f;
+                    entry.intensity_acc.sum_intensity = 0.0f;
                 }
             };
 
@@ -1193,8 +1180,7 @@ private:
                     dst.color_acc.sum_a += src.color_acc.sum_a;
                 }
                 if (has_intensity) {
-                    dst.intensity_acc.sum_weighted_intensity += src.intensity_acc.sum_weighted_intensity;
-                    dst.intensity_acc.sum_weight += src.intensity_acc.sum_weight;
+                    dst.intensity_acc.sum_intensity += src.intensity_acc.sum_intensity;
                 }
             };
 
@@ -1644,8 +1630,8 @@ private:
 
                 if (has_intensity && intensity_ptr) {
                     const VoxelIntensityData& intensity_data = intensity_data_ptr[i];
-                    if (intensity_data.sum_weight > 0.0f) {
-                        intensity_ptr[index] = intensity_data.sum_weighted_intensity / intensity_data.sum_weight;
+                    if (core.hit_count > 0U) {
+                        intensity_ptr[index] = intensity_data.sum_intensity * inv_count;
                     } else {
                         intensity_ptr[index] = 0.0f;
                     }
