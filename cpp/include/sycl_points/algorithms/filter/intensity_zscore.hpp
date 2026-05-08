@@ -14,8 +14,8 @@ namespace kernel {
 ///        Uses the one-pass variance formula: Var = E[X²] - E[X]²
 ///        Returns 0 if the local standard deviation is below sigma_min (flat region).
 ///        sigma_min must be specified in the same units as the intensity values.
-SYCL_EXTERNAL inline float compute_zscore(const float* intensities, const int32_t* index_ptr, size_t k, size_t i,
-                                          float sigma_min) {
+SYCL_EXTERNAL inline float compute(const float* intensities, const int32_t* index_ptr, size_t k, size_t i,
+                                   float sigma_min) {
     float sum_I = 0.0f;
     float sum_I2 = 0.0f;
     for (size_t j = 0; j < k; ++j) {
@@ -63,7 +63,7 @@ inline void compute(PointCloudShared& cloud, const knn::KNNResult& neighbors, fl
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
-            tmp_ptr[i] = kernel::compute_zscore(intensity_ptr, index_ptr, k, i, sigma_min);
+            tmp_ptr[i] = kernel::compute(intensity_ptr, index_ptr, k, i, sigma_min);
         });
     });
     event.wait_and_throw();

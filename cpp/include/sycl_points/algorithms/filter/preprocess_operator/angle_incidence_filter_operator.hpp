@@ -88,7 +88,7 @@ public:
                         return;
                     }
                     Normal normal;
-                    algorithms::covariance::kernel::compute_normal_from_covariance(point_ptr[i], cov_ptr[i], normal);
+                    algorithms::covariance::kernel::extract_normal(point_ptr[i], cov_ptr[i], normal);
                     compute_flag(point_ptr[i], normal, flag_ptr[i]);
                 });
             }

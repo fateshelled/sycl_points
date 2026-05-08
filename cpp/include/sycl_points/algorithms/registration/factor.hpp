@@ -253,7 +253,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
     covariance::kernel::update_covariance_plane(normalized_target_cov);
 
     const Covariance mahalanobis_cov = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
-    const Covariance mahalanobis_cov_inv = covariance::kernel::compute_covariance_inverse(mahalanobis_cov);
+    const Covariance mahalanobis_cov_inv = covariance::kernel::inverse(mahalanobis_cov);
 
     const Eigen::Matrix<float, 4, 6> J = compute_weighted_se3_jacobian(T, source_pt, Eigen::Matrix4f::Identity());
 
@@ -298,7 +298,7 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
     covariance::kernel::update_covariance_plane(normalized_target_cov);
 
     const Covariance mahalanobis_cov = compute_mahalanobis_covariance(normalized_source_cov, normalized_target_cov, T);
-    const Covariance mahalanobis_cov_inv = covariance::kernel::compute_covariance_inverse(mahalanobis_cov);
+    const Covariance mahalanobis_cov_inv = covariance::kernel::inverse(mahalanobis_cov);
 
     return (eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis_cov_inv, residual)));
 }

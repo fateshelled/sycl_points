@@ -118,7 +118,7 @@ inline void correct_intensity(PointCloudShared& cloud, float exponent = 2.0f, fl
 
         submit_kernel([=](size_t i, const PointType& pt) {
             Normal n;
-            algorithms::covariance::kernel::compute_normal_from_covariance(pt, cov_ptr[i], n);
+            algorithms::covariance::kernel::extract_normal(pt, cov_ptr[i], n);
             return kernel::compute_angle_factor(pt, n, ang_exp);
         }).wait_and_throw();
 
