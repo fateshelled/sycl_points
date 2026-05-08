@@ -243,6 +243,10 @@ SYCL_EXTERNAL Covariance estimate_robust(const PointType* point_ptr, size_t k_co
             estimate(ret, point_ptr, k_correspondences, index_ptr, i);
             return ret;
     }
+    // Unreachable if all enum values are handled; identity fallback for safety.
+    Covariance fallback;
+    fallback.setIdentity();
+    return fallback;
 }
 }  // namespace kernel
 
@@ -356,11 +360,9 @@ inline sycl_utils::events estimate_robust_async(const sycl_utils::DeviceQueue& q
             } else if (k_correspondences <= 32) {
                 cov = kernel::estimate_robust<32>(point_ptr, k_correspondences, index_ptr, i, mad_scale,
                                                   min_robust_scale, robust_max_iter, robust_type);
-            } else if (k_correspondences <= 64) {
+            } else {
                 cov = kernel::estimate_robust<64>(point_ptr, k_correspondences, index_ptr, i, mad_scale,
                                                   min_robust_scale, robust_max_iter, robust_type);
-            } else {
-                cov.setIdentity();
             }
 
             // write to global memory
