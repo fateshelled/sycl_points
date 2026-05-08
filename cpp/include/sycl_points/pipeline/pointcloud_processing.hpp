@@ -179,7 +179,7 @@ private:
             // When reusing, far neighbors contribute negligibly due to exponential weight decay.
             if (gp.neighbor_num <= ctx.knn_result.k) {
                 algorithms::intensity_gaussian::smooth_intensity(scan, ctx.knn_result, gp.sigma_azimuth,
-                                                                 gp.sigma_elevation, gp.sigma_range);
+                                                                 gp.sigma_elevation, gp.sigma_range, gp.neighbor_num);
             } else {
                 const auto gaussian_knn = ctx.tree->knn_search(scan, gp.neighbor_num);
                 algorithms::intensity_gaussian::smooth_intensity(scan, gaussian_knn, gp.sigma_azimuth,

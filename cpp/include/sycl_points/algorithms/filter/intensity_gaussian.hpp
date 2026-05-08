@@ -32,8 +32,11 @@ namespace kernel {
 /// @param sigma_azimuth  σ for the horizontal (azimuthal) scan direction [same units as coordinates]
 /// @param sigma_elevation σ for the vertical (elevation) direction [same units as coordinates]
 /// @param sigma_range    σ for the radial (depth) direction [same units as coordinates]
+/// @param k_stride  Full stride of index_ptr (== neighbors.k, the memory layout stride).
+/// @param k_use     Number of neighbors to actually use (<= k_stride).
 SYCL_EXTERNAL inline float compute(const PointType* points, const float* intensities, const int32_t* index_ptr,
-                                   size_t k, size_t i, float sigma_azimuth, float sigma_elevation, float sigma_range) {
+                                   size_t k_stride, size_t k_use, size_t i, float sigma_azimuth, float sigma_elevation,
+                                   float sigma_range) {
     const float px = points[i].x();
     const float py = points[i].y();
     const float pz = points[i].z();
@@ -66,8 +69,8 @@ SYCL_EXTERNAL inline float compute(const PointType* points, const float* intensi
 
     float sum_w = 0.0f, sum_wI = 0.0f;
 
-    for (size_t j = 0; j < k; ++j) {
-        const int32_t idx = index_ptr[i * k + j];
+    for (size_t j = 0; j < k_use; ++j) {
+        const int32_t idx = index_ptr[i * k_stride + j];
         const float dpx = points[idx].x() - px;
         const float dpy = points[idx].y() - py;
         const float dpz = points[idx].z() - pz;
@@ -99,8 +102,11 @@ SYCL_EXTERNAL inline float compute(const PointType* points, const float* intensi
 /// @param sigma_range    Gaussian σ in the radial depth direction [m].
 ///                       Set small (e.g. 0.05) to preserve depth discontinuities at object
 ///                       boundaries. Set large to blend across range (angular-only smoothing).
+/// @param k_limit        If > 0, use only the first k_limit neighbors from neighbors (must be <= neighbors.k).
+///                       Allows reusing a larger KNNResult (e.g. from covariance estimation) while
+///                       limiting the actual computation to the requested count.
 inline void smooth_intensity(PointCloudShared& cloud, const knn::KNNResult& neighbors, float sigma_azimuth,
-                             float sigma_elevation, float sigma_range = 0.05f) {
+                             float sigma_elevation, float sigma_range = 0.05f, size_t k_limit = 0) {
     const size_t N = cloud.size();
     if (N == 0) return;
     if (!cloud.has_intensity()) {
@@ -116,11 +122,14 @@ inline void smooth_intensity(PointCloudShared& cloud, const knn::KNNResult& neig
     const size_t work_group_size = cloud.queue.get_work_group_size();
     const size_t global_size = cloud.queue.get_global_size(N);
     const auto indices = neighbors.indices;
-    const size_t k = neighbors.k;
+    // k_stride: memory layout stride (always neighbors.k)
+    // k_use:    number of neighbors to process in the kernel loop
+    const size_t k_stride = neighbors.k;
+    const size_t k_use = (k_limit > 0 && k_limit < k_stride) ? k_limit : k_stride;
 
     auto tmp = std::make_shared<shared_vector<float>>(N, 0.0f, *cloud.queue.ptr);
 
-    auto event = cloud.queue.ptr->submit([&, indices, k](sycl::handler& h) {
+    auto event = cloud.queue.ptr->submit([&, indices, k_stride, k_use](sycl::handler& h) {
         const auto pt_ptr = cloud.points_ptr();
         const auto int_ptr = cloud.intensities_ptr();
         const auto idx_ptr = indices->data();
@@ -131,7 +140,7 @@ inline void smooth_intensity(PointCloudShared& cloud, const knn::KNNResult& neig
         h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
             const size_t i = item.get_global_id(0);
             if (i >= N) return;
-            tmp_ptr[i] = kernel::compute(pt_ptr, int_ptr, idx_ptr, k, i, sig_az, sig_el, sig_r);
+            tmp_ptr[i] = kernel::compute(pt_ptr, int_ptr, idx_ptr, k_stride, k_use, i, sig_az, sig_el, sig_r);
         });
     });
     event.wait_and_throw();
