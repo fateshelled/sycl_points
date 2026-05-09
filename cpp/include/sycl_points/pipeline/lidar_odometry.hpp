@@ -1,9 +1,9 @@
 #pragma once
 
-#include <cassert>
 #include <deque>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
@@ -481,8 +481,7 @@ private:
         // Always non-null after align() — registration_input_pc_ / deskewed_pc_ are guaranteed to be set.
         const auto reg_pc_ptr = this->registration_pipeline_->get_deskewed_point_cloud();
         if (reg_pc_ptr == nullptr) {
-            std::cerr << "[LiDAR Odometry] get_deskewed_point_cloud() returned nullptr unexpectedly." << std::endl;
-            assert(false);
+            throw std::runtime_error("[LiDAR Odometry] get_deskewed_point_cloud() returned nullptr unexpectedly.");
         }
 
         shared_vector_ptr<float> icp_weights = nullptr;

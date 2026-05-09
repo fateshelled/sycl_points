@@ -35,8 +35,8 @@ namespace kernel {
 /// @param k_stride  Full stride of index_ptr (== neighbors.k, the memory layout stride).
 /// @param k_use     Number of neighbors to actually use (<= k_stride).
 SYCL_EXTERNAL inline float compute(const PointType* points, const float* intensities, const int32_t* index_ptr,
-                                   size_t k_stride, size_t k_use, size_t i, float sigma_azimuth, float sigma_elevation,
-                                   float sigma_range) {
+                                   size_t k_stride, size_t k_use, size_t i, float inv2_az, float inv2_el,
+                                   float inv2_r) {
     const float px = points[i].x();
     const float py = points[i].y();
     const float pz = points[i].z();
@@ -62,10 +62,6 @@ SYCL_EXTERNAL inline float compute(const PointType* points, const float* intensi
     const float ex = near_zenith ? 0.0f : (-rz * ay);
     const float ey = near_zenith ? 1.0f : (rz * ax);
     const float ez = near_zenith ? 0.0f : (rxy / r);
-
-    const float inv2_r = 0.5f / (sigma_range * sigma_range);
-    const float inv2_az = 0.5f / (sigma_azimuth * sigma_azimuth);
-    const float inv2_el = 0.5f / (sigma_elevation * sigma_elevation);
 
     float sum_w = 0.0f, sum_wI = 0.0f;
 
@@ -119,30 +115,34 @@ inline void smooth_intensity(PointCloudShared& cloud, const knn::KNNResult& neig
         throw std::runtime_error("[intensity_gaussian::smooth_intensity] All sigma values must be positive");
     }
 
-    const size_t work_group_size = cloud.queue.get_work_group_size();
-    const size_t global_size = cloud.queue.get_global_size(N);
-    const auto indices = neighbors.indices;
-    // k_stride: memory layout stride (always neighbors.k)
-    // k_use:    number of neighbors to process in the kernel loop
-    const size_t k_stride = neighbors.k;
-    const size_t k_use = (k_limit > 0 && k_limit < k_stride) ? k_limit : k_stride;
-
     auto tmp = std::make_shared<shared_vector<float>>(N, 0.0f, *cloud.queue.ptr);
 
-    auto event = cloud.queue.ptr->submit([&, indices, k_stride, k_use](sycl::handler& h) {
-        const auto pt_ptr = cloud.points_ptr();
-        const auto int_ptr = cloud.intensities_ptr();
-        const auto idx_ptr = indices->data();
-        const auto tmp_ptr = tmp->data();
-        const float sig_az = sigma_azimuth;
-        const float sig_el = sigma_elevation;
-        const float sig_r = sigma_range;
-        h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
-            const size_t i = item.get_global_id(0);
-            if (i >= N) return;
-            tmp_ptr[i] = kernel::compute(pt_ptr, int_ptr, idx_ptr, k_stride, k_use, i, sig_az, sig_el, sig_r);
+    auto event = cloud.queue.ptr->submit(  //
+        [&, tmp](sycl::handler& h) {
+            const size_t work_group_size = cloud.queue.get_work_group_size();
+            const size_t global_size = cloud.queue.get_global_size(N);
+            const auto indices = neighbors.indices;
+            // k_stride: memory layout stride (always neighbors.k)
+            // k_use:    number of neighbors to process in the kernel loop
+            const size_t k_stride = neighbors.k;
+            const size_t k_use = (k_limit > 0 && k_limit < k_stride) ? k_limit : k_stride;
+
+            const float inv2_az = 0.5f / (sigma_azimuth * sigma_azimuth);
+            const float inv2_el = 0.5f / (sigma_elevation * sigma_elevation);
+            const float inv2_r = 0.5f / (sigma_range * sigma_range);
+
+            const auto pt_ptr = cloud.points_ptr();
+            const auto int_ptr = cloud.intensities_ptr();
+
+            const auto idx_ptr = indices->data();
+            const auto tmp_ptr = tmp->data();
+
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
+                const size_t i = item.get_global_id(0);
+                if (i >= N) return;
+                tmp_ptr[i] = kernel::compute(pt_ptr, int_ptr, idx_ptr, k_stride, k_use, i, inv2_az, inv2_el, inv2_r);
+            });
         });
-    });
     event.wait_and_throw();
 
     std::swap(cloud.intensities, tmp);
