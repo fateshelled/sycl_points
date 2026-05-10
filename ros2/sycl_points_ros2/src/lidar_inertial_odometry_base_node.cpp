@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <sycl_points/ros2/convert.hpp>
+#include <sycl_points/ros2/enhanced_reflectivity.hpp>
 #include <sycl_points/utils/time_utils.hpp>
 
 #include "sycl_points_ros2/declare_lidar_inertial_odometry_params.hpp"
@@ -157,6 +158,11 @@ LidarInertialOdometryBaseNode::ProcessedFrame LidarInertialOdometryBaseNode::pro
         RCLCPP_WARN(this->get_logger(), "input point cloud is empty");
         frame.result = ResultType::error;
         return frame;
+    }
+
+    if (this->params_.scan.enhanced_reflectivity.enable) {
+        sycl_points::ros2::apply_enhanced_reflectivity(*this->scan_pc_, msg,
+                                                       this->params_.scan.enhanced_reflectivity.clip_max);
     }
 
     frame.result = this->pipeline_->process(this->scan_pc_, timestamp);

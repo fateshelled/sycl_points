@@ -31,6 +31,10 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             "scan/intensity_correction/ref_distance", params.scan.intensity_correction.ref_distance);
         params.scan.intensity_correction.angle_exponent = node->declare_parameter<double>(
             "scan/intensity_correction/angle_exponent", params.scan.intensity_correction.angle_exponent);
+        params.scan.enhanced_reflectivity.enable = node->declare_parameter<bool>(
+            "scan/enhanced_reflectivity/enable", params.scan.enhanced_reflectivity.enable);
+        params.scan.enhanced_reflectivity.clip_max = node->declare_parameter<double>(
+            "scan/enhanced_reflectivity/clip_max", params.scan.enhanced_reflectivity.clip_max);
         params.scan.intensity_zscore.enable =
             node->declare_parameter<bool>("scan/intensity_zscore/enable", params.scan.intensity_zscore.enable);
         params.scan.intensity_zscore.sigma_min =

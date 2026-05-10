@@ -115,9 +115,17 @@ struct Parameters {
             float sigma_range = 0.05f;     // [m] radial depth direction (small = edge-preserving)
         };
 
+        // Ouster LiDAR-specific intensity correction: range compensation + ambient merge +
+        // per-ring normalization. When enabled, intensity_correction is automatically skipped.
+        struct EnhancedReflectivity {
+            bool enable = false;
+            float clip_max = 5.0f;
+        };
+
         IntensityCorrection intensity_correction;
         IntensityZScore intensity_zscore;
         IntensityGaussian intensity_gaussian;
+        EnhancedReflectivity enhanced_reflectivity;
         Downsampling downsampling;
         Preprocess preprocess;
     };

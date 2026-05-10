@@ -138,7 +138,8 @@ private:
             this->preprocess_filter_->random_sampling(dst, this->scan_params_.downsampling.random.num);
         }
 
-        if (this->scan_params_.intensity_correction.enable && dst.has_intensity()) {
+        if (this->scan_params_.intensity_correction.enable && !this->scan_params_.enhanced_reflectivity.enable &&
+            dst.has_intensity()) {
             algorithms::intensity_correction::correct_intensity(dst, this->scan_params_.intensity_correction.exp,
                                                                 this->scan_params_.intensity_correction.scale,
                                                                 this->scan_params_.intensity_correction.min_intensity,
