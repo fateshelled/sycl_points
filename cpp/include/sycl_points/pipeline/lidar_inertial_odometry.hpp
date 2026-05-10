@@ -241,8 +241,8 @@ private:
     PointCloudShared::Ptr preprocessed_pc_ = nullptr;
     PointCloudShared::Ptr registration_input_pc_ = nullptr;  // random-sampled source for ICP linearization
     bool is_first_frame_ = true;
+    pointcloud_processing::ProcessingContext processing_ctx_;
 
-    algorithms::knn::KNNResult knn_result_;
     shared_vector_ptr<float> icp_weights_ = nullptr;
 
     pointcloud_processing::PCProcessor::Ptr pc_processor_ = nullptr;
@@ -676,7 +676,7 @@ private:
     }
 
     void refine_filter(const PointCloudShared::Ptr scan) {
-        this->pc_processor_->refine_filter(*scan, this->knn_result_);
+        this->pc_processor_->refine_filter(*scan, this->processing_ctx_);
     }
 
     void compute_covariances() {
@@ -685,10 +685,13 @@ private:
                                  this->params_.registration.pipeline.registration.rotation_constraint.enable ||
                                  this->params_.scan.preprocess.angle_incidence_filter.enable);
         const bool needs_zscore = this->params_.scan.intensity_zscore.enable && this->preprocessed_pc_->has_intensity();
+        const bool needs_gaussian =
+            this->params_.scan.intensity_gaussian.enable && this->preprocessed_pc_->has_intensity();
 
-        if (!needs_covs && !needs_zscore) return;
+        if (!needs_covs && !needs_zscore && !needs_gaussian) return;
 
-        this->knn_result_ = this->pc_processor_->compute_covariances(*this->preprocessed_pc_);
+        this->processing_ctx_ = this->pc_processor_->prepare_context(*this->preprocessed_pc_);
+        this->pc_processor_->compute_covariances(*this->preprocessed_pc_, this->processing_ctx_);
     }
 
     // -------------------------------------------------------------------------

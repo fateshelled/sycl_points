@@ -45,3 +45,4 @@ cpp/build_omp/*
 CLAUDE.md
 
 *.pyc
+.gemini-session-id
