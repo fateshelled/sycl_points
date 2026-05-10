@@ -137,16 +137,6 @@ private:
         if (this->scan_params_.downsampling.random.enable) {
             this->preprocess_filter_->random_sampling(dst, this->scan_params_.downsampling.random.num);
         }
-
-        if (this->scan_params_.intensity_correction.enable && !this->scan_params_.enhanced_reflectivity.enable &&
-            dst.has_intensity()) {
-            algorithms::intensity_correction::correct_intensity(dst, this->scan_params_.intensity_correction.exp,
-                                                                this->scan_params_.intensity_correction.scale,
-                                                                this->scan_params_.intensity_correction.min_intensity,
-                                                                this->scan_params_.intensity_correction.max_intensity,
-                                                                this->scan_params_.intensity_correction.ref_distance,
-                                                                this->scan_params_.intensity_correction.angle_exponent);
-        }
     }
 
     void compute_covariances_impl(PointCloudShared& scan, ProcessingContext& ctx) const {
@@ -168,6 +158,17 @@ private:
             this->preprocess_filter_->angle_incidence_filter(
                 scan, scan, this->scan_params_.preprocess.angle_incidence_filter.min_angle,
                 this->scan_params_.preprocess.angle_incidence_filter.max_angle);
+        }
+
+        if (this->scan_params_.intensity_correction.enable && scan.has_intensity()) {
+            algorithms::intensity_correction::correct_intensity(        //
+                scan,                                                   //
+                this->scan_params_.intensity_correction.exp,            //
+                this->scan_params_.intensity_correction.scale,          //
+                this->scan_params_.intensity_correction.min_intensity,  //
+                this->scan_params_.intensity_correction.max_intensity,  //
+                this->scan_params_.intensity_correction.ref_distance,   //
+                this->scan_params_.intensity_correction.angle_exponent);
         }
 
         if (this->scan_params_.intensity_zscore.enable && scan.has_intensity()) {
