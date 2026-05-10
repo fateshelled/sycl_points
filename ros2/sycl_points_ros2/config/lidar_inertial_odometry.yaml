@@ -83,15 +83,22 @@ lidar_inertial_odometry_node:
     scan/preprocess/angle_incidence_filter/min_angle: 0.0
     scan/preprocess/angle_incidence_filter/max_angle: 1.396  # 80 degrees
 
+    # [Ouster LiDAR] Enhanced intensity correction using intensity, ambient, and ring fields.
+    # Applies range compensation, ambient light merging, and per-ring normalization to remove
+    # horizontal banding.
+    scan/enhanced_reflectivity/enable: true
+    scan/enhanced_reflectivity/clip_max: 5.0
+
+    # Generic distance/angle-based intensity correction.
     scan/intensity_correction/enable: true
     scan/intensity_correction/exp: 2.0
     scan/intensity_correction/scale: 1.0e-4
     scan/intensity_correction/min_intensity: 0.0
     scan/intensity_correction/max_intensity: 100.0
     scan/intensity_correction/ref_distance: 1.0
-    scan/intensity_correction/angle_exponent: 0.0
+    scan/intensity_correction/angle_exponent: 0.0  # 0: disabled, 1.0: Lambertian reflectance
 
-    scan/intensity_zscore/enable: true
+    scan/intensity_zscore/enable: false
     scan/intensity_zscore/sigma_min: 0.0  # Points with local σ below this are set to z=0 (flat region)
 
     scan/intensity_gaussian/enable: false
