@@ -120,6 +120,7 @@ struct Parameters {
         struct EnhancedReflectivity {
             bool enable = false;
             float clip_max = 5.0f;
+            float ring_mean_ema_alpha = 0.5f;  // EMA smoothing factor for per-ring means (0=frozen, 1=no smoothing)
         };
 
         IntensityCorrection intensity_correction;

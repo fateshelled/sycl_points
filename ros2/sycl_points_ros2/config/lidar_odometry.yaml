@@ -82,6 +82,7 @@ lidar_odometry_node:
     # horizontal banding.
     scan/enhanced_reflectivity/enable: true
     scan/enhanced_reflectivity/clip_max: 5.0
+    scan/enhanced_reflectivity/ring_mean_ema_alpha: 0.5  # EMA factor for per-ring mean smoothing (0=frozen, 1=no smoothing)
 
     # Generic distance/angle-based intensity correction.
     scan/intensity_correction/enable: true

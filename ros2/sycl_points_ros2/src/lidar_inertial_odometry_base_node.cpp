@@ -82,6 +82,8 @@ void LidarInertialOdometryBaseNode::initialize_processing() {
 
     this->msg_data_buffer_ = std::make_shared<shared_vector<uint8_t>>(*this->pipeline_->get_device_queue()->ptr);
     this->scan_pc_ = std::make_shared<PointCloudShared>(*this->pipeline_->get_device_queue());
+    this->enhanced_reflectivity_corrector_.set_ema_alpha(
+        this->params_.scan.enhanced_reflectivity.ring_mean_ema_alpha);
     this->processing_initialized_ = true;
 
     RCLCPP_INFO(this->get_logger(), "Input conversion - RGB: %s, intensity: %s",

@@ -35,6 +35,8 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             "scan/enhanced_reflectivity/enable", params.scan.enhanced_reflectivity.enable);
         params.scan.enhanced_reflectivity.clip_max = node->declare_parameter<double>(
             "scan/enhanced_reflectivity/clip_max", params.scan.enhanced_reflectivity.clip_max);
+        params.scan.enhanced_reflectivity.ring_mean_ema_alpha = static_cast<float>(node->declare_parameter<double>(
+            "scan/enhanced_reflectivity/ring_mean_ema_alpha", params.scan.enhanced_reflectivity.ring_mean_ema_alpha));
         params.scan.intensity_zscore.enable =
             node->declare_parameter<bool>("scan/intensity_zscore/enable", params.scan.intensity_zscore.enable);
         params.scan.intensity_zscore.sigma_min =
