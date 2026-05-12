@@ -7,7 +7,6 @@
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/intensity_gaussian.hpp"
 #include "sycl_points/algorithms/filter/intensity_local_mean_norm.hpp"
-#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
@@ -70,7 +69,7 @@ public:
         this->compute_covariances_impl(scan, ctx);
     }
 
-    /// @brief Apply post-KNN filters (angle incidence, z-score, Gaussian intensity smoothing).
+    /// @brief Apply post-KNN filters (angle incidence, Gaussian intensity smoothing, local-mean normalization).
     void refine_filter(PointCloudShared& scan, const ProcessingContext& ctx) const {
         this->refine_filter_impl(scan, ctx);
     }
@@ -170,10 +169,6 @@ private:
                 this->scan_params_.intensity_correction.max_intensity,  //
                 this->scan_params_.intensity_correction.ref_distance,   //
                 this->scan_params_.intensity_correction.angle_exponent);
-        }
-
-        if (this->scan_params_.intensity_zscore.enable && scan.has_intensity()) {
-            algorithms::intensity_zscore::compute(scan, ctx.knn_result, this->scan_params_.intensity_zscore.sigma_min);
         }
 
         if (this->scan_params_.intensity_gaussian.enable && scan.has_intensity()) {

@@ -102,11 +102,6 @@ struct Parameters {
             AngleIncidenceFilter angle_incidence_filter;
         };
 
-        struct IntensityZScore {
-            bool enable = false;
-            float sigma_min = 0.0f;  // Points with local σ below this are set to z=0 (flat region)
-        };
-
         struct IntensityGaussian {
             bool enable = false;
             size_t neighbor_num = 10;
@@ -133,7 +128,6 @@ struct Parameters {
         };
 
         IntensityCorrection intensity_correction;
-        IntensityZScore intensity_zscore;
         IntensityGaussian intensity_gaussian;
         IntensityLocalMeanNorm intensity_local_mean_norm;
         EnhancedReflectivity enhanced_reflectivity;
