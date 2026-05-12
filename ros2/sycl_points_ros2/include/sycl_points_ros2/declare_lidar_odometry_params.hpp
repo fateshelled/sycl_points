@@ -51,6 +51,18 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             "scan/intensity_gaussian/sigma_elevation", params.scan.intensity_gaussian.sigma_elevation);
         params.scan.intensity_gaussian.sigma_range = node->declare_parameter<double>(
             "scan/intensity_gaussian/sigma_range", params.scan.intensity_gaussian.sigma_range);
+        params.scan.intensity_local_mean_norm.enable = node->declare_parameter<bool>(
+            "scan/intensity_local_mean_norm/enable", params.scan.intensity_local_mean_norm.enable);
+        params.scan.intensity_local_mean_norm.neighbor_num = node->declare_parameter<int>(
+            "scan/intensity_local_mean_norm/neighbor_num", params.scan.intensity_local_mean_norm.neighbor_num);
+        params.scan.intensity_local_mean_norm.sigma_azimuth = node->declare_parameter<double>(
+            "scan/intensity_local_mean_norm/sigma_azimuth", params.scan.intensity_local_mean_norm.sigma_azimuth);
+        params.scan.intensity_local_mean_norm.sigma_elevation = node->declare_parameter<double>(
+            "scan/intensity_local_mean_norm/sigma_elevation", params.scan.intensity_local_mean_norm.sigma_elevation);
+        params.scan.intensity_local_mean_norm.sigma_range = node->declare_parameter<double>(
+            "scan/intensity_local_mean_norm/sigma_range", params.scan.intensity_local_mean_norm.sigma_range);
+        params.scan.intensity_local_mean_norm.mean_min = static_cast<float>(node->declare_parameter<double>(
+            "scan/intensity_local_mean_norm/mean_min", params.scan.intensity_local_mean_norm.mean_min));
         params.scan.downsampling.voxel.enable =
             node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan.downsampling.voxel.enable);
         params.scan.downsampling.voxel.size =

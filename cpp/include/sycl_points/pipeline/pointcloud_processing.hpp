@@ -6,6 +6,7 @@
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/intensity_gaussian.hpp"
+#include "sycl_points/algorithms/filter/intensity_local_mean_norm.hpp"
 #include "sycl_points/algorithms/filter/intensity_zscore.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
@@ -186,6 +187,19 @@ private:
                 const auto gaussian_knn = ctx.tree->knn_search(scan, gp.neighbor_num);
                 algorithms::intensity_gaussian::smooth_intensity(scan, gaussian_knn, gp.sigma_azimuth,
                                                                  gp.sigma_elevation, gp.sigma_range);
+            }
+        }
+
+        if (this->scan_params_.intensity_local_mean_norm.enable && scan.has_intensity()) {
+            const auto& lp = this->scan_params_.intensity_local_mean_norm;
+            if (lp.neighbor_num <= ctx.knn_result.k) {
+                algorithms::intensity_local_mean_norm::normalize(scan, ctx.knn_result, lp.sigma_azimuth,
+                                                                 lp.sigma_elevation, lp.sigma_range, lp.mean_min,
+                                                                 lp.neighbor_num);
+            } else {
+                const auto local_knn = ctx.tree->knn_search(scan, lp.neighbor_num);
+                algorithms::intensity_local_mean_norm::normalize(scan, local_knn, lp.sigma_azimuth, lp.sigma_elevation,
+                                                                 lp.sigma_range, lp.mean_min);
             }
         }
     }
