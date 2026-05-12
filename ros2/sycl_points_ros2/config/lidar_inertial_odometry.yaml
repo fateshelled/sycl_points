@@ -108,6 +108,13 @@ lidar_inertial_odometry_node:
     scan/intensity_gaussian/sigma_elevation: 0.5  # [m] vertical (elevation) direction
     scan/intensity_gaussian/sigma_range: 0.05     # [m] radial depth direction (small = edge-preserving)
 
+    scan/intensity_local_mean_norm/enable: false
+    scan/intensity_local_mean_norm/neighbor_num: 10
+    scan/intensity_local_mean_norm/sigma_azimuth: 0.3    # [m] horizontal (azimuthal) scan direction
+    scan/intensity_local_mean_norm/sigma_elevation: 0.5  # [m] vertical (elevation) direction
+    scan/intensity_local_mean_norm/sigma_range: 0.05     # [m] radial depth direction (small = edge-preserving)
+    scan/intensity_local_mean_norm/mean_min: 0.001       # minimum local mean below which normalization is skipped
+
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
     scan/downsampling/polar/enable: true
