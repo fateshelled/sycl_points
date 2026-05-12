@@ -34,8 +34,10 @@ SYCL_EXTERNAL inline float compute(const PointType* points, const float* intensi
 }  // namespace kernel
 
 /// @brief Normalize cloud.intensities in-place by the Gaussian-weighted local mean.
-///        Each point's intensity is divided by the weighted average of its neighborhood,
-///        removing spatially-varying reflectivity bias while preserving local contrast.
+///        Each point's intensity is divided by max(local_mean, mean_min), removing
+///        spatially-varying reflectivity bias while preserving local contrast.
+///        The fmax-based clamp keeps the output continuous across the mean_min
+///        threshold and prevents division by near-zero in dark regions.
 ///        Uses a temporary buffer to avoid read/write race conditions.
 ///
 /// @param cloud           Point cloud with intensity field (modified in-place)
