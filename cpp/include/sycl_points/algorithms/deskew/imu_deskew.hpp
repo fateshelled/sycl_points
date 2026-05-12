@@ -228,8 +228,12 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
     // IMU integration
     {
         imu::IMUPreintegration local_integrator(preintegration_params);
-        local_integrator.reset(bias, R_world_body_i);
+        local_integrator.reset(bias);
         local_integrator.integrate(m_start);  // stores as prev; no integration step yet
+
+        // Deskew assumes zero window-start velocity (motion is captured via the IMU
+        // integration itself relative to scan_start).
+        const Eigen::Vector3f v_world_body_i = Eigen::Vector3f::Zero();
 
         for (auto it = it_next; it != filtered.end(); ++it) {
             if (it->timestamp > scan_end_sec + kMarginSec) break;
@@ -241,7 +245,8 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
 
             // predict_relative_transform() applies gravity compensation using dt_total,
             // which equals t_rel_sec because the integrator was reset at scan_start.
-            const sycl_points::TransformMatrix T_imu_rel = local_integrator.predict_relative_transform(bias);
+            const sycl_points::TransformMatrix T_imu_rel =
+                local_integrator.predict_relative_transform(R_world_body_i, v_world_body_i, bias);
 
             // Convert to LiDAR-frame relative transform:
             //   T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}

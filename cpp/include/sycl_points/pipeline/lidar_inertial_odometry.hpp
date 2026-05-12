@@ -267,6 +267,11 @@ private:
     Eigen::Matrix<float, 21, 21> P_post_ = Eigen::Matrix<float, 21, 21>::Zero();
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
+    /// Window-start IMU orientation/velocity snapshotted at the latest preintegration
+    /// reset.  These act as the linearization point for predict_relative_transform()
+    /// and must remain frozen across IEKF iterations even when x_ is being updated.
+    Eigen::Matrix3f imu_R_world_at_reset_ = Eigen::Matrix3f::Identity();
+    Eigen::Vector3f imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
 
     std::deque<imu::IMUMeasurement> imu_buffer_;
     mutable std::mutex imu_mutex_;
@@ -340,9 +345,9 @@ private:
         const Eigen::Matrix<float, 15, 15> P_initial_imu =
             algorithms::lio::transform_covariance_lidar_to_imu(P_initial, T_i2l_eff, this->x_.rotation);
 
-        this->imu_preintegration_->reset(               //
-            {this->x_.gyro_bias, this->x_.accel_bias},  //
-            R_world_imu, this->x_.velocity, P_initial_imu);
+        this->imu_preintegration_->reset({this->x_.gyro_bias, this->x_.accel_bias}, P_initial_imu);
+        this->imu_R_world_at_reset_ = R_world_imu;
+        this->imu_v_world_at_reset_ = this->x_.velocity;
     }
 
     /// @brief Predict the full 21-DOF state from IMU preintegration using the given extrinsic.
@@ -351,7 +356,8 @@ private:
         const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
 
         // Relative pose prediction (gravity + initial velocity already compensated)
-        const TransformMatrix T_imu_rel_mat = this->imu_preintegration_->predict_relative_transform(current_bias);
+        const TransformMatrix T_imu_rel_mat = this->imu_preintegration_->predict_relative_transform(
+            this->imu_R_world_at_reset_, this->imu_v_world_at_reset_, current_bias);
         Eigen::Isometry3f T_imu_rel = Eigen::Isometry3f::Identity();
         T_imu_rel.linear() = T_imu_rel_mat.block<3, 3>(0, 0);
         T_imu_rel.translation() = T_imu_rel_mat.block<3, 1>(0, 3);
@@ -396,7 +402,8 @@ private:
         const Eigen::Vector3f t_li = T_i2l.translation();
 
         const imu::IMUBias current_bias{x_op.gyro_bias, x_op.accel_bias};
-        const TransformMatrix T_imu_rel_mat = this->imu_preintegration_->predict_relative_transform(current_bias);
+        const TransformMatrix T_imu_rel_mat = this->imu_preintegration_->predict_relative_transform(
+            this->imu_R_world_at_reset_, this->imu_v_world_at_reset_, current_bias);
         const Eigen::Matrix3f R_imu_rel = T_imu_rel_mat.block<3, 3>(0, 0);
         const Eigen::Vector3f t_imu_rel = T_imu_rel_mat.block<3, 1>(0, 3);
         const Eigen::Matrix3f R_pred_rel = R_li * R_imu_rel * R_li.transpose();
@@ -638,7 +645,9 @@ private:
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
                 this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
+            this->imu_preintegration_->reset(this->params_.imu.bias);
+            this->imu_R_world_at_reset_ = R_world_imu;
+            this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
         }
 
         // Initialize state biases from params so preprocess() uses the correct bias

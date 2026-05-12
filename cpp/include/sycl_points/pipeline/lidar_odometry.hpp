@@ -172,7 +172,9 @@ public:
                 const Eigen::Matrix3f R_world_imu =
                     this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
-                this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, Eigen::Vector3f::Zero());
+                this->imu_preintegration_->reset(this->params_.imu.bias);
+                this->imu_R_world_at_reset_ = R_world_imu;
+                this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
                 this->last_imu_reset_timestamp_ = timestamp;
             }
 
@@ -289,6 +291,11 @@ private:
     std::deque<imu::IMUMeasurement> imu_buffer_;
     mutable std::mutex imu_mutex_;            ///< Guards imu_buffer_ (written by IMU callback, read by LiDAR callback).
     double last_imu_reset_timestamp_ = -1.0;  ///< LiDAR timestamp of the last IMU reset.
+    /// Window-start IMU pose/velocity snapshotted at the latest preintegration reset.
+    /// Required by predict_relative_transform() to compensate gravity and the constant-
+    /// velocity contribution.  Updated together with imu_preintegration_->reset().
+    Eigen::Matrix3f imu_R_world_at_reset_ = Eigen::Matrix3f::Identity();
+    Eigen::Vector3f imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
     std::vector<imu::IMUMeasurement> imu_batch_;  ///< Reusable buffer for per-frame IMU snapshots.
 
     std::string error_message_;
@@ -392,7 +399,9 @@ private:
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
                 this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu);
+            this->imu_preintegration_->reset(this->params_.imu.bias);
+            this->imu_R_world_at_reset_ = R_world_imu;
+            this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
         }
     }
 
@@ -428,7 +437,8 @@ private:
     Eigen::Isometry3f imu_motion_prediction() {
         // T_imu_rel: relative pose in IMU body frame, with gravity and initial velocity
         // already accounted for inside predict_relative_transform().
-        const TransformMatrix T_imu_rel = this->imu_preintegration_->predict_relative_transform(this->params_.imu.bias);
+        const TransformMatrix T_imu_rel = this->imu_preintegration_->predict_relative_transform(
+            this->imu_R_world_at_reset_, this->imu_v_world_at_reset_, this->params_.imu.bias);
 
         // Convert to LiDAR-frame relative transform:
         // T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
@@ -457,7 +467,9 @@ private:
             const Eigen::Vector3f v_reset =
                 this->imu_velocity_corrector_.get_reset_velocity(*this->imu_preintegration_, this->params_.imu.bias,
                                                                  this->prev_odom_.rotation() * this->linear_velocity_);
-            this->imu_preintegration_->reset(this->params_.imu.bias, R_world_imu, v_reset);
+            this->imu_preintegration_->reset(this->params_.imu.bias);
+            this->imu_R_world_at_reset_ = R_world_imu;
+            this->imu_v_world_at_reset_ = v_reset;
         } else {
             init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
                                                       this->dt_, this->reg_result_, this->registrated_);
