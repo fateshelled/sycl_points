@@ -99,9 +99,6 @@ lidar_inertial_odometry_node:
     scan/intensity_correction/ref_distance: 1.0
     scan/intensity_correction/angle_exponent: 0.0  # 0: disabled, 1.0: Lambertian reflectance
 
-    scan/intensity_zscore/enable: false
-    scan/intensity_zscore/sigma_min: 0.0  # Points with local σ below this are set to z=0 (flat region)
-
     scan/intensity_gaussian/enable: false
     scan/intensity_gaussian/neighbor_num: 10
     scan/intensity_gaussian/sigma_azimuth: 0.3    # [m] horizontal (azimuthal) scan direction
