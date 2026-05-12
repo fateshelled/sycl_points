@@ -175,6 +175,10 @@ lidar_inertial_odometry_node:
     registration/min_num_points: 300
     registration/random_sampling/enable: true
     registration/random_sampling/num: 2048
+    # Intensity-weighted sampling. Assumes intensities are pre-normalized (e.g. by scan/intensity_local_mean_norm).
+    # Silently falls back to uniform sampling when the source has no intensity field.
+    registration/random_sampling/use_intensities: false
+    registration/random_sampling/weighted_ratio: 0.8  # Fraction of samples from the weighted distribution [0.0, 1.0]
     registration/max_correspondence_distance: 2.0
 
     registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE

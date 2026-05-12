@@ -126,10 +126,14 @@ private:
 
     void update_registration_input(const PointCloudShared& source) const {
         this->initialize_runtime_state(source.queue);
-        if (this->pipeline_params_.random_sampling.enable &&
-            source.size() > this->pipeline_params_.random_sampling.num) {
-            this->preprocess_filter_->random_sampling(source, *this->registration_input_pc_,
-                                                      this->pipeline_params_.random_sampling.num);
+        const auto& rs = this->pipeline_params_.random_sampling;
+        if (rs.enable && source.size() > rs.num) {
+            if (rs.use_intensities && source.has_intensity()) {
+                this->preprocess_filter_->mixed_random_sampling(source, *this->registration_input_pc_,
+                                                                *source.intensities, rs.num, rs.weighted_ratio);
+            } else {
+                this->preprocess_filter_->random_sampling(source, *this->registration_input_pc_, rs.num);
+            }
         } else {
             *this->registration_input_pc_ = source;
         }

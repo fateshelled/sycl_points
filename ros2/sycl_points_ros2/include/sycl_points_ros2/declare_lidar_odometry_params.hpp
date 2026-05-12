@@ -215,6 +215,15 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                 node->declare_parameter<bool>("registration/random_sampling/enable", random_sampling.enable);
             random_sampling.num =
                 node->declare_parameter<int64_t>("registration/random_sampling/num", random_sampling.num);
+            random_sampling.use_intensities = node->declare_parameter<bool>(
+                "registration/random_sampling/use_intensities", random_sampling.use_intensities);
+            random_sampling.weighted_ratio = static_cast<float>(node->declare_parameter<double>(
+                "registration/random_sampling/weighted_ratio", random_sampling.weighted_ratio));
+            if (random_sampling.weighted_ratio < 0.0f || random_sampling.weighted_ratio > 1.0f) {
+                throw std::invalid_argument(
+                    "[declare_lidar_odometry_params] `registration/random_sampling/weighted_ratio` must be "
+                    "within [0.0, 1.0]");
+            }
 
             const std::string reg_type = node->declare_parameter<std::string>("registration/type", "gicp");
             solver.reg_type = algorithms::registration::RegType_from_string(reg_type);
