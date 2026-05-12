@@ -187,6 +187,14 @@ public:
         const Eigen::Matrix3f R_corr = eigen_utils::geometry::quaternion_to_rotation_matrix(q_corr);
         corrected.Delta_R *= R_corr;
 
+        // Renormalize via quaternion roundtrip to keep Delta_R on SO(3).
+        // Single-precision drift comes from two sources: (1) the matrix product above,
+        // (2) any unrenormalized steps in result_.Delta_R since the last periodic
+        // renormalization (integrate_step renormalizes every 100 steps, which may not
+        // fire within a single LiDAR window).
+        const Eigen::Vector4f q_norm = eigen_utils::geometry::rotation_matrix_to_quaternion(corrected.Delta_R);
+        corrected.Delta_R = eigen_utils::geometry::quaternion_to_rotation_matrix(q_norm);
+
         corrected.Delta_v += result_.J.J_v_bg * d_bg + result_.J.J_v_ba * d_ba;
         corrected.Delta_p += result_.J.J_p_bg * d_bg + result_.J.J_p_ba * d_ba;
 
@@ -234,11 +242,13 @@ public:
         const PreintegrationResult c = get_corrected(current_bias);
         const float dt_f = static_cast<float>(c.dt_total);
 
-        // The bias-corrected accelerometer reading is the specific force in the body
-        // frame, which equals R_wb^T·(a_world - g_world).  A stationary device therefore
-        // reads -R_wb^T·g_world, so Delta_p accumulates a non-zero gravity contribution.
-        // Adding 0.5·R_i^T·g_world·dt^2 here cancels that contribution and leaves only
-        // the displacement caused by true acceleration (zero if the device is stationary).
+        // The bias-corrected accelerometer reads the specific force in the body frame:
+        //   a_meas - b_a ≈ R_wb^T · (a_world − g_world)
+        // A stationary device (a_world = 0) therefore reads −R_wb^T · g_world, so the
+        // integrated Delta_p contains a term  −0.5 · R_i^T · g_world · dt²  even when
+        // the sensor is not moving.  Adding +0.5 · R_i^T · g_world · dt² here removes
+        // that term, leaving only the displacement caused by true acceleration (which
+        // is zero for a stationary device).
         const Eigen::Vector3f delta_p_grav_free =
             c.Delta_p + 0.5f * (R_world_body_i.transpose() * params_.gravity) * dt_f * dt_f;
 
