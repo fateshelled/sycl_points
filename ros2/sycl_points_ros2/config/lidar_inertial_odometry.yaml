@@ -86,12 +86,12 @@ lidar_inertial_odometry_node:
     # [Ouster LiDAR] Enhanced intensity correction using intensity, ambient, and ring fields.
     # Applies range compensation, ambient light merging, and per-ring normalization to remove
     # horizontal banding.
-    scan/enhanced_reflectivity/enable: true
+    scan/enhanced_reflectivity/enable: false
     scan/enhanced_reflectivity/clip_max: 5.0
     scan/enhanced_reflectivity/ring_mean_ema_alpha: 0.5  # EMA factor for per-ring mean smoothing (0=frozen, 1=no smoothing)
 
     # Generic distance/angle-based intensity correction.
-    scan/intensity_correction/enable: true
+    scan/intensity_correction/enable: false
     scan/intensity_correction/exp: 2.0
     scan/intensity_correction/scale: 1.0e-4
     scan/intensity_correction/min_intensity: 0.0
