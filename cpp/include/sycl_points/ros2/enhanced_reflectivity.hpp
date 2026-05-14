@@ -4,6 +4,7 @@
 #include <array>
 #include <bitset>
 #include <cstdint>
+#include <cstring>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <vector>
 
@@ -69,7 +70,7 @@ public:
             if (this->ring_is_uint8_) {
                 r = static_cast<uint16_t>(msg_bytes[base + this->ring_offset_]);
             } else {
-                r = reinterpret_cast<const uint16_t*>(&msg_bytes[base + this->ring_offset_])[0];
+                std::memcpy(&r, &msg_bytes[base + this->ring_offset_], sizeof(uint16_t));
             }
             this->ring_idx_[i] = r;
 
@@ -80,8 +81,9 @@ public:
             if (range_sq < 1e-6f) continue;
 
             const float ref = this->en_ref_[i] = intensities[i] * range_sq;
-            const float raw_amb =
-                static_cast<float>(reinterpret_cast<const uint16_t*>(&msg_bytes[base + this->ambient_offset_])[0]);
+            uint16_t raw_amb_val = 0;
+            std::memcpy(&raw_amb_val, &msg_bytes[base + this->ambient_offset_], sizeof(uint16_t));
+            const float raw_amb = static_cast<float>(raw_amb_val);
             const float amb = this->en_amb_[i] = raw_amb / range_sq;
 
             if (r < MAX_RINGS) {
