@@ -679,7 +679,7 @@ private:
         if (this->params_.imu.deskew.enable) {
             auto imu_buf = this->get_imu_buffer();
             const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
-            this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf, this->odom_, current_bias);
+            this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf, this->odom_, current_bias, this->x_.velocity);
         }
         this->pc_processor_->prefilter(*scan, *this->preprocessed_pc_);
     }

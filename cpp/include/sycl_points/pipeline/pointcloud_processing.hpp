@@ -42,13 +42,14 @@ public:
     template <imu::imu_measurement_range Range>
     void deskew_with_imu(const PointCloudShared& src, PointCloudShared& dst, const Range& imu_buffer,
                          const Eigen::Isometry3f& current_pose) const {
-        this->deskew_with_imu_impl(src, dst, imu_buffer, current_pose, this->imu_params_.bias);
+        this->deskew_with_imu_impl(src, dst, imu_buffer, current_pose, this->imu_params_.bias, Eigen::Vector3f::Zero());
     }
 
     template <imu::imu_measurement_range Range>
     void deskew_with_imu(const PointCloudShared& src, PointCloudShared& dst, const Range& imu_buffer,
-                         const Eigen::Isometry3f& current_pose, const imu::IMUBias& bias) const {
-        this->deskew_with_imu_impl(src, dst, imu_buffer, current_pose, bias);
+                         const Eigen::Isometry3f& current_pose, const imu::IMUBias& bias,
+                         const Eigen::Vector3f& v_world_body_i = Eigen::Vector3f::Zero()) const {
+        this->deskew_with_imu_impl(src, dst, imu_buffer, current_pose, bias, v_world_body_i);
     }
 
     void prefilter(const PointCloudShared& src, PointCloudShared& dst) const { this->prefilter_impl(src, dst); }
@@ -101,12 +102,13 @@ private:
 
     template <imu::imu_measurement_range Range>
     void deskew_with_imu_impl(const PointCloudShared& src, PointCloudShared& dst, const Range& imu_buffer,
-                              const Eigen::Isometry3f& current_pose, const imu::IMUBias& bias) const {
+                              const Eigen::Isometry3f& current_pose, const imu::IMUBias& bias,
+                              const Eigen::Vector3f& v_world_body_i) const {
         const double scan_start_sec = src.start_time_ms * 1e-3;
         const Eigen::Matrix3f R_world_imu = current_pose.rotation() * this->imu_params_.T_imu_to_lidar.rotation();
         algorithms::deskew::deskew_point_cloud_imu(src, dst, imu_buffer, scan_start_sec,
                                                    this->imu_params_.T_imu_to_lidar, bias,
-                                                   this->imu_params_.preintegration, R_world_imu);
+                                                   this->imu_params_.preintegration, R_world_imu, v_world_body_i);
     }
 
     void prefilter_impl(const PointCloudShared& src, PointCloudShared& dst) const {
