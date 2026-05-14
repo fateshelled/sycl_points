@@ -192,8 +192,8 @@ public:
         // (2) any unrenormalized steps in result_.Delta_R since the last periodic
         // renormalization (integrate_step renormalizes every 100 steps, which may not
         // fire within a single LiDAR window).
-        const Eigen::Vector4f q_norm = eigen_utils::geometry::rotation_matrix_to_quaternion(corrected.Delta_R);
-        corrected.Delta_R = eigen_utils::geometry::quaternion_to_rotation_matrix(q_norm);
+        const Eigen::Vector4f q = eigen_utils::geometry::rotation_matrix_to_quaternion(corrected.Delta_R);
+        corrected.Delta_R = eigen_utils::geometry::quaternion_to_rotation_matrix(eigen_utils::normalize<4>(q));
 
         corrected.Delta_v += result_.J.J_v_bg * d_bg + result_.J.J_v_ba * d_ba;
         corrected.Delta_p += result_.J.J_p_bg * d_bg + result_.J.J_p_ba * d_ba;
