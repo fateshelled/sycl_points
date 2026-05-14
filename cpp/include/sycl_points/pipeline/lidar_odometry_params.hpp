@@ -102,11 +102,6 @@ struct Parameters {
             AngleIncidenceFilter angle_incidence_filter;
         };
 
-        struct IntensityZScore {
-            bool enable = false;
-            float sigma_min = 0.0f;  // Points with local σ below this are set to z=0 (flat region)
-        };
-
         struct IntensityGaussian {
             bool enable = false;
             size_t neighbor_num = 10;
@@ -115,9 +110,27 @@ struct Parameters {
             float sigma_range = 0.05f;     // [m] radial depth direction (small = edge-preserving)
         };
 
+        struct IntensityLocalMeanNorm {
+            bool enable = false;
+            size_t neighbor_num = 10;
+            float sigma_azimuth = 0.3f;    // [m] horizontal (azimuthal) scan direction
+            float sigma_elevation = 0.5f;  // [m] vertical (elevation) direction
+            float sigma_range = 0.05f;     // [m] radial depth direction (small = edge-preserving)
+            float mean_min = 1e-3f;        // minimum local mean; below this normalization is skipped
+        };
+
+        // Ouster LiDAR-specific intensity correction: range compensation + ambient merge +
+        // per-ring normalization. When enabled, intensity_correction is automatically skipped.
+        struct EnhancedReflectivity {
+            bool enable = false;
+            float clip_max = 5.0f;
+            float ring_mean_ema_alpha = 0.5f;  // EMA smoothing factor for per-ring means (0=frozen, 1=no smoothing)
+        };
+
         IntensityCorrection intensity_correction;
-        IntensityZScore intensity_zscore;
         IntensityGaussian intensity_gaussian;
+        IntensityLocalMeanNorm intensity_local_mean_norm;
+        EnhancedReflectivity enhanced_reflectivity;
         Downsampling downsampling;
         Preprocess preprocess;
     };

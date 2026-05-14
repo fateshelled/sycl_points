@@ -12,6 +12,7 @@
 #include <sycl_points/pipeline/lidar_odometry.hpp>
 #include <sycl_points/pipeline/lidar_odometry_params.hpp>
 #include <sycl_points/ros2/covariance_marker_publisher.hpp>
+#include <sycl_points/ros2/enhanced_reflectivity.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 #include <vector>
 
@@ -103,6 +104,7 @@ protected:
     sycl_points::shared_vector_ptr<uint8_t> msg_data_buffer_ = nullptr;
     PointCloudShared::Ptr scan_pc_ = nullptr;
     pipeline::lidar_odometry::Parameters params_;
+    EnhancedReflectivityCorrector enhanced_reflectivity_corrector_;
 
     std::string points_topic_ = "points";
     bool input_convert_rgb_ = true;

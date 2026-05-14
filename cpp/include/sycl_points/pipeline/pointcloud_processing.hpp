@@ -6,7 +6,7 @@
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/intensity_gaussian.hpp"
-#include "sycl_points/algorithms/filter/intensity_zscore.hpp"
+#include "sycl_points/algorithms/filter/intensity_local_mean_norm.hpp"
 #include "sycl_points/algorithms/filter/polar_downsampling.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
@@ -69,7 +69,7 @@ public:
         this->compute_covariances_impl(scan, ctx);
     }
 
-    /// @brief Apply post-KNN filters (angle incidence, z-score, Gaussian intensity smoothing).
+    /// @brief Apply post-KNN filters (angle incidence, Gaussian intensity smoothing, local-mean normalization).
     void refine_filter(PointCloudShared& scan, const ProcessingContext& ctx) const {
         this->refine_filter_impl(scan, ctx);
     }
@@ -137,15 +137,6 @@ private:
         if (this->scan_params_.downsampling.random.enable) {
             this->preprocess_filter_->random_sampling(dst, this->scan_params_.downsampling.random.num);
         }
-
-        if (this->scan_params_.intensity_correction.enable && dst.has_intensity()) {
-            algorithms::intensity_correction::correct_intensity(dst, this->scan_params_.intensity_correction.exp,
-                                                                this->scan_params_.intensity_correction.scale,
-                                                                this->scan_params_.intensity_correction.min_intensity,
-                                                                this->scan_params_.intensity_correction.max_intensity,
-                                                                this->scan_params_.intensity_correction.ref_distance,
-                                                                this->scan_params_.intensity_correction.angle_exponent);
-        }
     }
 
     void compute_covariances_impl(PointCloudShared& scan, ProcessingContext& ctx) const {
@@ -169,8 +160,16 @@ private:
                 this->scan_params_.preprocess.angle_incidence_filter.max_angle);
         }
 
-        if (this->scan_params_.intensity_zscore.enable && scan.has_intensity()) {
-            algorithms::intensity_zscore::compute(scan, ctx.knn_result, this->scan_params_.intensity_zscore.sigma_min);
+        if (this->scan_params_.intensity_correction.enable && !this->scan_params_.enhanced_reflectivity.enable &&
+            scan.has_intensity()) {
+            algorithms::intensity_correction::correct_intensity(        //
+                scan,                                                   //
+                this->scan_params_.intensity_correction.exp,            //
+                this->scan_params_.intensity_correction.scale,          //
+                this->scan_params_.intensity_correction.min_intensity,  //
+                this->scan_params_.intensity_correction.max_intensity,  //
+                this->scan_params_.intensity_correction.ref_distance,   //
+                this->scan_params_.intensity_correction.angle_exponent);
         }
 
         if (this->scan_params_.intensity_gaussian.enable && scan.has_intensity()) {
@@ -184,6 +183,19 @@ private:
                 const auto gaussian_knn = ctx.tree->knn_search(scan, gp.neighbor_num);
                 algorithms::intensity_gaussian::smooth_intensity(scan, gaussian_knn, gp.sigma_azimuth,
                                                                  gp.sigma_elevation, gp.sigma_range);
+            }
+        }
+
+        if (this->scan_params_.intensity_local_mean_norm.enable && scan.has_intensity()) {
+            const auto& lp = this->scan_params_.intensity_local_mean_norm;
+            if (lp.neighbor_num <= ctx.knn_result.k) {
+                algorithms::intensity_local_mean_norm::normalize(scan, ctx.knn_result, lp.sigma_azimuth,
+                                                                 lp.sigma_elevation, lp.sigma_range, lp.mean_min,
+                                                                 lp.neighbor_num);
+            } else {
+                const auto local_knn = ctx.tree->knn_search(scan, lp.neighbor_num);
+                algorithms::intensity_local_mean_norm::normalize(scan, local_knn, lp.sigma_azimuth, lp.sigma_elevation,
+                                                                 lp.sigma_range, lp.mean_min);
             }
         }
     }

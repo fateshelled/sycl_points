@@ -83,22 +83,34 @@ lidar_inertial_odometry_node:
     scan/preprocess/angle_incidence_filter/min_angle: 0.0
     scan/preprocess/angle_incidence_filter/max_angle: 1.396  # 80 degrees
 
-    scan/intensity_correction/enable: true
+    # [Ouster LiDAR] Enhanced intensity correction using intensity, ambient, and ring fields.
+    # Applies range compensation, ambient light merging, and per-ring normalization to remove
+    # horizontal banding.
+    scan/enhanced_reflectivity/enable: false
+    scan/enhanced_reflectivity/clip_max: 5.0
+    scan/enhanced_reflectivity/ring_mean_ema_alpha: 0.5  # EMA factor for per-ring mean smoothing (0=frozen, 1=no smoothing)
+
+    # Generic distance/angle-based intensity correction.
+    scan/intensity_correction/enable: false
     scan/intensity_correction/exp: 2.0
     scan/intensity_correction/scale: 1.0e-4
     scan/intensity_correction/min_intensity: 0.0
     scan/intensity_correction/max_intensity: 100.0
     scan/intensity_correction/ref_distance: 1.0
-    scan/intensity_correction/angle_exponent: 0.0
-
-    scan/intensity_zscore/enable: true
-    scan/intensity_zscore/sigma_min: 0.0  # Points with local σ below this are set to z=0 (flat region)
+    scan/intensity_correction/angle_exponent: 0.0  # 0: disabled, 1.0: Lambertian reflectance
 
     scan/intensity_gaussian/enable: false
     scan/intensity_gaussian/neighbor_num: 10
     scan/intensity_gaussian/sigma_azimuth: 0.3    # [m] horizontal (azimuthal) scan direction
     scan/intensity_gaussian/sigma_elevation: 0.5  # [m] vertical (elevation) direction
     scan/intensity_gaussian/sigma_range: 0.05     # [m] radial depth direction (small = edge-preserving)
+
+    scan/intensity_local_mean_norm/enable: false
+    scan/intensity_local_mean_norm/neighbor_num: 10
+    scan/intensity_local_mean_norm/sigma_azimuth: 0.3    # [m] horizontal (azimuthal) scan direction
+    scan/intensity_local_mean_norm/sigma_elevation: 0.5  # [m] vertical (elevation) direction
+    scan/intensity_local_mean_norm/sigma_range: 0.05     # [m] radial depth direction (small = edge-preserving)
+    scan/intensity_local_mean_norm/mean_min: 0.001       # minimum local mean below which normalization is skipped
 
     scan/downsampling/voxel/enable: false
     scan/downsampling/voxel/voxel_size: 0.3
@@ -163,6 +175,10 @@ lidar_inertial_odometry_node:
     registration/min_num_points: 300
     registration/random_sampling/enable: true
     registration/random_sampling/num: 2048
+    # Intensity-weighted sampling. Assumes intensities are pre-normalized (e.g. by scan/intensity_local_mean_norm).
+    # Silently falls back to uniform sampling when the source has no intensity field.
+    registration/random_sampling/use_intensities: false
+    registration/random_sampling/weighted_ratio: 0.8  # Fraction of samples from the weighted distribution [0.0, 1.0]
     registration/max_correspondence_distance: 2.0
 
     registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE

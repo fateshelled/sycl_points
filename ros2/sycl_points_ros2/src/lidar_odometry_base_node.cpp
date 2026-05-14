@@ -100,6 +100,18 @@ void LiDAROdometryBaseNode::initialize_processing() {
 
     this->msg_data_buffer_ = std::make_shared<shared_vector<uint8_t>>(*this->pipeline_->get_device_queue()->ptr);
     this->scan_pc_ = std::make_shared<PointCloudShared>(*this->pipeline_->get_device_queue());
+    this->enhanced_reflectivity_corrector_.set_ema_alpha(this->params_.scan.enhanced_reflectivity.ring_mean_ema_alpha);
+
+    if (this->params_.scan.enhanced_reflectivity.enable && this->input_convert_intensity_ &&
+        this->input_use_reflectivity_as_intensity) {
+        // Reflectivity is already range-compensated by the Ouster driver; multiplying by range^2
+        // again in EnhancedReflectivityCorrector yields a double compensation.
+        RCLCPP_WARN(this->get_logger(),
+                    "scan/enhanced_reflectivity.enable and input/use_reflectivity_as_intensity are both true. "
+                    "Enhanced reflectivity expects raw intensity, so this causes double range compensation. "
+                    "Set input/use_reflectivity_as_intensity to false when enabling enhanced_reflectivity.");
+    }
+
     this->processing_initialized_ = true;
 
     RCLCPP_INFO(this->get_logger(), "Input conversion - RGB: %s, intensity: %s",
@@ -181,6 +193,18 @@ LiDAROdometryBaseNode::ProcessedFrame LiDAROdometryBaseNode::process_point_cloud
         RCLCPP_WARN(this->get_logger(), "input point cloud is empty");
         frame.result = ResultType::error;
         return frame;
+    }
+
+    if (this->params_.scan.enhanced_reflectivity.enable && this->scan_pc_->has_intensity()) {
+        const bool applied = this->enhanced_reflectivity_corrector_.apply(
+            *this->scan_pc_, msg, this->params_.scan.enhanced_reflectivity.clip_max);
+        if (!applied) {
+            RCLCPP_WARN_ONCE(this->get_logger(),
+                             "scan/enhanced_reflectivity is enabled but input message lacks ambient (UINT16) or "
+                             "ring (UINT8/UINT16) fields. Skipping enhanced reflectivity. "
+                             "Note: pipeline intensity_correction is also auto-skipped — no intensity correction "
+                             "will be applied.");
+        }
     }
 
     frame.result = this->pipeline_->process(this->scan_pc_, timestamp);
