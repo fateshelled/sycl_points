@@ -160,7 +160,8 @@ private:
                 this->scan_params_.preprocess.angle_incidence_filter.max_angle);
         }
 
-        if (this->scan_params_.intensity_correction.enable && scan.has_intensity()) {
+        if (this->scan_params_.intensity_correction.enable && !this->scan_params_.enhanced_reflectivity.enable &&
+            scan.has_intensity()) {
             algorithms::intensity_correction::correct_intensity(        //
                 scan,                                                   //
                 this->scan_params_.intensity_correction.exp,            //

@@ -40,9 +40,11 @@ public:
 
     void set_ema_alpha(float alpha) { this->ema_alpha_ = alpha; }
 
-    void apply(PointCloudShared& cloud, const sensor_msgs::msg::PointCloud2& msg, float clip_max = 5.0f) {
-        if (!cloud.has_intensity()) return;
-        if (!this->parse_fields(msg)) return;
+    // Returns false if the message is missing required fields (ambient/ring) or the cloud has
+    // no intensity. Callers can warn the user that enhanced_reflectivity is silently inactive.
+    bool apply(PointCloudShared& cloud, const sensor_msgs::msg::PointCloud2& msg, float clip_max = 5.0f) {
+        if (!cloud.has_intensity()) return false;
+        if (!this->parse_fields(msg)) return false;
 
         const size_t N = cloud.size();
         const size_t point_step = msg.point_step;
@@ -51,8 +53,10 @@ public:
         const auto& points = *cloud.points;
         auto& intensities = *cloud.intensities;
 
-        this->en_ref_.assign(N, 0.0f);
-        this->en_amb_.assign(N, 0.0f);
+        // resize (not assign) — every slot is written below: the range_sq < 1e-6f branch
+        // explicitly zeroes, the normal path overwrites with computed values.
+        this->en_ref_.resize(N);
+        this->en_amb_.resize(N);
         this->ring_idx_.resize(N);
 
         std::array<float, MAX_RINGS> ring_sum_ref{};
@@ -78,7 +82,11 @@ public:
             const float y = points[i].y();
             const float z = points[i].z();
             const float range_sq = x * x + y * y + z * z;
-            if (range_sq < 1e-6f) continue;
+            if (range_sq < 1e-6f) {
+                this->en_ref_[i] = 0.0f;
+                this->en_amb_[i] = 0.0f;
+                continue;
+            }
 
             const float ref = this->en_ref_[i] = intensities[i] * range_sq;
             uint16_t raw_amb_val = 0;
@@ -114,16 +122,21 @@ public:
             }
         }
 
-        // Pass 2: normalize and write back
+        // Pass 2: normalize and write back. Out-of-range rings get 0 so raw input
+        // values don't leak through as spikes alongside normalized neighbors.
         for (size_t i = 0; i < N; ++i) {
             const uint16_t r = this->ring_idx_[i];
-            if (r >= MAX_RINGS) continue;
+            if (r >= MAX_RINGS) {
+                intensities[i] = 0.0f;
+                continue;
+            }
             float ref = this->en_ref_[i];
             float amb = this->en_amb_[i];
             if (this->ring_mean_ref_[r] > 0.0f) ref /= this->ring_mean_ref_[r];
             if (this->ring_mean_amb_[r] > 0.0f) amb /= this->ring_mean_amb_[r];
             intensities[i] = std::clamp(ref + amb, 0.0f, clip_max);
         }
+        return true;
     }
 
 private:
