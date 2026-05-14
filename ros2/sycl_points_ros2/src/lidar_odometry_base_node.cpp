@@ -195,13 +195,13 @@ LiDAROdometryBaseNode::ProcessedFrame LiDAROdometryBaseNode::process_point_cloud
         return frame;
     }
 
-    if (this->params_.scan.enhanced_reflectivity.enable) {
+    if (this->params_.scan.enhanced_reflectivity.enable && this->scan_pc_->has_intensity()) {
         const bool applied = this->enhanced_reflectivity_corrector_.apply(
             *this->scan_pc_, msg, this->params_.scan.enhanced_reflectivity.clip_max);
         if (!applied) {
             RCLCPP_WARN_ONCE(this->get_logger(),
-                             "scan/enhanced_reflectivity is enabled but input message lacks required fields "
-                             "(intensity, ambient UINT16, ring UINT8/UINT16). Skipping enhanced reflectivity. "
+                             "scan/enhanced_reflectivity is enabled but input message lacks ambient (UINT16) or "
+                             "ring (UINT8/UINT16) fields. Skipping enhanced reflectivity. "
                              "Note: pipeline intensity_correction is also auto-skipped — no intensity correction "
                              "will be applied.");
         }
