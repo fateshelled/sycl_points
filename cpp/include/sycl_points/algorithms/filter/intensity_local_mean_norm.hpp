@@ -62,8 +62,8 @@ inline void normalize(PointCloudShared& cloud, const knn::KNNResult& neighbors, 
     if (sigma_azimuth <= 0.0f || sigma_elevation <= 0.0f || sigma_range <= 0.0f) {
         throw std::runtime_error("[intensity_local_mean_norm::normalize] All sigma values must be positive");
     }
-    if (mean_min < 0.0f) {
-        throw std::runtime_error("[intensity_local_mean_norm::normalize] mean_min must be non-negative");
+    if (mean_min <= 0.0f) {
+        throw std::runtime_error("[intensity_local_mean_norm::normalize] mean_min must be positive");
     }
 
     auto tmp = std::make_shared<shared_vector<float>>(N, 0.0f, *cloud.queue.ptr);
