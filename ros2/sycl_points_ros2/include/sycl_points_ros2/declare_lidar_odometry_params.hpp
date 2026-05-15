@@ -411,6 +411,22 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             node->declare_parameter<double>("imu/buffer_duration_sec", params.imu.buffer_duration_sec);
 
         params.imu.deskew.enable = node->declare_parameter<bool>("imu/deskew/enable", params.imu.deskew.enable);
+
+        // Stationary-IMU initial roll/pitch alignment
+        params.imu.initial_alignment.enable =
+            node->declare_parameter<bool>("imu/initial_alignment/enable", params.imu.initial_alignment.enable);
+        params.imu.initial_alignment.required_duration_sec = static_cast<float>(node->declare_parameter<double>(
+            "imu/initial_alignment/required_duration_sec", params.imu.initial_alignment.required_duration_sec));
+        params.imu.initial_alignment.max_gyro_std = static_cast<float>(node->declare_parameter<double>(
+            "imu/initial_alignment/max_gyro_std", params.imu.initial_alignment.max_gyro_std));
+        params.imu.initial_alignment.max_accel_std = static_cast<float>(node->declare_parameter<double>(
+            "imu/initial_alignment/max_accel_std", params.imu.initial_alignment.max_accel_std));
+        params.imu.initial_alignment.max_accel_norm_error = static_cast<float>(node->declare_parameter<double>(
+            "imu/initial_alignment/max_accel_norm_error", params.imu.initial_alignment.max_accel_norm_error));
+        params.imu.initial_alignment.estimate_gyro_bias = node->declare_parameter<bool>(
+            "imu/initial_alignment/estimate_gyro_bias", params.imu.initial_alignment.estimate_gyro_bias);
+        params.imu.initial_alignment.max_wait_sec = static_cast<float>(node->declare_parameter<double>(
+            "imu/initial_alignment/max_wait_sec", params.imu.initial_alignment.max_wait_sec));
     }
 
     return params;

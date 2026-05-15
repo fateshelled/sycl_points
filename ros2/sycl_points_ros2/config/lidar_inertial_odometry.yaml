@@ -70,6 +70,18 @@ lidar_inertial_odometry_node:
     imu/bias/accel/y: 0.0
     imu/bias/accel/z: 0.0
 
+    # Gravity-aligned initial roll/pitch estimation.
+    # Assumes the robot is stationary for at least required_duration_sec at startup.
+    # Yaw is preserved from initial_base_link_pose; gravity does not constrain it.
+    # The first few scans before alignment converges are dropped (waiting_initial_alignment).
+    imu/initial_alignment/enable: true
+    imu/initial_alignment/required_duration_sec: 0.2  # IMU window length [s]; must be <= imu/buffer_duration_sec
+    imu/initial_alignment/max_gyro_std: 0.01          # [rad/s] per-axis stationarity threshold
+    imu/initial_alignment/max_accel_std: 0.2          # [m/s^2] per-axis stationarity threshold
+    imu/initial_alignment/max_accel_norm_error: 0.5   # [m/s^2] tolerance on |a_mean| vs |gravity|
+    imu/initial_alignment/estimate_gyro_bias: true    # Replace gyro bias with the stationary mean
+    imu/initial_alignment/max_wait_sec: 5.0           # Force alignment after this many seconds even if not stationary (<=0 = wait forever)
+
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
     input/convert_intensity: false
@@ -83,7 +95,7 @@ lidar_inertial_odometry_node:
     scan/preprocess/angle_incidence_filter/min_angle: 0.0
     scan/preprocess/angle_incidence_filter/max_angle: 1.396  # 80 degrees
 
-    scan/intensity_correction/enable: true
+    scan/intensity_correction/enable: false
     scan/intensity_correction/exp: 2.0
     scan/intensity_correction/scale: 1.0e-4
     scan/intensity_correction/min_intensity: 0.0
@@ -91,7 +103,7 @@ lidar_inertial_odometry_node:
     scan/intensity_correction/ref_distance: 1.0
     scan/intensity_correction/angle_exponent: 0.0
 
-    scan/intensity_zscore/enable: true
+    scan/intensity_zscore/enable: false
     scan/intensity_zscore/sigma_min: 0.0  # Points with local σ below this are set to z=0 (flat region)
 
     scan/intensity_gaussian/enable: false
@@ -141,7 +153,7 @@ lidar_inertial_odometry_node:
     # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
     lio/max_iterations: 8
     lio/criteria/translation: 0.01  # [m]
-    lio/criteria/rotation: 0.01  # [rad]
+    lio/criteria/rotation: 0.01     # [rad]
     lio/invalid_regularization_factor: 1.0e+4
     # Fixed-sigma floors added to P_initial at each IMU reset.
     # Prevents H_imu from dominating H_icp when noise_density is set to a small

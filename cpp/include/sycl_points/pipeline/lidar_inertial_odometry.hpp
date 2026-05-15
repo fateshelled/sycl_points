@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
+#include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/lio/lio_registration.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
@@ -48,6 +49,7 @@ public:
     enum class ResultType : std::int8_t {
         success = 0,
         first_frame,
+        waiting_initial_alignment,
         error = 100,
         old_timestamp,
         small_number_of_points,
@@ -56,6 +58,14 @@ public:
     explicit LidarInertialOdometryPipeline(const Parameters& params) {
         params_ = params;
         params_.imu.enable = true;  // IMU is mandatory for LIO
+        // Ensure the IMU buffer is large enough to satisfy the alignment window.
+        // The pop_front rule keeps span ≤ buffer_duration_sec, so equal values can fail.
+        if (params_.imu.initial_alignment.enable) {
+            const double need = static_cast<double>(params_.imu.initial_alignment.required_duration_sec) + 0.2;
+            if (params_.imu.buffer_duration_sec < need) {
+                params_.imu.buffer_duration_sec = need;
+            }
+        }
         initialize();
     }
 
@@ -100,6 +110,15 @@ public:
     // -------------------------------------------------------------------------
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
         this->error_message_.clear();
+
+        // Initial roll/pitch alignment from stationary IMU samples.
+        // Runs once before the first scan is accepted as the reference frame.
+        if (this->is_first_frame_ && this->params_.imu.initial_alignment.enable && !this->alignment_done_) {
+            const auto alignment_status = this->try_initial_alignment(timestamp);
+            if (alignment_status != ResultType::success) {
+                return alignment_status;
+            }
+        }
 
         if (this->last_frame_time_ > 0.0) {
             const float dt = static_cast<float>(timestamp - this->last_frame_time_);
@@ -241,6 +260,8 @@ private:
     PointCloudShared::Ptr preprocessed_pc_ = nullptr;
     PointCloudShared::Ptr registration_input_pc_ = nullptr;  // random-sampled source for ICP linearization
     bool is_first_frame_ = true;
+    bool alignment_done_ = false;
+    double alignment_start_timestamp_ = -1.0;
     pointcloud_processing::ProcessingContext processing_ctx_;
 
     shared_vector_ptr<float> icp_weights_ = nullptr;
@@ -669,6 +690,97 @@ private:
         }
 
         this->clear_total_processing_times();
+    }
+
+    // -------------------------------------------------------------------------
+    // Initial gravity-aligned alignment
+    // -------------------------------------------------------------------------
+
+    /// @brief Attempt a stationary-IMU initial alignment.  On success, overrides
+    ///        the configured initial roll/pitch (keeping the user-specified yaw)
+    ///        and optionally replaces the configured gyro bias.
+    ///
+    /// @return ResultType::success when alignment has succeeded (or had already
+    ///         been completed previously); ResultType::waiting_initial_alignment
+    ///         when the IMU buffer is not yet ready or the robot is not stationary.
+    ResultType try_initial_alignment(double scan_timestamp) {
+        const auto imu_buf = this->get_imu_buffer();
+        const auto& align_params = this->params_.imu.initial_alignment;
+
+        // Initialize wait-clock on the first attempt so the timeout is measured from
+        // the first scan that asked for alignment (not from pipeline construction).
+        if (this->alignment_start_timestamp_ < 0.0) {
+            this->alignment_start_timestamp_ = scan_timestamp;
+        }
+        const double elapsed = scan_timestamp - this->alignment_start_timestamp_;
+        const bool timeout_reached =
+            align_params.max_wait_sec > 0.0f && elapsed >= static_cast<double>(align_params.max_wait_sec);
+
+        const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
+        auto result = imu::estimate_initial_alignment(imu_buf, this->params_.imu.preintegration.gravity, align_params,
+                                                      current_bias, /*bypass_stationarity=*/false);
+
+        if (!result.success && timeout_reached) {
+            // Retry with stationarity checks disabled.  Buffer-size/duration checks still apply.
+            result = imu::estimate_initial_alignment(imu_buf, this->params_.imu.preintegration.gravity, align_params,
+                                                     current_bias, /*bypass_stationarity=*/true);
+            if (result.success) {
+                std::cerr << "[LidarInertialOdometry] initial alignment FORCED after " << elapsed
+                          << "s (robot was not detected stationary). gyro_bias may be biased; "
+                          << "drift performance can degrade until LIO converges." << std::endl;
+            }
+        }
+
+        if (!result.success) {
+            this->error_message_ = std::string("initial_alignment: ") + result.error_message;
+            // Emit a diagnostic with sample/duration info so the user can see why we wait.
+            const double span = imu_buf.size() >= 2 ? (imu_buf.back().timestamp - imu_buf.front().timestamp) : 0.0;
+            std::cerr << "[LidarInertialOdometry] waiting initial alignment: " << result.error_message
+                      << " (samples=" << imu_buf.size() << ", buffer_span=" << span
+                      << "s, required=" << align_params.required_duration_sec << "s, elapsed=" << elapsed << "s/"
+                      << align_params.max_wait_sec << "s, accel_mean_norm=" << result.accel_norm << ", gyro_std=["
+                      << result.gyro_std.transpose() << "], accel_std=[" << result.accel_std.transpose() << "])"
+                      << std::endl;
+            return ResultType::waiting_initial_alignment;
+        }
+
+        // Compose: R_world_lidar = R_world_imu_aligned * R_imu_to_lidar^T (yaw=0),
+        // then overlay user-requested yaw from params.pose.initial.
+        const Eigen::Matrix3f R_imu_to_lidar = this->params_.imu.T_imu_to_lidar.linear();
+        const Eigen::Matrix3f R_lidar_grav_only = result.R_world_imu * R_imu_to_lidar.transpose();
+        const float yaw_grav = imu::detail::yaw_from_rotation(R_lidar_grav_only);
+        const Eigen::Matrix3f R_lidar_grav_no_yaw = imu::detail::rotation_z(-yaw_grav) * R_lidar_grav_only;
+
+        const float yaw_user = imu::detail::yaw_from_rotation(this->params_.pose.initial.linear());
+        const Eigen::Matrix3f R_world_lidar = imu::detail::rotation_z(yaw_user) * R_lidar_grav_no_yaw;
+
+        // Recompute R_world_imu corresponding to the yaw-corrected lidar pose.
+        const Eigen::Matrix3f R_world_imu_final = R_world_lidar * R_imu_to_lidar;
+
+        // Mutate params.pose.initial so the first-frame init block picks up the new rotation.
+        this->params_.pose.initial.linear() = R_world_lidar;
+
+        // Update navigation state.
+        this->x_.rotation = R_world_lidar;
+        this->x_.gyro_bias = result.gyro_bias;
+        this->odom_.linear() = R_world_lidar;
+        this->prev_odom_.linear() = R_world_lidar;
+
+        // Re-snapshot the IMU preintegration linearization point so the next reset
+        // uses the gravity-aligned orientation rather than the configured identity.
+        this->imu_R_world_at_reset_ = R_world_imu_final;
+        this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
+        this->imu_preintegration_->reset({this->x_.gyro_bias, this->x_.accel_bias});
+
+        this->alignment_done_ = true;
+
+        std::cout << "[LidarInertialOdometry] initial alignment done: "
+                  << "roll=" << result.roll_rad * 180.0f / static_cast<float>(M_PI) << " deg, "
+                  << "pitch=" << result.pitch_rad * 180.0f / static_cast<float>(M_PI) << " deg, "
+                  << "yaw_preserved=" << yaw_user * 180.0f / static_cast<float>(M_PI) << " deg, "
+                  << "|a|=" << result.accel_norm << " m/s^2, "
+                  << "gyro_bias=[" << result.gyro_bias.transpose() << "]" << std::endl;
+        return ResultType::success;
     }
 
     // -------------------------------------------------------------------------

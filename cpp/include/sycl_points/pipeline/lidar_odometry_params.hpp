@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
@@ -188,6 +189,10 @@ struct Parameters {
             bool enable = false;
         };
         Deskew deskew;
+
+        /// Gravity-aligned initial roll/pitch estimation at startup.
+        /// Requires the robot to be stationary for a few seconds before the first scan.
+        imu::InitialAlignmentParams initial_alignment;
     };
 
     struct Registration {
