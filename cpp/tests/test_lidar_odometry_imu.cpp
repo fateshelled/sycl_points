@@ -133,7 +133,7 @@ TEST(LidarOdometryIMU, ZeroMotionIMUGivesNearIdentityRelativeTransform) {
     imu::IMUPreintegration integrator(imu_params);
 
     // Reset at identity world orientation
-    integrator.reset(imu::IMUBias(), Eigen::Matrix3f::Identity());
+    integrator.reset(imu::IMUBias());
 
     // Feed static IMU data (100 Hz for 0.1 s)
     const auto batch = make_static_imu(0.0, 0.1, 10);
@@ -141,7 +141,8 @@ TEST(LidarOdometryIMU, ZeroMotionIMUGivesNearIdentityRelativeTransform) {
 
     EXPECT_TRUE(integrator.has_measurements());
 
-    const sp::TransformMatrix T_rel = integrator.predict_relative_transform(imu::IMUBias());
+    const sp::TransformMatrix T_rel =
+        integrator.predict_relative_transform(Eigen::Matrix3f::Identity(), Eigen::Vector3f::Zero(), imu::IMUBias());
 
     // Gravity-compensated relative rotation should be identity
     const Eigen::Matrix3f R_rel = T_rel.block<3, 3>(0, 0);

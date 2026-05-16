@@ -124,20 +124,17 @@ public:
 
     /// @brief Reset the integrator (call at every new LiDAR keyframe).
     /// @param bias               Current bias estimate used as the linearization point.
-    /// @param R_world_body_i     Rotation from body to world frame at the window start.
-    ///                           Required to compensate gravity in predict_relative_transform().
-    /// @param v_world_i          Linear velocity in the world frame at the window start [m/s].
-    ///                           Used by predict_relative_transform() to add the constant-
-    ///                           velocity contribution (v * dt) to the predicted displacement.
-    ///                           Defaults to zero.
     /// @param initial_covariance 15×15 state covariance at the window start.
     ///                           Typically the posterior covariance P from the previous
     ///                           keyframe optimisation.  Propagated forward together with
     ///                           the IMU process noise; pass as P_pred to
     ///                           compute_imu_hessian_gradient().
     ///                           Defaults to zero (uncertainty from IMU noise only).
-    void reset(const IMUBias& bias = IMUBias(), const Eigen::Matrix3f& R_world_body_i = Eigen::Matrix3f::Identity(),
-               const Eigen::Vector3f& v_world_i = Eigen::Vector3f::Zero(),
+    ///
+    /// Note: the window-start orientation and velocity required by
+    /// predict_relative_transform() are now passed directly to that function,
+    /// so callers must retain them externally.
+    void reset(const IMUBias& bias = IMUBias(),
                const Eigen::Matrix<float, 15, 15>& initial_covariance = Eigen::Matrix<float, 15, 15>::Zero()) {
         bias_lin_ = bias;
         result_ = PreintegrationResult{};
@@ -145,8 +142,6 @@ public:
         has_prev_ = false;
         num_measurements_ = 0;
         step_count_ = 0;
-        R_world_body_i_ = R_world_body_i;
-        v_world_i_ = v_world_i;
     }
 
     /// @brief Feed one IMU sample.  Integration starts after the second call.
@@ -192,6 +187,14 @@ public:
         const Eigen::Matrix3f R_corr = eigen_utils::geometry::quaternion_to_rotation_matrix(q_corr);
         corrected.Delta_R *= R_corr;
 
+        // Renormalize via quaternion roundtrip to keep Delta_R on SO(3).
+        // Single-precision drift comes from two sources: (1) the matrix product above,
+        // (2) any unrenormalized steps in result_.Delta_R since the last periodic
+        // renormalization (integrate_step renormalizes every 100 steps, which may not
+        // fire within a single LiDAR window).
+        const Eigen::Vector4f q = eigen_utils::geometry::rotation_matrix_to_quaternion(corrected.Delta_R);
+        corrected.Delta_R = eigen_utils::geometry::quaternion_to_rotation_matrix(eigen_utils::normalize<4>(q));
+
         corrected.Delta_v += result_.J.J_v_bg * d_bg + result_.J.J_v_ba * d_ba;
         corrected.Delta_p += result_.J.J_p_bg * d_bg + result_.J.J_p_ba * d_ba;
 
@@ -225,27 +228,33 @@ public:
     }
 
     /// @brief Predict the relative transform from window start to window end.
-    ///        Gravity is compensated using the initial orientation supplied to reset().
-    ///        The initial velocity supplied to reset() is also included, so the returned
+    ///        Gravity and the initial-velocity contribution are compensated using the
+    ///        window-start orientation/velocity passed as arguments, so the returned
     ///        translation captures both constant-velocity motion and acceleration-induced
     ///        displacement.  Suitable for direct use as an ICP initial guess.
+    ///
+    /// @param R_world_body_i Rotation from body to world frame at the window start.
+    /// @param v_world_i      Linear velocity in the world frame at the window start [m/s].
+    /// @param current_bias   Current bias estimate (may differ from linearization bias).
     /// @return T_body_i_to_body_j  (TransformMatrix = Matrix4f)
-    TransformMatrix predict_relative_transform(const IMUBias& current_bias) const {
+    TransformMatrix predict_relative_transform(const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_i,
+                                               const IMUBias& current_bias) const {
         const PreintegrationResult c = get_corrected(current_bias);
         const float dt_f = static_cast<float>(c.dt_total);
 
-        // Delta_p accumulates the specific force (accelerometer reading), which includes
-        // gravity.  Subtract the gravity contribution expressed in the window-start body
-        // frame so that a stationary device returns zero translation.
-        // Gravity term in window-start body frame: R_i^T * g_world.
-        // Its integral over [0, dt]: 0.5 * R_i^T * g_world * dt^2.
-        // Adding it cancels the gravity already baked into Delta_p.
+        // The bias-corrected accelerometer reads the specific force in the body frame:
+        //   a_meas - b_a ≈ R_wb^T · (a_world − g_world)
+        // A stationary device (a_world = 0) therefore reads −R_wb^T · g_world, so the
+        // integrated Delta_p contains a term  −0.5 · R_i^T · g_world · dt²  even when
+        // the sensor is not moving.  Adding +0.5 · R_i^T · g_world · dt² here removes
+        // that term, leaving only the displacement caused by true acceleration (which
+        // is zero for a stationary device).
         const Eigen::Vector3f delta_p_grav_free =
-            c.Delta_p + 0.5f * (R_world_body_i_.transpose() * params_.gravity) * dt_f * dt_f;
+            c.Delta_p + 0.5f * (R_world_body_i.transpose() * params_.gravity) * dt_f * dt_f;
 
         // Add the initial velocity contribution in window-start body frame.
         // v_world * dt is expressed in body frame as R_i^T * v_world * dt.
-        const Eigen::Vector3f delta_p = delta_p_grav_free + R_world_body_i_.transpose() * v_world_i_ * dt_f;
+        const Eigen::Vector3f delta_p = delta_p_grav_free + R_world_body_i.transpose() * v_world_i * dt_f;
 
         TransformMatrix T_rel = TransformMatrix::Identity();
         T_rel.block<3, 3>(0, 0) = c.Delta_R;
@@ -297,8 +306,9 @@ private:
         const Eigen::Vector4f q_step = eigen_utils::lie::so3_exp(phi_mid);
         const Eigen::Matrix3f R_step = eigen_utils::geometry::quaternion_to_rotation_matrix(q_step);
 
-        // Half-step rotation for accel integration (use omega at m0 start)
-        const Eigen::Vector3f phi_half = omega_0 * (0.5f * dt_f);
+        // Half-step rotation for accel integration (midpoint scheme: use omega_mid
+        // for symmetry with the full-step rotation R_step = Exp(omega_mid * dt)).
+        const Eigen::Vector3f phi_half = omega_mid * (0.5f * dt_f);
         const Eigen::Vector4f q_half = eigen_utils::lie::so3_exp(phi_half);
         const Eigen::Matrix3f R_half = eigen_utils::geometry::quaternion_to_rotation_matrix(q_half);
         const Eigen::Matrix3f Delta_R_mid = result_.Delta_R * R_half;
@@ -425,8 +435,6 @@ private:
     IMUBias bias_lin_;
     PreintegrationResult result_;
     IMUMeasurement prev_meas_;
-    Eigen::Matrix3f R_world_body_i_ = Eigen::Matrix3f::Identity();
-    Eigen::Vector3f v_world_i_ = Eigen::Vector3f::Zero();
     bool has_prev_ = false;
     int num_measurements_ = 0;
     int step_count_ = 0;

@@ -112,6 +112,10 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 /// @param R_world_body_i        Rotation from IMU body to world frame at scan start.
 ///                              Used for gravity compensation in Delta_p.
 ///                              Typically: odom.rotation() * T_imu_to_lidar.rotation().
+/// @param v_world_body_i        World-frame linear velocity of the IMU body at scan start [m/s].
+///                              Pass Vector3f::Zero() if no velocity estimate is available
+///                              (e.g., pure LO); the deskew will then omit the v0 * t term
+///                              and only correct for rotation and acceleration-induced motion.
 /// @param[out] status           Optional detailed result code.
 /// @return true on success, false if prerequisites are not met.
 template <imu::imu_measurement_range Range>
@@ -119,7 +123,8 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
                                    const Range& imu_buffer, double scan_start_time_sec,
                                    const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
                                    const imu::IMUPreintegrationParams& preintegration_params,
-                                   const Eigen::Matrix3f& R_world_body_i, IMUDeskewStatus* status = nullptr) {
+                                   const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
+                                   IMUDeskewStatus* status = nullptr) {
     auto set_status = [&](IMUDeskewStatus s) {
         if (status) *status = s;
     };
@@ -228,7 +233,7 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
     // IMU integration
     {
         imu::IMUPreintegration local_integrator(preintegration_params);
-        local_integrator.reset(bias, R_world_body_i);
+        local_integrator.reset(bias);
         local_integrator.integrate(m_start);  // stores as prev; no integration step yet
 
         for (auto it = it_next; it != filtered.end(); ++it) {
@@ -241,7 +246,8 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
 
             // predict_relative_transform() applies gravity compensation using dt_total,
             // which equals t_rel_sec because the integrator was reset at scan_start.
-            const sycl_points::TransformMatrix T_imu_rel = local_integrator.predict_relative_transform(bias);
+            const sycl_points::TransformMatrix T_imu_rel =
+                local_integrator.predict_relative_transform(R_world_body_i, v_world_body_i, bias);
 
             // Convert to LiDAR-frame relative transform:
             //   T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}

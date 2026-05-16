@@ -99,6 +99,7 @@ TEST(IMUDeskewTest, PureRotationDeskew) {
                                            Eigen::Isometry3f::Identity(),  // T_imu_to_lidar = I
                                            imu::IMUBias(), preint_params,
                                            Eigen::Matrix3f::Identity(),  // R_world_imu = I
+                                           Eigen::Vector3f::Zero(),      // v_world_imu = 0
                                            &status);
 
     ASSERT_TRUE(ok) << "deskew failed with status " << static_cast<int>(status);
@@ -158,8 +159,9 @@ TEST(IMUDeskewTest, PureTranslationDeskew) {
 
     PointCloudShared deskewed(queue);
     IMUDeskewStatus status;
-    const bool ok = deskew_point_cloud_imu(cloud, deskewed, imu_buf, scan_start_sec, Eigen::Isometry3f::Identity(),
-                                           imu::IMUBias(), preint_params, Eigen::Matrix3f::Identity(), &status);
+    const bool ok =
+        deskew_point_cloud_imu(cloud, deskewed, imu_buf, scan_start_sec, Eigen::Isometry3f::Identity(), imu::IMUBias(),
+                               preint_params, Eigen::Matrix3f::Identity(), Eigen::Vector3f::Zero(), &status);
 
     ASSERT_TRUE(ok) << "deskew failed: " << static_cast<int>(status);
     for (size_t i = 0; i < world_pts.size(); ++i) {
@@ -192,8 +194,9 @@ TEST(IMUDeskewTest, InPlaceAliasNoCorruption) {
 
     // Pass cloud as both input and output (in-place).
     IMUDeskewStatus status;
-    const bool ok = deskew_point_cloud_imu(cloud, cloud, imu_buf, scan_start_sec, Eigen::Isometry3f::Identity(),
-                                           imu::IMUBias(), preint_params, Eigen::Matrix3f::Identity(), &status);
+    const bool ok =
+        deskew_point_cloud_imu(cloud, cloud, imu_buf, scan_start_sec, Eigen::Isometry3f::Identity(), imu::IMUBias(),
+                               preint_params, Eigen::Matrix3f::Identity(), Eigen::Vector3f::Zero(), &status);
 
     ASSERT_TRUE(ok) << "in-place deskew failed: " << static_cast<int>(status);
     ASSERT_EQ(cloud.size(), 10u);
@@ -220,7 +223,8 @@ TEST(IMUDeskewTest, InsufficientIMUDataReturnsFalse) {
     IMUDeskewStatus status;
     PointCloudShared output(queue);
     const bool ok = deskew_point_cloud_imu(cloud, output, empty_buf, 1.0, Eigen::Isometry3f::Identity(), imu::IMUBias(),
-                                           imu::IMUPreintegrationParams(), Eigen::Matrix3f::Identity(), &status);
+                                           imu::IMUPreintegrationParams(), Eigen::Matrix3f::Identity(),
+                                           Eigen::Vector3f::Zero(), &status);
 
     EXPECT_FALSE(ok);
     EXPECT_EQ(status, IMUDeskewStatus::insufficient_imu_coverage);
@@ -242,7 +246,8 @@ TEST(IMUDeskewTest, NoTimestampsReturnsFalse) {
     IMUDeskewStatus status;
     PointCloudShared output(queue);
     const bool ok = deskew_point_cloud_imu(cloud, output, imu_buf, 1.0, Eigen::Isometry3f::Identity(), imu::IMUBias(),
-                                           imu::IMUPreintegrationParams(), Eigen::Matrix3f::Identity(), &status);
+                                           imu::IMUPreintegrationParams(), Eigen::Matrix3f::Identity(),
+                                           Eigen::Vector3f::Zero(), &status);
 
     EXPECT_FALSE(ok);
     EXPECT_EQ(status, IMUDeskewStatus::no_timestamps);
@@ -264,7 +269,8 @@ TEST(IMUDeskewTest, ZeroScanDurationReturnsFalse) {
     IMUDeskewStatus status;
     PointCloudShared output(queue);
     const bool ok = deskew_point_cloud_imu(cloud, output, imu_buf, 1.0, Eigen::Isometry3f::Identity(), imu::IMUBias(),
-                                           imu::IMUPreintegrationParams(), Eigen::Matrix3f::Identity(), &status);
+                                           imu::IMUPreintegrationParams(), Eigen::Matrix3f::Identity(),
+                                           Eigen::Vector3f::Zero(), &status);
 
     EXPECT_FALSE(ok);
     EXPECT_EQ(status, IMUDeskewStatus::invalid_scan_duration);
@@ -289,7 +295,8 @@ TEST(IMUDeskewTest, PartialIMUCoverageReturnsFalse) {
     IMUDeskewStatus status;
     PointCloudShared output(queue);
     const bool ok = deskew_point_cloud_imu(cloud, output, imu_buf, 1.0, Eigen::Isometry3f::Identity(), imu::IMUBias(),
-                                           imu::IMUPreintegrationParams(), Eigen::Matrix3f::Identity(), &status);
+                                           imu::IMUPreintegrationParams(), Eigen::Matrix3f::Identity(),
+                                           Eigen::Vector3f::Zero(), &status);
 
     EXPECT_FALSE(ok);
     EXPECT_EQ(status, IMUDeskewStatus::insufficient_imu_coverage);
@@ -342,7 +349,8 @@ TEST(IMUDeskewTest, MatchesConstantVelocityApproximately) {
 
     PointCloudShared deskewed_imu(queue), deskewed_cv(queue);
     ASSERT_TRUE(deskew_point_cloud_imu(cloud_imu, deskewed_imu, imu_buf, scan_start_sec, Eigen::Isometry3f::Identity(),
-                                       imu::IMUBias(), preint_params, Eigen::Matrix3f::Identity()));
+                                       imu::IMUBias(), preint_params, Eigen::Matrix3f::Identity(),
+                                       Eigen::Vector3f::Zero()));
     ASSERT_TRUE(deskew_point_cloud_constant_velocity(cloud_cv, deskewed_cv, start_pose, end_pose));
 
     // Both methods should correct points close to the world-frame position.
@@ -405,7 +413,8 @@ TEST(IMUDeskewTest, NormalsAndCovariancesRotated) {
 
     PointCloudShared deskewed(queue);
     ASSERT_TRUE(deskew_point_cloud_imu(cloud, deskewed, imu_buf, scan_start_sec, Eigen::Isometry3f::Identity(),
-                                       imu::IMUBias(), preint_params, Eigen::Matrix3f::Identity()));
+                                       imu::IMUBias(), preint_params, Eigen::Matrix3f::Identity(),
+                                       Eigen::Vector3f::Zero()));
 
     for (size_t i = 0; i < offsets_ms.size(); ++i) {
         const Eigen::Vector3f p_corrected = (*deskewed.points)[i].head<3>();
