@@ -805,11 +805,12 @@ private:
         const bool needs_covs = (reg_type == algorithms::registration::RegType::GICP ||
                                  this->params_.registration.pipeline.registration.rotation_constraint.enable ||
                                  this->params_.scan.preprocess.angle_incidence_filter.enable);
-        const bool needs_zscore = this->params_.scan.intensity_zscore.enable && this->preprocessed_pc_->has_intensity();
         const bool needs_gaussian =
             this->params_.scan.intensity_gaussian.enable && this->preprocessed_pc_->has_intensity();
+        const bool needs_local_mean_norm =
+            this->params_.scan.intensity_local_mean_norm.enable && this->preprocessed_pc_->has_intensity();
 
-        if (!needs_covs && !needs_zscore && !needs_gaussian) return;
+        if (!needs_covs && !needs_gaussian && !needs_local_mean_norm) return;
 
         this->processing_ctx_ = this->pc_processor_->prepare_context(*this->preprocessed_pc_);
         this->pc_processor_->compute_covariances(*this->preprocessed_pc_, this->processing_ctx_);

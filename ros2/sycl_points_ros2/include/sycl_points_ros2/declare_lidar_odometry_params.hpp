@@ -31,10 +31,12 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             "scan/intensity_correction/ref_distance", params.scan.intensity_correction.ref_distance);
         params.scan.intensity_correction.angle_exponent = node->declare_parameter<double>(
             "scan/intensity_correction/angle_exponent", params.scan.intensity_correction.angle_exponent);
-        params.scan.intensity_zscore.enable =
-            node->declare_parameter<bool>("scan/intensity_zscore/enable", params.scan.intensity_zscore.enable);
-        params.scan.intensity_zscore.sigma_min =
-            node->declare_parameter<double>("scan/intensity_zscore/sigma_min", params.scan.intensity_zscore.sigma_min);
+        params.scan.enhanced_reflectivity.enable = node->declare_parameter<bool>(
+            "scan/enhanced_reflectivity/enable", params.scan.enhanced_reflectivity.enable);
+        params.scan.enhanced_reflectivity.clip_max = node->declare_parameter<double>(
+            "scan/enhanced_reflectivity/clip_max", params.scan.enhanced_reflectivity.clip_max);
+        params.scan.enhanced_reflectivity.ring_mean_ema_alpha = static_cast<float>(node->declare_parameter<double>(
+            "scan/enhanced_reflectivity/ring_mean_ema_alpha", params.scan.enhanced_reflectivity.ring_mean_ema_alpha));
         params.scan.intensity_gaussian.enable =
             node->declare_parameter<bool>("scan/intensity_gaussian/enable", params.scan.intensity_gaussian.enable);
         params.scan.intensity_gaussian.neighbor_num = node->declare_parameter<int>(
@@ -45,6 +47,18 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             "scan/intensity_gaussian/sigma_elevation", params.scan.intensity_gaussian.sigma_elevation);
         params.scan.intensity_gaussian.sigma_range = node->declare_parameter<double>(
             "scan/intensity_gaussian/sigma_range", params.scan.intensity_gaussian.sigma_range);
+        params.scan.intensity_local_mean_norm.enable = node->declare_parameter<bool>(
+            "scan/intensity_local_mean_norm/enable", params.scan.intensity_local_mean_norm.enable);
+        params.scan.intensity_local_mean_norm.neighbor_num = node->declare_parameter<int>(
+            "scan/intensity_local_mean_norm/neighbor_num", params.scan.intensity_local_mean_norm.neighbor_num);
+        params.scan.intensity_local_mean_norm.sigma_azimuth = node->declare_parameter<double>(
+            "scan/intensity_local_mean_norm/sigma_azimuth", params.scan.intensity_local_mean_norm.sigma_azimuth);
+        params.scan.intensity_local_mean_norm.sigma_elevation = node->declare_parameter<double>(
+            "scan/intensity_local_mean_norm/sigma_elevation", params.scan.intensity_local_mean_norm.sigma_elevation);
+        params.scan.intensity_local_mean_norm.sigma_range = node->declare_parameter<double>(
+            "scan/intensity_local_mean_norm/sigma_range", params.scan.intensity_local_mean_norm.sigma_range);
+        params.scan.intensity_local_mean_norm.mean_min = static_cast<float>(node->declare_parameter<double>(
+            "scan/intensity_local_mean_norm/mean_min", params.scan.intensity_local_mean_norm.mean_min));
         params.scan.downsampling.voxel.enable =
             node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan.downsampling.voxel.enable);
         params.scan.downsampling.voxel.size =
@@ -201,6 +215,15 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                 node->declare_parameter<bool>("registration/random_sampling/enable", random_sampling.enable);
             random_sampling.num =
                 node->declare_parameter<int64_t>("registration/random_sampling/num", random_sampling.num);
+            random_sampling.use_intensities = node->declare_parameter<bool>(
+                "registration/random_sampling/use_intensities", random_sampling.use_intensities);
+            random_sampling.weighted_ratio = static_cast<float>(node->declare_parameter<double>(
+                "registration/random_sampling/weighted_ratio", random_sampling.weighted_ratio));
+            if (random_sampling.weighted_ratio < 0.0f || random_sampling.weighted_ratio > 1.0f) {
+                throw std::invalid_argument(
+                    "[declare_lidar_odometry_params] `registration/random_sampling/weighted_ratio` must be "
+                    "within [0.0, 1.0]");
+            }
 
             const std::string reg_type = node->declare_parameter<std::string>("registration/type", "gicp");
             solver.reg_type = algorithms::registration::RegType_from_string(reg_type);

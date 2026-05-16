@@ -15,6 +15,13 @@ struct RegistrationPipelineParams {
     struct RandomSampling {
         bool enable = true;
         size_t num = 1000;
+        // When true, use per-point intensity values as sampling weights via mixed weighted/uniform sampling.
+        // Assumes intensities have been pre-normalized (e.g. by intensity_local_mean_norm); raw 0-255 intensities
+        // will skew the distribution heavily toward retro-reflectors. Silently falls back to uniform sampling
+        // when the source point cloud has no intensity field.
+        bool use_intensities = false;
+        // Fraction of samples drawn from the weighted distribution (rest are uniform). Range: [0.0, 1.0].
+        float weighted_ratio = 0.8f;
     };
 
     /// @brief Parameters for multi-stage robust scale annealing

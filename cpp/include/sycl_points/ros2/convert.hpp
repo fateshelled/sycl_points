@@ -7,9 +7,29 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points {
 namespace ros2 {
+
+namespace detail {
+
+// Load a value of type T from a byte buffer that may not be aligned to alignof(T).
+// Safe under strict aliasing (reads occur only through uint8_t*) and avoids potential
+// SIGBUS on strict-alignment platforms. For constant sizeof(T), compilers fold the
+// bytewise copy into a single unaligned load on platforms that support it.
+// Usable from both host code and SYCL kernels.
+template <typename T>
+SYCL_EXTERNAL inline T load_unaligned(const uint8_t* p) {
+    T v;
+    auto* dst = reinterpret_cast<uint8_t*>(&v);
+    for (size_t i = 0; i < sizeof(T); ++i) {
+        dst[i] = p[i];
+    }
+    return v;
+}
+
+}  // namespace detail
 
 inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const sensor_msgs::msg::PointCloud2& msg,
                         PointCloudShared::Ptr& cloud, sycl_points::shared_vector_ptr<uint8_t>& msg_buffer,
@@ -140,8 +160,7 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
 
             if (timestamp_type == sensor_msgs::msg::PointField::UINT32) {
                 // Ouster "t", Livox "offset_time": nanoseconds from scan start → milliseconds
-                const float offset_ms =
-                    static_cast<float>(reinterpret_cast<const uint32_t*>(&msg_bytes[base])[0]) * 1e-6f;
+                const float offset_ms = static_cast<float>(detail::load_unaligned<uint32_t>(&msg_bytes[base])) * 1e-6f;
                 offsets[i] = offset_ms;
                 max_offset_ms = std::max(max_offset_ms, static_cast<double>(offset_ms));
                 continue;
@@ -151,12 +170,12 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             if (timestamp_type == sensor_msgs::msg::PointField::FLOAT32) {
                 // FLOAT32 has insufficient precision for absolute Unix timestamps;
                 // always treat as scan-start-relative offset in seconds (e.g. Velodyne).
-                const double raw = static_cast<double>(reinterpret_cast<const float*>(&msg_bytes[base])[0]);
+                const double raw = static_cast<double>(detail::load_unaligned<float>(&msg_bytes[base]));
                 if (std::isfinite(raw) && raw > 0.0) {
                     offset_ms = raw * 1e3;
                 }
             } else if (timestamp_type == sensor_msgs::msg::PointField::FLOAT64) {
-                const double raw = reinterpret_cast<const double*>(&msg_bytes[base])[0];
+                const double raw = detail::load_unaligned<double>(&msg_bytes[base]);
                 if (std::isfinite(raw) && raw >= 0.0) {
                     // Values larger than 1e8 s (~year 1973) are absolute Unix timestamps.
                     offset_ms = (raw > 1e8) ? raw * 1e3 - start_time_ms : raw * 1e3;
@@ -196,13 +215,13 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
                 const size_t i = item.get_global_id(0);
                 if (i >= point_size) return;
                 const size_t base = point_step * i;
-                const float x = static_cast<float>(reinterpret_cast<const ScalarT*>(&msg_data_ptr[base + x_offset])[0]);
-                const float y = static_cast<float>(reinterpret_cast<const ScalarT*>(&msg_data_ptr[base + y_offset])[0]);
-                const float z = static_cast<float>(reinterpret_cast<const ScalarT*>(&msg_data_ptr[base + z_offset])[0]);
+                const float x = static_cast<float>(detail::load_unaligned<ScalarT>(&msg_data_ptr[base + x_offset]));
+                const float y = static_cast<float>(detail::load_unaligned<ScalarT>(&msg_data_ptr[base + y_offset]));
+                const float z = static_cast<float>(detail::load_unaligned<ScalarT>(&msg_data_ptr[base + z_offset]));
                 points_ptr[i] = {x, y, z, 1.0f};
 
                 if (write_rgb) {
-                    const auto rgb = reinterpret_cast<const uint8_t*>(&msg_data_ptr[base + rgb_offset]);
+                    const auto rgb = &msg_data_ptr[base + rgb_offset];
                     auto& dst = rgb_ptr[i];
                     dst.x() = static_cast<float>(rgb[0]) / 255.0f;
                     dst.y() = static_cast<float>(rgb[1]) / 255.0f;
@@ -214,11 +233,11 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
                     float intensity = 0.0f;
                     switch (intensity_type) {
                         case sensor_msgs::msg::PointField::FLOAT32:
-                            intensity = reinterpret_cast<const float*>(&msg_data_ptr[base + intensity_offset])[0];
+                            intensity = detail::load_unaligned<float>(&msg_data_ptr[base + intensity_offset]);
                             break;
                         case sensor_msgs::msg::PointField::UINT16:
                             intensity = static_cast<float>(
-                                reinterpret_cast<const uint16_t*>(&msg_data_ptr[base + intensity_offset])[0]);
+                                detail::load_unaligned<uint16_t>(&msg_data_ptr[base + intensity_offset]));
                             break;
                     }
                     intensity_ptr[i] = intensity;
@@ -260,9 +279,9 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             const size_t base = point_step * i;
 
             {
-                const auto x = static_cast<float>(reinterpret_cast<const double*>(&msg.data[base + x_offset])[0]);
-                const auto y = static_cast<float>(reinterpret_cast<const double*>(&msg.data[base + y_offset])[0]);
-                const auto z = static_cast<float>(reinterpret_cast<const double*>(&msg.data[base + z_offset])[0]);
+                const auto x = static_cast<float>(detail::load_unaligned<double>(&msg.data[base + x_offset]));
+                const auto y = static_cast<float>(detail::load_unaligned<double>(&msg.data[base + y_offset]));
+                const auto z = static_cast<float>(detail::load_unaligned<double>(&msg.data[base + z_offset]));
                 auto& dst = (*cloud->points)[i];
                 dst.x() = x;
                 dst.y() = y;
@@ -271,7 +290,7 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
             }
 
             if (has_rgb_field) {
-                const auto rgb = reinterpret_cast<const uint8_t*>(&msg.data[base + rgb_offset]);
+                const auto rgb = &msg.data[base + rgb_offset];
                 auto& dst = (*cloud->rgb)[i];
                 dst.x() = static_cast<float>(rgb[0]) / 255.0f;
                 dst.y() = static_cast<float>(rgb[1]) / 255.0f;
@@ -283,11 +302,11 @@ inline bool fromROS2msg(const sycl_points::sycl_utils::DeviceQueue& queue, const
                 float intensity = 0.0f;
                 switch (intensity_type) {
                     case sensor_msgs::msg::PointField::FLOAT32:
-                        intensity = reinterpret_cast<const float*>(&msg.data[base + intensity_offset])[0];
+                        intensity = detail::load_unaligned<float>(&msg.data[base + intensity_offset]);
                         break;
                     case sensor_msgs::msg::PointField::UINT16:
-                        intensity = static_cast<float>(
-                            reinterpret_cast<const uint16_t*>(&msg.data[base + intensity_offset])[0]);
+                        intensity =
+                            static_cast<float>(detail::load_unaligned<uint16_t>(&msg.data[base + intensity_offset]));
                         break;
                 }
                 (*cloud->intensities)[i] = intensity;

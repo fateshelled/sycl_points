@@ -88,8 +88,7 @@ SYCL_EXTERNAL inline float compute(const PointType* points, const float* intensi
 }  // namespace kernel
 
 /// @brief Apply directional Gaussian smoothing to cloud.intensities in-place.
-///        Uses a temporary buffer to avoid read/write race conditions (same pattern as
-///        intensity_zscore::compute).
+///        Uses a temporary buffer to avoid read/write race conditions.
 ///
 /// @param cloud          Point cloud with intensity field (modified in-place)
 /// @param neighbors      KNN result (typically k >= 5 for meaningful smoothing)
