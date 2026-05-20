@@ -798,6 +798,9 @@ private:
 
     void refine_filter(const PointCloudShared::Ptr scan) {
         this->pc_processor_->refine_filter(*scan, this->processing_ctx_);
+        if (this->params_.registration.pipeline.registration.photometric.enable && scan->has_intensity()) {
+            this->pc_processor_->prepare_source_intensity_gradient(*scan);
+        }
     }
 
     void compute_covariances() {
@@ -809,8 +812,10 @@ private:
             this->params_.scan.intensity_gaussian.enable && this->preprocessed_pc_->has_intensity();
         const bool needs_local_mean_norm =
             this->params_.scan.intensity_local_mean_norm.enable && this->preprocessed_pc_->has_intensity();
+        const bool needs_photometric_intensity = this->params_.registration.pipeline.registration.photometric.enable &&
+                                                 this->preprocessed_pc_->has_intensity();
 
-        if (!needs_covs && !needs_gaussian && !needs_local_mean_norm) return;
+        if (!needs_covs && !needs_gaussian && !needs_local_mean_norm && !needs_photometric_intensity) return;
 
         this->processing_ctx_ = this->pc_processor_->prepare_context(*this->preprocessed_pc_);
         this->pc_processor_->compute_covariances(*this->preprocessed_pc_, this->processing_ctx_);

@@ -81,39 +81,52 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_color(
     return ret;
 }
 
-/// @brief Linearize intensity residual using intensity gradient
-/// @note This follows the same geometric decoupling strategy used for RGB photometric residuals.
+/// @brief Linearize intensity residual using source-side intensity gradient.
+/// @note Gradient and normal are expressed in the source (scan) frame and rotated into the world frame
+///       via the current SE(3) transform's rotation block. The tangent-plane projection then uses the
+///       rotated source normal, so the residual reduces to zero when the source matches the interpolated
+///       target intensity along the source surface tangent.
 /// @param T SE(3) transform applied to the source point
 /// @param source_pt Source point before transformation
 /// @param target_pt Target point associated with the source point
 /// @param source_intensity Intensity observed at the source point
 /// @param target_intensity Intensity observed at the target point
-/// @param target_normal Target surface normal
-/// @param target_intensity_grad Spatial gradient of the target intensity
+/// @param source_normal Source surface normal (in source frame)
+/// @param source_intensity_grad Spatial gradient of the source intensity (in source frame)
 SYCL_EXTERNAL inline LinearizedKernelResult linearize_intensity(
     const std::array<sycl::float4, 4>& T,           ///< SE(3) transform
     const PointType& source_pt,                     ///< Source point
     const PointType& target_pt,                     ///< Target point
     float source_intensity,                         ///< Source intensity
     float target_intensity,                         ///< Target intensity
-    const Normal& target_normal,                    ///< Target normal
-    const IntensityGradient& target_intensity_grad  ///< Target intensity gradient
+    const Normal& source_normal,                    ///< Source normal (source frame)
+    const IntensityGradient& source_intensity_grad  ///< Source intensity gradient (source frame)
 ) {
-    // Offset between the projected point and the target point on the tangent plane
-    const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
+    // Rotate source-frame normal and gradient into the world frame using R(T).
+    const Eigen::Matrix3f R = eigen_utils::from_sycl_vec(T).template block<3, 3>(0, 0);
+    const Eigen::Vector3f n_s_3 = source_normal.template head<3>();
+    const Eigen::Vector3f n_w = eigen_utils::multiply<3, 3, 1>(R, n_s_3);
+    const Eigen::Vector3f grad_w = eigen_utils::multiply<3, 3, 1>(R, source_intensity_grad);
 
-    // Intensity residual compensated by the spatial gradient on the tangent plane
-    // r = (I_s - I_t) - ∇I_t · offset,  so r=0 when source matches interpolated target intensity
+    // Tangent-plane offset using the rotated source normal as the plane normal.
+    Normal rotated_normal = Normal::Zero();
+    rotated_normal.template head<3>() = n_w;
+    const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, rotated_normal);
+
+    // Intensity residual compensated by the spatial gradient on the tangent plane.
+    // r = (I_s - I_t) - (R*∇I_s) · offset
     const float intensity_diff = source_intensity - target_intensity;
-    const float residual_intensity = intensity_diff - eigen_utils::dot<3>(target_intensity_grad, offset);
+    const float residual_intensity = intensity_diff - eigen_utils::dot<3>(grad_w, offset);
 
-    // SE(3) Jacobian of the source point
+    // SE(3) Jacobian of the source point.
     const Eigen::Matrix<float, 3, 6> J_geo = compute_se3_jacobian(T, source_pt).template block<3, 6>(0, 0);
 
-    // Intensity Jacobian: ∇I_tangent^T * J_geo  (project gradient onto tangent plane)
-    const Eigen::Vector3f n = target_normal.template head<3>();
-    const Eigen::Vector3f grad_tangent = target_intensity_grad - n * (n.dot(target_intensity_grad));
-    const Eigen::Matrix<float, 1, 3> grad_row = grad_tangent.transpose();
+    // Intensity Jacobian: (∇I_w projected onto rotated source tangent plane)^T * J_geo.
+    // Sign convention matches the existing color/intensity factors: compute_se3_jacobian returns
+    // d(p_t - T*p_s)/dξ while the tangent offset uses (T*p_s - p_t), so the two sign flips cancel.
+    const float ng = eigen_utils::dot<3>(n_w, grad_w);
+    const Eigen::Vector3f grad_tangent = grad_w - eigen_utils::multiply<3>(n_w, ng);
+    const Eigen::Matrix<float, 1, 3> grad_row = eigen_utils::transpose<3, 1>(grad_tangent);
     const Eigen::Matrix<float, 1, 6> J_intensity = eigen_utils::multiply<1, 3, 6>(grad_row, J_geo);
     const Eigen::Matrix<float, 6, 1> J_intensity_T = eigen_utils::transpose<1, 6>(J_intensity);
 
@@ -150,22 +163,29 @@ SYCL_EXTERNAL inline float calculate_color_error(const std::array<sycl::float4, 
     return 0.5f * eigen_utils::frobenius_norm_squared<3>(residual_color);
 }
 
-/// @brief Evaluate intensity photometric error including geometric correction
+/// @brief Evaluate intensity photometric error including geometric correction (source-side gradient).
 /// @param T SE(3) transform applied to the source point
 /// @param source_pt Source point before transformation
 /// @param target_pt Target point associated with the source point
 /// @param source_intensity Intensity observed at the source point
 /// @param target_intensity Intensity observed at the target point
-/// @param target_normal Target surface normal
-/// @param target_intensity_grad Spatial gradient of the target intensity
+/// @param source_normal Source surface normal (in source frame)
+/// @param source_intensity_grad Spatial gradient of the source intensity (in source frame)
 /// @return Squared error value
 SYCL_EXTERNAL inline float calculate_intensity_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                      const PointType& target_pt, float source_intensity,
-                                                     float target_intensity, const Normal& target_normal,
-                                                     const IntensityGradient& target_intensity_grad) {
-    const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, target_normal);
+                                                     float target_intensity, const Normal& source_normal,
+                                                     const IntensityGradient& source_intensity_grad) {
+    const Eigen::Matrix3f R = eigen_utils::from_sycl_vec(T).template block<3, 3>(0, 0);
+    const Eigen::Vector3f n_w = eigen_utils::multiply<3, 3, 1>(R, source_normal.template head<3>());
+    const Eigen::Vector3f grad_w = eigen_utils::multiply<3, 3, 1>(R, source_intensity_grad);
+
+    Normal rotated_normal = Normal::Zero();
+    rotated_normal.template head<3>() = n_w;
+    const Eigen::Vector3f offset = compute_tangent_plane_offset(T, source_pt, target_pt, rotated_normal);
+
     const float intensity_diff = source_intensity - target_intensity;
-    const float residual_intensity = intensity_diff - eigen_utils::dot<3>(target_intensity_grad, offset);
+    const float residual_intensity = intensity_diff - eigen_utils::dot<3>(grad_w, offset);
 
     return 0.5f * residual_intensity * residual_intensity;
 }
