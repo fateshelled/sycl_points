@@ -374,7 +374,7 @@ private:
 
         // Registration
         {
-            auto reg_pipeline_params = this->params_.registration.pipeline;
+            auto& reg_pipeline_params = this->params_.registration.pipeline;
             if (this->is_imu_deskew_enabled() && reg_pipeline_params.velocity_update.enable) {
                 std::cerr << "[LiDAR Odometry] VelocityUpdate is disabled because IMU deskew is enabled." << std::endl;
                 reg_pipeline_params.velocity_update.enable = false;
