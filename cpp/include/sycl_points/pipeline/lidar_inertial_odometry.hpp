@@ -116,7 +116,7 @@ public:
         if (this->is_first_frame_ && this->alignment_estimator_->enabled() && !this->alignment_estimator_->is_done()) {
             const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
             const auto out = this->alignment_estimator_->try_align(timestamp, this->get_imu_buffer(), current_bias,
-                                                                   this->params_.pose.initial.linear());
+                                                                   this->odom_.linear());
             if (out.status != imu::InitialAlignmentEstimator::Status::success) {
                 this->error_message_ = std::string("initial_alignment: ") + out.error_message;
                 return ResultType::waiting_initial_alignment;
@@ -205,15 +205,15 @@ public:
             this->last_frame_time_ = timestamp;
             this->last_imu_reset_timestamp_ = timestamp;
 
-            this->x_.position = this->params_.pose.initial.translation();
-            this->x_.rotation = this->params_.pose.initial.rotation();
+            // odom_/prev_odom_ were initialized in initialize() from params and may have
+            // been updated by apply_initial_alignment().  Confirm x_.position/rotation from
+            // odom_ here so the aligned rotation (when applicable) propagates without
+            // re-reading mutated params.
+            this->x_.position = this->odom_.translation();
+            this->x_.rotation = this->odom_.rotation();
             this->x_.velocity = Eigen::Vector3f::Zero();
-            this->x_.accel_bias = this->params_.imu.bias.accel_bias;
-            this->x_.gyro_bias = this->params_.imu.bias.gyro_bias;
-            // offset_R_L_I / offset_T_L_I already set in initialize(); keep as-is.
-
-            this->odom_ = this->params_.pose.initial;
-            this->prev_odom_ = this->params_.pose.initial;
+            // x_.accel_bias / gyro_bias / offset_R_L_I / offset_T_L_I already set in initialize();
+            // x_.gyro_bias may also have been updated by apply_initial_alignment().
 
             this->reset_imu_preintegration();
             return ResultType::first_frame;
@@ -705,20 +705,17 @@ private:
     // -------------------------------------------------------------------------
 
     /// @brief Apply a successful alignment result to the LIO state.
-    /// Overrides params.pose.initial so the first-frame init block picks up the new
-    /// rotation, updates the navigation state and odometry, and relinearizes the IMU
-    /// preintegration window around the gravity-aligned orientation.
+    /// Updates the navigation state rotation, the held gyro bias, and odometry.
+    /// The IMU preintegration reset is intentionally left to the subsequent first-frame
+    /// block (which calls reset_imu_preintegration() with proper covariance handling)
+    /// to avoid a redundant reset that would discard the P_post_ floor adjustments.
+    /// @note Currently only gyro_bias is updated.  If the estimator gains accel_bias
+    ///       estimation, extend this method accordingly.
     void apply_initial_alignment(const imu::InitialAlignmentEstimator::Output& out) {
-        this->params_.pose.initial.linear() = out.R_world_lidar;
-
         this->x_.rotation = out.R_world_lidar;
         this->x_.gyro_bias = out.gyro_bias;
         this->odom_.linear() = out.R_world_lidar;
         this->prev_odom_.linear() = out.R_world_lidar;
-
-        this->imu_R_world_at_reset_ = out.R_world_imu;
-        this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
-        this->imu_preintegration_->reset({this->x_.gyro_bias, this->x_.accel_bias});
     }
 
     // -------------------------------------------------------------------------
