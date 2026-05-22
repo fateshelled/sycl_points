@@ -73,6 +73,7 @@ lidar_odometry_node:
     imu/initial_alignment/max_accel_std: 0.2          # [m/s^2] per-axis stationarity threshold
     imu/initial_alignment/max_accel_norm_error: 0.5   # [m/s^2] tolerance on |a_mean| vs |gravity|
     imu/initial_alignment/estimate_gyro_bias: true    # Replace gyro bias with the stationary mean
+    imu/initial_alignment/max_wait_sec: 5.0           # Force alignment after this many seconds even if not stationary (<=0 = wait forever)
 
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true

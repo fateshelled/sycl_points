@@ -212,6 +212,11 @@ LiDAROdometryBaseNode::ProcessedFrame LiDAROdometryBaseNode::process_point_cloud
         RCLCPP_WARN(this->get_logger(), "lidar odometry failed: %s", this->pipeline_->get_error_message().c_str());
         return frame;
     }
+    if (frame.result == ResultType::waiting_initial_alignment) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "%s",
+                             this->pipeline_->get_error_message().c_str());
+        return frame;
+    }
 
     frame.odom = this->pipeline_->get_odom();
     frame.keyframe_pose = this->pipeline_->get_last_keyframe_pose();
