@@ -53,7 +53,9 @@ public:
 
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
-    const PointCloudShared& get_keyframe_point_cloud() const { return this->submap_->get_keyframe_point_cloud(); }
+    const PointCloudShared& get_last_keyframe_point_cloud() const {
+        return this->submap_->get_last_keyframe_point_cloud();
+    }
     const PointCloudShared* get_registration_input_point_cloud() const {
         return this->registration_pipeline_->get_registration_input_point_cloud();
     }

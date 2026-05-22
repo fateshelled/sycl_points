@@ -27,10 +27,10 @@ public:
     const auto& get_submap_kdtree() const { return *this->submap_tree_; }
 
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
-    const PointCloudShared& get_keyframe_point_cloud() const { return *this->keyframe_pc_; }
+    const PointCloudShared& get_last_keyframe_point_cloud() const { return *this->last_keyframe_pc_; }
 
     Submap(const sycl_utils::DeviceQueue& queue, const LidarOdometryParams& params) : queue_(queue) {
-        this->keyframe_pc_ = std::make_shared<PointCloudShared>(this->queue_);
+        this->last_keyframe_pc_ = std::make_shared<PointCloudShared>(this->queue_);
         this->submap_pc_ptr_ = std::make_shared<PointCloudShared>(this->queue_);
         this->submap_pc_tmp_ = std::make_shared<PointCloudShared>(this->queue_);
 
@@ -127,9 +127,9 @@ private:
     algorithms::mapping::VoxelHashMap::Ptr submap_voxel_ = nullptr;
     algorithms::mapping::OccupancyGridMap::Ptr occupancy_grid_ = nullptr;
     algorithms::knn::KDTree::Ptr submap_tree_ = nullptr;
-    PointCloudShared::Ptr keyframe_pc_ = nullptr;    // Sensor coordinate
-    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;  // Odom/World coordinate
-    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;  // Odom/World coordinate
+    PointCloudShared::Ptr last_keyframe_pc_ = nullptr;  // Sensor coordinate
+    PointCloudShared::Ptr submap_pc_ptr_ = nullptr;     // Odom/World coordinate
+    PointCloudShared::Ptr submap_pc_tmp_ = nullptr;     // Odom/World coordinate
 
     bool is_keyframe(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
         // calculate delta pose
@@ -153,23 +153,23 @@ private:
                       shared_vector_ptr<float> random_sampling_weights = nullptr) {
         if (random_sampling_weights &&
             random_sampling_weights->size() == cloud.size()) {  // weighted/uniform mixed random sampling
-            this->preprocess_filter_->mixed_random_sampling(cloud, *this->keyframe_pc_, *random_sampling_weights,
+            this->preprocess_filter_->mixed_random_sampling(cloud, *this->last_keyframe_pc_, *random_sampling_weights,
                                                             this->submap_params_.point_random_sampling_num,
                                                             this->submap_params_.weighted_sampling_ratio);
         } else {
             // uniform random sampling
-            this->preprocess_filter_->random_sampling(cloud, *this->keyframe_pc_,
+            this->preprocess_filter_->random_sampling(cloud, *this->last_keyframe_pc_,
                                                       this->submap_params_.point_random_sampling_num);
         }
 
         // add to grid map
         const auto submap_type = this->submap_params_.map_type;
         if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
-            this->occupancy_grid_->add_point_cloud(*this->keyframe_pc_, current_pose);
+            this->occupancy_grid_->add_point_cloud(*this->last_keyframe_pc_, current_pose);
             this->occupancy_grid_->extract_occupied_points(*this->submap_pc_tmp_, current_pose,
                                                            this->submap_params_.max_distance_range);
         } else {
-            this->submap_voxel_->add_point_cloud(*this->keyframe_pc_, current_pose);
+            this->submap_voxel_->add_point_cloud(*this->last_keyframe_pc_, current_pose);
             this->submap_voxel_->downsampling(*this->submap_pc_tmp_, current_pose.translation(),
                                               this->submap_params_.max_distance_range);
         }

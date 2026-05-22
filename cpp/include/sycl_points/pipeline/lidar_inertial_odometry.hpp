@@ -82,7 +82,9 @@ public:
     const auto& get_keyframe_poses() const { return this->submap_->get_keyframe_poses(); }
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
-    const PointCloudShared& get_keyframe_point_cloud() const { return this->submap_->get_keyframe_point_cloud(); }
+    const PointCloudShared& get_last_keyframe_point_cloud() const {
+        return this->submap_->get_last_keyframe_point_cloud();
+    }
     const auto& get_registration_result() const { return *this->reg_result_; }
     const imu::State& get_lio_state() const { return this->x_; }
 
