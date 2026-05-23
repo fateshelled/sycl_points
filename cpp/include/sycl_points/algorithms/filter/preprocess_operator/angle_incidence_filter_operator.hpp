@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <numbers>
 #include <stdexcept>
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
@@ -28,7 +29,7 @@ public:
                 "[PreprocessFilter::angle_incidence_filter] Normal vector or covariance matrices must be "
                 "pre-computed.");
         }
-        if (min_angle < 0.0f || max_angle > M_PIf * 0.5f || min_angle >= max_angle) {
+        if (min_angle < 0.0f || max_angle > std::numbers::pi_v<float> * 0.5f || min_angle >= max_angle) {
             throw std::invalid_argument("[PreprocessFilter::angle_incidence_filter] Invalid angle range");
         }
 

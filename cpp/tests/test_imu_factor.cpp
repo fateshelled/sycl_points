@@ -2,6 +2,7 @@
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <numbers>
 
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -130,7 +131,7 @@ TEST(ImuFactor, BiasResiduals) {
 // 6. Rotation residual: Log(R_pred^T * R_op) around Z axis.
 TEST(ImuFactor, RotationResidualSO3Log) {
     imu::State x_pred, x_op;
-    const float angle = static_cast<float>(M_PI) / 6.0f;  // 30 degrees
+    const float angle = std::numbers::pi_v<float> / 6.0f;  // 30 degrees
 
     x_pred.rotation = Eigen::Matrix3f::Identity();  // R_pred = I
     x_op.rotation = rot_z(angle);                   // R_op   = Rz(30°)
@@ -154,7 +155,7 @@ TEST(ImuFactor, RotationResidualSO3Log) {
 
 // 7. Anti-symmetry: swapping x_pred and x_op negates the rotation residual.
 TEST(ImuFactor, RotationResidualAntisymmetry) {
-    const float angle = static_cast<float>(M_PI) / 4.0f;
+    const float angle = std::numbers::pi_v<float> / 4.0f;
 
     imu::State x_a, x_b;
     x_a.rotation = Eigen::Matrix3f::Identity();

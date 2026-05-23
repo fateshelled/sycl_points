@@ -2,6 +2,7 @@
 
 #include <Eigen/Geometry>
 #include <algorithm>
+#include <numbers>
 #include <vector>
 
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
@@ -301,7 +302,8 @@ TEST(OccupancyGridMapTest, RotatesCovariancesIntoMapFrame) {
 
         auto cloud = MakePointCloud(queue, input_positions, &covariances);
         Eigen::Isometry3f pose = Eigen::Isometry3f::Identity();
-        pose.linear() = Eigen::AngleAxisf(static_cast<float>(M_PI_2), Eigen::Vector3f::UnitZ()).toRotationMatrix();
+        pose.linear() =
+            Eigen::AngleAxisf(std::numbers::pi_v<float> / 2.0f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
         pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
 
         map.add_point_cloud(cloud, pose);
@@ -330,8 +332,7 @@ TEST(OccupancyGridMapTest, SupportsLogEuclideanCovarianceAggregation) {
         sycl_points::sycl_utils::DeviceQueue queue(device);
 
         sycl_points::algorithms::mapping::OccupancyGridMap map(queue, 0.5f);
-        map.set_covariance_aggregation_mode(
-            sycl_points::algorithms::mapping::CovarianceAggregationMode::LOG_EUCLIDEAN);
+        map.set_covariance_aggregation_mode(sycl_points::algorithms::mapping::CovarianceAggregationMode::LOG_EUCLIDEAN);
 
         const std::vector<Eigen::Vector3f> input_positions = {
             {0.0f, 0.0f, 0.0f},

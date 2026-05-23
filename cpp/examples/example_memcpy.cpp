@@ -1,5 +1,6 @@
 #include <chrono>
 #include <iostream>
+#include <numbers>
 
 #include "sycl_points/io/point_cloud_reader.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
@@ -63,7 +64,7 @@ int main() {
         // Transform
         Eigen::Matrix4f trans = Eigen::Matrix4f::Identity();
         trans.block(0, 0, 3, 3) =
-            Eigen::AngleAxisf(0.5 * M_PI, Eigen::Vector3f(0, 1, 0)).matrix();  // rotate 90 deg, y axis
+            Eigen::AngleAxisf(0.5 * std::numbers::pi, Eigen::Vector3f(0, 1, 0)).matrix();  // rotate 90 deg, y axis
         trans.block(0, 3, 3, 1) << 1.0, 2.0, 3.0;
 
         // transform on device (shared to shared)

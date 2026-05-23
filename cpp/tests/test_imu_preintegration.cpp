@@ -2,6 +2,7 @@
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <numbers>
 
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -103,8 +104,8 @@ TEST(IMUPreintegration, ZeroMotionIdentityResult) {
 // 5. Constant rotation around Z: after T seconds at ω_z rad/s,
 //    Delta_R should be rot_z(ω_z * T).
 TEST(IMUPreintegration, ConstantRotationZ) {
-    const float omega_z = static_cast<float>(M_PI / 4.0);  // 45 deg/s
-    const double T = 2.0;                                  // 2 seconds
+    const float omega_z = std::numbers::pi_v<float> / 4.0f;  // 45 deg/s
+    const double T = 2.0;                                    // 2 seconds
     const int n_steps = 400;
 
     imu::IMUPreintegration integ;

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/imu/imu_velocity_corrector.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
@@ -30,6 +31,7 @@ public:
     enum class ResultType : std::int8_t {
         success = 0,  //
         first_frame,
+        waiting_initial_alignment,
         error = 100,
         old_timestamp,
         small_number_of_points
@@ -37,6 +39,14 @@ public:
 
     LiDAROdometryPipeline(const LidarOdometryParams& params) {
         this->params_ = params;
+        // Ensure the IMU buffer is large enough to satisfy the alignment window.
+        // The pop_front rule keeps span ≤ buffer_duration_sec, so equal values can fail.
+        if (this->params_.imu.enable && this->params_.imu.initial_alignment.enable) {
+            const double need = static_cast<double>(this->params_.imu.initial_alignment.required_duration_sec) + 0.2;
+            if (this->params_.imu.buffer_duration_sec < need) {
+                this->params_.imu.buffer_duration_sec = need;
+            }
+        }
         this->initialize();
     }
 
@@ -53,7 +63,9 @@ public:
 
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
-    const PointCloudShared& get_keyframe_point_cloud() const { return this->submap_->get_keyframe_point_cloud(); }
+    const PointCloudShared& get_last_keyframe_point_cloud() const {
+        return this->submap_->get_last_keyframe_point_cloud();
+    }
     const PointCloudShared* get_registration_input_point_cloud() const {
         return this->registration_pipeline_->get_registration_input_point_cloud();
     }
@@ -97,6 +109,20 @@ public:
 
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
         this->error_message_.clear();
+
+        // Initial roll/pitch alignment from stationary IMU samples.
+        // Runs once before the first scan is accepted as the reference frame.
+        // Only active when IMU is enabled and initial_alignment.enable == true.
+        if (this->is_first_frame_ && this->alignment_estimator_ && this->alignment_estimator_->enabled() &&
+            !this->alignment_estimator_->is_done()) {
+            const auto out = this->alignment_estimator_->try_align(timestamp, this->get_imu_buffer(), this->imu_bias_,
+                                                                   this->odom_.linear());
+            if (out.status != imu::InitialAlignmentEstimator::Status::success) {
+                this->error_message_ = std::string("initial_alignment: ") + out.error_message;
+                return ResultType::waiting_initial_alignment;
+            }
+            this->apply_initial_alignment(out);
+        }
 
         if (this->last_frame_time_ > 0.0) {
             const float dt = static_cast<float>(timestamp - this->last_frame_time_);
@@ -168,11 +194,13 @@ public:
             this->last_frame_time_ = timestamp;
 
             // Reset IMU integrator so the next window starts from the initial pose.
+            // Use odom_.rotation() (post-alignment if applied) rather than params_.pose.initial
+            // so the aligned roll/pitch propagates into the IMU linearization point.
             if (this->imu_preintegration_) {
                 const Eigen::Matrix3f R_world_imu =
-                    this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+                    this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
-                this->imu_preintegration_->reset(this->params_.imu.bias);
+                this->imu_preintegration_->reset(this->imu_bias_);
                 this->imu_R_world_at_reset_ = R_world_imu;
                 this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
                 this->last_imu_reset_timestamp_ = timestamp;
@@ -288,6 +316,11 @@ private:
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     imu::IMUVelocityCorrector imu_velocity_corrector_;
+    /// Held IMU bias.  Initialized from params_.imu.bias and updated by initial alignment.
+    /// Subsequent IMU processing (preintegration reset, motion prediction, velocity corrector)
+    /// reads this member rather than params_.imu.bias so params remain immutable at runtime.
+    imu::IMUBias imu_bias_;
+    imu::InitialAlignmentEstimator::Ptr alignment_estimator_ = nullptr;
     std::deque<imu::IMUMeasurement> imu_buffer_;
     mutable std::mutex imu_mutex_;            ///< Guards imu_buffer_ (written by IMU callback, read by LiDAR callback).
     double last_imu_reset_timestamp_ = -1.0;  ///< LiDAR timestamp of the last IMU reset.
@@ -374,7 +407,7 @@ private:
 
         // Registration
         {
-            auto reg_pipeline_params = this->params_.registration.pipeline;
+            auto& reg_pipeline_params = this->params_.registration.pipeline;
             if (this->is_imu_deskew_enabled() && reg_pipeline_params.velocity_update.enable) {
                 std::cerr << "[LiDAR Odometry] VelocityUpdate is disabled because IMU deskew is enabled." << std::endl;
                 reg_pipeline_params.velocity_update.enable = false;
@@ -394,15 +427,36 @@ private:
             this->motion_predictor_ = std::make_shared<AdaptiveMotionPredictor>(this->params_.motion_prediction);
         }
 
+        // Held IMU bias (mutated by initial alignment; default = configured bias)
+        this->imu_bias_ = this->params_.imu.bias;
+
         // IMU preintegration (optional)
         if (this->params_.imu.enable) {
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
                 this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            this->imu_preintegration_->reset(this->params_.imu.bias);
+            this->imu_preintegration_->reset(this->imu_bias_);
             this->imu_R_world_at_reset_ = R_world_imu;
             this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
+
+            // Initial gravity-aligned alignment estimator
+            this->alignment_estimator_ = std::make_shared<imu::InitialAlignmentEstimator>(
+                this->params_.imu.initial_alignment, this->params_.imu.preintegration.gravity,
+                this->params_.imu.T_imu_to_lidar);
         }
+    }
+
+    /// @brief Apply a successful alignment result to the LO state.
+    /// Updates odometry rotation and the held IMU bias.  The IMU preintegration reset
+    /// is intentionally left to the subsequent first-frame block, which uses the
+    /// just-updated odom_/imu_bias_ to produce identical post-state without a
+    /// redundant reset (and avoids the imu_mutex_/reset coordination here).
+    /// @note Currently only gyro_bias is updated.  If the estimator gains accel_bias
+    ///       estimation, extend this method accordingly.
+    void apply_initial_alignment(const imu::InitialAlignmentEstimator::Output& out) {
+        this->odom_.linear() = out.R_world_lidar;
+        this->prev_odom_.linear() = out.R_world_lidar;
+        this->imu_bias_.gyro_bias = out.gyro_bias;
     }
 
     void preprocess(const PointCloudShared::Ptr scan) {
@@ -439,7 +493,7 @@ private:
         // T_imu_rel: relative pose in IMU body frame, with gravity and initial velocity
         // already accounted for inside predict_relative_transform().
         const TransformMatrix T_imu_rel = this->imu_preintegration_->predict_relative_transform(
-            this->imu_R_world_at_reset_, this->imu_v_world_at_reset_, this->params_.imu.bias);
+            this->imu_R_world_at_reset_, this->imu_v_world_at_reset_, this->imu_bias_);
 
         // Convert to LiDAR-frame relative transform:
         // T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
@@ -465,10 +519,9 @@ private:
             const Eigen::Matrix3f R_world_imu = this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
 
             // linear_velocity_ is in the prev_odom_ body frame, so use prev_odom_.rotation() to convert to world frame.
-            const Eigen::Vector3f v_reset =
-                this->imu_velocity_corrector_.get_reset_velocity(*this->imu_preintegration_, this->params_.imu.bias,
-                                                                 this->prev_odom_.rotation() * this->linear_velocity_);
-            this->imu_preintegration_->reset(this->params_.imu.bias);
+            const Eigen::Vector3f v_reset = this->imu_velocity_corrector_.get_reset_velocity(
+                *this->imu_preintegration_, this->imu_bias_, this->prev_odom_.rotation() * this->linear_velocity_);
+            this->imu_preintegration_->reset(this->imu_bias_);
             this->imu_R_world_at_reset_ = R_world_imu;
             this->imu_v_world_at_reset_ = v_reset;
         } else {
