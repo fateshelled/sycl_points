@@ -2,6 +2,7 @@
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <numbers>
 
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/pipeline/lidar_odometry.hpp"
@@ -160,8 +161,8 @@ TEST(LidarOdometryIMU, ExtrinsicConversionRotatesRelativeTranslation) {
     // Extrinsic: IMU is rotated 90° around Z relative to LiDAR
     // p_lidar = R_90z * p_imu
     Eigen::Isometry3f T_imu_to_lidar = Eigen::Isometry3f::Identity();
-    const float c = std::cos(M_PIf / 2.0f);
-    const float s = std::sin(M_PIf / 2.0f);
+    const float c = std::cos(std::numbers::pi_v<float> / 2.0f);
+    const float s = std::sin(std::numbers::pi_v<float> / 2.0f);
     Eigen::Matrix3f R90z;
     R90z << c, -s, 0, s, c, 0, 0, 0, 1;
     T_imu_to_lidar.linear() = R90z;

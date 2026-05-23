@@ -6,6 +6,7 @@
 #include <deque>
 #include <iostream>
 #include <memory>
+#include <numbers>
 #include <string>
 
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
@@ -270,8 +271,8 @@ public:
     /// @param R_world_lidar_user  User-specified initial LiDAR rotation; yaw is extracted
     ///                            and preserved while roll/pitch are replaced by the
     ///                            gravity-aligned estimate.
-    Output try_align(double scan_timestamp, const std::deque<IMUMeasurement>& imu_buffer,
-                     const IMUBias& current_bias, const Eigen::Matrix3f& R_world_lidar_user) {
+    Output try_align(double scan_timestamp, const std::deque<IMUMeasurement>& imu_buffer, const IMUBias& current_bias,
+                     const Eigen::Matrix3f& R_world_lidar_user) {
         Output out;
         if (this->done_) {
             out.status = Status::success;
@@ -335,9 +336,9 @@ public:
         this->done_ = true;
 
         std::cout << "[InitialAlignment] initial alignment done: "
-                  << "roll=" << result.roll_rad * 180.0f / static_cast<float>(M_PI) << " deg, "
-                  << "pitch=" << result.pitch_rad * 180.0f / static_cast<float>(M_PI) << " deg, "
-                  << "yaw_preserved=" << yaw_user * 180.0f / static_cast<float>(M_PI) << " deg, "
+                  << "roll=" << result.roll_rad * 180.0f / std::numbers::pi_v<float> << " deg, "
+                  << "pitch=" << result.pitch_rad * 180.0f / std::numbers::pi_v<float> << " deg, "
+                  << "yaw_preserved=" << yaw_user * 180.0f / std::numbers::pi_v<float> << " deg, "
                   << "|a|=" << result.accel_norm << " m/s^2, "
                   << "gyro_bias=[" << result.gyro_bias.transpose() << "]" << std::endl;
         return out;

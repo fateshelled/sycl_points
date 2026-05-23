@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <numbers>
 #include <vector>
 
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
@@ -250,7 +251,8 @@ TEST(VoxelHashMapTest, RotatesCovariancesIntoMapFrame) {
         auto cloud = MakePointCloud(queue, input_positions, &covariances);
 
         Eigen::Isometry3f pose = Eigen::Isometry3f::Identity();
-        pose.linear() = Eigen::AngleAxisf(static_cast<float>(M_PI_2), Eigen::Vector3f::UnitZ()).toRotationMatrix();
+        pose.linear() =
+            Eigen::AngleAxisf(std::numbers::pi_v<float> / 2.0f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
         pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
 
         voxel_map.add_point_cloud(cloud, pose);

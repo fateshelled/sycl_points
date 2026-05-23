@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <numbers>
+
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -12,7 +14,8 @@ TEST(RelativePoseDeskewTest, DeskewsPointsWithConstantVelocity) {
     const Eigen::Transform<float, 3, 1> start_pose = Eigen::Transform<float, 3, 1>::Identity();
     Eigen::Transform<float, 3, 1> end_pose = Eigen::Transform<float, 3, 1>::Identity();
     end_pose.translation() = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
-    end_pose.linear() = Eigen::AngleAxisf(static_cast<float>(M_PI_2), Eigen::Vector3f::UnitZ()).toRotationMatrix();
+    end_pose.linear() =
+        Eigen::AngleAxisf(std::numbers::pi_v<float> / 2.0f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
 
     const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(start_pose.inverse() * end_pose);
 
@@ -76,7 +79,8 @@ TEST(RelativePoseDeskewTest, PreservesAndRotatesPhotometricGradients) {
     const Eigen::Transform<float, 3, 1> start_pose = Eigen::Transform<float, 3, 1>::Identity();
     Eigen::Transform<float, 3, 1> end_pose = Eigen::Transform<float, 3, 1>::Identity();
     end_pose.translation() = Eigen::Vector3f(0.5f, -0.25f, 0.1f);
-    end_pose.linear() = Eigen::AngleAxisf(static_cast<float>(M_PI_2), Eigen::Vector3f::UnitZ()).toRotationMatrix();
+    end_pose.linear() =
+        Eigen::AngleAxisf(std::numbers::pi_v<float> / 2.0f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
 
     const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(start_pose.inverse() * end_pose);
 

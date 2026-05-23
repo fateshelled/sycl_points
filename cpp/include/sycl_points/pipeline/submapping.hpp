@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Geometry>
+#include <numbers>
 #include <utility>
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
@@ -137,7 +138,8 @@ private:
 
         // calculate moving distance and angle
         const auto distance = delta_pose.translation().norm();
-        const auto angle = std::fabs(Eigen::AngleAxisf(delta_pose.rotation()).angle()) * (180.0f / M_PIf);
+        const auto angle =
+            std::fabs(Eigen::AngleAxisf(delta_pose.rotation()).angle()) * (180.0f / std::numbers::pi_v<float>);
 
         // calculate delta time
         const auto delta_time = this->last_keyframe_time_ > 0.0 ? timestamp - this->last_keyframe_time_

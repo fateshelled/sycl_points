@@ -3,6 +3,7 @@
 #include <Eigen/Dense>
 #include <cmath>
 #include <deque>
+#include <numbers>
 
 #include "sycl_points/algorithms/deskew/imu_deskew.hpp"
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
@@ -55,7 +56,7 @@ TEST(IMUDeskewTest, PureRotationDeskew) {
     cloud.end_time_ms = (scan_start_sec + scan_duration_sec) * 1e3;
 
     // Sensor rotates at 2π/4 = π/2 rad/s around Z over 100 ms → 9° rotation.
-    const float omega_z = static_cast<float>(M_PI / 2.0);
+    const float omega_z = std::numbers::pi_v<float> / 2.0f;
 
     // Five world-frame points (known ground truth).
     const std::vector<Eigen::Vector3f> world_points = {
@@ -310,7 +311,7 @@ TEST(IMUDeskewTest, MatchesConstantVelocityApproximately) {
     constexpr double scan_start_sec = 0.0;
     constexpr double scan_duration_sec = 0.1;
 
-    const float omega_z = static_cast<float>(M_PI / 4.0);  // 45°/s
+    const float omega_z = std::numbers::pi_v<float> / 4.0f;  // 45°/s
 
     const Eigen::Transform<float, 3, 1> start_pose = Eigen::Transform<float, 3, 1>::Identity();
     Eigen::Transform<float, 3, 1> end_pose = Eigen::Transform<float, 3, 1>::Identity();
@@ -372,7 +373,7 @@ TEST(IMUDeskewTest, NormalsAndCovariancesRotated) {
     cloud.start_time_ms = scan_start_sec * 1e3;
     cloud.end_time_ms = (scan_start_sec + scan_duration_sec) * 1e3;
 
-    const float omega_z = static_cast<float>(M_PI / 2.0);
+    const float omega_z = std::numbers::pi_v<float> / 2.0f;
 
     const Eigen::Vector3f world_point(1.0f, 1.0f, 0.0f);
     const Eigen::Vector3f world_normal = Eigen::Vector3f::UnitZ();

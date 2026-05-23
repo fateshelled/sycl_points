@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <numbers>
+
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
@@ -126,7 +129,8 @@ TEST(IntensityCorrectionTest, AngleCorrectionWithNormals) {
 
     // Point along z-axis, normal at 60° → cos(theta) = 0.5 → angle_factor = 1/0.5 = 2
     (*cpu_cloud.points)[1] = sycl_points::PointType(0.0f, 0.0f, 5.0f, 1.0f);
-    (*cpu_cloud.normals)[1] = sycl_points::Normal(0.0f, std::sin(M_PIf / 3.0f), std::cos(M_PIf / 3.0f), 0.0f);
+    (*cpu_cloud.normals)[1] = sycl_points::Normal(0.0f, std::sin(std::numbers::pi_v<float> / 3.0f),
+                                                  std::cos(std::numbers::pi_v<float> / 3.0f), 0.0f);
 
     (*cpu_cloud.intensities)[0] = 1.0f;
     (*cpu_cloud.intensities)[1] = 1.0f;

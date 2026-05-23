@@ -3,6 +3,7 @@
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cctype>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 
@@ -71,8 +72,8 @@ struct Parameters {
             struct Polar {
                 bool enable = true;
                 float distance_size = 1.0f;
-                float elevation_size = 3.0f * M_PIf / 180.0f;
-                float azimuth_size = 3.0f * M_PIf / 180.0f;
+                float elevation_size = 3.0f * std::numbers::pi_v<float> / 180.0f;
+                float azimuth_size = 3.0f * std::numbers::pi_v<float> / 180.0f;
                 std::string coord_system = "CAMERA";
             };
 
@@ -96,7 +97,7 @@ struct Parameters {
             struct AngleIncidenceFilter {
                 bool enable = true;
                 float min_angle = 0.0f;
-                float max_angle = 80.0f * M_PIf / 180.0f;
+                float max_angle = 80.0f * std::numbers::pi_v<float> / 180.0f;
             };
 
             BoxFilter box_filter;
