@@ -48,7 +48,9 @@ struct InitialAlignmentParams {
 /// @brief Result of an alignment attempt.  R_world_imu is the rotation that maps IMU body
 ///        vectors into the world frame so that the body-frame "up" direction aligns with
 ///        the negated gravity vector.  Yaw is intentionally not constrained by gravity and
-///        is left as the minimum-rotation yaw (essentially zero).
+///        is left as the minimum-rotation yaw (essentially zero by construction of
+///        FromTwoVectors, which produces a rotation whose axis lies in the gravity-orthogonal
+///        plane).
 struct InitialAlignmentResult {
     bool success = false;
     Eigen::Matrix3f R_world_imu = Eigen::Matrix3f::Identity();
@@ -61,28 +63,6 @@ struct InitialAlignmentResult {
     float pitch_rad = 0.0f;
     std::string error_message;
 };
-
-namespace detail {
-
-/// @brief Extract the yaw component (ZYX convention) of a rotation matrix using atan2 on
-///        the first column.  Avoids gimbal-lock corner cases at pitch = ±π/2 by returning
-///        0 when the horizontal projection of the first column collapses.
-inline float yaw_from_rotation(const Eigen::Matrix3f& R) {
-    const float cy = R(0, 0);
-    const float sy = R(1, 0);
-    if (std::hypot(cy, sy) < 1e-6f) return 0.0f;
-    return std::atan2(sy, cy);
-}
-
-inline Eigen::Matrix3f rotation_z(float yaw) {
-    const float c = std::cos(yaw);
-    const float s = std::sin(yaw);
-    Eigen::Matrix3f Rz;
-    Rz << c, -s, 0.0f, s, c, 0.0f, 0.0f, 0.0f, 1.0f;
-    return Rz;
-}
-
-}  // namespace detail
 
 /// @brief Estimate the gravity-aligned roll/pitch of the IMU body frame from a window of
 ///        stationary IMU samples.
@@ -223,16 +203,21 @@ inline InitialAlignmentResult estimate_initial_alignment(const std::deque<IMUMea
     return res;
 }
 
-/// @brief Stationary-IMU initial roll/pitch alignment with user-specified yaw preserved.
+/// @brief Stationary-IMU initial roll/pitch alignment.
 ///
 /// Wraps estimate_initial_alignment and owns:
 ///   - the wait/timeout clock (started at the first try),
-///   - the gravity-aligned → yaw-overlayed composition R_world_lidar,
-///   - the corresponding R_world_imu_final for IMU preintegration relinearization.
+///   - the gravity-aligned LiDAR rotation in the imu_attitude frame.
 ///
 /// The caller polls try_align() once per scan while is_done() is false.  On success
-/// the result must be applied by the caller to its own state (pose, gyro bias, IMU
+/// the result is applied by the caller to its own state (pose, gyro bias, IMU
 /// preintegration reset) because state layouts differ between LO and LIO.
+///
+/// Frame convention (see 3-stage TF chain in lidar_inertial_odometry.hpp):
+///   world ──TF1(user yaw+pos)──▶ init_pose ──TF2──▶ imu_attitude ──x_──▶ lidar
+/// User yaw is held externally by TF1, so this estimator no longer composes it back
+/// into its output.  The returned R_imu_att_lidar is the LiDAR's rotation in the
+/// imu_attitude frame at startup (carries the gravity-corrected roll/pitch).
 class InitialAlignmentEstimator {
 public:
     using Ptr = std::shared_ptr<InitialAlignmentEstimator>;
@@ -247,12 +232,15 @@ public:
         std::string error_message;  ///< populated on Status::waiting (diagnostic)
 
         // Valid only when status == success.
-        Eigen::Matrix3f R_world_lidar = Eigen::Matrix3f::Identity();  ///< gravity-aligned + user yaw
-        Eigen::Matrix3f R_world_imu = Eigen::Matrix3f::Identity();    ///< matching IMU rotation
+        /// LiDAR rotation in the imu_attitude frame after gravity-aligned roll/pitch
+        /// correction.  Yaw is approximately zero by construction (FromTwoVectors
+        /// returns the minimum rotation that maps body_up → world_up, whose axis lies
+        /// in the gravity-orthogonal plane).  The caller assigns this directly to its
+        /// LIO state rotation; user-specified yaw is preserved separately via TF1.
+        Eigen::Matrix3f R_imu_att_lidar = Eigen::Matrix3f::Identity();
         Eigen::Vector3f gyro_bias = Eigen::Vector3f::Zero();
         float roll_rad = 0.0f;
         float pitch_rad = 0.0f;
-        float yaw_preserved_rad = 0.0f;
         float accel_norm = 0.0f;
     };
 
@@ -268,11 +256,8 @@ public:
     /// @param scan_timestamp      Timestamp of the current scan; used for the timeout clock.
     /// @param imu_buffer          Snapshot of buffered IMU samples (chronological).
     /// @param current_bias        Current IMU bias estimate (subtracted from mean accel).
-    /// @param R_world_lidar_user  User-specified initial LiDAR rotation; yaw is extracted
-    ///                            and preserved while roll/pitch are replaced by the
-    ///                            gravity-aligned estimate.
-    Output try_align(double scan_timestamp, const std::deque<IMUMeasurement>& imu_buffer, const IMUBias& current_bias,
-                     const Eigen::Matrix3f& R_world_lidar_user) {
+    Output try_align(double scan_timestamp, const std::deque<IMUMeasurement>& imu_buffer,
+                     const IMUBias& current_bias) {
         Output out;
         if (this->done_) {
             out.status = Status::success;
@@ -313,24 +298,18 @@ public:
             return out;
         }
 
-        // Compose: R_world_lidar = R_world_imu_aligned * R_imu_to_lidar^T (yaw≈0),
-        // then overlay user-requested yaw.
+        // R_imu_att_lidar = R_world_imu_aligned * R_imu_to_lidar^T.
+        // The result's yaw is ≈ 0 because FromTwoVectors returns the minimum rotation
+        // (whose axis lies in the gravity-orthogonal plane); user yaw is layered on
+        // externally by the caller through TF1, not here.
         const Eigen::Matrix3f R_imu_to_lidar = this->T_imu_to_lidar_.linear();
-        const Eigen::Matrix3f R_lidar_grav_only = result.R_world_imu * R_imu_to_lidar.transpose();
-        const float yaw_grav = detail::yaw_from_rotation(R_lidar_grav_only);
-        const Eigen::Matrix3f R_lidar_grav_no_yaw = detail::rotation_z(-yaw_grav) * R_lidar_grav_only;
-
-        const float yaw_user = detail::yaw_from_rotation(R_world_lidar_user);
-        const Eigen::Matrix3f R_world_lidar = detail::rotation_z(yaw_user) * R_lidar_grav_no_yaw;
-        const Eigen::Matrix3f R_world_imu_final = R_world_lidar * R_imu_to_lidar;
+        const Eigen::Matrix3f R_imu_att_lidar = result.R_world_imu * R_imu_to_lidar.transpose();
 
         out.status = Status::success;
-        out.R_world_lidar = R_world_lidar;
-        out.R_world_imu = R_world_imu_final;
+        out.R_imu_att_lidar = R_imu_att_lidar;
         out.gyro_bias = result.gyro_bias;
         out.roll_rad = result.roll_rad;
         out.pitch_rad = result.pitch_rad;
-        out.yaw_preserved_rad = yaw_user;
         out.accel_norm = result.accel_norm;
 
         this->done_ = true;
@@ -338,7 +317,6 @@ public:
         std::cout << "[InitialAlignment] initial alignment done: "
                   << "roll=" << result.roll_rad * 180.0f / std::numbers::pi_v<float> << " deg, "
                   << "pitch=" << result.pitch_rad * 180.0f / std::numbers::pi_v<float> << " deg, "
-                  << "yaw_preserved=" << yaw_user * 180.0f / std::numbers::pi_v<float> << " deg, "
                   << "|a|=" << result.accel_norm << " m/s^2, "
                   << "gyro_bias=[" << result.gyro_bias.transpose() << "]" << std::endl;
         return out;
