@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <map>
@@ -88,6 +89,11 @@ protected:
     geometry_msgs::msg::TransformStamped make_transform_message(const std_msgs::msg::Header& header,
                                                                 const Eigen::Isometry3f& odom) const;
 
+    /// @brief Build the 3-stage TF chain matching the pipeline's
+    /// world → init_pose → imu_attitude → base_link decomposition.
+    std::array<geometry_msgs::msg::TransformStamped, 3> make_decomposed_transform_messages(
+        const std_msgs::msg::Header& header) const;
+
     bool publish_debug_clouds_enabled() const { return this->publish_options_.publish_debug_clouds; }
     bool publish_odom_enabled() const { return this->publish_options_.publish_odom; }
     bool publish_tf_enabled() const { return this->publish_options_.publish_tf; }
@@ -114,6 +120,12 @@ protected:
     // ROS2/TF frame parameters
     std::string odom_frame_id_ = "odom";
     std::string base_link_id_ = "base_link";
+    /// Intermediate frame between `odom` and `imu_attitude` in the 3-stage TF chain.
+    /// Holds the user-specified initial yaw + position (TF1).
+    std::string init_pose_frame_id_ = "init_pose";
+    /// Intermediate frame between `init_pose` and `base_link` in the 3-stage TF chain.
+    /// Holds the gravity-aligned attitude (TF2; Identity in Phase 1).
+    std::string imu_attitude_frame_id_ = "imu_attitude";
     Eigen::Isometry3f T_base_link_to_lidar_ = Eigen::Isometry3f::Identity();
     Eigen::Isometry3f T_lidar_to_base_link_ = Eigen::Isometry3f::Identity();
 
