@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <map>
@@ -90,8 +89,10 @@ protected:
                                                                 const Eigen::Isometry3f& odom) const;
 
     /// @brief Build the 3-stage TF chain matching the pipeline's
-    /// world → init_pose → imu_attitude → base_link decomposition.
-    std::array<geometry_msgs::msg::TransformStamped, 3> make_decomposed_transform_messages(
+    /// world → init_pose → imu_attitude → base_link decomposition.  Returned as a
+    /// vector so callers can pass the whole batch to TransformBroadcaster::sendTransform()
+    /// in a single TFMessage rather than emitting one per hop.
+    std::vector<geometry_msgs::msg::TransformStamped> make_decomposed_transform_messages(
         const std_msgs::msg::Header& header) const;
 
     bool publish_debug_clouds_enabled() const { return this->publish_options_.publish_debug_clouds; }

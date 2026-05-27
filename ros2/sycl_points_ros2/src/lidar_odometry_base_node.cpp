@@ -44,8 +44,7 @@ void LiDAROdometryBaseNode::initialize_processing() {
     // tf and pose (ROS2/TF specific)
     this->odom_frame_id_ = this->declare_parameter<std::string>("odom_frame_id", this->odom_frame_id_);
     this->base_link_id_ = this->declare_parameter<std::string>("base_link_id", this->base_link_id_);
-    this->init_pose_frame_id_ =
-        this->declare_parameter<std::string>("init_pose_frame_id", this->init_pose_frame_id_);
+    this->init_pose_frame_id_ = this->declare_parameter<std::string>("init_pose_frame_id", this->init_pose_frame_id_);
     this->imu_attitude_frame_id_ =
         this->declare_parameter<std::string>("imu_attitude_frame_id", this->imu_attitude_frame_id_);
     {
@@ -243,14 +242,11 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
     time_utils::measure_execution(
         [&]() {
             if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
-                // Publish the 3-stage TF chain:
+                // Publish the 3-stage TF chain in a single TFMessage:
                 //   odom → init_pose → imu_attitude → base_link
                 // Downstream consumers using lookupTransform(odom, base_link) recover
                 // the same composed pose via TF tree traversal.
-                const auto tfs = this->make_decomposed_transform_messages(header);
-                for (const auto& tf : tfs) {
-                    this->tf_broadcaster_->sendTransform(tf);
-                }
+                this->tf_broadcaster_->sendTransform(this->make_decomposed_transform_messages(header));
             }
 
             if (this->publish_odom_enabled()) {
@@ -389,8 +385,7 @@ namespace {
 
 geometry_msgs::msg::TransformStamped to_transform_stamped(const std_msgs::msg::Header& header,
                                                           const std::string& parent_frame,
-                                                          const std::string& child_frame,
-                                                          const Eigen::Isometry3f& T) {
+                                                          const std::string& child_frame, const Eigen::Isometry3f& T) {
     const auto t = T.translation();
     const Eigen::Quaternionf q(T.rotation());
     geometry_msgs::msg::TransformStamped tf;
@@ -409,7 +404,7 @@ geometry_msgs::msg::TransformStamped to_transform_stamped(const std_msgs::msg::H
 
 }  // namespace
 
-std::array<geometry_msgs::msg::TransformStamped, 3> LiDAROdometryBaseNode::make_decomposed_transform_messages(
+std::vector<geometry_msgs::msg::TransformStamped> LiDAROdometryBaseNode::make_decomposed_transform_messages(
     const std_msgs::msg::Header& header) const {
     // TF1: world → init_pose (user-specified initial yaw + position; static).
     const Eigen::Isometry3f& T_world_init = this->pipeline_->get_T_world_init();
@@ -420,12 +415,15 @@ std::array<geometry_msgs::msg::TransformStamped, 3> LiDAROdometryBaseNode::make_
 
     // TF3: imu_attitude → base_link (dynamic; LiDAR-frame state composed with the
     // base_link extrinsic).
-    const Eigen::Isometry3f T_imu_att_base_link =
-        this->pipeline_->get_odom_imu_att() * this->T_lidar_to_base_link_;
+    const Eigen::Isometry3f T_imu_att_base_link = this->pipeline_->get_odom_imu_att() * this->T_lidar_to_base_link_;
 
-    return {to_transform_stamped(header, this->odom_frame_id_, this->init_pose_frame_id_, T_world_init),
-            to_transform_stamped(header, this->init_pose_frame_id_, this->imu_attitude_frame_id_, T_init_imu_att),
-            to_transform_stamped(header, this->imu_attitude_frame_id_, this->base_link_id_, T_imu_att_base_link)};
+    std::vector<geometry_msgs::msg::TransformStamped> tfs;
+    tfs.reserve(3);
+    tfs.push_back(to_transform_stamped(header, this->odom_frame_id_, this->init_pose_frame_id_, T_world_init));
+    tfs.push_back(
+        to_transform_stamped(header, this->init_pose_frame_id_, this->imu_attitude_frame_id_, T_init_imu_att));
+    tfs.push_back(to_transform_stamped(header, this->imu_attitude_frame_id_, this->base_link_id_, T_imu_att_base_link));
+    return tfs;
 }
 
 void LiDAROdometryBaseNode::record_processing_times(const ProcessedFrame& frame) {
