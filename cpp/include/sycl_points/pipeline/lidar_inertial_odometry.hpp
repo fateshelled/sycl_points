@@ -226,7 +226,13 @@ public:
         // First frame: initialize state and submap, no registration
         if (this->is_first_frame_) {
             try {
-                this->submap_->add_first_frame(*this->preprocessed_pc_, timestamp);
+                // Anchor the first keyframe at the post-alignment LiDAR pose (odom_ in
+                // imu_attitude frame) so that subsequent add_frame() calls share the
+                // same reference frame.  Without this, the first submap content lives
+                // in the sensor frame while later frames live in imu_attitude — visible
+                // as a small (gravity-correction) tilt mismatch in rviz until the voxel
+                // hash map accumulates enough data to swap in.
+                this->submap_->add_first_frame(*this->preprocessed_pc_, timestamp, this->odom_);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[LidarInertialOdometry] " << this->error_message_ << std::endl;

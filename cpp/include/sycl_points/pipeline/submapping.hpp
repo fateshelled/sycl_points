@@ -79,8 +79,21 @@ public:
         }
     }
 
-    void add_first_frame(const PointCloudShared& cloud, double timestamp) {
-        this->build_submap(cloud, this->last_keyframe_pose_, true);
+    /// @brief Build the very first keyframe of the submap.
+    /// @param current_pose  Pose at which the first scan is anchored.  Must match the
+    ///                      pipeline's current odom_ (in the imu_attitude frame in the
+    ///                      3-stage TF convention) so that subsequent frames added via
+    ///                      add_frame() share the same reference frame.  If alignment
+    ///                      fired before the first frame, this is the gravity-corrected
+    ///                      pose, not the constructor-time default.
+    void add_first_frame(const PointCloudShared& cloud, double timestamp, const Eigen::Isometry3f& current_pose) {
+        this->last_keyframe_pose_ = current_pose;
+        if (this->keyframe_poses_.empty()) {
+            this->keyframe_poses_.push_back(current_pose);
+        } else {
+            this->keyframe_poses_.front() = current_pose;
+        }
+        this->build_submap(cloud, current_pose, true);
         this->last_keyframe_time_ = timestamp;
     }
 
