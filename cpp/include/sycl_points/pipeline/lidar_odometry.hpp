@@ -56,10 +56,23 @@ public:
     const auto& get_current_processing_time() const { return this->current_processing_time_; }
     const auto& get_total_processing_times() const { return this->total_processing_times_; }
 
-    const auto& get_odom() const { return this->odom_; }
-    const auto& get_prev_odom() const { return this->prev_odom_; }
-    const auto& get_last_keyframe_pose() const { return this->submap_->get_last_keyframe_pose(); }
+    /// @brief Composed world-frame LiDAR pose: TF1 * TF2 * x_ (back-compat with the
+    ///        previous get_odom() semantics).  Returns by value because the world-frame
+    ///        pose is derived on demand from the imu_att-frame internal odometry.
+    Eigen::Isometry3f get_odom() const { return this->compose_world(this->odom_); }
+    Eigen::Isometry3f get_prev_odom() const { return this->compose_world(this->prev_odom_); }
+    Eigen::Isometry3f get_last_keyframe_pose() const {
+        return this->compose_world(this->submap_->get_last_keyframe_pose());
+    }
+
+    /// @brief Keyframe poses in the imu_attitude frame.  Compose with
+    ///        get_T_world_init() * get_R_init_imu_att() to obtain world-frame poses.
     const auto& get_keyframe_poses() const { return this->submap_->get_keyframe_poses(); }
+
+    // 3-stage TF chain accessors (for ROS TF broadcast and inspection).
+    const Eigen::Isometry3f& get_T_world_init() const { return this->T_world_init_; }
+    const Eigen::Matrix3f& get_R_init_imu_att() const { return this->R_init_imu_att_; }
+    const Eigen::Isometry3f& get_odom_imu_att() const { return this->odom_; }
 
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
@@ -115,8 +128,7 @@ public:
         // Only active when IMU is enabled and initial_alignment.enable == true.
         if (this->is_first_frame_ && this->alignment_estimator_ && this->alignment_estimator_->enabled() &&
             !this->alignment_estimator_->is_done()) {
-            const auto out = this->alignment_estimator_->try_align(timestamp, this->get_imu_buffer(), this->imu_bias_,
-                                                                   this->odom_.linear());
+            const auto out = this->alignment_estimator_->try_align(timestamp, this->get_imu_buffer(), this->imu_bias_);
             if (out.status != imu::InitialAlignmentEstimator::Status::success) {
                 this->error_message_ = std::string("initial_alignment: ") + out.error_message;
                 return ResultType::waiting_initial_alignment;
@@ -183,7 +195,13 @@ public:
         // first frame processing
         if (this->is_first_frame_) {
             try {
-                this->submap_->add_first_frame(*this->preprocessed_pc_, timestamp);
+                // Anchor the first keyframe at the post-alignment LiDAR pose (odom_ in
+                // imu_attitude frame) so that subsequent add_frame() calls share the
+                // same reference frame.  Without this, the first submap content lives
+                // in the sensor frame while later frames live in imu_attitude — visible
+                // as a small (gravity-correction) tilt mismatch in rviz until the voxel
+                // hash map accumulates enough data to swap in.
+                this->submap_->add_first_frame(*this->preprocessed_pc_, timestamp, this->odom_);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
@@ -300,10 +318,19 @@ private:
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
+    /// TF1 (world → init_pose).  Static.  Captures the user-specified initial pose
+    /// (yaw + position) from params_.pose.initial at init time.
+    Eigen::Isometry3f T_world_init_ = Eigen::Isometry3f::Identity();
+    /// TF2 (init_pose → imu_attitude), rotation only.  Identity in Phase 1; a
+    /// placeholder for future online gravity correction (Phase 3).
+    Eigen::Matrix3f R_init_imu_att_ = Eigen::Matrix3f::Identity();
+
     Eigen::Vector3f linear_velocity_;     // [m/s] in previous LiDAR body frame
     Eigen::AngleAxisf angular_velocity_;  // [rad/s]
-    Eigen::Isometry3f prev_odom_;         // prev T_odom_to_lidar
-    Eigen::Isometry3f odom_;              // current T_odom_to_lidar
+    /// Previous / current LiDAR pose in the imu_attitude frame.  Compose with
+    /// T_world_init_ * R_init_imu_att_ via compose_world() for world-frame output.
+    Eigen::Isometry3f prev_odom_;
+    Eigen::Isometry3f odom_;
 
     submapping::Submap::Ptr submap_ = nullptr;
 
@@ -369,6 +396,13 @@ private:
 
     bool is_imu_deskew_enabled() const { return this->params_.imu.enable && this->params_.imu.deskew.enable; }
 
+    /// @brief Compose an imu_attitude-frame pose into world frame: TF1 * TF2 * pose.
+    Eigen::Isometry3f compose_world(const Eigen::Isometry3f& pose_imu_att) const {
+        Eigen::Isometry3f T_init_imu_att = Eigen::Isometry3f::Identity();
+        T_init_imu_att.linear() = this->R_init_imu_att_;
+        return this->T_world_init_ * T_init_imu_att * pose_imu_att;
+    }
+
     void initialize() {
         // SYCL queue
         {
@@ -385,7 +419,15 @@ private:
             this->preprocessed_pc_ = std::make_shared<PointCloudShared>(*this->queue_ptr_);
         }
 
-        // set Initial pose
+        // Capture user-specified initial pose into TF1 (T_world_init_), then reset
+        // params_.pose.initial to Identity so all downstream code (Submap, odom_,
+        // IMU preintegration linearization point) operates in the imu_attitude frame
+        // (= init_pose in Phase 1, since TF2 = R_init_imu_att_ = Identity).
+        this->T_world_init_ = this->params_.pose.initial;
+        this->R_init_imu_att_ = Eigen::Matrix3f::Identity();
+        this->params_.pose.initial = Eigen::Isometry3f::Identity();
+
+        // set Initial pose (in imu_attitude frame, Identity until alignment fires)
         {
             this->odom_ = this->params_.pose.initial;
             this->prev_odom_ = this->params_.pose.initial;
@@ -430,7 +472,12 @@ private:
         // Held IMU bias (mutated by initial alignment; default = configured bias)
         this->imu_bias_ = this->params_.imu.bias;
 
-        // IMU preintegration (optional)
+        // IMU preintegration (optional).
+        // The "world" rotation here lives in the imu_attitude frame (odom_'s frame);
+        // since params_.pose.initial was reset to Identity above, this evaluates to
+        // R_lidar_imu (the LiDAR-IMU extrinsic) — the IMU's rotation in imu_attitude
+        // when odom_ = Identity.  The first-frame block will overwrite this with the
+        // post-alignment value before any IMU integration runs.
         if (this->params_.imu.enable) {
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
@@ -447,15 +494,18 @@ private:
     }
 
     /// @brief Apply a successful alignment result to the LO state.
-    /// Updates odometry rotation and the held IMU bias.  The IMU preintegration reset
-    /// is intentionally left to the subsequent first-frame block, which uses the
-    /// just-updated odom_/imu_bias_ to produce identical post-state without a
-    /// redundant reset (and avoids the imu_mutex_/reset coordination here).
+    /// Updates odometry rotation (the LiDAR's pose in the imu_attitude frame) and the
+    /// held IMU bias.  The IMU preintegration reset is intentionally left to the
+    /// subsequent first-frame block, which uses the just-updated odom_/imu_bias_ to
+    /// produce identical post-state without a redundant reset.
+    /// @note In Phase 1 the alignment result is absorbed into odom_.linear() (which
+    ///       lives in the imu_attitude frame).  R_init_imu_att_ stays Identity;
+    ///       Phase 3 online correction will repurpose it.
     /// @note Currently only gyro_bias is updated.  If the estimator gains accel_bias
     ///       estimation, extend this method accordingly.
     void apply_initial_alignment(const imu::InitialAlignmentEstimator::Output& out) {
-        this->odom_.linear() = out.R_world_lidar;
-        this->prev_odom_.linear() = out.R_world_lidar;
+        this->odom_.linear() = out.R_imu_att_lidar;
+        this->prev_odom_.linear() = out.R_imu_att_lidar;
         this->imu_bias_.gyro_bias = out.gyro_bias;
     }
 
