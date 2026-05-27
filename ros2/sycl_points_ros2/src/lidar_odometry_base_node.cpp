@@ -290,7 +290,10 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
             if (this->pub_submap_ != nullptr && this->pub_submap_->get_subscription_count() > 0) {
                 auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), header);
                 if (submap_msg != nullptr) {
-                    submap_msg->header.frame_id = this->odom_frame_id_;
+                    // The submap point cloud is stored in the imu_attitude frame.
+                    // Downstream consumers apply TF (imu_attitude → init_pose → odom) to
+                    // recover world coordinates with the user-specified yaw and position.
+                    submap_msg->header.frame_id = this->imu_attitude_frame_id_;
                     this->pub_submap_->publish(*submap_msg);
                 }
             }
