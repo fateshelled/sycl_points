@@ -284,6 +284,21 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             genz.planarity_threshold =
                 node->declare_parameter<double>("registration/genz/planarity_threshold", genz.planarity_threshold);
         }
+        // Source noise model (GICP planar regularization)
+        // sigma_range = sigma_grazing = 0 reproduces the standard {1e-3, 1, 1} behavior.
+        {
+            auto& nm = solver.source_noise_model;
+            nm.sigma_range = static_cast<float>(
+                node->declare_parameter<double>("registration/source_noise_model/sigma_range", nm.sigma_range));
+            nm.sigma_grazing = static_cast<float>(
+                node->declare_parameter<double>("registration/source_noise_model/sigma_grazing", nm.sigma_grazing));
+            nm.min_eigenvalue = static_cast<float>(
+                node->declare_parameter<double>("registration/source_noise_model/min_eigenvalue", nm.min_eigenvalue));
+            nm.max_eigenvalue = static_cast<float>(
+                node->declare_parameter<double>("registration/source_noise_model/max_eigenvalue", nm.max_eigenvalue));
+            nm.cos_min = static_cast<float>(
+                node->declare_parameter<double>("registration/source_noise_model/cos_min", nm.cos_min));
+        }
         // Rotation Constraint
         {
             auto& rotation_constraint = solver.rotation_constraint;
