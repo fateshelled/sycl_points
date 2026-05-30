@@ -105,12 +105,12 @@ SYCL_EXTERNAL inline void update_covariance_plane_noise_aware(Covariance& cov, c
         // Smallest-eigenvalue eigenvector = local surface normal.
         const Eigen::Vector3f n = eigenvectors.col(0);
         const float cos_theta = sycl::fabs(eigen_utils::dot<3>(n, p)) / d;
-        const float cos_c = sycl::fmax(cos_theta, nm.cos_min);
+        // Guard against misconfigured nm.cos_min <= 0 to keep tan2 finite.
+        const float cos_c = sycl::fmax(cos_theta, sycl::fmax(nm.cos_min, 1e-6f));
         tan2 = (1.0f - cos_c * cos_c) / (cos_c * cos_c);
     }
 
-    const float sigma_sq =
-        nm.sigma_range * nm.sigma_range * d_sq + nm.sigma_grazing * nm.sigma_grazing * tan2;
+    const float sigma_sq = nm.sigma_range * nm.sigma_range * d_sq + nm.sigma_grazing * nm.sigma_grazing * tan2;
 
     float lambda_min = nm.min_eigenvalue + sigma_sq;
     lambda_min = sycl::clamp(lambda_min, nm.min_eigenvalue, nm.max_eigenvalue);
