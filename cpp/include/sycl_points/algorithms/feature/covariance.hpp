@@ -17,8 +17,10 @@ namespace covariance {
 struct NoiseModel {
     float sigma_range = 0.0f;      // [m/m] range-proportional std-dev (variance contribution: (sigma_range * d)^2)
     float sigma_grazing = 0.0f;    // [dimensionless] tan(theta)-proportional std-dev for incidence-angle noise
-    float min_eigenvalue = 1e-3f;  // numerical floor for lambda_min (planar regularization baseline; lambda_min when sigma_sq = 0)
-    float max_eigenvalue = 1.0f;   // upper cap; clamping here drives source covariance toward isotropy (target-driven point-to-plane behavior)
+    float min_eigenvalue = 1e-3f;  // numerical floor for lambda_min
+                                   //  (planar regularization baseline; lambda_min when sigma_sq = 0)
+    float max_eigenvalue = 1.0f;   // upper cap; clamping here drives source covariance toward isotropy (target-driven
+                                   // point-to-plane behavior)
     float cos_min = 0.1f;          // clamp on |cos(theta)| to avoid tan() divergence near grazing rays
 };
 
@@ -106,10 +108,10 @@ SYCL_EXTERNAL inline void update_covariance_plane_noise_aware(Covariance& cov, c
     if (d > 1e-6f) {
         // Smallest-eigenvalue eigenvector = local surface normal.
         const Eigen::Vector3f n = eigenvectors.col(0);
-        const float cos_theta = sycl::fabs(eigen_utils::dot<3>(n, p)) / d;
+        float cos_theta = sycl::fabs(eigen_utils::dot<3>(n, p)) / d;
         // Guard against misconfigured nm.cos_min <= 0 to keep tan2 finite.
-        const float cos_c = sycl::fmax(cos_theta, sycl::fmax(nm.cos_min, 1e-6f));
-        const float cos2 = cos_c * cos_c;
+        cos_theta = sycl::clamp(cos_theta, sycl::fmax(nm.cos_min, 1e-6f), 1.0f);
+        const float cos2 = cos_theta * cos_theta;
         tan2 = 1.0f / cos2 - 1.0f;
     }
 
@@ -117,7 +119,8 @@ SYCL_EXTERNAL inline void update_covariance_plane_noise_aware(Covariance& cov, c
     // min_eigenvalue acts as a numerical floor (planar regularization baseline);
     // max_eigenvalue caps lambda_min so the source covariance does not exceed isotropic scale.
     const float sigma_sq = nm.sigma_range * nm.sigma_range * d_sq + nm.sigma_grazing * nm.sigma_grazing * tan2;
-    const float lambda_min = sycl::clamp(sigma_sq, nm.min_eigenvalue, nm.max_eigenvalue);
+    const float lambda_min =
+        sycl::clamp(sigma_sq, sycl::fmax(nm.min_eigenvalue, 1e-6f), sycl::fmax(nm.max_eigenvalue, 1e-6f));
 
     const auto diag = eigen_utils::as_diagonal<3>({lambda_min, 1.0f, 1.0f});
     cov.block<3, 3>(0, 0) = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
