@@ -35,7 +35,7 @@
 //                           for future online gravity correction (Phase 3).
 //                           imu_attitude is therefore gravity-aligned in Phase 1
 //                           (= init_pose), so gravity stays (0,0,-g) canonical.
-//   TF3 = x_              : 21-DOF LIO state (the time-varying pose tracked by
+//   TF3 = x_              : 15-DOF LIO state (the time-varying pose tracked by
 //                           the IEKF, expressed in the imu_attitude frame).
 //
 //   x_.position  = imu_attitude-frame position of the LiDAR origin [m]
@@ -45,11 +45,12 @@
 //
 //   Composed world pose:  T_world_lidar = T_world_init_ * R_init_imu_att_ * x_
 //
-// NOTE: The ICP Hessian is embedded into the 15-DOF LiDAR-frame error-state.
-//       When T_imu_to_lidar ≠ Identity the preintegration covariance P_pred is
-//       expressed in the IMU error-state, which introduces a small mismatch.
-//       A full adjoint correction (P_lidar = Ad * P_imu * Ad^T) is left for a
-//       future update.
+// The ICP Hessian is embedded into the 15-DOF LiDAR-frame error-state.  The
+// IMU preintegration covariance lives in the IMU error-state and is rotated
+// into the LiDAR error-state via transform_covariance_imu_to_lidar() before
+// being passed to compute_imu_hessian_gradient(); the inverse Jacobian is
+// applied in reset_imu_preintegration() when handing P_post back to the
+// preintegrator.
 // ---------------------------------------------------------------------------
 
 namespace sycl_points {
@@ -249,7 +250,7 @@ public:
             this->x_.position = this->odom_.translation();
             this->x_.rotation = this->odom_.rotation();
             this->x_.velocity = Eigen::Vector3f::Zero();
-            // x_.accel_bias / gyro_bias / offset_R_L_I / offset_T_L_I already set in initialize();
+            // x_.accel_bias / gyro_bias already set in initialize();
             // x_.gyro_bias may also have been updated by apply_initial_alignment().
 
             this->reset_imu_preintegration();
@@ -331,10 +332,10 @@ private:
 
     Parameters params_;
 
-    // LIO state (LiDAR frame convention, 21-DOF including extrinsic)
+    // LIO state (LiDAR frame convention, 15-DOF: position, rotation, velocity, accel_bias, gyro_bias)
     imu::State x_;
-    // Posterior covariance passed as initial covariance to the next IMU reset window. (LiDAR frame, 21×21)
-    Eigen::Matrix<float, 21, 21> P_post_ = Eigen::Matrix<float, 21, 21>::Zero();
+    // Posterior covariance passed as initial covariance to the next IMU reset window. (LiDAR frame, 15×15)
+    Eigen::Matrix<float, 15, 15> P_post_ = Eigen::Matrix<float, 15, 15>::Zero();
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     /// Window-start IMU orientation/velocity snapshotted at the latest preintegration
@@ -377,35 +378,16 @@ private:
         return this->T_world_init_ * T_init_imu_att * pose_imu_att;
     }
 
-    /// @brief Return the effective LiDAR-IMU extrinsic to use for prediction/reset.
-    /// When estimate_extrinsic is enabled, uses the current state x_; otherwise uses the fixed param.
-    Eigen::Isometry3f effective_extrinsic() const { return this->effective_extrinsic_from(this->x_); }
-
-    /// @brief Return effective extrinsic from an operating-point state (used inside IEKF loop).
-    Eigen::Isometry3f effective_extrinsic_from(const imu::State& x_op) const {
-        if (this->params_.lio.estimate_extrinsic) {
-            Eigen::Isometry3f T;
-            T.setIdentity();
-            T.linear() = x_op.offset_R_L_I;
-            T.translation() = x_op.offset_T_L_I;
-            return T;
-        }
-        return this->params_.imu.T_imu_to_lidar;
-    }
-
-    bool is_lio_converged(const Eigen::Matrix<float, 21, 1>& delta) const {
+    bool is_lio_converged(const Eigen::Matrix<float, 15, 1>& delta) const {
         return delta.segment<3>(imu::State::kIdxRot).norm() < params_.lio.criteria.rotation &&
                delta.segment<3>(imu::State::kIdxPos).norm() < params_.lio.criteria.translation;
     }
 
     void reset_imu_preintegration() {
-        // Use current state extrinsic when online calibration is enabled
-        const Eigen::Isometry3f T_i2l_eff = effective_extrinsic();
-        const Eigen::Matrix3f R_world_imu = x_.rotation * T_i2l_eff.rotation();
+        const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
+        const Eigen::Matrix3f R_world_imu = x_.rotation * T_i2l.rotation();
 
-        // Extract the 15×15 navigation-state covariance block from P_post_ (21×21).
-        // The extrinsic block is not passed to IMU preintegration (it doesn't model extrinsic).
-        Eigen::Matrix<float, 15, 15> P_initial = this->P_post_.block<15, 15>(0, 0);
+        Eigen::Matrix<float, 15, 15> P_initial = this->P_post_;
 
         // Add fixed-sigma floors to P_initial before resetting the integrator.
         // Velocity floor: ensures P_pred[p,p] ≳ (fd_velocity_sigma × dt)², keeping
@@ -420,16 +402,16 @@ private:
         // Convert before passing so that get_raw().covariance → transform_covariance_imu_to_lidar
         // yields the correct P_pred_lidar without double-transformation.
         const Eigen::Matrix<float, 15, 15> P_initial_imu =
-            algorithms::lio::transform_covariance_lidar_to_imu(P_initial, T_i2l_eff, this->x_.rotation);
+            algorithms::lio::transform_covariance_lidar_to_imu(P_initial, T_i2l, this->x_.rotation);
 
         this->imu_preintegration_->reset({this->x_.gyro_bias, this->x_.accel_bias}, P_initial_imu);
         this->imu_R_world_at_reset_ = R_world_imu;
         this->imu_v_world_at_reset_ = this->x_.velocity;
     }
 
-    /// @brief Predict the full 21-DOF state from IMU preintegration using the given extrinsic.
-    /// @param T_i2l  Extrinsic to use for the prediction (may be from x_ or x_op).
-    imu::State predict_state_with(const Eigen::Isometry3f& T_i2l) const {
+    /// @brief Predict the 15-DOF state from IMU preintegration.
+    imu::State predict_state() const {
+        const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
         const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
 
         // Relative pose prediction (gravity + initial velocity already compensated)
@@ -454,67 +436,7 @@ private:
         pred.velocity = this->x_.velocity + this->params_.imu.preintegration.gravity * dt_f + R_world_imu * c.Delta_v;
         pred.accel_bias = this->x_.accel_bias;
         pred.gyro_bias = this->x_.gyro_bias;
-        pred.offset_R_L_I = T_i2l.rotation();
-        pred.offset_T_L_I = T_i2l.translation();
         return pred;
-    }
-
-    /// @brief Predict from the current state extrinsic (convenience wrapper).
-    imu::State predict_state() const { return predict_state_with(effective_extrinsic()); }
-
-    /// @brief Compute the 15×6 Jacobian of the IMU prediction residual w.r.t. the extrinsic [δφ_ex | δt_ex].
-    ///
-    /// The navigation prediction (position, rotation, velocity) depends on the LiDAR-IMU extrinsic
-    /// T_i2l = [R_li | t_li].  This Jacobian captures that coupling so the IEKF cross-terms are correct.
-    ///
-    /// Rows 0–2  (position):   -x_.rotation * ∂t_pred_rel/∂δex
-    /// Rows 3–5  (rotation):    R_li * (I − R_imu_rel^T)   (columns 0–2 only; cols 3–5 = 0)
-    /// Rows 6–8  (velocity):    x_.rotation * R_li * [Delta_v]×   (columns 0–2 only)
-    /// Rows 9–14 (biases):      0
-    Eigen::Matrix<float, 15, 6> compute_extrinsic_jacobian(const imu::State& x_op) const {
-        Eigen::Matrix<float, 15, 6> J = Eigen::Matrix<float, 15, 6>::Zero();
-
-        const Eigen::Isometry3f T_i2l = effective_extrinsic_from(x_op);
-        const Eigen::Matrix3f R_li = T_i2l.rotation();
-        const Eigen::Vector3f t_li = T_i2l.translation();
-
-        const imu::IMUBias current_bias{x_op.gyro_bias, x_op.accel_bias};
-        const TransformMatrix T_imu_rel_mat = this->imu_preintegration_->predict_relative_transform(
-            this->imu_R_world_at_reset_, this->imu_v_world_at_reset_, current_bias);
-        const Eigen::Matrix3f R_imu_rel = T_imu_rel_mat.block<3, 3>(0, 0);
-        const Eigen::Vector3f t_imu_rel = T_imu_rel_mat.block<3, 1>(0, 3);
-        const Eigen::Matrix3f R_pred_rel = R_li * R_imu_rel * R_li.transpose();
-
-        // a = R_li^T * t_li  (lever-arm in IMU frame)
-        const Eigen::Vector3f a = R_li.transpose() * t_li;
-
-        // ∂t_pred_rel / ∂δφ_ex:
-        //   t_pred_rel = (I − R_pred_rel) * t_li + R_li * t_imu_rel
-        //   δt_pred_rel|_δφ = R_li * ([R_imu_rel*a]× − R_imu_rel*[a]× − [t_imu_rel]×) * δφ
-        const Eigen::Matrix3f dpos_dphi = this->x_.rotation * R_li *
-                                          (eigen_utils::lie::skew(Eigen::Vector3f(R_imu_rel * a)) -
-                                           R_imu_rel * eigen_utils::lie::skew(Eigen::Vector3f(a)) -
-                                           eigen_utils::lie::skew(Eigen::Vector3f(t_imu_rel)));
-
-        // ∂t_pred_rel / ∂δt_ex:
-        //   = I − R_pred_rel
-        const Eigen::Matrix3f dpos_dt = this->x_.rotation * (Eigen::Matrix3f::Identity() - R_pred_rel);
-
-        J.block<3, 3>(imu::State::kIdxPos, 0) = -dpos_dphi;
-        J.block<3, 3>(imu::State::kIdxPos, 3) = -dpos_dt;
-
-        // ∂r_rot / ∂δφ_ex = R_li * (I − R_imu_rel^T)   (δt_ex has no effect)
-        J.block<3, 3>(imu::State::kIdxRot, 0) = R_li * (Eigen::Matrix3f::Identity() - R_imu_rel.transpose());
-
-        // ∂r_vel / ∂δφ_ex: velocity prediction uses R_world_imu = x_.rotation * R_li
-        //   ∂(R_world_imu * Delta_v) / ∂δφ_ex = x_.rotation * R_li * [Delta_v]×  (negate for residual)
-        // Wait: r_vel = x_op.vel − x_pred.vel, and x_pred.vel depends on extrinsic via R_world_imu.
-        //   ∂r_vel / ∂δφ_ex = −∂x_pred.vel / ∂δφ_ex = x_.rotation * R_li * [Delta_v]×
-        // (sign: ∂(R_li*Exp(δφ)*Delta_v)/∂δφ = −R_li*[Delta_v]× → world: x_.rot*R_li*[Δv]×, negated gives +)
-        const auto c = this->imu_preintegration_->get_corrected(current_bias);
-        J.block<3, 3>(imu::State::kIdxVel, 0) = this->x_.rotation * R_li * eigen_utils::lie::skew(c.Delta_v);
-
-        return J;
     }
 
     /// @brief Combined LIO Gauss-Newton optimization for one LiDAR frame.
@@ -522,29 +444,13 @@ private:
         // ---- Build prior from IMU preintegration ----
         imu::State x_pred = predict_state();
 
-        // Build 21×21 P_pred:
-        //   - Upper-left 15×15: IMU preintegration covariance transformed to LiDAR frame.
-        //   - Lower-right 6×6:  Extrinsic prior from the previous frame's posterior.
-        const Eigen::Isometry3f T_i2l_init = effective_extrinsic();
-        const Eigen::Matrix<float, 15, 15> P_nav_lidar = algorithms::lio::transform_covariance_imu_to_lidar(
-            this->imu_preintegration_->get_raw().covariance, T_i2l_init, x_pred.rotation);
+        // Transform IMU-frame preintegration covariance into the LiDAR error-state frame.
+        const Eigen::Matrix<float, 15, 15> P_pred = algorithms::lio::transform_covariance_imu_to_lidar(
+            this->imu_preintegration_->get_raw().covariance, this->params_.imu.T_imu_to_lidar, x_pred.rotation);
 
-        Eigen::Matrix<float, 21, 21> P_pred_21 = Eigen::Matrix<float, 21, 21>::Zero();
-        P_pred_21.block<15, 15>(0, 0) = P_nav_lidar;
-        P_pred_21.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot) =
-            this->P_post_.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot);
-
-        // When extrinsic estimation is disabled, pin the extrinsic with a large stiffness
-        // so the 21×21 system behaves identically to the original 15-DOF system.
-        if (!this->params_.lio.estimate_extrinsic) {
-            constexpr float kPin = 1e6f;
-            P_pred_21.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot) =
-                (1.0f / kPin) * Eigen::Matrix<float, 6, 6>::Identity();
-        }
-
-        Eigen::Matrix<float, 21, 21> H_imu = Eigen::Matrix<float, 21, 21>::Zero();
-        Eigen::Matrix<float, 21, 1> b_imu = Eigen::Matrix<float, 21, 1>::Zero();
-        bool imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_pred, P_pred_21, H_imu, b_imu);
+        Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
+        Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
+        const bool imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_pred, P_pred, H_imu, b_imu);
 
         // ---- Prepare ICP source (random sampling) ----
         const auto& rs = this->params_.registration.pipeline.random_sampling;
@@ -582,44 +488,17 @@ private:
                                                                       this->submap_->get_submap_kdtree(), T_op,
                                                                       T_initial, options);
 
-            // Update gradient b_imu at the current operating point.
-            // H_imu = P_pred_21^{-1} is constant for this frame, so we only recompute
+            // H_imu = P_pred^{-1} is constant for this frame, so we only recompute
             // the residual r and b_imu = H_imu · r (no LDLT inversion needed).
-            // When extrinsic estimation is enabled, also re-linearise the navigation
-            // prediction using the current x_op extrinsic — but keep x_pred's extrinsic
-            // fixed to the prior mean so that the extrinsic prior term is correctly enforced.
             if (iter > 0 && imu_valid) {
-                if (this->params_.lio.estimate_extrinsic) {
-                    const imu::State x_nav_pred = predict_state_with(effective_extrinsic_from(x_op));
-                    x_pred.position = x_nav_pred.position;
-                    x_pred.rotation = x_nav_pred.rotation;
-                    x_pred.velocity = x_nav_pred.velocity;
-                    // x_pred.offset_R_L_I / offset_T_L_I stay as the prior mean
-                }
                 imu::compute_imu_gradient(x_pred, x_op, H_imu, b_imu);
             }
 
-            // Combine ICP + IMU into 21×21 normal equations.
-            // When extrinsic estimation is enabled, add cross-terms that make the
-            // extrinsic observable through the navigation-state residual. The copies
-            // are only made in that case to avoid the 21×21 allocation on the common path.
+            // Combine ICP + IMU into 15×15 normal equations.
             algorithms::lio::LIOLinearizedResult lio;
             algorithms::lio::add_icp_factor(lio, last_icp, x_op.rotation);
             if (imu_valid) {
-                if (this->params_.lio.estimate_extrinsic) {
-                    Eigen::Matrix<float, 21, 21> H_cross = H_imu;
-                    Eigen::Matrix<float, 21, 1> b_cross = b_imu;
-                    const Eigen::Matrix<float, 15, 6> J_nav_ex = compute_extrinsic_jacobian(x_op);
-                    const Eigen::Matrix<float, 15, 15> Omega_nav = H_imu.block<15, 15>(0, 0);
-                    const Eigen::Matrix<float, 15, 6> OJ = Omega_nav * J_nav_ex;
-                    H_cross.block<15, 6>(0, imu::State::kIdxExRot) += OJ;
-                    H_cross.block<6, 15>(imu::State::kIdxExRot, 0) += OJ.transpose();
-                    H_cross.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot) += J_nav_ex.transpose() * OJ;
-                    b_cross.segment<6>(imu::State::kIdxExRot) += J_nav_ex.transpose() * b_imu.segment<15>(0);
-                    algorithms::lio::add_imu_factor(lio, H_cross, b_cross);
-                } else {
-                    algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
-                }
+                algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
             } else {
                 const float kReg = this->params_.lio.invalid_regularization_factor;
                 lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += kReg * Eigen::Matrix3f::Identity();
@@ -627,15 +506,11 @@ private:
                     kReg * Eigen::Matrix3f::Identity();
                 lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) +=
                     kReg * Eigen::Matrix3f::Identity();
-                // Always pin extrinsic when IMU is invalid — ICP provides no extrinsic information.
-                constexpr float kPin = 1e6f;
-                lio.H.block<6, 6>(imu::State::kIdxExRot, imu::State::kIdxExRot) +=
-                    kPin * Eigen::Matrix<float, 6, 6>::Identity();
             }
 
-            Eigen::Matrix<float, 21, 1> delta;
+            Eigen::Matrix<float, 15, 1> delta;
             const float lambda = this->params_.registration.pipeline.registration.gn.lambda;
-            if (!algorithms::lio::solve_ldlt(lio.H + lambda * Eigen::Matrix<float, 21, 21>::Identity(), lio.b, delta,
+            if (!algorithms::lio::solve_ldlt(lio.H + lambda * Eigen::Matrix<float, 15, 15>::Identity(), lio.b, delta,
                                              &this->P_post_))
                 break;
 
@@ -651,15 +526,11 @@ private:
         this->x_.rotation = x_op.rotation;
         this->x_.accel_bias = x_op.accel_bias;
         this->x_.gyro_bias = x_op.gyro_bias;
-        if (this->params_.lio.estimate_extrinsic) {
-            this->x_.offset_R_L_I = x_op.offset_R_L_I;
-            this->x_.offset_T_L_I = x_op.offset_T_L_I;
-        }
         if (this->dt_ > 0.0f) {
             const Eigen::Vector3f v_fd = (this->x_.position - prev_position) / this->dt_;
             const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.gyro_bias, x_op.accel_bias});
             if (c.dt_total > 1e-6) {
-                const Eigen::Matrix3f R_world_imu_prev = prev_rotation * effective_extrinsic_from(x_op).rotation();
+                const Eigen::Matrix3f R_world_imu_prev = prev_rotation * this->params_.imu.T_imu_to_lidar.rotation();
                 const Eigen::Vector3f a_world = this->params_.imu.preintegration.gravity +
                                                 R_world_imu_prev * c.Delta_v / static_cast<float>(c.dt_total);
                 this->x_.velocity = v_fd + 0.5f * a_world * this->dt_;
@@ -749,19 +620,6 @@ private:
         // before the first frame's state initialization runs.
         this->x_.accel_bias = this->params_.imu.bias.accel_bias;
         this->x_.gyro_bias = this->params_.imu.bias.gyro_bias;
-        this->x_.offset_R_L_I = this->params_.imu.T_imu_to_lidar.rotation();
-        this->x_.offset_T_L_I = this->params_.imu.T_imu_to_lidar.translation();
-
-        // Initialize P_post_ extrinsic blocks with the initial uncertainty from params.
-        // The navigation blocks start at zero; the extrinsic blocks hold the prior sigma.
-        if (this->params_.lio.estimate_extrinsic) {
-            const float sr2 = this->params_.lio.extrinsic_rotation_sigma * this->params_.lio.extrinsic_rotation_sigma;
-            const float st2 =
-                this->params_.lio.extrinsic_translation_sigma * this->params_.lio.extrinsic_translation_sigma;
-            this->P_post_.block<3, 3>(imu::State::kIdxExRot, imu::State::kIdxExRot) = sr2 * Eigen::Matrix3f::Identity();
-            this->P_post_.block<3, 3>(imu::State::kIdxExTrans, imu::State::kIdxExTrans) =
-                st2 * Eigen::Matrix3f::Identity();
-        }
 
         this->clear_total_processing_times();
     }
