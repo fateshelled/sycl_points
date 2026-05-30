@@ -15,10 +15,10 @@ namespace covariance {
 /// @note With sigma_range = sigma_grazing = 0 and min/max = (1e-3, 1.0),
 ///       the noise-aware regularizer reduces to the standard {1e-3, 1, 1} planar form.
 struct NoiseModel {
-    float sigma_range = 0.0f;      // [m/m] range-proportional std-dev (added variance grows as (sigma_range * d)^2)
+    float sigma_range = 0.0f;      // [m/m] range-proportional std-dev (variance contribution: (sigma_range * d)^2)
     float sigma_grazing = 0.0f;    // [dimensionless] tan(theta)-proportional std-dev for incidence-angle noise
-    float min_eigenvalue = 1e-3f;  // lower clamp for the regularized minimum eigenvalue
-    float max_eigenvalue = 1.0f;   // upper clamp for the regularized minimum eigenvalue
+    float min_eigenvalue = 1e-3f;  // numerical floor for lambda_min (planar regularization baseline; lambda_min when sigma_sq = 0)
+    float max_eigenvalue = 1.0f;   // upper cap; clamping here drives source covariance toward isotropy (target-driven point-to-plane behavior)
     float cos_min = 0.1f;          // clamp on |cos(theta)| to avoid tan() divergence near grazing rays
 };
 
@@ -88,8 +88,10 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
 /// @param cov Covariance to regularize (in place)
 /// @param pt_in_sensor_frame Source point in the LiDAR sensor frame (pre-transform)
 /// @param nm Noise model parameters
-/// @note Reduces to update_covariance_plane when nm.sigma_range == 0 && nm.sigma_grazing == 0
-///       (then lambda_min = clamp(min_eigenvalue + 0, min_eigenvalue, max_eigenvalue) = min_eigenvalue).
+/// @note sigma_sq is the variance along the local surface normal projected from modeled sensor noise.
+///       With nm.sigma_range == 0 && nm.sigma_grazing == 0, sigma_sq = 0 and
+///       lambda_min = clamp(0, min_eigenvalue, max_eigenvalue) = min_eigenvalue,
+///       reducing exactly to the {min_eigenvalue, 1, 1} planar form used by update_covariance_plane.
 SYCL_EXTERNAL inline void update_covariance_plane_noise_aware(Covariance& cov, const PointType& pt_in_sensor_frame,
                                                               const NoiseModel& nm) {
     Eigen::Vector3f eigenvalues;
@@ -107,13 +109,15 @@ SYCL_EXTERNAL inline void update_covariance_plane_noise_aware(Covariance& cov, c
         const float cos_theta = sycl::fabs(eigen_utils::dot<3>(n, p)) / d;
         // Guard against misconfigured nm.cos_min <= 0 to keep tan2 finite.
         const float cos_c = sycl::fmax(cos_theta, sycl::fmax(nm.cos_min, 1e-6f));
-        tan2 = (1.0f - cos_c * cos_c) / (cos_c * cos_c);
+        const float cos2 = cos_c * cos_c;
+        tan2 = 1.0f / cos2 - 1.0f;
     }
 
+    // sigma_sq IS the variance along the surface normal from modeled sensor noise.
+    // min_eigenvalue acts as a numerical floor (planar regularization baseline);
+    // max_eigenvalue caps lambda_min so the source covariance does not exceed isotropic scale.
     const float sigma_sq = nm.sigma_range * nm.sigma_range * d_sq + nm.sigma_grazing * nm.sigma_grazing * tan2;
-
-    float lambda_min = nm.min_eigenvalue + sigma_sq;
-    lambda_min = sycl::clamp(lambda_min, nm.min_eigenvalue, nm.max_eigenvalue);
+    const float lambda_min = sycl::clamp(sigma_sq, nm.min_eigenvalue, nm.max_eigenvalue);
 
     const auto diag = eigen_utils::as_diagonal<3>({lambda_min, 1.0f, 1.0f});
     cov.block<3, 3>(0, 0) = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
