@@ -214,6 +214,15 @@ lidar_odometry_node:
 
     registration/genz/planarity_threshold: 0.2
 
+    # GICP source-side sensor noise model (range/incidence-angle-aware planar regularization).
+    # Inflates the minimum eigenvalue of the source covariance for distant or grazing points.
+    # Set sigma_range = sigma_grazing = 0.0 to disable (reproduces the original {1e-3, 1, 1} behavior).
+    registration/source_noise_model/sigma_range: 0.0     # [m/m]   range-proportional std-dev (variance grows as (sigma_range * d)^2)
+    registration/source_noise_model/sigma_grazing: 0.0   # [-]     tan(theta)-proportional std-dev for incidence-angle noise
+    registration/source_noise_model/min_eigenvalue: 1.0e-3
+    registration/source_noise_model/max_eigenvalue: 1.0
+    registration/source_noise_model/cos_min: 0.1         # clamp on |cos(theta)| to avoid tan() divergence near grazing rays
+
     # Anderson Acceleration
     registration/anderson/enabled: false    # If true, apply Anderson acceleration to the outer iteration
     registration/anderson/window_size: 5    # History window size m (Anderson(m))

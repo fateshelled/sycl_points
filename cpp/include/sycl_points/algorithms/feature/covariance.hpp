@@ -11,6 +11,17 @@ namespace algorithms {
 
 namespace covariance {
 
+/// @brief Source-side sensor noise model for GICP covariance regularization.
+/// @note With sigma_range = sigma_grazing = 0 and min/max = (1e-3, 1.0),
+///       the noise-aware regularizer reduces to the standard {1e-3, 1, 1} planar form.
+struct NoiseModel {
+    float sigma_range = 0.0f;      // [m/m] range-proportional std-dev (added variance grows as (sigma_range * d)^2)
+    float sigma_grazing = 0.0f;    // [dimensionless] tan(theta)-proportional std-dev for incidence-angle noise
+    float min_eigenvalue = 1e-3f;  // lower clamp for the regularized minimum eigenvalue
+    float max_eigenvalue = 1.0f;   // upper clamp for the regularized minimum eigenvalue
+    float cos_min = 0.1f;          // clamp on |cos(theta)| to avoid tan() divergence near grazing rays
+};
+
 namespace kernel {
 
 SYCL_EXTERNAL inline void estimate(Covariance& ret, const PointType* point_ptr, const size_t k_correspondences,
@@ -69,6 +80,42 @@ SYCL_EXTERNAL inline void update_covariance_plane(Covariance& cov) {
     Eigen::Matrix3f eigenvectors;
     eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
     const auto diag = eigen_utils::as_diagonal<3>({1e-3f, 1.0f, 1.0f});
+    cov.block<3, 3>(0, 0) = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
+                                                           eigen_utils::transpose<3, 3>(eigenvectors));
+}
+
+/// @brief Planar regularization with sensor-noise-aware minimum eigenvalue.
+/// @param cov Covariance to regularize (in place)
+/// @param pt_in_sensor_frame Source point in the LiDAR sensor frame (pre-transform)
+/// @param nm Noise model parameters
+/// @note Reduces to update_covariance_plane when nm.sigma_range == 0 && nm.sigma_grazing == 0
+///       (then lambda_min = clamp(min_eigenvalue + 0, min_eigenvalue, max_eigenvalue) = min_eigenvalue).
+SYCL_EXTERNAL inline void update_covariance_plane_noise_aware(Covariance& cov, const PointType& pt_in_sensor_frame,
+                                                              const NoiseModel& nm) {
+    Eigen::Vector3f eigenvalues;
+    Eigen::Matrix3f eigenvectors;
+    eigen_utils::symmetric_eigen_decomposition_3x3(cov.block<3, 3>(0, 0), eigenvalues, eigenvectors);
+
+    const Eigen::Vector3f p(pt_in_sensor_frame.x(), pt_in_sensor_frame.y(), pt_in_sensor_frame.z());
+    const float d_sq = eigen_utils::dot<3>(p, p);
+    const float d = sycl::sqrt(d_sq);
+
+    float tan2 = 0.0f;
+    if (d > 1e-6f) {
+        // Smallest-eigenvalue eigenvector = local surface normal.
+        const Eigen::Vector3f n = eigenvectors.col(0);
+        const float cos_theta = sycl::fabs(eigen_utils::dot<3>(n, p)) / d;
+        const float cos_c = sycl::fmax(cos_theta, nm.cos_min);
+        tan2 = (1.0f - cos_c * cos_c) / (cos_c * cos_c);
+    }
+
+    const float sigma_sq =
+        nm.sigma_range * nm.sigma_range * d_sq + nm.sigma_grazing * nm.sigma_grazing * tan2;
+
+    float lambda_min = nm.min_eigenvalue + sigma_sq;
+    lambda_min = sycl::clamp(lambda_min, nm.min_eigenvalue, nm.max_eigenvalue);
+
+    const auto diag = eigen_utils::as_diagonal<3>({lambda_min, 1.0f, 1.0f});
     cov.block<3, 3>(0, 0) = eigen_utils::multiply<3, 3, 3>(eigen_utils::multiply<3, 3, 3>(eigenvectors, diag),
                                                            eigen_utils::transpose<3, 3>(eigenvectors));
 }
