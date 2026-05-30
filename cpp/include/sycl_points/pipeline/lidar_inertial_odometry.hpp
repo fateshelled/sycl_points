@@ -45,11 +45,12 @@
 //
 //   Composed world pose:  T_world_lidar = T_world_init_ * R_init_imu_att_ * x_
 //
-// NOTE: The ICP Hessian is embedded into the 15-DOF LiDAR-frame error-state.
-//       When T_imu_to_lidar ≠ Identity the preintegration covariance P_pred is
-//       expressed in the IMU error-state, which introduces a small mismatch.
-//       A full adjoint correction (P_lidar = Ad * P_imu * Ad^T) is left for a
-//       future update.
+// The ICP Hessian is embedded into the 15-DOF LiDAR-frame error-state.  The
+// IMU preintegration covariance lives in the IMU error-state and is rotated
+// into the LiDAR error-state via transform_covariance_imu_to_lidar() before
+// being passed to compute_imu_hessian_gradient(); the inverse Jacobian is
+// applied in reset_imu_preintegration() when handing P_post back to the
+// preintegrator.
 // ---------------------------------------------------------------------------
 
 namespace sycl_points {
