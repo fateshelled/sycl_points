@@ -36,13 +36,6 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         static_cast<float>(node->declare_parameter<double>("lio/fd_velocity_sigma", params.lio.fd_velocity_sigma));
     params.lio.icp_rotation_sigma =
         static_cast<float>(node->declare_parameter<double>("lio/icp_rotation_sigma", params.lio.icp_rotation_sigma));
-
-    params.lio.estimate_extrinsic =
-        node->declare_parameter<bool>("lio/estimate_extrinsic", params.lio.estimate_extrinsic);
-    params.lio.extrinsic_rotation_sigma = static_cast<float>(
-        node->declare_parameter<double>("lio/extrinsic_rotation_sigma", params.lio.extrinsic_rotation_sigma));
-    params.lio.extrinsic_translation_sigma = static_cast<float>(
-        node->declare_parameter<double>("lio/extrinsic_translation_sigma", params.lio.extrinsic_translation_sigma));
     return params;
 }
 

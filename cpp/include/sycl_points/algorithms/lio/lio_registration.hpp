@@ -11,27 +11,25 @@
 //
 // Provides the building blocks for the LIO Gauss-Newton optimisation loop:
 //
-//   1. add_icp_factor()   — embed the 6×6 ICP linearization into the 21-DOF
+//   1. add_icp_factor()   — embed the 6×6 ICP linearization into the 15-DOF
 //                           normal equation, handling the perturbation-convention
 //                           mismatch between ICP (body-frame δt) and LIO
 //                           (world-frame δp).
-//   2. add_imu_factor()   — add the 21×21 IMU prior Hessian/gradient.
+//   2. add_imu_factor()   — add the 15×15 IMU prior Hessian/gradient.
 //   3. solve_ldlt()       — solve H·δx = −b and optionally compute P_post = H⁻¹.
-//   4. retract()          — apply a 21-D tangent-space update to a State,
-//                           respecting SO(3) for the two rotation components.
+//   4. retract()          — apply a 15-D tangent-space update to a State,
+//                           respecting SO(3) for the rotation component.
 //   5. imu_to_lidar_jacobian() / transform_covariance_*()
 //                         — convert the 15-D IMU-frame preintegration covariance
 //                           to the 15-D LiDAR-frame used by the optimiser, and
 //                           back again for the next IMU reset window.
 //
-// State-vector ordering (21-D, same as imu_factor.hpp):
+// State-vector ordering (15-D, same as imu_factor.hpp):
 //   indices  0– 2  position           δp   (world frame)
 //   indices  3– 5  rotation           δφ   (so(3) tangent, right-perturbation)
 //   indices  6– 8  velocity           δv   (world frame)
 //   indices  9–11  accelerometer bias δb_a (body frame)
 //   indices 12–14  gyroscope bias     δb_g (body frame)
-//   indices 15–17  extrinsic rotation δφ_ex (so(3) tangent, right-perturbation)
-//   indices 18–20  extrinsic transl.  δt_ex
 //
 // ICP 6-DOF delta ordering (registration.hpp convention):
 //   indices  0– 2  rotation    δω  (body frame)
@@ -52,7 +50,7 @@ namespace lio {
 
 /// @brief Accumulated Gauss-Newton normal equation for one LIO iteration.
 ///
-/// Holds the combined 21×21 Hessian H and 21×1 gradient b that result from
+/// Holds the combined 15×15 Hessian H and 15×1 gradient b that result from
 /// accumulating one or more factors (ICP geometry, IMU prior).  After all
 /// factors have been added, pass H and b to solve_ldlt() to obtain the state
 /// update δx and the posterior covariance P_post = H⁻¹.
@@ -67,8 +65,8 @@ namespace lio {
 ///
 /// Diagnostic fields (error_icp, error_imu, inlier) are for logging only.
 struct LIOLinearizedResult {
-    Eigen::Matrix<float, 21, 21> H = Eigen::Matrix<float, 21, 21>::Zero();  ///< Combined Hessian
-    Eigen::Matrix<float, 21, 1> b = Eigen::Matrix<float, 21, 1>::Zero();    ///< Combined gradient
+    Eigen::Matrix<float, 15, 15> H = Eigen::Matrix<float, 15, 15>::Zero();  ///< Combined Hessian
+    Eigen::Matrix<float, 15, 1> b = Eigen::Matrix<float, 15, 1>::Zero();    ///< Combined gradient
     float error_icp = 0.0f;                                                 ///< Accumulated ICP cost (for diagnostics)
     float error_imu = 0.0f;                                                 ///< IMU prior cost (for diagnostics)
     uint32_t inlier = 0;                                                    ///< Number of valid ICP correspondences
@@ -80,7 +78,7 @@ struct LIOLinearizedResult {
 // add_icp_factor
 // ---------------------------------------------------------------------------
 
-/// @brief Embed an ICP 6×6 Hessian/gradient into the LIO 21×21 normal equation.
+/// @brief Embed an ICP 6×6 Hessian/gradient into the LIO 15×15 normal equation.
 ///
 /// ## Perturbation-convention mismatch and how it is resolved
 ///
@@ -92,7 +90,7 @@ struct LIOLinearizedResult {
 ///   - δω : rotation increment (body frame)
 ///   - δt : translation increment (body frame) → p_new = p + R · δt
 ///
-/// The LIO 21-D error-state uses:
+/// The LIO 15-D error-state uses:
 ///   - δφ : rotation increment (body frame)  — same as ICP δω ✓
 ///   - δp : position increment (world frame) — p_new = p + δp ✗
 ///
@@ -108,9 +106,6 @@ struct LIOLinearizedResult {
 ///   H_lio[p,p]   = R · H_icp[t,t] · Rᵀ
 ///   H_lio[p,φ]   = R · H_icp[t,ω]         (φ stays in body frame)
 ///   H_lio[φ,p]   = H_icp[ω,t] · Rᵀ
-///
-/// The extrinsic blocks (rows/columns 15–20) of H and b are unaffected because
-/// the ICP measurement depends only on the LiDAR-frame pose, not the extrinsic.
 ///
 /// @param result        LIO normal equation to accumulate into.
 /// @param icp           ICP linearization from registration::Registration.
@@ -138,20 +133,18 @@ inline void add_icp_factor(LIOLinearizedResult& result, const registration::Line
 // add_imu_factor
 // ---------------------------------------------------------------------------
 
-/// @brief Add the IMU prior 21×21 Hessian/gradient into the LIO normal equation.
+/// @brief Add the IMU prior 15×15 Hessian/gradient into the LIO normal equation.
 ///
-/// The IMU factor is already expressed in the LIO 21-D state ordering
+/// The IMU factor is already expressed in the LIO 15-D state ordering
 /// (computed by compute_imu_hessian_gradient()), so no index permutation is
-/// needed.  When extrinsic estimation is enabled the caller is responsible for
-/// adding the cross-terms between the navigation state and the extrinsic blocks
-/// before calling this function.
+/// needed.
 ///
 /// @param result  LIO normal equation to accumulate into.
-/// @param H_imu   21×21 IMU information matrix from compute_imu_hessian_gradient().
-/// @param b_imu   21×1  IMU gradient vector   from compute_imu_hessian_gradient().
+/// @param H_imu   15×15 IMU information matrix from compute_imu_hessian_gradient().
+/// @param b_imu   15×1  IMU gradient vector   from compute_imu_hessian_gradient().
 /// @param error   Optional scalar IMU prior cost for logging (default 0).
-inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<float, 21, 21>& H_imu,
-                           const Eigen::Matrix<float, 21, 1>& b_imu, float error = 0.0f) {
+inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<float, 15, 15>& H_imu,
+                           const Eigen::Matrix<float, 15, 1>& b_imu, float error = 0.0f) {
     result.H += H_imu;
     result.b += b_imu;
     result.error_imu = error;
@@ -171,15 +164,15 @@ inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<floa
 /// preintegration window (passed to IMUPreintegration::reset() after
 /// converting back to IMU frame via transform_covariance_lidar_to_imu()).
 ///
-/// @param[in]  H      Combined LIO Hessian (21×21), may include a Levenberg–
+/// @param[in]  H      Combined LIO Hessian (15×15), may include a Levenberg–
 ///                    Marquardt damping term λI added by the caller.
-/// @param[in]  b      Combined LIO gradient (21×1).
-/// @param[out] delta  21-D state update δx on success; zero on failure.
+/// @param[in]  b      Combined LIO gradient (15×1).
+/// @param[out] delta  15-D state update δx on success; zero on failure.
 /// @param[out] P_post Posterior covariance H⁻¹ (optional, pass nullptr to skip).
 /// @return true on success; false if H is numerically ill-conditioned.
-inline bool solve_ldlt(const Eigen::Matrix<float, 21, 21>& H, const Eigen::Matrix<float, 21, 1>& b,
-                       Eigen::Matrix<float, 21, 1>& delta, Eigen::Matrix<float, 21, 21>* P_post = nullptr) {
-    Eigen::LDLT<Eigen::Matrix<float, 21, 21>> ldlt(H);
+inline bool solve_ldlt(const Eigen::Matrix<float, 15, 15>& H, const Eigen::Matrix<float, 15, 1>& b,
+                       Eigen::Matrix<float, 15, 1>& delta, Eigen::Matrix<float, 15, 15>* P_post = nullptr) {
+    Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(H);
     if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) {
         delta.setZero();
         if (P_post) P_post->setZero();
@@ -197,7 +190,7 @@ inline bool solve_ldlt(const Eigen::Matrix<float, 21, 21>& H, const Eigen::Matri
 // retract
 // ---------------------------------------------------------------------------
 
-/// @brief Apply a 21-D tangent-space update δx to a navigation state.
+/// @brief Apply a 15-D tangent-space update δx to a navigation state.
 ///
 /// Implements the manifold retraction  x_new = x ⊕ δx:
 ///
@@ -206,16 +199,14 @@ inline bool solve_ldlt(const Eigen::Matrix<float, 21, 21>& H, const Eigen::Matri
 ///   velocity     : v_new = v + δv                         (additive)
 ///   accel_bias   : b_a_new = b_a + δb_a                  (additive)
 ///   gyro_bias    : b_g_new = b_g + δb_g                  (additive)
-///   offset_R_L_I : R_ex_new = R_ex · Exp(δφ_ex)          (SO(3) right-perturbation)
-///   offset_T_L_I : t_ex_new = t_ex + δt_ex               (additive)
 ///
 /// The right-perturbation convention is consistent throughout: the same
 /// convention is used by add_icp_factor() and compute_imu_hessian_gradient().
 ///
 /// @param state  Current navigation state (linearisation point x_op).
-/// @param delta  21-D tangent-space update δx from solve_ldlt().
+/// @param delta  15-D tangent-space update δx from solve_ldlt().
 /// @return Updated navigation state x_op ⊕ δx.
-inline imu::State retract(const imu::State& state, const Eigen::Matrix<float, 21, 1>& delta) {
+inline imu::State retract(const imu::State& state, const Eigen::Matrix<float, 15, 1>& delta) {
     imu::State updated = state;
 
     updated.position += delta.segment<3>(imu::State::kIdxPos);
@@ -226,12 +217,6 @@ inline imu::State retract(const imu::State& state, const Eigen::Matrix<float, 21
     updated.velocity += delta.segment<3>(imu::State::kIdxVel);
     updated.accel_bias += delta.segment<3>(imu::State::kIdxAccBias);
     updated.gyro_bias += delta.segment<3>(imu::State::kIdxGyrBias);
-
-    // Extrinsic rotation: right-perturbation on SO(3)
-    const Eigen::Vector4f dq_ex = eigen_utils::lie::so3_exp(delta.segment<3>(imu::State::kIdxExRot));
-    updated.offset_R_L_I = state.offset_R_L_I * eigen_utils::geometry::quaternion_to_rotation_matrix(dq_ex);
-
-    updated.offset_T_L_I += delta.segment<3>(imu::State::kIdxExTrans);
 
     return updated;
 }
@@ -246,10 +231,6 @@ inline imu::State retract(const imu::State& state, const Eigen::Matrix<float, 21
 // When T_imu_to_lidar ≠ Identity the two frames differ, and the covariance
 // must be transformed before it can be used as the IMU prior.  These functions
 // implement that transformation via a first-order Jacobian J.
-//
-// The extrinsic blocks (indices 15–20) are not part of IMU preintegration and
-// are therefore handled separately (see lio_registration() in
-// lidar_inertial_odometry.hpp).
 // ---------------------------------------------------------------------------
 
 /// @brief Jacobian that maps the 15-D IMU error-state to the 15-D LiDAR error-state.
