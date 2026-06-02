@@ -474,11 +474,11 @@ private:
         last_icp.inlier = 0;
         size_t actual_iterations = 0;
 
-        for (size_t iter = 0; iter < this->params_.lio.max_iterations; ++iter) {
+        for (size_t iter = 0; iter < this->params_.lio.total_iterations; ++iter) {
             ++actual_iterations;
 
-            if (robust.auto_scale && this->params_.lio.max_iterations > 1) {
-                const float t = static_cast<float>(iter) / static_cast<float>(this->params_.lio.max_iterations - 1);
+            if (robust.auto_scale && this->params_.lio.total_iterations > 1) {
+                const float t = static_cast<float>(iter) / static_cast<float>(this->params_.lio.total_iterations - 1);
                 options.robust_scale =
                     std::max(robust.init_scale * std::pow(robust.min_scale / robust.init_scale, t), robust.min_scale);
             }

@@ -13,8 +13,11 @@ namespace lidar_inertial_odometry {
 /// IMU is always required; params_.imu.enable is forced true in the pipeline.
 struct Parameters : public lidar_odometry::Parameters {
     struct LIO {
-        /// Maximum number of Gauss-Newton iterations per frame.
-        size_t max_iterations = 10;
+        /// Total number of IEKF/Gauss-Newton iterations per frame.
+        /// The IEKF loop is flat: each iteration runs one linearize+solve, and the
+        /// robust scale is annealed across these iterations. So this value is the
+        /// total linearize+solve count (unlike the nested LO solver loop).
+        size_t total_iterations = 10;
         // Convergence threshold
         algorithms::registration::RegistrationParams::Criteria criteria;
         /// Regularization factor for velocity and bias when P_pred is singular.

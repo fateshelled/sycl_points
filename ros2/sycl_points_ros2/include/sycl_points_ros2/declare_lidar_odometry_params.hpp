@@ -227,8 +227,10 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
 
             const std::string reg_type = node->declare_parameter<std::string>("registration/type", "gicp");
             solver.reg_type = algorithms::registration::RegType_from_string(reg_type);
+            // Innermost solver iterations. The total max loop count is
+            // auto_scaling_iter x velocity_update/iter x solver_iterations.
             solver.max_iterations =
-                node->declare_parameter<int64_t>("registration/max_iterations", solver.max_iterations);
+                node->declare_parameter<int64_t>("registration/solver_iterations", solver.max_iterations);
             solver.criteria.translation =
                 node->declare_parameter<double>("registration/criteria/translation", solver.criteria.translation);
             solver.criteria.rotation =

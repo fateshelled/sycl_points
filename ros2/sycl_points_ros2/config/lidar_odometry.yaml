@@ -177,7 +177,11 @@ lidar_odometry_node:
     # Silently falls back to uniform sampling when the source has no intensity field.
     registration/random_sampling/use_intensities: false
     registration/random_sampling/weighted_ratio: 0.8  # Fraction of samples from the weighted distribution [0.0, 1.0]
-    registration/max_iterations: 4
+    # Iterations of the innermost solver only. The actual max loop count is the
+    # product of the three nested loops:
+    #   auto_scaling_iter x velocity_update/iter x solver_iterations
+    #   (current config: 4 x 2 x 4 = 32; LM inner iterations are additional)
+    registration/solver_iterations: 4
     registration/max_correspondence_distance: 2.0
     registration/criteria/translation: 1.0e-3  # [m]
     registration/criteria/rotation: 1.0e-6     # [rad]

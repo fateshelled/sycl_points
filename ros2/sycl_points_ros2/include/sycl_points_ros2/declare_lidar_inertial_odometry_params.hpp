@@ -24,8 +24,8 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         "imu/preintegration/accel_bias_rw_density", params.imu.preintegration.accel_bias_rw_density));
 
     // LIO-specific optimization parameters
-    params.lio.max_iterations =
-        static_cast<size_t>(node->declare_parameter<int64_t>("lio/max_iterations", params.lio.max_iterations));
+    params.lio.total_iterations =
+        static_cast<size_t>(node->declare_parameter<int64_t>("lio/total_iterations", params.lio.total_iterations));
     params.lio.criteria.rotation =
         node->declare_parameter<double>("lio/criteria/rotation", params.lio.criteria.rotation);
     params.lio.criteria.translation =
