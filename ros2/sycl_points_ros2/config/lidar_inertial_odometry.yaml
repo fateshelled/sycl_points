@@ -163,7 +163,9 @@ lidar_inertial_odometry_node:
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
     # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
-    lio/max_iterations: 8
+    # Total IEKF iterations per frame: each iteration = one linearize+solve,
+    # with the robust scale annealed across these iterations (flat loop).
+    lio/total_iterations: 8
     lio/criteria/translation: 0.01  # [m]
     lio/criteria/rotation: 0.01     # [rad]
     lio/invalid_regularization_factor: 1.0e+4
@@ -178,7 +180,7 @@ lidar_inertial_odometry_node:
     lio/icp_rotation_sigma: 0.01  # [rad]
 
     # ICP registration backend (used for linearization inside the LIO loop)
-    # registration/max_iterations is unused; outer loop count is lio/max_iterations.
+    # registration/solver_iterations is unused; the loop count is lio/total_iterations.
     registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
     registration/random_sampling/enable: true
