@@ -1,7 +1,7 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch.conditions import IfCondition
 from launch.actions import TimerAction
@@ -56,18 +56,43 @@ def generate_launch_description():
                 default_value="0",
                 description="rosbag start offset in seconds",
             ),
+            DeclareLaunchArgument(
+                "rosbag/exclude_topics",
+                default_value="",
+                description=(
+                    "Comma-separated topics to exclude from rosbag playback "
+                    "(e.g. '/tf_static' when the bag's static TF conflicts with the "
+                    "node's odom->base_link->lidar tree). Empty = exclude nothing. "
+                    "Does NOT affect odometry results (the pipeline never consumes TF); "
+                    "visualization only."
+                ),
+            ),
         ]
     )
     use_sim_time = LaunchConfiguration("use_sim_time")
 
-    nodes = [
-        Node(
-            package="rviz2",
-            executable="rviz2",
-            arguments=["-d", os.path.join(package_dir, "rviz2", "rviz2.rviz")],
-            condition=IfCondition(LaunchConfiguration("rviz2")),
-        ),
-        TimerAction(
+    def launch_setup(context, *args, **kwargs):
+        # Parse the comma-separated exclude list at runtime.  Omit the parameter
+        # entirely when empty: an empty array param has an ambiguous type and would
+        # otherwise error, and omitting it keeps the default "exclude nothing".
+        exclude_raw = LaunchConfiguration("rosbag/exclude_topics").perform(context)
+        exclude_topics = [t.strip() for t in exclude_raw.split(",") if t.strip()]
+
+        player_params = {
+            "play.read_ahead_queue_size": 1000,
+            "play.node_prefix": "",
+            "play.rate": 1.0,
+            "play.loop": False,
+            "play.start_paused": False,
+            "play.start_offset.sec": LaunchConfiguration("rosbag/start_offset/sec"),
+            "storage.uri": LaunchConfiguration("rosbag/uri"),
+            "storage.storage_config_uri": "",
+            "use_sim_time": use_sim_time,
+        }
+        if exclude_topics:
+            player_params["play.exclude_topics_to_filter"] = exclude_topics
+
+        container = TimerAction(
             period=1.0,
             actions=[
                 ComposableNodeContainer(
@@ -119,21 +144,7 @@ def generate_launch_description():
                             package="rosbag2_transport",
                             plugin="rosbag2_transport::Player",
                             name="player",
-                            parameters=[
-                                {
-                                    "play.read_ahead_queue_size": 1000,
-                                    "play.node_prefix": "",
-                                    "play.rate": 1.0,
-                                    "play.loop": False,
-                                    "play.start_paused": False,
-                                    "play.start_offset.sec": LaunchConfiguration(
-                                        "rosbag/start_offset/sec"
-                                    ),
-                                    "storage.uri": LaunchConfiguration("rosbag/uri"),
-                                    "storage.storage_config_uri": "",
-                                    "use_sim_time": use_sim_time,
-                                }
-                            ],
+                            parameters=[player_params],
                             condition=IfCondition(LaunchConfiguration("rosbag/play")),
                             extra_arguments=[{"use_intra_process_comms": True}],
                         ),
@@ -150,7 +161,14 @@ def generate_launch_description():
                     ],
                 ),
             ],
-        ),
-    ]
+        )
+        return [container]
 
-    return LaunchDescription(launch_args + nodes)
+    rviz = Node(
+        package="rviz2",
+        executable="rviz2",
+        arguments=["-d", os.path.join(package_dir, "rviz2", "rviz2.rviz")],
+        condition=IfCondition(LaunchConfiguration("rviz2")),
+    )
+
+    return LaunchDescription(launch_args + [rviz, OpaqueFunction(function=launch_setup)])
