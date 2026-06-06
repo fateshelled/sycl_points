@@ -78,16 +78,27 @@ def generate_launch_description():
         exclude_raw = LaunchConfiguration("rosbag/exclude_topics").perform(context)
         exclude_topics = [t.strip() for t in exclude_raw.split(",") if t.strip()]
 
+        # Resolve substitutions to concrete Python types here so the rosbag2 Player
+        # (which is strict about parameter types) receives int/bool/str rather than
+        # raw substitution strings.
+        try:
+            start_offset_sec = int(
+                LaunchConfiguration("rosbag/start_offset/sec").perform(context)
+            )
+        except ValueError:
+            start_offset_sec = 0
+        sim_time = LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+
         player_params = {
             "play.read_ahead_queue_size": 1000,
             "play.node_prefix": "",
             "play.rate": 1.0,
             "play.loop": False,
             "play.start_paused": False,
-            "play.start_offset.sec": LaunchConfiguration("rosbag/start_offset/sec"),
-            "storage.uri": LaunchConfiguration("rosbag/uri"),
+            "play.start_offset.sec": start_offset_sec,
+            "storage.uri": LaunchConfiguration("rosbag/uri").perform(context),
             "storage.storage_config_uri": "",
-            "use_sim_time": use_sim_time,
+            "use_sim_time": sim_time,
         }
         if exclude_topics:
             player_params["play.exclude_topics_to_filter"] = exclude_topics
