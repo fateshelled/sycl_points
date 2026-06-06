@@ -211,7 +211,9 @@ namespace detail {
 inline float yaw_from_rotation(const Eigen::Matrix3f& R) {
     const float cy = R(0, 0);
     const float sy = R(1, 0);
-    if (std::hypot(cy, sy) < 1e-6f) return 0.0f;
+    // Rotation-matrix elements are bounded in [-1, 1], so a direct squared-sum
+    // comparison is safe and avoids std::hypot's under/overflow guarding overhead.
+    if ((cy * cy + sy * sy) < 1e-12f) return 0.0f;
     return std::atan2(sy, cy);
 }
 
