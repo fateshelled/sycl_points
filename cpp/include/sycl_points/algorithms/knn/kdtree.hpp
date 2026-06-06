@@ -22,13 +22,22 @@ namespace knn {
 namespace {
 
 // Node structure for KD-Tree (ignoring w component)
+//
+// Two roles share this struct:
+//   - Internal node: `pt`/`idx` hold the split point, `left`/`right` are child node
+//     indices, `axis` is the split axis.
+//   - Leaf descriptor (is_leaf == 1): holds no point of its own. `left` is the start
+//     index of a contiguous block of leaf-point nodes, `right` is the number of points
+//     in that block, and `idx` is -1 so remove_nodes_by_flags() skips the descriptor.
+//     The leaf-point nodes themselves are plain entries (valid `pt`/`idx`) that are only
+//     ever read by scanning the block, never reached via child pointers.
 struct FlatKDNode {
     PointType pt;
-    int32_t idx;         // Index of the point in the original dataset
-    int32_t left = -1;   // Index of left child node (-1 if none), or next leaf node for leaf nodes
-    int32_t right = -1;  // Index of right child node (-1 if none), unused for leaf nodes
+    int32_t idx;         // Point index (internal/leaf-point), or -1 for a leaf descriptor
+    int32_t left = -1;   // Internal: left child; leaf descriptor: leaf block start index
+    int32_t right = -1;  // Internal: right child; leaf descriptor: leaf block point count
     uint8_t axis;        // Split axis (0=x, 1=y, 2=z) - unused for leaf nodes
-    uint8_t is_leaf;     // 1 if leaf node, 0 if internal node
+    uint8_t is_leaf;     // 1 if leaf descriptor, 0 if internal node
     uint8_t valid = 1;   // 0 is removed node, 1 is valid
     uint8_t pad;         // Padding for alignment (1 bytes)
 
@@ -323,28 +332,32 @@ private:
 
             // Check if this should be a leaf node
             if (indices_size <= leaf_threshold) {
-                // Create leaf nodes as a linked list
-                int32_t currentLeafIdx = nodeIdx;
+                // Store leaf points contiguously in a block and turn this node into a
+                // leaf descriptor pointing at it. The search kernel scans [left, left + right)
+                // sequentially instead of pointer-chasing one leaf point at a time.
+                const uint32_t leafStart = nextNodeIdx;
+                nextNodeIdx += static_cast<uint32_t>(indices_size);
 
                 for (size_t i = 0; i < indices_size; ++i) {
                     const auto pointIdx = globalIndices[startIdx + i];
-                    auto& leafNode = tree[currentLeafIdx];
+                    auto& member = tree[leafStart + i];
 
-                    leafNode.pt = points[pointIdx];
-                    leafNode.idx = pointIdx;
-                    leafNode.is_leaf = 1;  // Mark as leaf node
-                    leafNode.axis = 0;     // Unused for leaf nodes
-                    leafNode.right = -1;   // Unused for leaf nodes
-                    leafNode.valid = 1;
-
-                    // Set left to next leaf node index, or -1 for the last one
-                    if (i < indices_size - 1) {
-                        leafNode.left = nextNodeIdx;
-                        currentLeafIdx = nextNodeIdx++;
-                    } else {
-                        leafNode.left = -1;  // Last leaf node
-                    }
+                    member.pt = points[pointIdx];
+                    member.idx = pointIdx;
+                    member.is_leaf = 1;
+                    member.axis = 0;
+                    member.left = -1;
+                    member.right = -1;
+                    member.valid = 1;
                 }
+
+                // Leaf descriptor (holds no point of its own).
+                node.is_leaf = 1;
+                node.valid = 1;
+                node.idx = -1;  // sentinel so remove_nodes_by_flags() skips the descriptor
+                node.axis = 0;
+                node.left = static_cast<int32_t>(leafStart);      // leaf block start index
+                node.right = static_cast<int32_t>(indices_size);  // leaf block point count
                 continue;
             }
 
@@ -485,22 +498,35 @@ private:
                     if (nodeIdx == -1 || nodeIdx >= treeSize) continue;
 
                     const auto node = tree_ptr[nodeIdx];
-                    const bool is_valid = (node.valid == filter::INCLUDE_FLAG);
 
-                    // Calculate distance to current node
+                    // Leaf descriptor: scan the contiguous point block [left, left + right).
+                    if (node.is_leaf != 0) {
+                        const int32_t leafStart = node.left;
+                        const int32_t leafCount = node.right;
+                        for (int32_t li = 0; li < leafCount; ++li) {
+                            const auto& member = tree_ptr[leafStart + li];
+                            const bool is_valid = (member.valid == filter::INCLUDE_FLAG);
+                            const PointType diff = eigen_utils::subtract<4, 1>(query, member.pt);
+                            const float dist_sq =
+                                is_valid ? eigen_utils::dot<4>(diff, diff) : std::numeric_limits<float>::max();
+                            found_num = is_valid ? found_num + 1 : found_num;
+                            insert_to_bestK<MAX_K>(bestK, dist_sq, member.idx, k, found_num);
+                        }
+                        continue;
+                    }
+
+                    // Internal node: evaluate the split point, then descend.
+                    const bool is_valid = (node.valid == filter::INCLUDE_FLAG);
                     const PointType diff = eigen_utils::subtract<4, 1>(query, node.pt);
                     const float dist_sq =
                         is_valid ? eigen_utils::dot<4>(diff, diff) : std::numeric_limits<float>::max();
                     found_num = is_valid ? found_num + 1 : found_num;
                     insert_to_bestK<MAX_K>(bestK, dist_sq, node.idx, k, found_num);
 
-                    // Calculate distance along split axis
+                    // Distance along split axis decides nearer/further subtree.
                     const float axisDistance = diff[node.axis];
-
-                    // Determine nearer and further subtrees
-                    const bool is_leaf = (node.is_leaf != 0);
-                    const auto nearerNode = (is_leaf || axisDistance <= 0) ? node.left : node.right;
-                    const auto furtherNode = (is_leaf || axisDistance <= 0) ? node.right : node.left;
+                    const auto nearerNode = (axisDistance <= 0) ? node.left : node.right;
+                    const auto furtherNode = (axisDistance <= 0) ? node.right : node.left;
 
                     // Squared distance to splitting plane
                     const float splitDistSq = axisDistance * axisDistance;
@@ -623,9 +649,27 @@ private:
                     if (nodeIdx == -1 || nodeIdx >= treeSize) continue;
 
                     const auto node = tree_ptr[nodeIdx];
-                    const bool is_valid = (node.valid == filter::INCLUDE_FLAG);
 
-                    // Calculate distance to current node
+                    // Leaf descriptor: scan the contiguous point block [left, left + right).
+                    if (node.is_leaf != 0) {
+                        const int32_t leafStart = node.left;
+                        const int32_t leafCount = node.right;
+                        for (int32_t li = 0; li < leafCount; ++li) {
+                            const auto& member = tree_ptr[leafStart + li];
+                            const bool is_valid = (member.valid == filter::INCLUDE_FLAG);
+                            const PointType diff = eigen_utils::subtract<4, 1>(query, member.pt);
+                            const float dist_sq =
+                                is_valid ? eigen_utils::dot<4>(diff, diff) : std::numeric_limits<float>::max();
+                            if (is_valid && dist_sq <= radius_sq) {
+                                ++found_num;
+                                insert_to_bestK<MAX_K>(bestK, dist_sq, member.idx, max_k, found_num);
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Internal node: evaluate the split point, then descend.
+                    const bool is_valid = (node.valid == filter::INCLUDE_FLAG);
                     const PointType diff = eigen_utils::subtract<4, 1>(query, node.pt);
                     const float dist_sq =
                         is_valid ? eigen_utils::dot<4>(diff, diff) : std::numeric_limits<float>::max();
@@ -636,13 +680,10 @@ private:
                         insert_to_bestK<MAX_K>(bestK, dist_sq, node.idx, max_k, found_num);
                     }
 
-                    // Calculate distance along split axis
+                    // Distance along split axis decides nearer/further subtree.
                     const float axisDistance = diff[node.axis];
-
-                    // Determine nearer and further subtrees
-                    const bool is_leaf = (node.is_leaf != 0);
-                    const auto nearerNode = (is_leaf || axisDistance <= 0) ? node.left : node.right;
-                    const auto furtherNode = (is_leaf || axisDistance <= 0) ? node.right : node.left;
+                    const auto nearerNode = (axisDistance <= 0) ? node.left : node.right;
+                    const auto furtherNode = (axisDistance <= 0) ? node.right : node.left;
 
                     // Squared distance to splitting plane
                     const float splitDistSq = axisDistance * axisDistance;
