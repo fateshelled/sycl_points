@@ -203,21 +203,36 @@ inline InitialAlignmentResult estimate_initial_alignment(const std::deque<IMUMea
     return res;
 }
 
+namespace detail {
+
+/// @brief Extract the yaw component (ZYX convention) of a rotation matrix using atan2 on
+///        the first column.  Avoids gimbal-lock corner cases at pitch = ±π/2 by returning
+///        0 when the horizontal projection of the first column collapses.
+inline float yaw_from_rotation(const Eigen::Matrix3f& R) {
+    const float cy = R(0, 0);
+    const float sy = R(1, 0);
+    // Rotation-matrix elements are bounded in [-1, 1], so a direct squared-sum
+    // comparison is safe and avoids std::hypot's under/overflow guarding overhead.
+    if ((cy * cy + sy * sy) < 1e-12f) return 0.0f;
+    return std::atan2(sy, cy);
+}
+
+}  // namespace detail
+
 /// @brief Stationary-IMU initial roll/pitch alignment.
 ///
 /// Wraps estimate_initial_alignment and owns:
 ///   - the wait/timeout clock (started at the first try),
-///   - the gravity-aligned LiDAR rotation in the imu_attitude frame.
+///   - the gravity-aligned LiDAR rotation (yaw ≈ 0).
 ///
 /// The caller polls try_align() once per scan while is_done() is false.  On success
 /// the result is applied by the caller to its own state (pose, gyro bias, IMU
 /// preintegration reset) because state layouts differ between LO and LIO.
 ///
-/// Frame convention (see 3-stage TF chain in lidar_inertial_odometry.hpp):
-///   world ──TF1(user yaw+pos)──▶ init_pose ──TF2──▶ imu_attitude ──x_──▶ lidar
-/// User yaw is held externally by TF1, so this estimator no longer composes it back
-/// into its output.  The returned R_imu_att_lidar is the LiDAR's rotation in the
-/// imu_attitude frame at startup (carries the gravity-corrected roll/pitch).
+/// The returned R_gravity_lidar is the LiDAR's gravity-aligned rotation with yaw ≈ 0
+/// (gravity constrains roll/pitch only).  The caller layers the user-specified yaw on
+/// the left (Rz(yaw_user) * R_gravity_lidar) to obtain the initial T_odom_to_lidar in
+/// the gravity-aligned odom/world frame.
 class InitialAlignmentEstimator {
 public:
     using Ptr = std::shared_ptr<InitialAlignmentEstimator>;
@@ -232,12 +247,11 @@ public:
         std::string error_message;  ///< populated on Status::waiting (diagnostic)
 
         // Valid only when status == success.
-        /// LiDAR rotation in the imu_attitude frame after gravity-aligned roll/pitch
-        /// correction.  Yaw is approximately zero by construction (FromTwoVectors
-        /// returns the minimum rotation that maps body_up → world_up, whose axis lies
-        /// in the gravity-orthogonal plane).  The caller assigns this directly to its
-        /// LIO state rotation; user-specified yaw is preserved separately via TF1.
-        Eigen::Matrix3f R_imu_att_lidar = Eigen::Matrix3f::Identity();
+        /// Gravity-aligned LiDAR rotation with yaw ≈ 0 by construction (FromTwoVectors
+        /// returns the minimum rotation that maps body_up → world_up, whose axis lies in
+        /// the gravity-orthogonal plane).  The caller layers the user-specified yaw on
+        /// the left to obtain the initial T_odom_to_lidar rotation.
+        Eigen::Matrix3f R_gravity_lidar = Eigen::Matrix3f::Identity();
         Eigen::Vector3f gyro_bias = Eigen::Vector3f::Zero();
         float roll_rad = 0.0f;
         float pitch_rad = 0.0f;
@@ -298,15 +312,15 @@ public:
             return out;
         }
 
-        // R_imu_att_lidar = R_world_imu_aligned * R_imu_to_lidar^T.
+        // R_gravity_lidar = R_world_imu_aligned * R_imu_to_lidar^T.
         // The result's yaw is ≈ 0 because FromTwoVectors returns the minimum rotation
-        // (whose axis lies in the gravity-orthogonal plane); user yaw is layered on
-        // externally by the caller through TF1, not here.
+        // (whose axis lies in the gravity-orthogonal plane); user yaw is layered on the
+        // left by the caller, not here.
         const Eigen::Matrix3f R_imu_to_lidar = this->T_imu_to_lidar_.linear();
-        const Eigen::Matrix3f R_imu_att_lidar = result.R_world_imu * R_imu_to_lidar.transpose();
+        const Eigen::Matrix3f R_gravity_lidar = result.R_world_imu * R_imu_to_lidar.transpose();
 
         out.status = Status::success;
-        out.R_imu_att_lidar = R_imu_att_lidar;
+        out.R_gravity_lidar = R_gravity_lidar;
         out.gyro_bias = result.gyro_bias;
         out.roll_rad = result.roll_rad;
         out.pitch_rad = result.pitch_rad;
