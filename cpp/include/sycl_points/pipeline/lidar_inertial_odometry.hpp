@@ -611,6 +611,13 @@ private:
         {
             auto& reg_params = this->params_.registration.pipeline;
             reg_params.velocity_update.enable = false;  // LIO controls its own update loop
+            // In LIO the IMU prior already constrains degenerate pose directions toward
+            // the prediction; the ICP degenerate regularization would double-count along
+            // the same directions, so disable it unless explicitly requested.
+            if (!this->params_.lio.use_icp_degenerate_regularization) {
+                reg_params.registration.degenerate_reg.type =
+                    algorithms::registration::DegenerateRegularizationType::none;
+            }
             this->registration_ =
                 std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, reg_params.registration);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();

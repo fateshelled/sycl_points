@@ -52,6 +52,8 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         "lio/bias_estimation/max_accel_bias", params.lio.bias_estimation.max_accel_bias));
     params.lio.bias_estimation.max_gyro_bias = static_cast<float>(
         node->declare_parameter<double>("lio/bias_estimation/max_gyro_bias", params.lio.bias_estimation.max_gyro_bias));
+    params.lio.use_icp_degenerate_regularization = node->declare_parameter<bool>(
+        "lio/use_icp_degenerate_regularization", params.lio.use_icp_degenerate_regularization);
     return params;
 }
 
