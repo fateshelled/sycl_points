@@ -36,6 +36,8 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         static_cast<float>(node->declare_parameter<double>("lio/fd_velocity_sigma", params.lio.fd_velocity_sigma));
     params.lio.icp_rotation_sigma =
         static_cast<float>(node->declare_parameter<double>("lio/icp_rotation_sigma", params.lio.icp_rotation_sigma));
+    params.lio.velocity_fd_blend =
+        static_cast<float>(node->declare_parameter<double>("lio/velocity_fd_blend", params.lio.velocity_fd_blend));
     return params;
 }
 

@@ -33,6 +33,16 @@ struct Parameters : public lidar_odometry::Parameters {
         /// Choose so that 1/icp_rotation_sigma² ≲ H_icp[rot,rot]
         /// (≈ 1e4–1e5 for outdoor LiDAR with ~1000 inliers → σ ≈ 0.003–0.01 rad).
         float icp_rotation_sigma = 0.01f;
+
+        /// Blend factor in [0,1] for the post-optimization world-frame velocity.
+        /// The final velocity is a convex combination of the IEKF filter velocity
+        /// (x_op.velocity, smooth and IMU-consistent) and a finite-difference
+        /// velocity (position delta + ½·a·dt, responsive but noisy):
+        ///   v = (1 − blend)·v_filter + blend·v_finite_difference
+        /// 0.0 trusts the filter; 1.0 reproduces the legacy pure-FD behavior.
+        /// Because this velocity seeds the next window's IMU prediction, a lower
+        /// blend reduces position-difference noise leaking into the prior.
+        float velocity_fd_blend = 1.0f;
     };
 
     LIO lio;

@@ -500,14 +500,19 @@ private:
         if (this->dt_ > 0.0f) {
             const Eigen::Vector3f v_fd = (this->x_.position - prev_position) / this->dt_;
             const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.gyro_bias, x_op.accel_bias});
+            Eigen::Vector3f v_finite_difference;
             if (c.dt_total > 1e-6) {
                 const Eigen::Matrix3f R_world_imu_prev = prev_rotation * this->params_.imu.T_imu_to_lidar.rotation();
                 const Eigen::Vector3f a_world = this->params_.imu.preintegration.gravity +
                                                 R_world_imu_prev * c.Delta_v / static_cast<float>(c.dt_total);
-                this->x_.velocity = v_fd + 0.5f * a_world * this->dt_;
+                v_finite_difference = v_fd + 0.5f * a_world * this->dt_;
             } else {
-                this->x_.velocity = v_fd;
+                v_finite_difference = v_fd;
             }
+            // Blend the IEKF filter velocity with the finite-difference velocity.
+            // blend == 1.0 reproduces the legacy pure-FD estimate.
+            const float blend = std::clamp(this->params_.lio.velocity_fd_blend, 0.0f, 1.0f);
+            this->x_.velocity = (1.0f - blend) * x_op.velocity + blend * v_finite_difference;
         } else {
             this->x_.velocity = x_op.velocity;
         }
