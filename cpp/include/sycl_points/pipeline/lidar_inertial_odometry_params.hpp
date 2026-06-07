@@ -43,6 +43,27 @@ struct Parameters : public lidar_odometry::Parameters {
         /// Because this velocity seeds the next window's IMU prediction, a lower
         /// blend reduces position-difference noise leaking into the prior.
         float velocity_fd_blend = 1.0f;
+
+        /// Bias-estimation safeguards for the weakly-observable IMU bias states.
+        struct BiasEstimation {
+            /// Skip accel/gyro bias updates when the IMU excitation within the
+            /// window is below the thresholds below.  Biases are weakly observable
+            /// without motion, so updating them while near-stationary mostly
+            /// absorbs measurement noise and drives slow drift.  Default off to
+            /// preserve behavior; enable for long stationary periods.
+            bool freeze_on_low_excitation = false;
+            /// Window gyro variation (max |ω − mean ω|) above which the gyro is
+            /// considered excited [rad/s].
+            float gyro_excitation_threshold = 0.03f;
+            /// Window specific-force variation (max ||a| − mean |a||) above which
+            /// the accelerometer is considered excited [m/s²] (raw sensor units).
+            float accel_excitation_threshold = 0.3f;
+            /// Hard clamp on the estimated bias L2 norm; ≤0 disables.  Bounds
+            /// runaway from unobservable directions or numerical drift.
+            float max_accel_bias = 0.0f;  ///< [m/s²]
+            float max_gyro_bias = 0.0f;   ///< [rad/s]
+        };
+        BiasEstimation bias_estimation;
     };
 
     LIO lio;

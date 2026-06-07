@@ -354,6 +354,43 @@ private:
                delta.segment<3>(imu::State::kIdxPos).norm() < params_.lio.criteria.translation;
     }
 
+    /// @brief Decide whether the IMU bias states are observable in this window.
+    ///
+    /// Returns true (always update biases) unless freeze_on_low_excitation is set,
+    /// in which case the window must show gyro or specific-force variation above the
+    /// configured thresholds.  Near-stationary windows return false so the caller can
+    /// hold the biases fixed instead of letting them absorb measurement noise.
+    bool imu_bias_observable() const {
+        const auto& be = this->params_.lio.bias_estimation;
+        if (!be.freeze_on_low_excitation) return true;
+        if (this->imu_batch_.size() < 2) return false;
+
+        Eigen::Vector3f gyro_mean = Eigen::Vector3f::Zero();
+        float accel_norm_mean = 0.0f;
+        for (const auto& m : this->imu_batch_) {
+            gyro_mean += m.gyro;
+            accel_norm_mean += m.accel.norm();
+        }
+        const float n = static_cast<float>(this->imu_batch_.size());
+        gyro_mean /= n;
+        accel_norm_mean /= n;
+
+        float gyro_dev = 0.0f;
+        float accel_dev = 0.0f;
+        for (const auto& m : this->imu_batch_) {
+            gyro_dev = std::max(gyro_dev, (m.gyro - gyro_mean).norm());
+            accel_dev = std::max(accel_dev, std::abs(m.accel.norm() - accel_norm_mean));
+        }
+        return gyro_dev > be.gyro_excitation_threshold || accel_dev > be.accel_excitation_threshold;
+    }
+
+    /// @brief Clamp a bias vector to a maximum L2 norm (no-op when max_norm <= 0).
+    static void clamp_bias_norm(Eigen::Vector3f& bias, float max_norm) {
+        if (max_norm <= 0.0f) return;
+        const float norm = bias.norm();
+        if (norm > max_norm) bias *= (max_norm / norm);
+    }
+
     void reset_imu_preintegration() {
         const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
         const Eigen::Matrix3f R_world_imu = x_.rotation * T_i2l.rotation();
@@ -441,6 +478,11 @@ private:
         const TransformMatrix T_initial = state_to_pose(x_pred).matrix();
         const auto& robust = this->params_.registration.pipeline.robust;
 
+        // When excitation is too low the bias states are unobservable; hold them
+        // fixed for this frame so the optimizer does not absorb noise into them.
+        const bool update_bias = imu_bias_observable();
+
+
         algorithms::registration::LinearizedResult last_icp;
         last_icp.inlier = 0;
         size_t actual_iterations = 0;
@@ -485,6 +527,11 @@ private:
                                              &this->P_post_))
                 break;
 
+            if (!update_bias) {
+                delta.segment<3>(imu::State::kIdxAccBias).setZero();
+                delta.segment<3>(imu::State::kIdxGyrBias).setZero();
+            }
+
             x_op = algorithms::lio::retract(x_op, delta);
 
             if (is_lio_converged(delta)) break;
@@ -497,6 +544,8 @@ private:
         this->x_.rotation = x_op.rotation;
         this->x_.accel_bias = x_op.accel_bias;
         this->x_.gyro_bias = x_op.gyro_bias;
+        clamp_bias_norm(this->x_.accel_bias, this->params_.lio.bias_estimation.max_accel_bias);
+        clamp_bias_norm(this->x_.gyro_bias, this->params_.lio.bias_estimation.max_gyro_bias);
         if (this->dt_ > 0.0f) {
             const Eigen::Vector3f v_fd = (this->x_.position - prev_position) / this->dt_;
             const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.gyro_bias, x_op.accel_bias});

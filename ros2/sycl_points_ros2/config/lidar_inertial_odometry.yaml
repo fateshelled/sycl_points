@@ -183,6 +183,15 @@ lidar_inertial_odometry_node:
     # 0.0 trusts the smooth IEKF filter velocity (less position-noise leakage into
     # the next window's IMU prior); 1.0 is the legacy pure finite-difference estimate.
     lio/velocity_fd_blend: 0.5
+    # Bias-estimation safeguards for the weakly-observable IMU bias states.
+    # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
+    #   little motion (biases are unobservable there and would absorb noise).
+    lio/bias_estimation/freeze_on_low_excitation: true
+    lio/bias_estimation/gyro_excitation_threshold: 0.03   # [rad/s] max |w - mean w| in window
+    lio/bias_estimation/accel_excitation_threshold: 0.3   # [m/s^2] max ||a| - mean |a|| in window
+    # Hard clamp on estimated bias L2 norm (0 = disabled). Bounds runaway/drift.
+    lio/bias_estimation/max_accel_bias: 1.0   # [m/s^2]
+    lio/bias_estimation/max_gyro_bias: 0.2    # [rad/s]
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/solver_iterations is unused; the loop count is lio/total_iterations.
