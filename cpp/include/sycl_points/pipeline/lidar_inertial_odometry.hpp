@@ -533,6 +533,14 @@ private:
                                              &this->P_post_))
                 break;
 
+            // First-order bias freeze: we solve the full coupled system and then drop the
+            // bias increment. Because H couples pose/velocity with the bias states, the
+            // retained pose/velocity step technically assumes the bias also moves, so this
+            // is a slight inconsistency. The iterative re-linearization absorbs most of it
+            // and the approximation is empirically stable (PR #177 eval). A fully consistent
+            // freeze would, when !update_bias, zero the bias cross-terms / set the bias block
+            // of lio.H to identity and lio.b's bias segment to zero BEFORE solve_ldlt, and
+            // restore P_post_'s bias block from P_pred (zero cross-covariance) after it.
             if (!update_bias) {
                 delta.segment<3>(imu::State::kIdxAccBias).setZero();
                 delta.segment<3>(imu::State::kIdxGyrBias).setZero();
