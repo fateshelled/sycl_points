@@ -8,6 +8,7 @@
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/registration/anderson_acceleration.hpp"
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
+#include "sycl_points/algorithms/registration/dogleg_step.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/algorithms/registration/photometric_factor.hpp"
@@ -1055,63 +1056,11 @@ private:
 
         trust_region_radius = clamp_radius(trust_region_radius);
 
-        Eigen::Vector<float, 6> p_gn = Eigen::Vector<float, 6>::Zero();
-        float norm_p_gn = 0.0f;
-        bool has_valid_gn = false;
-        const bool success = this->solve_linear_system(H, g, p_gn);
-        if (success) {
-            norm_p_gn = p_gn.norm();
-            has_valid_gn = std::isfinite(norm_p_gn);
-        }
-
-        const float g_norm_sq = g.squaredNorm();
-        const Eigen::Vector<float, 6> Hg = H * g;
-        const float g_H_g = g.dot(Hg);
-        Eigen::Vector<float, 6> p_sd = -g;
-        if (g_H_g > std::numeric_limits<float>::epsilon()) {
-            const float alpha = g_norm_sq / g_H_g;
-            if (std::isfinite(alpha)) {
-                p_sd = -alpha * g;
-            }
-        }
-        const float norm_p_sd = p_sd.norm();
-
-        Eigen::Vector<float, 6> p_dl = Eigen::Vector<float, 6>::Zero();
-        float step_norm = 0.0f;
-        if (has_valid_gn && norm_p_gn <= trust_region_radius) {
-            p_dl = p_gn;
-            step_norm = norm_p_gn;
-        } else if (norm_p_sd >= trust_region_radius) {
-            if (norm_p_sd > std::numeric_limits<float>::epsilon()) {
-                p_dl = (trust_region_radius / norm_p_sd) * p_sd;
-            }
-            step_norm = trust_region_radius;
-        } else if (has_valid_gn) {
-            const Eigen::Vector<float, 6> diff = p_gn - p_sd;
-            const float a = diff.squaredNorm();
-            const float b = 2.0f * p_sd.dot(diff);
-            const float c = p_sd.squaredNorm() - trust_region_radius * trust_region_radius;
-            float discriminant = b * b - 4.0f * a * c;
-            discriminant = std::max(discriminant, 0.0f);
-            float tau = 0.0f;
-            if (a > std::numeric_limits<float>::epsilon()) {
-                tau = (-b + std::sqrt(discriminant)) / (2.0f * a);
-            }
-            tau = std::clamp(tau, 0.0f, 1.0f);
-            p_dl = p_sd + tau * diff;
-            step_norm = p_dl.norm();
-        } else {
-            p_dl = p_sd;
-            if (norm_p_sd > trust_region_radius && norm_p_sd > std::numeric_limits<float>::epsilon()) {
-                const float scale = trust_region_radius / norm_p_sd;
-                p_dl *= scale;
-                step_norm = trust_region_radius;
-            } else {
-                step_norm = norm_p_sd;
-            }
-        }
-
-        const float predicted_reduction = -(g.dot(p_dl) + 0.5f * p_dl.dot(H * p_dl));
+        // Step geometry is shared with the 15-DOF LIO solver (dogleg_step.hpp).
+        const DoglegStep<6> dl = compute_dogleg_step<6>(H, g, trust_region_radius);
+        const Eigen::Vector<float, 6>& p_dl = dl.p;
+        const float step_norm = dl.step_norm;
+        const float predicted_reduction = dl.predicted_reduction;
 
         if (predicted_reduction <= 0.0f) {
             trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
