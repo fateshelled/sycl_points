@@ -360,26 +360,32 @@ private:
     /// in which case the window must show gyro or specific-force variation above the
     /// configured thresholds.  Near-stationary windows return false so the caller can
     /// hold the biases fixed instead of letting them absorb measurement noise.
+    ///
+    /// Both deviations are measured on the full 3-D vector, not its magnitude.  Using
+    /// the accel magnitude alone would miss a constant-rate turn: the gravity vector
+    /// rotates in the body frame so the accel components vary while |a| stays ≈ g, and
+    /// the gyro is constant so its deviation is ~0 — the window would be wrongly judged
+    /// unobservable and freeze the gyro bias exactly when rotation makes it observable.
     bool imu_bias_observable() const {
         const auto& be = this->params_.lio.bias_estimation;
         if (!be.freeze_on_low_excitation) return true;
         if (this->imu_batch_.size() < 2) return false;
 
         Eigen::Vector3f gyro_mean = Eigen::Vector3f::Zero();
-        float accel_norm_mean = 0.0f;
+        Eigen::Vector3f accel_mean = Eigen::Vector3f::Zero();
         for (const auto& m : this->imu_batch_) {
             gyro_mean += m.gyro;
-            accel_norm_mean += m.accel.norm();
+            accel_mean += m.accel;
         }
         const float n = static_cast<float>(this->imu_batch_.size());
         gyro_mean /= n;
-        accel_norm_mean /= n;
+        accel_mean /= n;
 
         float gyro_dev = 0.0f;
         float accel_dev = 0.0f;
         for (const auto& m : this->imu_batch_) {
             gyro_dev = std::max(gyro_dev, (m.gyro - gyro_mean).norm());
-            accel_dev = std::max(accel_dev, std::abs(m.accel.norm() - accel_norm_mean));
+            accel_dev = std::max(accel_dev, (m.accel - accel_mean).norm());
         }
         return gyro_dev > be.gyro_excitation_threshold || accel_dev > be.accel_excitation_threshold;
     }
