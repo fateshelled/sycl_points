@@ -33,6 +33,46 @@ struct Parameters : public lidar_odometry::Parameters {
         /// Choose so that 1/icp_rotation_sigma² ≲ H_icp[rot,rot]
         /// (≈ 1e4–1e5 for outdoor LiDAR with ~1000 inliers → σ ≈ 0.003–0.01 rad).
         float icp_rotation_sigma = 0.01f;
+
+        /// Blend factor in [0,1] for the post-optimization world-frame velocity.
+        /// The final velocity is a convex combination of the IEKF filter velocity
+        /// (x_op.velocity, smooth and IMU-consistent) and a finite-difference
+        /// velocity (position delta + ½·a·dt, responsive but noisy):
+        ///   v = (1 − blend)·v_filter + blend·v_finite_difference
+        /// 0.0 trusts the filter; 1.0 reproduces the legacy pure-FD behavior.
+        /// Because this velocity seeds the next window's IMU prediction, a lower
+        /// blend reduces position-difference noise leaking into the prior.
+        float velocity_fd_blend = 1.0f;
+
+        /// Bias-estimation safeguards for the weakly-observable IMU bias states.
+        struct BiasEstimation {
+            /// Skip accel/gyro bias updates when the IMU excitation within the
+            /// window is below the thresholds below.  Biases are weakly observable
+            /// without motion, so updating them while near-stationary mostly
+            /// absorbs measurement noise and drives slow drift.  Default off to
+            /// preserve behavior; enable for long stationary periods.
+            bool freeze_on_low_excitation = false;
+            /// Window gyro variation (max |ω − mean ω|) above which the gyro is
+            /// considered excited [rad/s].
+            float gyro_excitation_threshold = 0.03f;
+            /// Window specific-force variation (max ||a| − mean |a||) above which
+            /// the accelerometer is considered excited [m/s²] (raw sensor units).
+            float accel_excitation_threshold = 0.3f;
+            /// Hard clamp on the estimated bias L2 norm; ≤0 disables.  Bounds
+            /// runaway from unobservable directions or numerical drift.
+            float max_accel_bias = 0.0f;  ///< [m/s²]
+            float max_gyro_bias = 0.0f;   ///< [rad/s]
+        };
+        BiasEstimation bias_estimation;
+
+        /// Keep the ICP degenerate regularization (registration.degenerate_reg)
+        /// active inside the LIO loop.  In LIO the IMU prior already constrains
+        /// poorly-observed (degenerate) pose directions toward the IMU prediction,
+        /// so the ICP-side Tikhonov term double-counts along the same directions and
+        /// can over-stiffen the solution.  Set false to disable it in the LIO
+        /// registration and let the IMU prior handle degeneracy alone.  The C++
+        /// default (true) preserves the previous behavior.
+        bool use_icp_degenerate_regularization = true;
     };
 
     LIO lio;

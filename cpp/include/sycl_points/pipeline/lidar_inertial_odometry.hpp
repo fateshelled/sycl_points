@@ -354,6 +354,49 @@ private:
                delta.segment<3>(imu::State::kIdxPos).norm() < params_.lio.criteria.translation;
     }
 
+    /// @brief Decide whether the IMU bias states are observable in this window.
+    ///
+    /// Returns true (always update biases) unless freeze_on_low_excitation is set,
+    /// in which case the window must show gyro or specific-force variation above the
+    /// configured thresholds.  Near-stationary windows return false so the caller can
+    /// hold the biases fixed instead of letting them absorb measurement noise.
+    ///
+    /// Both deviations are measured on the full 3-D vector, not its magnitude.  Using
+    /// the accel magnitude alone would miss a constant-rate turn: the gravity vector
+    /// rotates in the body frame so the accel components vary while |a| stays ≈ g, and
+    /// the gyro is constant so its deviation is ~0 — the window would be wrongly judged
+    /// unobservable and freeze the gyro bias exactly when rotation makes it observable.
+    bool imu_bias_observable() const {
+        const auto& be = this->params_.lio.bias_estimation;
+        if (!be.freeze_on_low_excitation) return true;
+        if (this->imu_batch_.size() < 2) return false;
+
+        Eigen::Vector3f gyro_mean = Eigen::Vector3f::Zero();
+        Eigen::Vector3f accel_mean = Eigen::Vector3f::Zero();
+        for (const auto& m : this->imu_batch_) {
+            gyro_mean += m.gyro;
+            accel_mean += m.accel;
+        }
+        const float n = static_cast<float>(this->imu_batch_.size());
+        gyro_mean /= n;
+        accel_mean /= n;
+
+        float gyro_dev = 0.0f;
+        float accel_dev = 0.0f;
+        for (const auto& m : this->imu_batch_) {
+            gyro_dev = std::max(gyro_dev, (m.gyro - gyro_mean).norm());
+            accel_dev = std::max(accel_dev, (m.accel - accel_mean).norm());
+        }
+        return gyro_dev > be.gyro_excitation_threshold || accel_dev > be.accel_excitation_threshold;
+    }
+
+    /// @brief Clamp a bias vector to a maximum L2 norm (no-op when max_norm <= 0).
+    static void clamp_bias_norm(Eigen::Vector3f& bias, float max_norm) {
+        if (max_norm <= 0.0f) return;
+        const float norm = bias.norm();
+        if (norm > max_norm) bias *= (max_norm / norm);
+    }
+
     void reset_imu_preintegration() {
         const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
         const Eigen::Matrix3f R_world_imu = x_.rotation * T_i2l.rotation();
@@ -441,6 +484,11 @@ private:
         const TransformMatrix T_initial = state_to_pose(x_pred).matrix();
         const auto& robust = this->params_.registration.pipeline.robust;
 
+        // When excitation is too low the bias states are unobservable; hold them
+        // fixed for this frame so the optimizer does not absorb noise into them.
+        const bool update_bias = imu_bias_observable();
+
+
         algorithms::registration::LinearizedResult last_icp;
         last_icp.inlier = 0;
         size_t actual_iterations = 0;
@@ -485,6 +533,19 @@ private:
                                              &this->P_post_))
                 break;
 
+            // First-order bias freeze: we solve the full coupled system and then drop the
+            // bias increment. Because H couples pose/velocity with the bias states, the
+            // retained pose/velocity step technically assumes the bias also moves, so this
+            // is a slight inconsistency. The iterative re-linearization absorbs most of it
+            // and the approximation is empirically stable (PR #177 eval). A fully consistent
+            // freeze would, when !update_bias, zero the bias cross-terms / set the bias block
+            // of lio.H to identity and lio.b's bias segment to zero BEFORE solve_ldlt, and
+            // restore P_post_'s bias block from P_pred (zero cross-covariance) after it.
+            if (!update_bias) {
+                delta.segment<3>(imu::State::kIdxAccBias).setZero();
+                delta.segment<3>(imu::State::kIdxGyrBias).setZero();
+            }
+
             x_op = algorithms::lio::retract(x_op, delta);
 
             if (is_lio_converged(delta)) break;
@@ -497,17 +558,24 @@ private:
         this->x_.rotation = x_op.rotation;
         this->x_.accel_bias = x_op.accel_bias;
         this->x_.gyro_bias = x_op.gyro_bias;
+        clamp_bias_norm(this->x_.accel_bias, this->params_.lio.bias_estimation.max_accel_bias);
+        clamp_bias_norm(this->x_.gyro_bias, this->params_.lio.bias_estimation.max_gyro_bias);
         if (this->dt_ > 0.0f) {
             const Eigen::Vector3f v_fd = (this->x_.position - prev_position) / this->dt_;
             const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.gyro_bias, x_op.accel_bias});
+            Eigen::Vector3f v_finite_difference;
             if (c.dt_total > 1e-6) {
                 const Eigen::Matrix3f R_world_imu_prev = prev_rotation * this->params_.imu.T_imu_to_lidar.rotation();
                 const Eigen::Vector3f a_world = this->params_.imu.preintegration.gravity +
                                                 R_world_imu_prev * c.Delta_v / static_cast<float>(c.dt_total);
-                this->x_.velocity = v_fd + 0.5f * a_world * this->dt_;
+                v_finite_difference = v_fd + 0.5f * a_world * this->dt_;
             } else {
-                this->x_.velocity = v_fd;
+                v_finite_difference = v_fd;
             }
+            // Blend the IEKF filter velocity with the finite-difference velocity.
+            // blend == 1.0 reproduces the legacy pure-FD estimate.
+            const float blend = std::clamp(this->params_.lio.velocity_fd_blend, 0.0f, 1.0f);
+            this->x_.velocity = (1.0f - blend) * x_op.velocity + blend * v_finite_difference;
         } else {
             this->x_.velocity = x_op.velocity;
         }
@@ -557,6 +625,13 @@ private:
         {
             auto& reg_params = this->params_.registration.pipeline;
             reg_params.velocity_update.enable = false;  // LIO controls its own update loop
+            // In LIO the IMU prior already constrains degenerate pose directions toward
+            // the prediction; the ICP degenerate regularization would double-count along
+            // the same directions, so disable it unless explicitly requested.
+            if (!this->params_.lio.use_icp_degenerate_regularization) {
+                reg_params.registration.degenerate_reg.type =
+                    algorithms::registration::DegenerateRegularizationType::none;
+            }
             this->registration_ =
                 std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, reg_params.registration);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
