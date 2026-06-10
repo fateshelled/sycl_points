@@ -493,6 +493,11 @@ private:
         last_icp.inlier = 0;
         size_t actual_iterations = 0;
 
+        // Undamped normal-equation Hessian of the last solved iteration; used to
+        // recover the posterior covariance without the damping term.
+        Eigen::Matrix<float, 15, 15> H_undamped = Eigen::Matrix<float, 15, 15>::Zero();
+        bool has_H_undamped = false;
+
         for (size_t iter = 0; iter < this->params_.lio.total_iterations; ++iter) {
             ++actual_iterations;
 
@@ -529,9 +534,10 @@ private:
 
             Eigen::Matrix<float, 15, 1> delta;
             const float lambda = this->params_.registration.pipeline.registration.gn.lambda;
-            if (!algorithms::lio::solve_ldlt(lio.H + lambda * Eigen::Matrix<float, 15, 15>::Identity(), lio.b, delta,
-                                             &this->P_post_))
+            if (!algorithms::lio::solve_ldlt(lio.H + lambda * Eigen::Matrix<float, 15, 15>::Identity(), lio.b, delta))
                 break;
+            H_undamped = lio.H;
+            has_H_undamped = true;
 
             // First-order bias freeze: we solve the full coupled system and then drop the
             // bias increment. Because H couples pose/velocity with the bias states, the
@@ -549,6 +555,19 @@ private:
             x_op = algorithms::lio::retract(x_op, delta);
 
             if (is_lio_converged(delta)) break;
+        }
+
+        // Posterior covariance from the undamped Hessian.  delta is solved with the
+        // damping term λI for step control, but including λI in the inverse would
+        // understate P_post_ and over-tighten the next window's IMU prior.
+        if (has_H_undamped) {
+            Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(H_undamped);
+            if (ldlt.info() == Eigen::Success && ldlt.vectorD().minCoeff() > 0.0f) {
+                this->P_post_.setIdentity();
+                ldlt.solveInPlace(this->P_post_);  // P_post = H⁻¹
+            }
+            // When H is not positive definite, keep the previous posterior instead of
+            // collapsing it to zero (zero would mean perfect confidence at the reset).
         }
 
         // ---- Update state and reset IMU preintegration ----
