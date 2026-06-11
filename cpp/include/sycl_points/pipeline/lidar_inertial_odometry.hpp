@@ -628,11 +628,13 @@ private:
             Eigen::Matrix<float, 15, 1> delta = Eigen::Matrix<float, 15, 1>::Zero();
             // step_accepted: a usable increment was produced and should be retracted.
             //   GN  — true unless the damped solve fails (then we stop: cannot progress).
-            //   LM  — true when an inner trial lowered the combined cost.
+            //   LM  — true when an inner trial lowered the combined cost; if no trial
+            //         does (lambda already at max_lambda), we stop: re-linearising at
+            //         the same x_op would reproduce the same H/b and fail again.
             //   DL  — true when the gain ratio cleared eta1.
-            // A rejected LM/dogleg step leaves x_op untouched and re-linearises next
-            // iteration with the adjusted lambda / trust-region radius, so it must NOT
-            // run the convergence test (delta == 0 would otherwise falsely converge).
+            // A rejected dogleg step leaves x_op untouched and re-linearises next
+            // iteration with the adjusted trust-region radius, so it must NOT run the
+            // convergence test (delta == 0 would otherwise falsely converge).
             bool step_accepted = false;
             bool stop = false;
 
@@ -668,6 +670,11 @@ private:
                         }
                         lm_lambda =
                             std::clamp(lm_lambda * lm_params.lambda_factor, lm_params.min_lambda, lm_params.max_lambda);
+                    }
+                    if (!step_accepted) {
+                        // lambda is already at max_lambda; re-linearising at the same
+                        // x_op would reproduce the same H/b and fail again.
+                        stop = true;
                     }
                     break;
                 }
@@ -712,8 +719,8 @@ private:
             } else if (stop) {
                 break;
             }
-            // LM / dogleg rejection: x_op unchanged; retry next iteration with the
-            // updated lambda / trust-region radius.
+            // Dogleg rejection: x_op unchanged; retry next iteration with the
+            // updated trust-region radius.
         }
 
         // Posterior covariance from the undamped Hessian.  delta is solved with the
