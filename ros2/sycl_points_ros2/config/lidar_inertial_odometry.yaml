@@ -192,11 +192,6 @@ lidar_inertial_odometry_node:
     # Hard clamp on estimated bias L2 norm (0 = disabled). Bounds runaway/drift.
     lio/bias_estimation/max_accel_bias: 1.0   # [m/s^2]
     lio/bias_estimation/max_gyro_bias: 0.2    # [rad/s]
-    # Keep the ICP degenerate regularization (registration/degenerate_regularization)
-    # active inside the LIO loop. In LIO the IMU prior already constrains degenerate
-    # pose directions toward the prediction, so the ICP-side Tikhonov term double-counts
-    # along the same directions. Set false to let the IMU prior handle degeneracy alone.
-    lio/use_icp_degenerate_regularization: false
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/solver_iterations is unused; the loop count is lio/total_iterations.
@@ -260,7 +255,7 @@ lidar_inertial_odometry_node:
     registration/dogleg/gamma_decrease: 0.80
     registration/dogleg/gamma_increase: 1.25
 
-    registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
+    registration/degenerate_regularization/type: "NONE" # NONE, NL_REG
     registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/nl_reg/base_factor: 0.2

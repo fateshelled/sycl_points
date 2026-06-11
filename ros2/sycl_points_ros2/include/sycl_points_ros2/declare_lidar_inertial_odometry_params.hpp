@@ -42,18 +42,14 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     // Bias-estimation safeguards
     params.lio.bias_estimation.freeze_on_low_excitation = node->declare_parameter<bool>(
         "lio/bias_estimation/freeze_on_low_excitation", params.lio.bias_estimation.freeze_on_low_excitation);
-    params.lio.bias_estimation.gyro_excitation_threshold =
-        static_cast<float>(node->declare_parameter<double>("lio/bias_estimation/gyro_excitation_threshold",
-                                                           params.lio.bias_estimation.gyro_excitation_threshold));
-    params.lio.bias_estimation.accel_excitation_threshold =
-        static_cast<float>(node->declare_parameter<double>("lio/bias_estimation/accel_excitation_threshold",
-                                                           params.lio.bias_estimation.accel_excitation_threshold));
+    params.lio.bias_estimation.gyro_excitation_threshold = static_cast<float>(node->declare_parameter<double>(
+        "lio/bias_estimation/gyro_excitation_threshold", params.lio.bias_estimation.gyro_excitation_threshold));
+    params.lio.bias_estimation.accel_excitation_threshold = static_cast<float>(node->declare_parameter<double>(
+        "lio/bias_estimation/accel_excitation_threshold", params.lio.bias_estimation.accel_excitation_threshold));
     params.lio.bias_estimation.max_accel_bias = static_cast<float>(node->declare_parameter<double>(
         "lio/bias_estimation/max_accel_bias", params.lio.bias_estimation.max_accel_bias));
     params.lio.bias_estimation.max_gyro_bias = static_cast<float>(
         node->declare_parameter<double>("lio/bias_estimation/max_gyro_bias", params.lio.bias_estimation.max_gyro_bias));
-    params.lio.use_icp_degenerate_regularization = node->declare_parameter<bool>(
-        "lio/use_icp_degenerate_regularization", params.lio.use_icp_degenerate_regularization);
     return params;
 }
 
