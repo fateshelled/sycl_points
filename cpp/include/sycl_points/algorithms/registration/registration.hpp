@@ -353,6 +353,34 @@ public:
         return compute_linearized_result(source, target, target_knn, pose, pose, options);
     }
 
+    /// @brief Evaluate the robust ICP error at @p pose using the correspondences cached by
+    ///        the most recent compute_linearized_result() call (frozen neighbours).
+    ///
+    /// Runs only the error parallel-reduction pass — no KNN re-search and no
+    /// linearization — so the correspondences stay fixed at whatever pose the last
+    /// compute_linearized_result() used.  This is the building block for the
+    /// trust-region / line-search step-acceptance tests in the LIO LM and dogleg
+    /// optimisers, which must compare the cost of a trial pose against the
+    /// linearisation point without re-establishing correspondences.
+    ///
+    /// @param source   Source point cloud (must be the same cloud passed to the
+    ///                 preceding compute_linearized_result() call, so the cached
+    ///                 neighbours line up with the source points).
+    /// @param target   Target point cloud (map/submap frame).
+    /// @param pose     Trial pose T_world_sensor (4×4 matrix) to evaluate.
+    /// @param options  Per-call execution overrides (robust scale etc.).
+    /// @return {robust ICP error, inlier count} at @p pose with frozen correspondences.
+    std::tuple<float, uint32_t> compute_error_frozen(const PointCloudShared& source, const PointCloudShared& target,
+                                                     const TransformMatrix& pose,
+                                                     const ExecutionOptions& options = ExecutionOptions()) const {
+        const float robust_scale =
+            options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
+        const float rotation_robust_scale = options.rotation_robust_scale > 0.0f
+                                                ? options.rotation_robust_scale
+                                                : this->params_.rotation_constraint.robust.default_scale;
+        return this->compute_error(source, target, this->neighbors_->at(0), pose, robust_scale, rotation_robust_scale);
+    }
+
 private:
     RegistrationParams params_;
     sycl_utils::DeviceQueue queue_;
