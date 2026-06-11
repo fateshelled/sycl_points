@@ -628,9 +628,9 @@ private:
             Eigen::Matrix<float, 15, 1> delta = Eigen::Matrix<float, 15, 1>::Zero();
             // step_accepted: a usable increment was produced and should be retracted.
             //   GN  — true unless the damped solve fails (then we stop: cannot progress).
-            //   LM  — true when an inner trial lowered the combined cost; if no trial
-            //         does (lambda already at max_lambda), we stop: re-linearising at
-            //         the same x_op would reproduce the same H/b and fail again.
+            //   LM  — true when an inner trial lowered the combined cost; if none does
+            //         within max_inner_iterations, we stop: re-linearising at the same
+            //         x_op would reproduce the same H/b and fail again.
             //   DL  — true when the gain ratio cleared eta1.
             // A rejected dogleg step leaves x_op untouched and re-linearises next
             // iteration with the adjusted trust-region radius, so it must NOT run the
@@ -672,8 +672,9 @@ private:
                             std::clamp(lm_lambda * lm_params.lambda_factor, lm_params.min_lambda, lm_params.max_lambda);
                     }
                     if (!step_accepted) {
-                        // lambda is already at max_lambda; re-linearising at the same
-                        // x_op would reproduce the same H/b and fail again.
+                        // max_inner_iterations exhausted without a cost-reducing step;
+                        // re-linearising at the same x_op would reproduce the same H/b
+                        // and fail again.
                         stop = true;
                     }
                     break;
