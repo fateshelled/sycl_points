@@ -732,9 +732,24 @@ private:
             if (ldlt.info() == Eigen::Success && ldlt.vectorD().minCoeff() > 0.0f) {
                 this->P_post_.setIdentity();
                 ldlt.solveInPlace(this->P_post_);  // P_post = H⁻¹
+            } else {
+                // H_undamped is singular along unobserved directions (e.g. at startup
+                // before any well-conditioned frame, or during a degenerate window).
+                // Keeping the previous P_post_ (Zero() at startup) would mean exactly
+                // zero covariance -- i.e. infinite confidence -- in those directions,
+                // which can later make P_pred singular.  A tiny diagonal regularization
+                // restores invertibility while leaving well-observed directions (large
+                // H entries) essentially unchanged; unobserved directions get a
+                // correspondingly large (low-confidence) P_post entry instead.
+                Eigen::Matrix<float, 15, 15> H_damped = H_undamped;
+                H_damped.diagonal().array() += 1e-4f;
+                Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt_damped(H_damped);
+                if (ldlt_damped.info() == Eigen::Success && ldlt_damped.vectorD().minCoeff() > 0.0f) {
+                    this->P_post_.setIdentity();
+                    ldlt_damped.solveInPlace(this->P_post_);
+                }
+                // If even the damped solve fails, keep the previous P_post_ as a last resort.
             }
-            // When H is not positive definite, keep the previous posterior instead of
-            // collapsing it to zero (zero would mean perfect confidence at the reset).
         }
 
         // ---- Update state and reset IMU preintegration ----
