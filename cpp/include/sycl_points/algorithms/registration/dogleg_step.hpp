@@ -42,7 +42,7 @@ inline DoglegStep<N> compute_dogleg_step(const Eigen::Matrix<float, N, N>& H, co
     {
         Eigen::LDLT<Eigen::Matrix<float, N, N>> ldlt;
         ldlt.compute(H);
-        if (ldlt.info() == Eigen::Success) {
+        if (ldlt.info() == Eigen::Success && ldlt.vectorD().minCoeff() > 0.0f) {
             p_gn = ldlt.solve(-g);
             norm_p_gn = p_gn.norm();
             has_valid_gn = std::isfinite(norm_p_gn);
