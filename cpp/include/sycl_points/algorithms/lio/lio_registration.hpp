@@ -110,22 +110,25 @@ struct LIOLinearizedResult {
 /// @param result        LIO normal equation to accumulate into.
 /// @param icp           ICP linearization from registration::Registration.
 /// @param R_world_lidar Current body-to-world rotation (x_op.rotation).
+/// @param weight        Scalar information weight applied to H/b/error (e.g. the
+///                      reduced chi-squared calibration 1/s² computed by the caller).
 inline void add_icp_factor(LIOLinearizedResult& result, const registration::LinearizedResult& icp,
-                           const Eigen::Matrix3f& R_world_lidar) {
+                           const Eigen::Matrix3f& R_world_lidar, float weight = 1.0f) {
     // Rotation block: δω (ICP body frame) == δφ (LIO body frame) — embed directly
-    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += icp.H.block<3, 3>(0, 0);
-    result.b.segment<3>(imu::State::kIdxRot) += icp.b.segment<3>(0);
+    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += weight * icp.H.block<3, 3>(0, 0);
+    result.b.segment<3>(imu::State::kIdxRot) += weight * icp.b.segment<3>(0);
 
     // Translation block: rotate ICP body-frame δt into LIO world-frame δp
     const Eigen::Matrix3f& R = R_world_lidar;
-    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) += R * icp.H.block<3, 3>(3, 3) * R.transpose();
-    result.b.segment<3>(imu::State::kIdxPos) += R * icp.b.segment<3>(3);
+    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) +=
+        weight * (R * icp.H.block<3, 3>(3, 3) * R.transpose());
+    result.b.segment<3>(imu::State::kIdxPos) += weight * (R * icp.b.segment<3>(3));
 
     // Cross terms: φ remains body-frame, p becomes world-frame
-    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) += R * icp.H.block<3, 3>(3, 0);
-    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) += icp.H.block<3, 3>(0, 3) * R.transpose();
+    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) += weight * (R * icp.H.block<3, 3>(3, 0));
+    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) += weight * (icp.H.block<3, 3>(0, 3) * R.transpose());
 
-    result.error_icp += icp.error;
+    result.error_icp += weight * icp.error;
     result.inlier += icp.inlier;
 }
 

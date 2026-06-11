@@ -488,6 +488,16 @@ private:
         // fixed for this frame so the optimizer does not absorb noise into them.
         const bool update_bias = imu_bias_observable();
 
+        // Per-point residual dimension for the chi-squared DOF estimate:
+        // point-to-plane constrains 1 dimension per correspondence; point-to-point /
+        // GICP / point-to-distribution use 3-D residuals.  GenZ blends both — using
+        // the smaller dimension is the conservative (loosening-only) choice.
+        const auto reg_type = this->params_.registration.pipeline.registration.reg_type;
+        const float icp_residual_dim = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
+                                        reg_type == algorithms::registration::RegType::GENZ)
+                                           ? 1.0f
+                                           : 3.0f;
+
 
         algorithms::registration::LinearizedResult last_icp;
         last_icp.inlier = 0;
@@ -519,8 +529,26 @@ private:
             }
 
             // Combine ICP + IMU into 15×15 normal equations.
+            // Reduced chi-squared calibration of the ICP information (same scheme as
+            // MapPrior::update): the ICP Hessian assumes unit-variance Mahalanobis
+            // residuals, which real data violates.  Calibrate by the actual residual
+            // statistics so a poor fit (map mismatch, degeneracy, sensor noise above
+            // the model) loosens the ICP factor relative to the IMU prior:
+            //   DOF = d·N_inlier − 6        (d = per-point residual dim, 6 = SE(3) params)
+            //   s²  = max(1, 2·error/DOF)   (factor 2 cancels the ½ in the robust error;
+            //                                clamp ≥ 1 so the factor is never tightened)
+            //   w   = 1 / s²
+            // Note: error is evaluated at the current annealed robust scale.  Early
+            // (coarse-scale) iterations see larger error → stronger downweighting →
+            // prediction-driven steps; the calibration relaxes toward w = 1 as the
+            // scale shrinks and the fit converges, which matches the GNC intent.
+            float icp_weight = 1.0f;
+            const float icp_dof = icp_residual_dim * static_cast<float>(last_icp.inlier) - 6.0f;
+            if (icp_dof > 0.0f && std::isfinite(last_icp.error) && last_icp.error >= 0.0f) {
+                icp_weight = 1.0f / std::max(1.0f, 2.0f * last_icp.error / icp_dof);
+            }
             algorithms::lio::LIOLinearizedResult lio;
-            algorithms::lio::add_icp_factor(lio, last_icp, x_op.rotation);
+            algorithms::lio::add_icp_factor(lio, last_icp, x_op.rotation, icp_weight);
             if (imu_valid) {
                 algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
             } else {
