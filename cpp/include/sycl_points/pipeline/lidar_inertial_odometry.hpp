@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <deque>
 #include <map>
@@ -11,6 +12,7 @@
 #include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/lio/lio_registration.hpp"
+#include "sycl_points/algorithms/registration/dogleg_step.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/pipeline/lidar_inertial_odometry_params.hpp"
 #include "sycl_points/pipeline/pointcloud_processing.hpp"
@@ -498,7 +500,6 @@ private:
                                            ? 1.0f
                                            : 3.0f;
 
-
         algorithms::registration::LinearizedResult last_icp;
         last_icp.inlier = 0;
         size_t actual_iterations = 0;
@@ -507,6 +508,21 @@ private:
         // recover the posterior covariance without the damping term.
         Eigen::Matrix<float, 15, 15> H_undamped = Eigen::Matrix<float, 15, 15>::Zero();
         bool has_H_undamped = false;
+
+        // Optimizer selection shared with the LO registration backend.
+        // GN: cheapest — damped solve only (λ escalated when H is ill-conditioned).
+        // LM/DOGLEG: step acceptance on the combined cost (weighted robust ICP error
+        //            with frozen correspondences + IMU prior Mahalanobis cost), at one
+        //            extra device error-evaluation pass per trial step.
+        const auto opt_method = this->params_.registration.pipeline.registration.optimization_method;
+        const auto& gn_params = this->params_.registration.pipeline.registration.gn;
+        const auto& lm_params = this->params_.registration.pipeline.registration.lm;
+        const auto& dl_params = this->params_.registration.pipeline.registration.dogleg;
+        float lm_lambda = lm_params.init_lambda;
+        float trust_region_radius = dl_params.initial_trust_region_radius;
+        const auto clamp_radius = [&](float radius) {
+            return std::clamp(radius, dl_params.min_trust_region_radius, dl_params.max_trust_region_radius);
+        };
 
         for (size_t iter = 0; iter < this->params_.lio.total_iterations; ++iter) {
             ++actual_iterations;
@@ -560,10 +576,25 @@ private:
                     kReg * Eigen::Matrix3f::Identity();
             }
 
-            Eigen::Matrix<float, 15, 1> delta;
-            const float lambda = this->params_.registration.pipeline.registration.gn.lambda;
-            if (!algorithms::lio::solve_ldlt(lio.H + lambda * Eigen::Matrix<float, 15, 15>::Identity(), lio.b, delta))
-                break;
+            Eigen::Matrix<float, 15, 1> delta = Eigen::Matrix<float, 15, 1>::Zero();
+
+            switch (opt_method) {
+                case algorithms::registration::OptimizationMethod::GAUSS_NEWTON: {
+                    const float lambda = gn_params.lambda;
+                    if (!algorithms::lio::solve_ldlt(lio.H + lambda * Eigen::Matrix<float, 15, 15>::Identity(), lio.b,
+                                                     delta))
+                        break;
+                    break;
+                }
+                case algorithms::registration::OptimizationMethod::LEVENBERG_MARQUARDT: {
+                    // TODO
+                    break;
+                }
+                case algorithms::registration::OptimizationMethod::POWELL_DOGLEG: {
+                    // TODO
+                    break;
+                }
+            }
             H_undamped = lio.H;
             has_H_undamped = true;
 
