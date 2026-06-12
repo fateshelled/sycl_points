@@ -64,15 +64,6 @@ struct Parameters : public lidar_odometry::Parameters {
             float max_gyro_bias = 0.0f;   ///< [rad/s]
         };
         BiasEstimation bias_estimation;
-
-        /// Keep the ICP degenerate regularization (registration.degenerate_reg)
-        /// active inside the LIO loop.  In LIO the IMU prior already constrains
-        /// poorly-observed (degenerate) pose directions toward the IMU prediction,
-        /// so the ICP-side Tikhonov term double-counts along the same directions and
-        /// can over-stiffen the solution.  Set false to disable it in the LIO
-        /// registration and let the IMU prior handle degeneracy alone.  The C++
-        /// default (true) preserves the previous behavior.
-        bool use_icp_degenerate_regularization = true;
     };
 
     LIO lio;

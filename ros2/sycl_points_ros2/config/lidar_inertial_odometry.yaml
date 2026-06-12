@@ -192,11 +192,6 @@ lidar_inertial_odometry_node:
     # Hard clamp on estimated bias L2 norm (0 = disabled). Bounds runaway/drift.
     lio/bias_estimation/max_accel_bias: 1.0   # [m/s^2]
     lio/bias_estimation/max_gyro_bias: 0.2    # [rad/s]
-    # Keep the ICP degenerate regularization (registration/degenerate_regularization)
-    # active inside the LIO loop. In LIO the IMU prior already constrains degenerate
-    # pose directions toward the prediction, so the ICP-side Tikhonov term double-counts
-    # along the same directions. Set false to let the IMU prior handle degeneracy alone.
-    lio/use_icp_degenerate_regularization: false
 
     # ICP registration backend (used for linearization inside the LIO loop)
     # registration/solver_iterations is unused; the loop count is lio/total_iterations.
@@ -241,9 +236,26 @@ lidar_inertial_odometry_node:
     registration/source_noise_model/max_eigenvalue: 1.0     # upper cap; clamping here drives source covariance toward isotropy (target-driven point-to-plane behavior)
     registration/source_noise_model/cos_min: 0.1            # clamp on |cos(theta)| to avoid tan() divergence near grazing rays
 
+    # Optimizer for the LIO 15-DOF update loop (mirrors the LO solver options).
+    # GN: damped solve only (fastest).
+    # LM / DOGLEG: step acceptance on the combined ICP+IMU cost, costing one extra
+    #   error-evaluation pass per trial step.
+    registration/optimization_method: GN  # GN, LM, DOGLEG
     registration/gn/lambda: 1.0e-3
+    registration/lm/max_inner_iterations: 5
+    registration/lm/lambda_factor: 2.0
+    registration/lm/init_lambda: 1.0
+    registration/lm/max_lambda: 1.0e+3
+    registration/lm/min_lambda: 1.0e-3
+    registration/dogleg/initial_trust_region_radius: 2.0
+    registration/dogleg/max_trust_region_radius: 10.0
+    registration/dogleg/min_trust_region_radius: 1.0e-3
+    registration/dogleg/eta1: 0.25
+    registration/dogleg/eta2: 0.75
+    registration/dogleg/gamma_decrease: 0.80
+    registration/dogleg/gamma_increase: 1.25
 
-    registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
+    registration/degenerate_regularization/type: "NONE" # NONE, NL_REG
     registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/nl_reg/base_factor: 0.2
