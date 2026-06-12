@@ -747,8 +747,13 @@ private:
                 if (ldlt_damped.info() == Eigen::Success && ldlt_damped.vectorD().minCoeff() > 0.0f) {
                     this->P_post_.setIdentity();
                     ldlt_damped.solveInPlace(this->P_post_);
+                } else {
+                    // H_undamped likely contains NaN/Inf from upstream (preintegration
+                    // or degenerate point matching); keep the previous P_post_.
+                    std::cerr << "[LidarInertialOdometry] WARNING: damped posterior solve failed; "
+                                 "keeping previous P_post_."
+                              << std::endl;
                 }
-                // If even the damped solve fails, keep the previous P_post_ as a last resort.
             }
         }
 
