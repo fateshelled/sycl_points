@@ -297,7 +297,7 @@ private:
     /// preprocessed_pc_ (when sampling was skipped).  submapping() must add this same
     /// cloud to the map; using registration_input_pc_ unconditionally would feed a
     /// stale/empty cloud whenever sampling was skipped.
-    const PointCloudShared* registration_source_pc_ = nullptr;
+    PointCloudShared::ConstPtr registration_source_pc_ = nullptr;
     bool is_first_frame_ = true;
     imu::InitialAlignmentEstimator::Ptr alignment_estimator_ = nullptr;
     pointcloud_processing::ProcessingContext processing_ctx_;
@@ -483,11 +483,11 @@ private:
         // map.  When sampling is skipped this is preprocessed_pc_, not the (stale)
         // registration_input_pc_.
         const auto& rs = this->params_.registration.pipeline.random_sampling;
-        const PointCloudShared* source =
+        PointCloudShared::ConstPtr source =
             (rs.enable && this->preprocessed_pc_->size() > rs.num)
                 ? (this->pc_processor_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_, rs.num),
-                   this->registration_input_pc_.get())
-                : this->preprocessed_pc_.get();
+                   this->registration_input_pc_)
+                : this->preprocessed_pc_;
         this->registration_source_pc_ = source;
 
         // ---- Gauss-Newton loop ----
@@ -938,8 +938,8 @@ private:
         // Add the same cloud that was used as the ICP source.  This is
         // registration_input_pc_ when random sampling ran, or preprocessed_pc_ when it
         // was skipped; registration_source_pc_ was set by lio_registration().
-        const PointCloudShared* reg_pc_ptr =
-            this->registration_source_pc_ != nullptr ? this->registration_source_pc_ : this->registration_input_pc_.get();
+        PointCloudShared::ConstPtr reg_pc_ptr =
+            this->registration_source_pc_ != nullptr ? this->registration_source_pc_ : this->registration_input_pc_;
         bool computed_icp_weights = false;
         const size_t total_samples = this->params_.submap.point_random_sampling_num;
         if (reg_pc_ptr->size() > total_samples) {
