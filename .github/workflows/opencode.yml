@@ -34,3 +34,4 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         with:
           model: google/gemini-3.1-flash-lite
+          share: false
