@@ -47,3 +47,5 @@ CLAUDE.md
 *.pyc
 .gemini-session-id
 .agy-conversation-id
+
+.env
