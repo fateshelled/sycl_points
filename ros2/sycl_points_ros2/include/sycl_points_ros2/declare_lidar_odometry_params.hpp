@@ -394,6 +394,25 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         }
     }
 
+    // Range-bias self-calibration (LiDAR footprint compensation; sensor-independent)
+    {
+        auto& rb = params.range_bias;
+        rb.enable = node->declare_parameter<bool>("range_bias/enable", rb.enable);
+        rb.learning_rate = static_cast<float>(node->declare_parameter<double>("range_bias/learning_rate", rb.learning_rate));
+        rb.max_abs_k = static_cast<float>(node->declare_parameter<double>("range_bias/max_abs_k", rb.max_abs_k));
+        rb.max_step = static_cast<float>(node->declare_parameter<double>("range_bias/max_step", rb.max_step));
+        rb.cos_min = static_cast<float>(node->declare_parameter<double>("range_bias/cos_min", rb.cos_min));
+        rb.max_correction =
+            static_cast<float>(node->declare_parameter<double>("range_bias/max_correction", rb.max_correction));
+        rb.residual_robust_scale = static_cast<float>(
+            node->declare_parameter<double>("range_bias/residual_robust_scale", rb.residual_robust_scale));
+        rb.min_inlier =
+            static_cast<uint32_t>(node->declare_parameter<int64_t>("range_bias/min_inlier", rb.min_inlier));
+        rb.min_sxx = static_cast<float>(node->declare_parameter<double>("range_bias/min_sxx", rb.min_sxx));
+        rb.min_condition =
+            static_cast<float>(node->declare_parameter<double>("range_bias/min_condition", rb.min_condition));
+    }
+
     // IMU
     {
         params.imu.enable = node->declare_parameter<bool>("imu/enable", params.imu.enable);

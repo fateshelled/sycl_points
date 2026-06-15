@@ -229,6 +229,24 @@ lidar_odometry_node:
     registration/source_noise_model/max_eigenvalue: 1.0     # upper cap; clamping here drives source covariance toward isotropy (target-driven point-to-plane behavior)
     registration/source_noise_model/cos_min: 0.1            # clamp on |cos(theta)| to avoid tan() divergence near grazing rays
 
+    # LiDAR footprint range-bias self-calibration (sensor-independent).
+    # Compensates the systematic range error from the elliptical laser footprint at far range /
+    # grazing incidence by shifting each point along its beam by dr = k * range * tan(incidence).
+    # The dimensionless coefficient k is learned online from the point-to-plane residuals, so no
+    # per-sensor magnitude is configured. Prefer this over the source_noise_model variance inflation
+    # above (keep that disabled: sigma_range = sigma_grazing = 0, i.e. covariance reg = {1e-3, 1, 1}),
+    # because bias correction removes the drift without discarding constraints in degenerate scenes.
+    range_bias/enable: false
+    range_bias/learning_rate: 0.5          # damping on each fixed-point step (0, 1]
+    range_bias/max_abs_k: 0.05             # clamp on |k| (dimensionless)
+    range_bias/max_step: 0.005             # clamp on per-frame |delta k| (rate limit)
+    range_bias/cos_min: 0.1                # clamp on |cos(incidence)| to bound tan()
+    range_bias/max_correction: 0.5         # [m] clamp on per-point range shift
+    range_bias/residual_robust_scale: 0.3  # [m] Geman-McClure scale for residual outlier rejection
+    range_bias/min_inlier: 200             # gate: min inlier correspondences to update k
+    range_bias/min_sxx: 1.0                # gate: min regressor energy (observability)
+    range_bias/min_condition: 1.0          # gate: min (Hessian eigenvalue / inlier) for scene conditioning
+
     # Anderson Acceleration
     registration/anderson/enabled: false    # If true, apply Anderson acceleration to the outer iteration
     registration/anderson/window_size: 5    # History window size m (Anderson(m))

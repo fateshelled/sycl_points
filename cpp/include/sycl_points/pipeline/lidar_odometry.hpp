@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Eigen/Eigenvalues>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/filter/range_bias_correction.hpp"
 #include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/imu/imu_velocity_corrector.hpp"
@@ -14,6 +16,7 @@
 #include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 #include "sycl_points/pipeline/pointcloud_processing.hpp"
+#include "sycl_points/pipeline/range_bias_estimator.hpp"
 #include "sycl_points/pipeline/submapping.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/time_utils.hpp"
@@ -163,6 +166,22 @@ public:
             this->add_delta_time(ProcessName::compute_covariances, dt_covariance);
         }
 
+        // Beam-direction range-bias correction (LiDAR footprint compensation).
+        // Uses the per-point covariance (-> surface normal -> incidence angle) from
+        // compute_covariances() and the online-calibrated, sensor-independent coefficient k.
+        // k stays 0 (no-op) until the estimator has learned it from well-conditioned frames.
+        if (this->params_.range_bias.enable) {
+            try {
+                algorithms::filter::apply_range_bias_correction(
+                    *this->queue_ptr_, *this->preprocessed_pc_, this->range_bias_estimator_.k(),
+                    this->params_.range_bias.cos_min, this->params_.range_bias.max_correction);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("range_bias_correction: ") + e.what();
+                std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
+        }
+
         // refine filter (angle incidence filter + intensity zscore)
         {
             double dt_refine_filter = 0.0;
@@ -247,6 +266,23 @@ public:
         }
         this->last_imu_reset_timestamp_ = timestamp;
 
+        // Online self-calibration of the range-bias coefficient from this frame's residuals.
+        // Runs before submapping so the registration's frozen neighbor buffer is not clobbered by
+        // the submap robust-weight pass. Gated to well-conditioned frames inside the estimator.
+        if (this->params_.range_bias.enable && this->reg_result_->inlier > 0) {
+            const auto* reg_input = this->registration_pipeline_->get_registration_input_point_cloud();
+            if (reg_input != nullptr && reg_input->size() > 0) {
+                const auto sums = this->registration_pipeline_->registration()->accumulate_range_bias_sums(
+                    *reg_input, this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(),
+                    this->reg_result_->T.matrix(), this->params_.range_bias.residual_robust_scale);
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> es(this->reg_result_->H_raw);
+                const float min_eig = (es.info() == Eigen::Success) ? es.eigenvalues()(0) : 0.0f;
+                const uint32_t inlier = this->reg_result_->inlier > 0 ? this->reg_result_->inlier : 1;
+                const float min_eig_per_inlier = min_eig / static_cast<float>(inlier);
+                this->range_bias_estimator_.update(sums.s_xy, sums.s_xx, sums.count, min_eig_per_inlier);
+            }
+        }
+
         // Submapping
         {
             double dt_build_submap = 0.0;
@@ -323,6 +359,9 @@ private:
     Parameters params_;
 
     AdaptiveMotionPredictor::Ptr motion_predictor_ = nullptr;
+
+    /// Online self-calibrating LiDAR footprint range-bias coefficient (sensor-independent).
+    RangeBiasEstimator range_bias_estimator_;
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     imu::IMUVelocityCorrector imu_velocity_corrector_;
@@ -438,6 +477,11 @@ private:
         // Motion predictor
         {
             this->motion_predictor_ = std::make_shared<AdaptiveMotionPredictor>(this->params_.motion_prediction);
+        }
+
+        // Range-bias self-calibration
+        {
+            this->range_bias_estimator_.set_params(this->params_.range_bias);
         }
 
         // Held IMU bias (mutated by initial alignment; default = configured bias)

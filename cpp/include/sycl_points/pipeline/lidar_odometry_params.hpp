@@ -12,6 +12,7 @@
 #include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 #include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
+#include "sycl_points/pipeline/range_bias_estimator.hpp"
 
 namespace sycl_points {
 namespace pipeline {
@@ -218,6 +219,9 @@ struct Parameters {
         Eigen::Isometry3f initial = Eigen::Isometry3f::Identity();
     };
 
+    /// Online self-calibrating LiDAR footprint range-bias correction.
+    using RangeBias = RangeBiasEstimator::Params;
+
     Device device;
     Scan scan;
     Submap submap;
@@ -226,6 +230,7 @@ struct Parameters {
     IMU imu;
     Registration registration;
     Pose pose;
+    RangeBias range_bias;
 };
 
 }  // namespace lidar_odometry

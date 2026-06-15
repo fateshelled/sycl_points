@@ -381,6 +381,115 @@ public:
         return this->compute_error(source, target, this->neighbors_->at(0), pose, robust_scale, rotation_robust_scale);
     }
 
+    /// @brief Accumulated least-squares statistics for online range-bias self-calibration.
+    struct RangeBiasSums {
+        double s_xy = 0.0;     ///< sum(w * x * y): regressor-residual cross term.
+        double s_xx = 0.0;     ///< sum(w * x * x): regressor energy.
+        uint32_t count = 0;    ///< number of inlier correspondences used.
+    };
+
+    /// @brief Accumulate range-bias regression statistics from one frame's correspondences.
+    ///
+    /// For each source point with a valid nearest neighbor at @p pose, this computes:
+    ///   - the signed point-to-plane residual   y = n . (T*source - target)
+    ///   - the signed beam regressor            x = r * sin(theta) * sign(d . n)
+    /// where r is the source range, d the beam direction, n the target surface normal (from the
+    /// target covariance), and theta the incidence angle.  The regressor is exactly the residual
+    /// sensitivity dy/dk of the beam-direction correction dr = k * r * tan(theta), so the sums feed
+    /// directly into RangeBiasEstimator's fixed-point step.  A Geman-McClure weight on |y| rejects
+    /// dynamic-object / wrong-correspondence outliers.  Normal orientation is irrelevant: flipping n
+    /// flips both x and y, leaving x*y and x*x unchanged.
+    ///
+    /// @param source                Source cloud in the sensor frame (LiDAR at origin).
+    /// @param target                Target (submap) cloud; must carry covariances.
+    /// @param target_knn            KNN structure built on @p target.
+    /// @param pose                  Converged pose T_world_sensor (4x4).
+    /// @param residual_robust_scale Geman-McClure scale [m] for outlier rejection.
+    RangeBiasSums accumulate_range_bias_sums(const PointCloudShared& source, const PointCloudShared& target,
+                                             const knn::KNNBase& target_knn, const TransformMatrix& pose,
+                                             float residual_robust_scale) const {
+        RangeBiasSums sums;
+        const size_t N = source.size();
+        if (N == 0 || !target.has_cov()) {
+            return sums;
+        }
+
+        auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, pose);
+
+        shared_vector<float> s_xy(1, 0.0f, *this->queue_.ptr);
+        shared_vector<float> s_xx(1, 0.0f, *this->queue_.ptr);
+        shared_vector<uint32_t> count(1, 0, *this->queue_.ptr);
+
+        auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t work_group_size = this->queue_.get_work_group_size_for_parallel_reduction();
+            const size_t global_size = this->queue_.get_global_size_for_parallel_reduction(N);
+
+            const auto source_ptr = source.points_ptr();
+            const auto target_ptr = target.points_ptr();
+            const auto target_cov_ptr = target.covs_ptr();
+            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+
+            const float max_corr_dist_squared =
+                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            const float robust_scale = residual_robust_scale > 0.0f ? residual_robust_scale : 1.0f;
+            const auto cur_T = eigen_utils::to_sycl_vec(pose);
+            const float tx = pose(0, 3);
+            const float ty = pose(1, 3);
+            const float tz = pose(2, 3);
+
+            auto sum_xy = sycl::reduction(s_xy.data(), sycl::plus<float>());
+            auto sum_xx = sycl::reduction(s_xx.data(), sycl::plus<float>());
+            auto sum_cnt = sycl::reduction(count.data(), sycl::plus<uint32_t>());
+
+            h.depends_on(knn_event.evs);
+            h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), sum_xy, sum_xx, sum_cnt,
+                           [=](sycl::nd_item<1> item, auto& sum_xy_arg, auto& sum_xx_arg, auto& sum_cnt_arg) {
+                               const size_t index = item.get_global_id(0);
+                               if (index >= N) return;
+                               if (neighbors_distances_ptr[index] > max_corr_dist_squared) return;
+                               const auto target_idx = neighbors_index_ptr[index];
+
+                               PointType p_map;
+                               transform::kernel::transform_point(source_ptr[index], p_map, cur_T);
+
+                               const PointType tgt = target_ptr[target_idx];
+                               Normal n;
+                               covariance::kernel::extract_normal(tgt, target_cov_ptr[target_idx], n);
+
+                               // Signed point-to-plane residual (frame-independent scalar).
+                               const float y = n.x() * (p_map.x() - tgt.x()) + n.y() * (p_map.y() - tgt.y()) +
+                                               n.z() * (p_map.z() - tgt.z());
+
+                               // Beam direction in the map frame: R*s = p_map - t, |R*s| = |s| = r.
+                               const float bx = p_map.x() - tx;
+                               const float by = p_map.y() - ty;
+                               const float bz = p_map.z() - tz;
+                               const float r = sycl::sqrt(bx * bx + by * by + bz * bz);
+                               if (r < 1e-6f) return;
+                               const float c = (bx * n.x() + by * n.y() + bz * n.z()) / r;  // d . n (signed)
+                               const float sin_theta = sycl::sqrt(sycl::fmax(0.0f, 1.0f - c * c));
+                               const float signc = c >= 0.0f ? 1.0f : -1.0f;
+                               const float x = r * sin_theta * signc;
+
+                               // Geman-McClure weight on the residual for outlier rejection.
+                               const float q = y / robust_scale;
+                               const float denom = 1.0f + q * q;
+                               const float w = 1.0f / (denom * denom);
+
+                               sum_xy_arg += w * x * y;
+                               sum_xx_arg += w * x * x;
+                               ++sum_cnt_arg;
+                           });
+        });
+        event.wait_and_throw();
+
+        sums.s_xy = static_cast<double>(s_xy[0]);
+        sums.s_xx = static_cast<double>(s_xx[0]);
+        sums.count = count[0];
+        return sums;
+    }
+
 private:
     RegistrationParams params_;
     sycl_utils::DeviceQueue queue_;
