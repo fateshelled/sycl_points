@@ -352,7 +352,7 @@ TEST(RegistrationPipelineTest, DeskewedAccessorFallsBackToRegistrationInputWitho
 
     pipeline.align(make_cloud(queue, 5), make_cloud(queue, 3), knn);
 
-    EXPECT_EQ(pipeline.get_deskewed_point_cloud(), pipeline.get_registration_input_point_cloud());
+    EXPECT_EQ(pipeline.get_deskewed_point_cloud().get(), pipeline.get_registration_input_point_cloud());
     ASSERT_NE(pipeline.get_deskewed_point_cloud(), nullptr);
     EXPECT_EQ(pipeline.get_deskewed_point_cloud()->size(), 2U);
 }
