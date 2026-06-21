@@ -40,8 +40,11 @@ static std::vector<imu::IMUMeasurement> make_static_imu(
 /// Create minimal pipeline params suitable for unit tests (uses Intel CPU device).
 static lo::LidarOdometryParams make_test_params() {
     lo::LidarOdometryParams p;
-    p.device.vendor = "intel";
-    p.device.type = "cpu";
+    p.device.vendor = "default";
+    p.device.type = "";
+
+    // Disable IMU initial alignment
+    p.imu.initial_alignment.enable = false;
 
     // Disable most preprocessing to keep it simple
     p.scan.downsampling.polar.enable = false;
