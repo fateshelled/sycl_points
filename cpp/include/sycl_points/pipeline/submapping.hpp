@@ -68,12 +68,9 @@ public:
                     this->submap_params_.occupancy_grid_map.enable_pruning);
                 this->occupancy_grid_->set_stale_frame_threshold(
                     this->submap_params_.occupancy_grid_map.stale_frame_threshold);
-                this->occupancy_grid_->set_covariance_aggregation_mode(
-                    this->submap_params_.covariance_aggregation_mode);
             } else {
                 this->submap_voxel_ =
                     std::make_shared<algorithms::mapping::VoxelHashMap>(this->queue_, this->submap_params_.voxel_size);
-                this->submap_voxel_->set_covariance_aggregation_mode(this->submap_params_.covariance_aggregation_mode);
             }
         }
     }

@@ -9,7 +9,6 @@
 #include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
 #include "sycl_points/algorithms/common/workgroup_utils.hpp"
-#include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
@@ -79,11 +78,6 @@ public:
     /// @brief Get minimum number of points required to keep a voxel in the output
     /// @return minimum number of accumulated points
     uint32_t get_min_num_point() const { return this->min_num_point_; }
-
-    void set_covariance_aggregation_mode(const CovarianceAggregationMode mode) {
-        this->covariance_aggregation_mode_ = mode;
-    }
-    CovarianceAggregationMode get_covariance_aggregation_mode() const { return this->covariance_aggregation_mode_; }
 
     /// @brief Reset the map data.
     void clear() {
@@ -354,8 +348,7 @@ private:
     SYCL_EXTERNAL static void compute_averaged_attributes(
         const VoxelCoreData& core, const VoxelCovarianceData& covariance, const VoxelColorData& color,
         const VoxelIntensityData& intensity, size_t output_idx, PointType* pt_output, Covariance* cov_output,
-        RGBType* rgb_output, float* intensity_output, CovarianceAggregationMode covariance_mode,
-        uint32_t min_num_point = 1) {
+        RGBType* rgb_output, float* intensity_output, uint32_t min_num_point = 1) {
         if (core.count >= min_num_point) {
             const float inv_count = 1.0f / static_cast<float>(core.count);
             pt_output[output_idx].x() = core.sum_x * inv_count;
@@ -363,7 +356,6 @@ private:
             pt_output[output_idx].z() = core.sum_z * inv_count;
             pt_output[output_idx].w() = 1.0f;
             if (cov_output) {
-                cov_output[output_idx].setZero();
                 Eigen::Matrix3f cov3 = Eigen::Matrix3f::Zero();
                 cov3(0, 0) = covariance.sum_xx * inv_count;
                 cov3(0, 1) = covariance.sum_xy * inv_count;
@@ -374,10 +366,8 @@ private:
                 cov3(1, 2) = covariance.sum_yz * inv_count;
                 cov3(2, 1) = cov3(1, 2);
                 cov3(2, 2) = covariance.sum_zz * inv_count;
-                if (covariance_mode == CovarianceAggregationMode::LOG_EUCLIDEAN) {
-                    cov3 = eigen_utils::exp_spd_3x3(cov3);
-                }
-                cov_output[output_idx].block<3, 3>(0, 0) = cov3;
+                cov_output[output_idx].setZero();
+                cov_output[output_idx].block<3, 3>(0, 0) = eigen_utils::exp_spd_3x3(cov3);
             }
             if (rgb_output) {
                 rgb_output[output_idx].x() = color.sum_r * inv_count;
@@ -465,12 +455,7 @@ private:
         output.sum_zz = sycl::fma(a22, r22, sycl::fma(a21, r21, a20 * r20));
     }
 
-    SYCL_EXTERNAL static void encode_covariance_for_aggregation(VoxelCovarianceAccumulator& covariance,
-                                                                CovarianceAggregationMode mode) {
-        if (mode != CovarianceAggregationMode::LOG_EUCLIDEAN) {
-            return;
-        }
-
+    SYCL_EXTERNAL static void encode_covariance_for_aggregation(VoxelCovarianceAccumulator& covariance) {
         Eigen::Matrix3f cov3 = Eigen::Matrix3f::Zero();
         cov3(0, 0) = covariance.sum_xx;
         cov3(0, 1) = covariance.sum_xy;
@@ -521,7 +506,6 @@ private:
     bool has_rgb_data_ = false;
     bool has_intensity_data_ = false;
     uint32_t min_num_point_ = 1U;
-    CovarianceAggregationMode covariance_aggregation_mode_ = CovarianceAggregationMode::ARITHMETIC;
 
     void update_voxel_num_and_flags(size_t new_voxel_num) {
         this->voxel_num_ = new_voxel_num;
@@ -673,7 +657,6 @@ private:
             const auto cp = this->capacity_;
             const auto current = this->staleness_counter_;
             const auto max_probe = this->max_probe_length_;
-            const auto covariance_mode = this->covariance_aggregation_mode_;
 
             auto load_entry = [=](VoxelLocalData& entry, const size_t idx) {
                 const PointType local_point = point_ptr[idx];
@@ -704,7 +687,7 @@ private:
 
                 if (has_cov && cov_ptr) {
                     rotate_covariance_upper_triangle(cov_ptr[idx], trans, entry.covariance_acc);
-                    encode_covariance_for_aggregation(entry.covariance_acc, covariance_mode);
+                    encode_covariance_for_aggregation(entry.covariance_acc);
                 }
 
                 if (has_rgb && rgb_ptr) {
@@ -1022,7 +1005,6 @@ private:
                 // Optional output arrays for aggregated RGB colors and intensity values.
                 const auto rgb_output = rgb_output_ptr;
                 const auto intensity_output = intensity_output_ptr;
-                const auto covariance_mode = this->covariance_aggregation_mode_;
 
                 if (is_nvidia) {
                     const auto flag_ptr = this->valid_flags_ptr_->data();
@@ -1041,8 +1023,7 @@ private:
                             const auto intensity = intensity_data_ptr[i];
 
                             compute_averaged_attributes(core, covariance, color, intensity, output_idx, result_ptr,
-                                                        cov_output, rgb_output, intensity_output, covariance_mode,
-                                                        min_num_point);
+                                                        cov_output, rgb_output, intensity_output, min_num_point);
                         }
                     });
 
@@ -1070,8 +1051,7 @@ private:
                         const auto intensity = intensity_data_ptr[i];
 
                         compute_averaged_attributes(core, covariance, color, intensity, output_idx, result_ptr,
-                                                    cov_output, rgb_output, intensity_output, covariance_mode,
-                                                    min_num_point);
+                                                    cov_output, rgb_output, intensity_output, min_num_point);
                     });
                 }
             })
