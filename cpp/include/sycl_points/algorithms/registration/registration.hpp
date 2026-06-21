@@ -457,7 +457,6 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
-            const covariance::NoiseModel source_noise_model = this->params_.source_noise_model;
             auto weights_ptr = out.data();
 
             h.depends_on(depends);
@@ -474,7 +473,7 @@ private:
                     float genz_weight = 1.0f;  // compute, but not use
                     const float squared_error = kernel::calculate_geometry_error<reg>(
                         cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
-                        genz_alpha, genz_weight, source_noise_model, genz_planarity_threshold);
+                        genz_alpha, genz_weight, genz_planarity_threshold);
                     const float residual_norm = sycl::sqrt(squared_error);
 
                     weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
@@ -587,7 +586,6 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
-            const covariance::NoiseModel source_noise_model = this->params_.source_noise_model;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
             const float rotation_constraint_robust_scale = rotation_robust_scale;
@@ -653,8 +651,7 @@ private:
                                                             source_ptr[index], source_cov,                      //
                                                             target_ptr[target_idx], target_cov, target_normal,  //
                                                             residual_norm,                                      //
-                                                            genz_alpha, genz_weight, source_noise_model,
-                                                            genz_planarity_threshold);
+                                                            genz_alpha, genz_weight, genz_planarity_threshold);
 
                         // Apply robust kernel
                         const float robust_weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
@@ -808,7 +805,6 @@ private:
 
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
-            const covariance::NoiseModel source_noise_model = this->params_.source_noise_model;
 
             const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
             const float photometric_robust_scale =
@@ -855,7 +851,7 @@ private:
                             cur_T,                                              //
                             source_ptr[index], source_cov,                      // source
                             target_ptr[target_idx], target_cov, target_normal,  // target
-                            genz_alpha, genz_weight, source_noise_model, genz_planarity_threshold);
+                            genz_alpha, genz_weight, genz_planarity_threshold);
                         const float residual_norm = sycl::sqrt(squared_error);
 
                         // Apply robust kernel

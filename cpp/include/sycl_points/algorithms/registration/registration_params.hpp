@@ -5,8 +5,8 @@
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
-#include "sycl_points/algorithms/registration/map_prior.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
+#include "sycl_points/algorithms/registration/map_prior.hpp"
 #include "sycl_points/algorithms/robust/robust.hpp"
 
 namespace sycl_points {
@@ -106,11 +106,7 @@ struct RegistrationParams {
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
 
     DegenerateRegularizationParams degenerate_reg;  // Degenerate Regularization
-    MapPriorParams map_prior;                        // MAP estimation prior using previous-frame Hessian
-
-    // Source-side sensor noise model for GICP planar regularization.
-    // Defaults (sigma_range = sigma_grazing = 0, min/max = 1e-3/1.0) reproduce the original {1e-3, 1, 1} behavior.
-    covariance::NoiseModel source_noise_model;
+    MapPriorParams map_prior;                       // MAP estimation prior using previous-frame Hessian
 
     bool verbose = false;  // If true, print debug messages
 };

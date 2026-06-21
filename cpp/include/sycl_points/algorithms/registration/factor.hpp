@@ -239,7 +239,6 @@ SYCL_EXTERNAL inline float calculate_point_to_plane_error(const std::array<sycl:
 SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl::float4, 4>& T,
                                                            const PointType& source_pt, const Covariance& source_cov,
                                                            const PointType& target_pt, const Covariance& target_cov,
-                                                           const covariance::NoiseModel& source_noise_model,
                                                            float& residual_norm) {
     PointType transform_source_pt;
     transform::kernel::transform_point(source_pt, transform_source_pt, T);
@@ -249,7 +248,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
 
     // Source is in sensor frame; apply range/incidence-angle-aware planar regularization.
     Covariance normalized_source_cov = source_cov;
-    covariance::kernel::update_covariance_plane_noise_aware(normalized_source_cov, source_pt, source_noise_model);
+    covariance::kernel::update_covariance_plane(normalized_source_cov);
 
     // Target is in map frame (accumulated); use standard planar regularization.
     Covariance normalized_target_cov = target_cov;
@@ -287,8 +286,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
 /// @return Squared error
 SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4>& T, const PointType& source_pt,
                                                 const Covariance& source_cov, const PointType& target_pt,
-                                                const Covariance& target_cov,
-                                                const covariance::NoiseModel& source_noise_model) {
+                                                const Covariance& target_cov) {
     PointType transform_source_pt;
     transform::kernel::transform_point(source_pt, transform_source_pt, T);
 
@@ -296,7 +294,7 @@ SYCL_EXTERNAL inline float calculate_gicp_error(const std::array<sycl::float4, 4
                              target_pt.z() - transform_source_pt.z(), 0.0f);
 
     Covariance normalized_source_cov = source_cov;
-    covariance::kernel::update_covariance_plane_noise_aware(normalized_source_cov, source_pt, source_noise_model);
+    covariance::kernel::update_covariance_plane(normalized_source_cov);
 
     Covariance normalized_target_cov = target_cov;
     covariance::kernel::update_covariance_plane(normalized_target_cov);
@@ -418,14 +416,13 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_geometry(const std::array<
                                                                const PointType& target_pt, const Covariance& target_cov,
                                                                const Normal& target_normal, float& residual_norm,
                                                                float genz_alpha, float& genz_weight,
-                                                               const covariance::NoiseModel& source_noise_model,
                                                                float genz_planarity_threshold = 0.2f) {
     if constexpr (reg == RegType::POINT_TO_POINT) {
         return linearize_point_to_point(T, source_pt, target_pt, residual_norm);
     } else if constexpr (reg == RegType::POINT_TO_PLANE) {
         return linearize_point_to_plane(T, source_pt, target_pt, target_normal, residual_norm);
     } else if constexpr (reg == RegType::GICP) {
-        return linearize_gicp(T, source_pt, source_cov, target_pt, target_cov, source_noise_model, residual_norm);
+        return linearize_gicp(T, source_pt, source_cov, target_pt, target_cov, residual_norm);
     } else if constexpr (reg == RegType::GENZ) {
         const bool is_planar = is_genz_planar_correspondence(target_cov, genz_planarity_threshold);
         genz_weight = is_planar ? genz_alpha : (1.0f - genz_alpha);
@@ -465,14 +462,13 @@ SYCL_EXTERNAL inline float calculate_geometry_error(const std::array<sycl::float
                                                     const PointType& target_pt, const Covariance& target_cov,  //
                                                     const Normal& target_normal,                               //
                                                     const float genz_alpha, float& genz_weight,
-                                                    const covariance::NoiseModel& source_noise_model,
                                                     const float genz_planarity_threshold = 0.2f) {
     if constexpr (reg == RegType::POINT_TO_POINT) {
         return calculate_point_to_point_error(T, source_pt, target_pt);
     } else if constexpr (reg == RegType::POINT_TO_PLANE) {
         return calculate_point_to_plane_error(T, source_pt, target_pt, target_normal);
     } else if constexpr (reg == RegType::GICP) {
-        return calculate_gicp_error(T, source_pt, source_cov, target_pt, target_cov, source_noise_model);
+        return calculate_gicp_error(T, source_pt, source_cov, target_pt, target_cov);
     } else if constexpr (reg == RegType::GENZ) {
         const bool is_planar = is_genz_planar_correspondence(target_cov, genz_planarity_threshold);
         genz_weight = is_planar ? genz_alpha : (1.0f - genz_alpha);
