@@ -270,15 +270,6 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             velocity_update.iter =
                 node->declare_parameter<int64_t>("registration/velocity_update/iter", velocity_update.iter);
         }
-        // photometric
-        {
-            auto& photometric = solver.photometric;
-
-            photometric.enable = node->declare_parameter<bool>("registration/photometric/enable", photometric.enable);
-            photometric.weight = node->declare_parameter<double>("registration/photometric/weight", photometric.weight);
-            photometric.robust_scale =
-                node->declare_parameter<double>("registration/photometric/robust_scale", photometric.robust_scale);
-        }
         // GenZ
         {
             auto& genz = solver.genz;

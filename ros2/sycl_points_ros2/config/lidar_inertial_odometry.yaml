@@ -212,10 +212,6 @@ lidar_inertial_odometry_node:
     registration/robust/init_scale: 10.0
     registration/robust/min_scale: 1.25
 
-    registration/photometric/enable: false
-    registration/photometric/weight: 0.2
-    registration/photometric/robust_scale: 5.0
-
     registration/rotation_constraint/enable:
       true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
     registration/rotation_constraint/weight: 1.0

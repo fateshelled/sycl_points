@@ -61,9 +61,8 @@ static lo::LidarOdometryParams make_test_params() {
     p.registration.pipeline.registration.max_correspondence_distance = 100.0f;
     p.registration.min_num_points = 3;
 
-    // No rotation constraint or photometric term
+    // No rotation constraint term
     p.registration.pipeline.registration.rotation_constraint.enable = false;
-    p.registration.pipeline.registration.photometric.enable = false;
 
     // Disable covariance M-estimation
     p.covariance_estimation.m_estimation.enable = false;

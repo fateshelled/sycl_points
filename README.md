@@ -30,8 +30,6 @@ This project was developed with reference to small_gicp and gtsam_points
     - Generalized ICP (GICP)
     - Genz-ICP
   - Robust Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
-  - Colored ICP / Intensity ICP
-    - Point cloud must have RGB or Intensity fields, and the target cloud requires pre-computed color or intensity gradients and geometric normal vector.
   - Velocity updating ICP (VICP)
     - Estimates sensor velocity to compensate for motion distortion in the source point cloud. The source cloud must have a `time` field for each point.
   - Rotation Constraint

@@ -36,7 +36,6 @@ SYCL_EXTERNAL inline float compute(const float* intensities, const int32_t* inde
 /// @brief Compute intensity z-score and overwrite intensities in-place.
 ///        Uses a temporary buffer to avoid read/write race conditions.
 ///        After this call, cloud.intensities contains z-score values.
-///        Call before intensity gradient computation so gradients represent ∇z.
 /// @param sigma_min  Minimum σ threshold in the same units as the intensity values.
 inline void compute(PointCloudShared& cloud, const knn::KNNResult& neighbors, float sigma_min = 0.01f) {
     const size_t N = cloud.size();

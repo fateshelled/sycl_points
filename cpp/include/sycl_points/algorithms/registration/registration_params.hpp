@@ -45,11 +45,6 @@ struct RegistrationParams {
         robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
         float default_scale = 10.0f;                                 // default scale for robust loss function
     };
-    struct PhotometricTerm {
-        bool enable = false;  // If true, use photometric term.
-        float weight = 0.2f;  // Scaling factor to balance photometric error with geometric error
-        float robust_scale = 5.0f;
-    };
     struct GenZ {
         float planarity_threshold = 0.2f;
     };
@@ -90,7 +85,6 @@ struct RegistrationParams {
 
     Criteria criteria;
     Robust robust;
-    PhotometricTerm photometric;
     RotationConstraint rotation_constraint;
     GenZ genz;
     GaussNewton gn;
