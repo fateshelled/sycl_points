@@ -66,8 +66,9 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_color(
 
     // Color Jacobian: G_t * (I - n*n^T) * J_geo  (project gradient onto tangent plane)
     const Eigen::Vector3f n = target_normal.template head<3>();
-    const Eigen::Vector3f Gn = target_rgb_grad * n;
-    const Eigen::Matrix<float, 3, 3> GP = target_rgb_grad - Gn * n.transpose();
+    const Eigen::Vector3f Gn = eigen_utils::multiply<3, 3>(target_rgb_grad, n);
+    const Eigen::Matrix<float, 3, 3> GP = eigen_utils::subtract<3, 3>(
+        target_rgb_grad, eigen_utils::multiply<3, 1, 3>(Gn, eigen_utils::transpose<3, 1>(n)));
     const Eigen::Matrix<float, 3, 6> J_color = eigen_utils::multiply<3, 3, 6>(GP, J_geo);
 
     LinearizedKernelResult ret;
@@ -112,9 +113,10 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_intensity(
 
     // Intensity Jacobian: ∇I_tangent^T * J_geo  (project gradient onto tangent plane)
     const Eigen::Vector3f n = target_normal.template head<3>();
-    const Eigen::Vector3f grad_tangent = target_intensity_grad - n * (n.dot(target_intensity_grad));
-    const Eigen::Matrix<float, 1, 3> grad_row = grad_tangent.transpose();
-    const Eigen::Matrix<float, 1, 6> J_intensity = eigen_utils::multiply<1, 3, 6>(grad_row, J_geo);
+    const Eigen::Vector3f grad_tangent = eigen_utils::subtract<3, 1>(
+        target_intensity_grad, eigen_utils::multiply<3>(n, eigen_utils::dot<3>(n, target_intensity_grad)));
+    const Eigen::Matrix<float, 1, 6> J_intensity =
+        eigen_utils::multiply<1, 3, 6>(eigen_utils::transpose<3, 1>(grad_tangent), J_geo);
     const Eigen::Matrix<float, 6, 1> J_intensity_T = eigen_utils::transpose<1, 6>(J_intensity);
 
     LinearizedKernelResult ret;
