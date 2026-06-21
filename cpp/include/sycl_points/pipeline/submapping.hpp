@@ -199,17 +199,13 @@ private:
         // Build target search structure for registration. Neighbor queries are launched lazily only when needed.
         this->submap_tree_ = algorithms::knn::KDTree::build(this->queue_, *this->submap_pc_ptr_);
 
-        // compute gradient and covariances
-        sycl_utils::events knn_events;
-        bool knn_ready = false;
-        compute_covariances(knn_ready, knn_events);
-
-        if (knn_ready) {
-            knn_events.wait_and_throw();
-        }
+        // compute covariances
+        compute_covariances();
     }
 
-    void compute_covariances(bool& knn_ready, sycl_utils::events& knn_events) {
+    void compute_covariances() {
+        bool knn_ready = false;
+        sycl_utils::events knn_events;
         auto ensure_knn = [&]() {
             if (!knn_ready) {
                 knn_events = this->submap_tree_->knn_search_async(*this->submap_pc_ptr_, this->cov_params_.neighbor_num,
