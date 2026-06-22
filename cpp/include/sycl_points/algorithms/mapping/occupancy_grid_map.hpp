@@ -1064,8 +1064,9 @@ private:
         cov3(1, 2) = covariance.sum_yz * inv_count;
         cov3(2, 1) = cov3(1, 2);
         cov3(2, 2) = covariance.sum_zz * inv_count;
+        cov3 = eigen_utils::exp_spd_3x3(cov3);
         cov_output[index].setZero();
-        cov_output[index].block<3, 3>(0, 0) = eigen_utils::exp_spd_3x3(cov3);
+        cov_output[index].block<3, 3>(0, 0) = cov3;
     }
 
     void integrate_points(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose, const bool has_cov,

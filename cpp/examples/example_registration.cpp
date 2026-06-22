@@ -31,9 +31,9 @@ int main() {
 
     sycl_points::algorithms::registration::RegistrationPipelineParams pipeline_param;
     pipeline_param.registration.max_iterations = 10;
-    pipeline_param.registration.max_correspondence_distance = 1.0f;
+    pipeline_param.registration.max_correspondence_distance = 2.0f;
     pipeline_param.registration.optimization_method =
-        sycl_points::algorithms::registration::OptimizationMethod::POWELL_DOGLEG;
+        sycl_points::algorithms::registration::OptimizationMethod::LEVENBERG_MARQUARDT;
     pipeline_param.registration.robust.type = sycl_points::algorithms::robust::RobustLossType::GEMAN_MCCLURE;
     pipeline_param.registration.robust.default_scale = 10.0f;
     pipeline_param.registration.reg_type = sycl_points::algorithms::registration::RegType::GICP;

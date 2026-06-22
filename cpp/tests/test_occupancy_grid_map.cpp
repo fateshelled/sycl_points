@@ -3,6 +3,8 @@
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <numbers>
+#include <sycl_points/algorithms/common/transform.hpp>
+#include <sycl_points/utils/eigen_utils.hpp>
 #include <vector>
 
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
@@ -70,6 +72,19 @@ sycl_points::Covariance MakeCovariance(float xx, float xy, float xz, float yy, f
     return cov;
 }
 
+sycl_points::Covariance ComputeExpectCovariance(const std::vector<sycl_points::Covariance>& covariances,
+                                                Eigen::Isometry3f pose = Eigen::Isometry3f::Identity()) {
+    sycl_points::Covariance expect_cov = sycl_points::Covariance::Zero();
+    for (const auto& c : covariances) {
+        expect_cov.block<3, 3>(0, 0) += sycl_points::eigen_utils::log_spd_3x3(c.block<3, 3>(0, 0));
+    }
+    expect_cov /= covariances.size();
+    expect_cov.block<3, 3>(0, 0) = sycl_points::eigen_utils::exp_spd_3x3(expect_cov.block<3, 3>(0, 0));
+    // rotate
+    const auto T = sycl_points::eigen_utils::to_sycl_vec(pose.matrix());
+    sycl_points::algorithms::transform::kernel::transform_covs(expect_cov, expect_cov, T);
+    return expect_cov;
+}
 }  // namespace
 
 TEST(OccupancyGridMapTest, ConstructorRejectsNonPositiveVoxelSize) {
@@ -268,15 +283,16 @@ TEST(OccupancyGridMapTest, AggregatesCovarianceColorAndIntensity) {
         ASSERT_TRUE(result.has_intensity());
 
         const auto& cov = (*result.covs)[0];
-        EXPECT_NEAR(cov(0, 0), 2.0f, 1e-5f);
-        EXPECT_NEAR(cov(0, 1), 0.4f, 1e-5f);
-        EXPECT_NEAR(cov(1, 0), 0.4f, 1e-5f);
-        EXPECT_NEAR(cov(0, 2), 0.6f, 1e-5f);
-        EXPECT_NEAR(cov(2, 0), 0.6f, 1e-5f);
-        EXPECT_NEAR(cov(1, 1), 3.0f, 1e-5f);
-        EXPECT_NEAR(cov(1, 2), 0.6f, 1e-5f);
-        EXPECT_NEAR(cov(2, 1), 0.6f, 1e-5f);
-        EXPECT_NEAR(cov(2, 2), 4.0f, 1e-5f);
+        const sycl_points::Covariance expect_cov = ComputeExpectCovariance(covariances);
+        EXPECT_NEAR(cov(0, 0), expect_cov(0, 0), 1e-5f);
+        EXPECT_NEAR(cov(0, 1), expect_cov(0, 1), 1e-5f);
+        EXPECT_NEAR(cov(1, 0), expect_cov(1, 0), 1e-5f);
+        EXPECT_NEAR(cov(0, 2), expect_cov(0, 2), 1e-5f);
+        EXPECT_NEAR(cov(2, 0), expect_cov(2, 0), 1e-5f);
+        EXPECT_NEAR(cov(1, 1), expect_cov(1, 1), 1e-5f);
+        EXPECT_NEAR(cov(1, 2), expect_cov(1, 2), 1e-5f);
+        EXPECT_NEAR(cov(2, 1), expect_cov(2, 1), 1e-5f);
+        EXPECT_NEAR(cov(2, 2), expect_cov(2, 2), 1e-5f);
         EXPECT_NEAR(cov.row(3).norm(), 0.0f, 1e-5f);
         EXPECT_NEAR(cov.col(3).norm(), 0.0f, 1e-5f);
     } catch (const sycl::exception& e) {
@@ -315,12 +331,16 @@ TEST(OccupancyGridMapTest, RotatesCovariancesIntoMapFrame) {
         ASSERT_TRUE(result.has_cov());
 
         const auto& cov = (*result.covs)[0];
-        EXPECT_NEAR(cov(0, 0), 10.0f, 1e-4f);
-        EXPECT_NEAR(cov(1, 1), 5.0f, 1e-4f);
-        EXPECT_NEAR(cov(2, 2), 17.0f, 1e-4f);
-        EXPECT_NEAR(cov(0, 1), 0.0f, 1e-4f);
-        EXPECT_NEAR(cov(0, 2), 0.0f, 1e-4f);
-        EXPECT_NEAR(cov(1, 2), 0.0f, 1e-4f);
+        const sycl_points::Covariance expect_cov = ComputeExpectCovariance(covariances, pose);
+        EXPECT_NEAR(cov(0, 0), expect_cov(0, 0), 1e-4f);
+        EXPECT_NEAR(cov(0, 1), expect_cov(0, 1), 1e-4f);
+        EXPECT_NEAR(cov(1, 0), expect_cov(1, 0), 1e-4f);
+        EXPECT_NEAR(cov(0, 2), expect_cov(0, 2), 1e-4f);
+        EXPECT_NEAR(cov(2, 0), expect_cov(2, 0), 1e-4f);
+        EXPECT_NEAR(cov(1, 1), expect_cov(1, 1), 1e-4f);
+        EXPECT_NEAR(cov(1, 2), expect_cov(1, 2), 1e-4f);
+        EXPECT_NEAR(cov(2, 1), expect_cov(2, 1), 1e-4f);
+        EXPECT_NEAR(cov(2, 2), expect_cov(2, 2), 1e-4f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }
