@@ -222,16 +222,12 @@ private:
 
         sycl_utils::events grad_events;
         const bool photometric_enabled = this->reg_params_.pipeline.registration.photometric.enable;
-        if (photometric_enabled) {
-            if (this->submap_pc_ptr_->has_rgb()) {
-                ensure_knn();
-                grad_events +=
-                    algorithms::color_gradient::compute_async(*this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
-            } else if (this->submap_pc_ptr_->has_intensity()) {
-                ensure_knn();
-                grad_events += algorithms::intensity_gradient::compute_async(*this->submap_pc_ptr_, this->knn_result_,
-                                                                             knn_events.evs);
-            }
+        // RGB photometric still uses target-side gradient. Intensity photometric was migrated to
+        // source-side gradient (computed per scan in PCProcessor::prepare_source_intensity_gradient).
+        if (photometric_enabled && this->submap_pc_ptr_->has_rgb()) {
+            ensure_knn();
+            grad_events +=
+                algorithms::color_gradient::compute_async(*this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
         }
         grad_events.wait_and_throw();
     }
@@ -254,9 +250,11 @@ private:
                                           reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
                                           reg_type == algorithms::registration::RegType::GENZ ||
                                           this->reg_params_.pipeline.registration.rotation_constraint.enable;
+            // Target-side normals are required for RGB photometric. Intensity photometric uses
+            // source-side normals (computed per scan), so the submap no longer needs them for that path.
             const bool need_normals = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
                                        reg_type == algorithms::registration::RegType::GENZ ||  //
-                                       photometric_enabled);
+                                       (photometric_enabled && this->submap_pc_ptr_->has_rgb()));
 
             const bool submap_has_cov = this->submap_pc_ptr_->has_cov();
             bool normals_are_ready = false;
@@ -279,7 +277,9 @@ private:
                     algorithms::covariance::estimate_async(this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
             }
 
-            if (photometric_enabled && !normals_are_ready) {
+            // Force target-normal availability only for RGB photometric (the intensity branch is
+            // handled on the scan side).
+            if (photometric_enabled && this->submap_pc_ptr_->has_rgb() && !normals_are_ready) {
                 if (covariances_are_ready) {
                     cov_events += algorithms::covariance::extract_normals_async(*this->submap_pc_ptr_, cov_events.evs);
                 } else {

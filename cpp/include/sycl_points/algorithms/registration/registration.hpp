@@ -170,21 +170,18 @@ public:
             }
         }
         if (params.photometric.enable) {
-            if (!target.has_normal()) {
-                throw std::runtime_error(
-                    "[Registration::validate_params] "
-                    "Target normal vector must be pre-computed before performing photometric matching.");
-            }
-
-            const bool color_ready = source.has_rgb() && target.has_rgb() && target.has_color_gradient();
-            const bool intensity_ready =
-                source.has_intensity() && target.has_intensity() && target.has_intensity_gradient();
+            // RGB photometric uses the target-side color gradient and target normal.
+            const bool color_ready =
+                source.has_rgb() && target.has_rgb() && target.has_color_gradient() && target.has_normal();
+            // Intensity photometric uses the source-side intensity gradient and source normal.
+            const bool intensity_ready = source.has_intensity() && source.has_intensity_gradient() &&
+                                         source.has_normal() && target.has_intensity();
 
             if (!color_ready && !intensity_ready) {
                 throw std::runtime_error(
                     "[Registration::validate_params] "
-                    "RGB fields with gradients or intensity fields with gradients are required for photometric "
-                    "matching.");
+                    "Photometric matching requires either RGB (target color + target color gradient + target normal) "
+                    "or intensity (source intensity + source intensity gradient + source normal + target intensity).");
             }
         }
         if (params.rotation_constraint.enable) {
@@ -574,8 +571,10 @@ private:
             const auto source_intensity_ptr = source.has_intensity() ? source.intensities_ptr() : nullptr;
             const auto target_intensity_ptr = target.has_intensity() ? target.intensities_ptr() : nullptr;
 
-            const auto target_intensity_grad_ptr =
-                target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
+            // Intensity photometric uses source-side gradient and source-side normal.
+            const auto source_intensity_grad_ptr =
+                source.has_intensity_gradient() ? source.intensity_gradients_ptr() : nullptr;
+            const auto source_normal_ptr = source.has_normal() ? source.normals_ptr() : nullptr;
             const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
             const float photometric_robust_scale =
                 this->params_.photometric.enable ? this->params_.photometric.robust_scale : 0.0f;
@@ -630,12 +629,13 @@ private:
 
                     const float source_intensity = source_intensity_ptr ? source_intensity_ptr[index] : 0.0f;
                     const float target_intensity = target_intensity_ptr ? target_intensity_ptr[target_idx] : 0.0f;
-                    const auto target_intensity_grad =
-                        target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
+                    const auto source_intensity_grad =
+                        source_intensity_grad_ptr ? source_intensity_grad_ptr[index] : IntensityGradient::Zero();
+                    const auto source_normal = source_normal_ptr ? source_normal_ptr[index] : Normal::Zero();
 
                     const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
                     const bool use_intensity =
-                        source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
+                        source_intensity_ptr && target_intensity_ptr && source_intensity_grad_ptr && source_normal_ptr;
 
                     sycl::float16 total_H0;
                     sycl::float16 total_H1;
@@ -695,11 +695,11 @@ private:
                                                                 residual_norm_color, photometric_robust_scale);
                     }
 
-                    // Intensity term
+                    // Intensity term (source-side gradient: see photometric_factor.hpp::linearize_intensity).
                     if (use_intensity) {
                         const LinearizedKernelResult linearized_intensity = kernel::linearize_intensity(
                             cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
-                            target_normal, target_intensity_grad);
+                            source_normal, source_intensity_grad);
                         float residual_norm_intensity = sycl::sqrt(linearized_intensity.squared_error);
                         const float robust_weight_intensity =
                             robust::kernel::compute_weight<loss>(residual_norm_intensity, photometric_robust_scale);
@@ -797,8 +797,9 @@ private:
             const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
             const auto source_intensity_ptr = source.has_intensity() ? source.intensities_ptr() : nullptr;
             const auto target_intensity_ptr = target.has_intensity() ? target.intensities_ptr() : nullptr;
-            const auto target_intensity_grad_ptr =
-                target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
+            // Intensity photometric uses source-side gradient and source-side normal.
+            const auto source_intensity_grad_ptr =
+                source.has_intensity_gradient() ? source.intensity_gradients_ptr() : nullptr;
 
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
@@ -841,11 +842,12 @@ private:
                     const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
                     const float source_intensity = source_intensity_ptr ? source_intensity_ptr[index] : 0.0f;
                     const float target_intensity = target_intensity_ptr ? target_intensity_ptr[target_idx] : 0.0f;
-                    const auto target_intensity_grad =
-                        target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
+                    const auto source_intensity_grad =
+                        source_intensity_grad_ptr ? source_intensity_grad_ptr[index] : IntensityGradient::Zero();
+                    const auto source_normal = source_normal_ptr ? source_normal_ptr[index] : Normal::Zero();
                     const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
                     const bool use_intensity =
-                        source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
+                        source_intensity_ptr && target_intensity_ptr && source_intensity_grad_ptr && source_normal_ptr;
 
                     float total_error = 0.0f;
                     // ICP term
@@ -879,7 +881,7 @@ private:
                     if (use_intensity) {
                         const float squared_error_intensity = kernel::calculate_intensity_error(
                             cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
-                            target_normal, target_intensity_grad);
+                            source_normal, source_intensity_grad);
                         const float residual_norm_intensity = sycl::sqrt(squared_error_intensity);
                         total_error += photometric_weight * robust::kernel::compute_error<loss>(
                                                                 residual_norm_intensity, photometric_robust_scale);

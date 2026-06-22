@@ -4,6 +4,7 @@
 
 #include "sycl_points/algorithms/deskew/imu_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
+#include "sycl_points/algorithms/feature/photometric_gradient.hpp"
 #include "sycl_points/algorithms/filter/intensity_correction.hpp"
 #include "sycl_points/algorithms/filter/intensity_gaussian.hpp"
 #include "sycl_points/algorithms/filter/intensity_local_mean_norm.hpp"
@@ -73,6 +74,36 @@ public:
     /// @brief Apply post-KNN filters (angle incidence, Gaussian intensity smoothing, local-mean normalization).
     void refine_filter(PointCloudShared& scan, const ProcessingContext& ctx) const {
         this->refine_filter_impl(scan, ctx);
+    }
+
+    /// @brief Prepare scan-side intensity gradient (and source normal) for source-side photometric ICP.
+    ///        Should be called after refine_filter(), so intensity values are finalized.
+    ///        Builds a fresh KDTree + KNN for the (possibly-filtered) scan, then extracts normals from
+    ///        existing covariances (or estimates them) and computes the intensity gradient.
+    void prepare_source_intensity_gradient(PointCloudShared& scan,
+                                           size_t neighbor_num = 0) const {
+        if (!scan.has_intensity()) return;
+        if (scan.size() == 0) return;
+
+        const size_t k = neighbor_num > 0 ? neighbor_num : this->covs_params_.neighbor_num;
+        if (scan.size() < k) return;
+
+        // Build a fresh KDTree because refine_filter() may have removed points (e.g. angle-incidence
+        // filter), invalidating any previously-built KNN result.
+        const auto tree = algorithms::knn::KDTree::build(this->queue_, scan);
+        algorithms::knn::KNNResult knn_result;
+        auto knn_events = tree->knn_search_async(scan, k, knn_result);
+
+        sycl_utils::events events = knn_events;
+        if (!scan.has_normal()) {
+            if (scan.has_cov()) {
+                events += algorithms::covariance::extract_normals_async(scan, events.evs);
+            } else {
+                events += algorithms::covariance::estimate_normals_async(knn_result, scan, events.evs);
+            }
+        }
+        events += algorithms::intensity_gradient::compute_async(scan, knn_result, events.evs);
+        events.wait_and_throw();
     }
 
 private:
