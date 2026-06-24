@@ -1,12 +1,12 @@
 #pragma once
 
+#include <Eigen/Dense>  // Must include before <sycl/sycl.hpp>
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <iostream>
 #include <memory>
 #include <sstream>
-#include <Eigen/Dense>  // Must include before <sycl/sycl.hpp>
 #include <sycl/sycl.hpp>
 
 #ifdef SYCL_IMPL_ADAPTIVECPP
@@ -414,6 +414,9 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
     } else if (device_vendor_upper == "OMP") {
         vendor_id = VENDOR_ID::OMP;
 #endif
+    } else if (device_vendor_upper == "DEFAULT") {
+        const auto device_selector = sycl_points::sycl_utils::device_selector::default_selector_v;
+        return sycl::device{device_selector};
     } else {
         throw std::runtime_error("[device_selector::select_device] invalid device vendor: " + device_vendor);
     }

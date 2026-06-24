@@ -5,8 +5,8 @@
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
-#include "sycl_points/algorithms/registration/map_prior.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
+#include "sycl_points/algorithms/registration/map_prior.hpp"
 #include "sycl_points/algorithms/robust/robust.hpp"
 
 namespace sycl_points {
@@ -45,11 +45,6 @@ struct RegistrationParams {
         robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
         float default_scale = 10.0f;                                 // default scale for robust loss function
     };
-    struct PhotometricTerm {
-        bool enable = false;  // If true, use photometric term.
-        float weight = 0.2f;  // Scaling factor to balance photometric error with geometric error
-        float robust_scale = 5.0f;
-    };
     struct GenZ {
         float planarity_threshold = 0.2f;
     };
@@ -83,12 +78,6 @@ struct RegistrationParams {
         float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
     };
 
-    struct AndersonAcceleration {
-        bool enabled = false;    // If true, apply Anderson acceleration to the outer iteration
-        size_t window_size = 5;  // History window size m (Anderson(m))
-        float beta = 1.0f;       // Mixing parameter: 1.0 = pure Anderson acceleration
-    };
-
     RegType reg_type = RegType::GICP;          // Registration Type
     size_t max_iterations = 20;                // max iteration
     float lambda = 1e-6f;                      // damping factor
@@ -96,21 +85,15 @@ struct RegistrationParams {
 
     Criteria criteria;
     Robust robust;
-    PhotometricTerm photometric;
     RotationConstraint rotation_constraint;
     GenZ genz;
     GaussNewton gn;
     LevenbergMarquardt lm;
     Dogleg dogleg;
-    AndersonAcceleration anderson;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
 
     DegenerateRegularizationParams degenerate_reg;  // Degenerate Regularization
-    MapPriorParams map_prior;                        // MAP estimation prior using previous-frame Hessian
-
-    // Source-side sensor noise model for GICP planar regularization.
-    // Defaults (sigma_range = sigma_grazing = 0, min/max = 1e-3/1.0) reproduce the original {1e-3, 1, 1} behavior.
-    covariance::NoiseModel source_noise_model;
+    MapPriorParams map_prior;                       // MAP estimation prior using previous-frame Hessian
 
     bool verbose = false;  // If true, print debug messages
 };

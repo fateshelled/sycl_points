@@ -21,10 +21,6 @@ struct PointCloudCPU {
     std::shared_ptr<NormalContainerCPU> normals = nullptr;
     /// @brief rgb container
     std::shared_ptr<RGBContainerCPU> rgb = nullptr;
-    /// @brief color gradient container
-    std::shared_ptr<ColorGradientContainerCPU> color_gradients = nullptr;
-    /// @brief intensity gradient container
-    std::shared_ptr<IntensityGradientContainerCPU> intensity_gradients = nullptr;
     /// @brief intensity container
     std::shared_ptr<IntensityContainerCPU> intensities = nullptr;
     /// @brief timestamp offset container
@@ -40,8 +36,6 @@ struct PointCloudCPU {
         this->covs = std::make_shared<CovarianceContainerCPU>();
         this->normals = std::make_shared<NormalContainerCPU>();
         this->rgb = std::make_shared<RGBContainerCPU>();
-        this->color_gradients = std::make_shared<ColorGradientContainerCPU>();
-        this->intensity_gradients = std::make_shared<IntensityGradientContainerCPU>();
         this->intensities = std::make_shared<IntensityContainerCPU>();
         this->timestamp_offsets = std::make_shared<TimestampContainerCPU>();
     }
@@ -54,14 +48,6 @@ struct PointCloudCPU {
     bool has_normal() const { return this->normals != nullptr && this->normals->size() == this->points->size(); }
     /// @brief has RGB field or not
     bool has_rgb() const { return this->rgb != nullptr && this->rgb->size() == this->points->size(); }
-    /// @brief has color gradient field or not
-    bool has_color_gradient() const {
-        return this->color_gradients != nullptr && this->color_gradients->size() == this->points->size();
-    }
-    /// @brief has intensity gradient field or not
-    bool has_intensity_gradient() const {
-        return this->intensity_gradients != nullptr && this->intensity_gradients->size() == this->points->size();
-    }
     /// @brief has intensity field or not
     bool has_intensity() const {
         return this->intensities != nullptr && this->intensities->size() == this->points->size();
@@ -98,10 +84,6 @@ struct PointCloudShared {
     std::shared_ptr<NormalContainerShared> normals = nullptr;
     /// @brief rgb container
     std::shared_ptr<RGBContainerShared> rgb = nullptr;
-    /// @brief color gradient container
-    std::shared_ptr<ColorGradientContainerShared> color_gradients = nullptr;
-    /// @brief intensity gradient container
-    std::shared_ptr<IntensityGradientContainerShared> intensity_gradients = nullptr;
     /// @brief intensity container
     std::shared_ptr<IntensityContainerShared> intensities = nullptr;
     /// @brief timestamp offset container
@@ -118,8 +100,6 @@ struct PointCloudShared {
         this->covs = std::make_shared<CovarianceContainerShared>(0, *this->queue.ptr);
         this->normals = std::make_shared<NormalContainerShared>(0, *this->queue.ptr);
         this->rgb = std::make_shared<RGBContainerShared>(0, *this->queue.ptr);
-        this->color_gradients = std::make_shared<ColorGradientContainerShared>(0, *this->queue.ptr);
-        this->intensity_gradients = std::make_shared<IntensityGradientContainerShared>(0, *this->queue.ptr);
         this->intensities = std::make_shared<IntensityContainerShared>(0, *this->queue.ptr);
         this->timestamp_offsets = std::make_shared<TimestampContainerShared>(0, *this->queue.ptr);
     }
@@ -170,34 +150,6 @@ struct PointCloudShared {
             }
         } else {
             this->rgb = std::make_shared<RGBContainerShared>(0, *this->queue.ptr);
-        }
-
-        if (cpu.has_color_gradient()) {
-            this->color_gradients = std::make_shared<ColorGradientContainerShared>(N, *this->queue.ptr);
-            if (is_cpu) {
-                copy_events += this->queue.ptr->memcpy(this->color_gradients->data(), cpu.color_gradients->data(),
-                                                       N * sizeof(ColorGradient));
-            } else {
-                for (size_t i = 0; i < N; ++i) {
-                    this->color_gradients->data()[i] = cpu.color_gradients->data()[i];
-                }
-            }
-        } else {
-            this->color_gradients = std::make_shared<ColorGradientContainerShared>(0, *this->queue.ptr);
-        }
-
-        if (cpu.has_intensity_gradient()) {
-            this->intensity_gradients = std::make_shared<IntensityGradientContainerShared>(N, *this->queue.ptr);
-            if (is_cpu) {
-                copy_events += this->queue.ptr->memcpy(this->intensity_gradients->data(),
-                                                       cpu.intensity_gradients->data(), N * sizeof(IntensityGradient));
-            } else {
-                for (size_t i = 0; i < N; ++i) {
-                    this->intensity_gradients->data()[i] = cpu.intensity_gradients->data()[i];
-                }
-            }
-        } else {
-            this->intensity_gradients = std::make_shared<IntensityGradientContainerShared>(0, *this->queue.ptr);
         }
 
         if (cpu.has_intensity()) {
@@ -272,10 +224,6 @@ struct PointCloudShared {
         this->copy_attribute(this->normals, other.normals, N, other.has_normal(), same_context, copy_queue,
                              copy_events);
         this->copy_attribute(this->rgb, other.rgb, N, other.has_rgb(), same_context, copy_queue, copy_events);
-        this->copy_attribute(this->color_gradients, other.color_gradients, N, other.has_color_gradient(), same_context,
-                             copy_queue, copy_events);
-        this->copy_attribute(this->intensity_gradients, other.intensity_gradients, N, other.has_intensity_gradient(),
-                             same_context, copy_queue, copy_events);
         this->copy_attribute(this->intensities, other.intensities, N, other.has_intensity(), same_context, copy_queue,
                              copy_events);
         this->copy_attribute(this->points, other.points, N, true, same_context, copy_queue, copy_events);
@@ -298,12 +246,6 @@ struct PointCloudShared {
     bool has_normal() const { return this->normals->size() > 0 && this->normals->size() == this->points->size(); }
     /// @brief has RGB field or not
     bool has_rgb() const { return this->rgb->size() > 0 && this->rgb->size() == this->points->size(); }
-    bool has_color_gradient() const {
-        return this->color_gradients->size() > 0 && this->color_gradients->size() == this->points->size();
-    }
-    bool has_intensity_gradient() const {
-        return this->intensity_gradients->size() > 0 && this->intensity_gradients->size() == this->points->size();
-    }
     /// @brief has intensity field or not
     bool has_intensity() const {
         return this->intensities->size() > 0 && this->intensities->size() == this->points->size();
@@ -321,10 +263,6 @@ struct PointCloudShared {
     Normal* normals_ptr() const { return this->normals->data(); }
     /// @brief pointer of RGB
     RGBType* rgb_ptr() const { return this->rgb->data(); }
-    /// @brief pointer of color gradients
-    ColorGradient* color_gradients_ptr() const { return this->color_gradients->data(); }
-    /// @brief pointer of intensity gradients
-    IntensityGradient* intensity_gradients_ptr() const { return this->intensity_gradients->data(); }
     /// @brief pointer of intensity
     float* intensities_ptr() const { return this->intensities->data(); }
     /// @brief pointer of timestamp offsets
@@ -342,12 +280,6 @@ struct PointCloudShared {
     /// @brief resize RGB container
     /// @param N size
     void resize_rgb(size_t N) const { this->rgb->resize(N); }
-    /// @brief resize color gradient container
-    /// @param N size
-    void resize_color_gradients(size_t N) const { this->color_gradients->resize(N); }
-    /// @brief resize intensity gradient container
-    /// @param N size
-    void resize_intensity_gradients(size_t N) const { this->intensity_gradients->resize(N); }
     /// @brief resize intensity container
     /// @param N size
     void resize_intensities(size_t N) const { this->intensities->resize(N); }
@@ -366,12 +298,6 @@ struct PointCloudShared {
     /// @brief reserve RGB container
     /// @param N size
     void reserve_rgb(size_t N) const { this->rgb->reserve(N); }
-    /// @brief reserve color gradient container
-    /// @param N size
-    void reserve_color_gradients(size_t N) const { this->color_gradients->reserve(N); }
-    /// @brief reserve intensity gradient container
-    /// @param N size
-    void reserve_intensity_gradients(size_t N) const { this->intensity_gradients->reserve(N); }
     /// @brief reserve intensity container
     /// @param N size
     void reserve_intensities(size_t N) const { this->intensities->reserve(N); }
@@ -384,8 +310,6 @@ struct PointCloudShared {
         this->covs->clear();
         this->normals->clear();
         this->rgb->clear();
-        this->color_gradients->clear();
-        this->intensity_gradients->clear();
         this->intensities->clear();
         this->timestamp_offsets->clear();
         this->start_time_ms = 0.0;
@@ -405,14 +329,6 @@ struct PointCloudShared {
         if (this->has_rgb() && other.has_rgb()) {
             this->rgb->insert(this->rgb->end(), other.rgb->begin(), other.rgb->end());
         }
-        if (this->has_color_gradient() && other.has_color_gradient()) {
-            this->color_gradients->insert(this->color_gradients->end(), other.color_gradients->begin(),
-                                          other.color_gradients->end());
-        }
-        if (this->has_intensity_gradient() && other.has_intensity_gradient()) {
-            this->intensity_gradients->insert(this->intensity_gradients->end(), other.intensity_gradients->begin(),
-                                              other.intensity_gradients->end());
-        }
         if (this->has_intensity() && other.has_intensity()) {
             this->intensities->insert(this->intensities->end(), other.intensities->begin(), other.intensities->end());
         }
@@ -430,14 +346,6 @@ struct PointCloudShared {
         }
         if (this->has_rgb()) {
             this->rgb->erase(this->rgb->begin() + start_idx, this->rgb->begin() + end_idx);
-        }
-        if (this->has_color_gradient()) {
-            this->color_gradients->erase(this->color_gradients->begin() + start_idx,
-                                         this->color_gradients->begin() + end_idx);
-        }
-        if (this->has_intensity_gradient()) {
-            this->intensity_gradients->erase(this->intensity_gradients->begin() + start_idx,
-                                             this->intensity_gradients->begin() + end_idx);
         }
         if (this->has_intensity()) {
             this->intensities->erase(this->intensities->begin() + start_idx, this->intensities->begin() + end_idx);

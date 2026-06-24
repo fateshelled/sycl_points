@@ -15,10 +15,6 @@ using Normal = Eigen::Vector4f;
 /// @note data is in range [0.0, 1.0].
 /// @note x: R, y: G, z: B, w: A
 using RGBType = Eigen::Vector4f;
-/// @brief Color gradient type (Row(0): r, Row(1): g, Row(2): b; Col(0-2): gradient, Col(3): unused)
-using ColorGradient = Eigen::Matrix3f;
-/// @brief Intensity gradient type (gradient along x, y, z)
-using IntensityGradient = Eigen::Vector3f;
 using TransformMatrix = Eigen::Matrix4f;
 /// @brief Timestamp offset in milliseconds relative to the first measurement.
 using TimestampOffset = float;
@@ -42,16 +38,6 @@ using NormalContainerShared = shared_vector<Normal>;
 using RGBContainerCPU = std::vector<RGBType, Eigen::aligned_allocator<RGBType>>;
 // Vector of RGB on shared memory
 using RGBContainerShared = shared_vector<RGBType>;
-
-// Vector of Color gradient on CPU
-using ColorGradientContainerCPU = std::vector<ColorGradient, Eigen::aligned_allocator<ColorGradient>>;
-// Vector of Color gradient on shared memory
-using ColorGradientContainerShared = shared_vector<ColorGradient>;
-
-// Vector of intensity gradient on CPU
-using IntensityGradientContainerCPU = std::vector<IntensityGradient, Eigen::aligned_allocator<IntensityGradient>>;
-// Vector of intensity gradient on shared memory
-using IntensityGradientContainerShared = shared_vector<IntensityGradient>;
 
 // Vector of Intensity on CPU
 using IntensityContainerCPU = std::vector<float, Eigen::aligned_allocator<float>>;

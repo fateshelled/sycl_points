@@ -40,8 +40,11 @@ static std::vector<imu::IMUMeasurement> make_static_imu(
 /// Create minimal pipeline params suitable for unit tests (uses Intel CPU device).
 static lo::LidarOdometryParams make_test_params() {
     lo::LidarOdometryParams p;
-    p.device.vendor = "intel";
-    p.device.type = "cpu";
+    p.device.vendor = "default";
+    p.device.type = "";
+
+    // Disable IMU initial alignment
+    p.imu.initial_alignment.enable = false;
 
     // Disable most preprocessing to keep it simple
     p.scan.downsampling.polar.enable = false;
@@ -61,9 +64,8 @@ static lo::LidarOdometryParams make_test_params() {
     p.registration.pipeline.registration.max_correspondence_distance = 100.0f;
     p.registration.min_num_points = 3;
 
-    // No rotation constraint or photometric term
+    // No rotation constraint term
     p.registration.pipeline.registration.rotation_constraint.enable = false;
-    p.registration.pipeline.registration.photometric.enable = false;
 
     // Disable covariance M-estimation
     p.covariance_estimation.m_estimation.enable = false;

@@ -19,7 +19,7 @@ namespace deskew {
 ///
 /// Points are transformed from the sensor frame at their sampling time into the
 /// frame of @p current_relative_pose, compensating both rotation and
-/// translation. Normals, covariances, and photometric gradients are rotated
+/// translation. Normals, and covariances are rotated
 /// using the angular velocity model to keep them aligned with the deskewed
 /// points.
 /// The body-frame velocity is estimated from the motion between
@@ -92,16 +92,6 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
         } else {
             output_cloud.intensities->clear();
         }
-        if (input_cloud.has_color_gradient()) {
-            output_cloud.color_gradients->resize(cloud_size);
-        } else {
-            output_cloud.color_gradients->clear();
-        }
-        if (input_cloud.has_intensity_gradient()) {
-            output_cloud.intensity_gradients->resize(cloud_size);
-        } else {
-            output_cloud.intensity_gradients->clear();
-        }
     }
 
     // Launch device kernel to deskew each point independently.
@@ -119,23 +109,13 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
         const auto* points_in = input_cloud.points->data();
         const auto* normals_in = input_cloud.has_normal() ? input_cloud.normals->data() : nullptr;
         const auto* covs_in = input_cloud.has_cov() ? input_cloud.covs->data() : nullptr;
-        const auto* color_gradients_in =
-            input_cloud.has_color_gradient() ? input_cloud.color_gradients->data() : nullptr;
-        const auto* intensity_gradients_in =
-            input_cloud.has_intensity_gradient() ? input_cloud.intensity_gradients->data() : nullptr;
         auto* points_out = output_cloud.points->data();
         auto* normals_out = output_cloud.has_normal() ? output_cloud.normals->data() : nullptr;
         auto* covs_out = output_cloud.has_cov() ? output_cloud.covs->data() : nullptr;
-        auto* color_gradients_out = output_cloud.has_color_gradient() ? output_cloud.color_gradients->data() : nullptr;
-        auto* intensity_gradients_out =
-            output_cloud.has_intensity_gradient() ? output_cloud.intensity_gradients->data() : nullptr;
         auto* timestamps = output_cloud.timestamp_offsets->data();
 
         const bool process_normals = normals_in != nullptr && normals_out != nullptr;
         const bool process_covs = covs_in != nullptr && covs_out != nullptr;
-        const bool process_color_gradients = color_gradients_in != nullptr && color_gradients_out != nullptr;
-        const bool process_intensity_gradients =
-            intensity_gradients_in != nullptr && intensity_gradients_out != nullptr;
 
         h.parallel_for(                                       //
             sycl::nd_range<1>(global_size, work_group_size),  //
@@ -155,12 +135,6 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
                     }
                     if (process_covs) {
                         eigen_utils::copy<4, 4>(covs_in[idx], covs_out[idx]);
-                    }
-                    if (process_color_gradients) {
-                        eigen_utils::copy<3, 3>(color_gradients_in[idx], color_gradients_out[idx]);
-                    }
-                    if (process_intensity_gradients) {
-                        eigen_utils::copy<3, 1>(intensity_gradients_in[idx], intensity_gradients_out[idx]);
                     }
                     return;
                 }
@@ -194,16 +168,6 @@ inline bool deskew_point_cloud_constant_velocity(const PointCloudShared& input_c
                     const Eigen::Matrix3f rotated_cov = eigen_utils::multiply<3, 3, 3>(
                         rotation_omega, eigen_utils::multiply<3, 3, 3>(cov_in, rotation_omega_t));
                     covs_out[idx].topLeftCorner<3, 3>() = rotated_cov;
-                }
-                if (process_color_gradients) {
-                    color_gradients_out[idx].setZero();
-                    color_gradients_out[idx] = eigen_utils::multiply<3, 3, 3>(
-                        color_gradients_in[idx], eigen_utils::transpose<3, 3>(rotation_omega));
-                }
-                if (process_intensity_gradients) {
-                    intensity_gradients_out[idx].setZero();
-                    intensity_gradients_out[idx] =
-                        eigen_utils::multiply<3, 3>(rotation_omega, intensity_gradients_in[idx]);
                 }
             });
     });

@@ -6,12 +6,10 @@
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
-#include "sycl_points/algorithms/registration/anderson_acceleration.hpp"
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
 #include "sycl_points/algorithms/registration/dogleg_step.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
-#include "sycl_points/algorithms/registration/photometric_factor.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/algorithms/registration/result.hpp"
 #include "sycl_points/algorithms/registration/rotation_constraint.hpp"
@@ -169,24 +167,6 @@ public:
                     "matching.");
             }
         }
-        if (params.photometric.enable) {
-            if (!target.has_normal()) {
-                throw std::runtime_error(
-                    "[Registration::validate_params] "
-                    "Target normal vector must be pre-computed before performing photometric matching.");
-            }
-
-            const bool color_ready = source.has_rgb() && target.has_rgb() && target.has_color_gradient();
-            const bool intensity_ready =
-                source.has_intensity() && target.has_intensity() && target.has_intensity_gradient();
-
-            if (!color_ready && !intensity_ready) {
-                throw std::runtime_error(
-                    "[Registration::validate_params] "
-                    "RGB fields with gradients or intensity fields with gradients are required for photometric "
-                    "matching.");
-            }
-        }
         if (params.rotation_constraint.enable) {
             if (!source.has_cov()) {
                 throw std::runtime_error(
@@ -238,9 +218,6 @@ public:
 
             float lm_lambda = this->params_.lm.init_lambda;
 
-            if (this->params_.anderson.enabled) {
-                this->anderson_acc_.reset(this->params_.anderson.window_size, this->params_.anderson.beta);
-            }
             const Eigen::Isometry3f T_initial(initial_guess);
 
             for (size_t iter = 0; iter < this->params_.max_iterations; ++iter) {
@@ -287,10 +264,6 @@ public:
                 }
                 if (result.converged) {
                     break;
-                } else {
-                    // Apply safeguarded Anderson acceleration to the outer iteration
-                    this->apply_anderson_acceleration(source, target, result, T_initial, robust_scale,
-                                                      rotation_robust_scale);
                 }
             }
         }
@@ -391,7 +364,6 @@ private:
     DegenerateRegularization degenerate_reg_;
     MapPrior map_prior_;
     float genz_alpha_ = 1.0f;
-    AndersonAcceleration anderson_acc_;
 
     template <typename Func>
     sycl_utils::events dispatch(Func&& exec) const {
@@ -457,7 +429,6 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
-            const covariance::NoiseModel source_noise_model = this->params_.source_noise_model;
             auto weights_ptr = out.data();
 
             h.depends_on(depends);
@@ -474,7 +445,7 @@ private:
                     float genz_weight = 1.0f;  // compute, but not use
                     const float squared_error = kernel::calculate_geometry_error<reg>(
                         cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
-                        genz_alpha, genz_weight, source_noise_model, genz_planarity_threshold);
+                        genz_alpha, genz_weight, genz_planarity_threshold);
                     const float residual_norm = sycl::sqrt(squared_error);
 
                     weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
@@ -569,16 +540,9 @@ private:
 
             const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
             const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
-            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
 
             const auto source_intensity_ptr = source.has_intensity() ? source.intensities_ptr() : nullptr;
             const auto target_intensity_ptr = target.has_intensity() ? target.intensities_ptr() : nullptr;
-
-            const auto target_intensity_grad_ptr =
-                target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
-            const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
-            const float photometric_robust_scale =
-                this->params_.photometric.enable ? this->params_.photometric.robust_scale : 0.0f;
 
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
@@ -587,7 +551,6 @@ private:
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
-            const covariance::NoiseModel source_noise_model = this->params_.source_noise_model;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
             const float rotation_constraint_robust_scale = rotation_robust_scale;
@@ -624,19 +587,6 @@ private:
 
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
 
-                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
-                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
-                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
-
-                    const float source_intensity = source_intensity_ptr ? source_intensity_ptr[index] : 0.0f;
-                    const float target_intensity = target_intensity_ptr ? target_intensity_ptr[target_idx] : 0.0f;
-                    const auto target_intensity_grad =
-                        target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
-
-                    const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
-                    const bool use_intensity =
-                        source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
-
                     sycl::float16 total_H0;
                     sycl::float16 total_H1;
                     sycl::float4 total_H2;
@@ -653,8 +603,7 @@ private:
                                                             source_ptr[index], source_cov,                      //
                                                             target_ptr[target_idx], target_cov, target_normal,  //
                                                             residual_norm,                                      //
-                                                            genz_alpha, genz_weight, source_noise_model,
-                                                            genz_planarity_threshold);
+                                                            genz_alpha, genz_weight, genz_planarity_threshold);
 
                         // Apply robust kernel
                         const float robust_weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
@@ -672,49 +621,6 @@ private:
                         } else {
                             total_error = robust::kernel::compute_error<loss>(residual_norm, robust_scale);
                         }
-                    }
-
-                    // Color term
-                    if (use_color) {
-                        const LinearizedKernelResult linearized_color =
-                            kernel::linearize_color(cur_T, source_ptr[index], target_ptr[target_idx], source_rgb,
-                                                    target_rgb, target_normal, target_grad);
-                        float residual_norm_color = sycl::sqrt(linearized_color.squared_error);
-                        const float robust_weight_color =
-                            robust::kernel::compute_weight<loss>(residual_norm_color, photometric_robust_scale);
-
-                        const auto& [H0_color, H1_color, H2_color] = eigen_utils::to_sycl_vec(linearized_color.H);
-                        const auto& [b0_color, b1_color] = eigen_utils::to_sycl_vec(linearized_color.b);
-
-                        total_H0 += photometric_weight * robust_weight_color * H0_color;
-                        total_H1 += photometric_weight * robust_weight_color * H1_color;
-                        total_H2 += photometric_weight * robust_weight_color * H2_color;
-                        total_b0 += photometric_weight * robust_weight_color * b0_color;
-                        total_b1 += photometric_weight * robust_weight_color * b1_color;
-                        total_error += photometric_weight * robust::kernel::compute_error<loss>(
-                                                                residual_norm_color, photometric_robust_scale);
-                    }
-
-                    // Intensity term
-                    if (use_intensity) {
-                        const LinearizedKernelResult linearized_intensity = kernel::linearize_intensity(
-                            cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
-                            target_normal, target_intensity_grad);
-                        float residual_norm_intensity = sycl::sqrt(linearized_intensity.squared_error);
-                        const float robust_weight_intensity =
-                            robust::kernel::compute_weight<loss>(residual_norm_intensity, photometric_robust_scale);
-
-                        const auto& [H0_intensity, H1_intensity, H2_intensity] =
-                            eigen_utils::to_sycl_vec(linearized_intensity.H);
-                        const auto& [b0_intensity, b1_intensity] = eigen_utils::to_sycl_vec(linearized_intensity.b);
-
-                        total_H0 += photometric_weight * robust_weight_intensity * H0_intensity;
-                        total_H1 += photometric_weight * robust_weight_intensity * H1_intensity;
-                        total_H2 += photometric_weight * robust_weight_intensity * H2_intensity;
-                        total_b0 += photometric_weight * robust_weight_intensity * b0_intensity;
-                        total_b1 += photometric_weight * robust_weight_intensity * b1_intensity;
-                        total_error += photometric_weight * robust::kernel::compute_error<loss>(
-                                                                residual_norm_intensity, photometric_robust_scale);
                     }
 
                     // Rotation constraint term
@@ -792,13 +698,6 @@ private:
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
             const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
-            const auto source_rgb_ptr = source.has_rgb() ? source.rgb_ptr() : nullptr;
-            const auto target_rgb_ptr = target.has_rgb() ? target.rgb_ptr() : nullptr;
-            const auto target_grad_ptr = target.has_color_gradient() ? target.color_gradients_ptr() : nullptr;
-            const auto source_intensity_ptr = source.has_intensity() ? source.intensities_ptr() : nullptr;
-            const auto target_intensity_ptr = target.has_intensity() ? target.intensities_ptr() : nullptr;
-            const auto target_intensity_grad_ptr =
-                target.has_intensity_gradient() ? target.intensity_gradients_ptr() : nullptr;
 
             const auto neighbors_index_ptr = knn_results.indices->data();
             const auto neighbors_distances_ptr = knn_results.distances->data();
@@ -808,11 +707,6 @@ private:
 
             const float genz_alpha = this->genz_alpha_;
             const float genz_planarity_threshold = this->params_.genz.planarity_threshold;
-            const covariance::NoiseModel source_noise_model = this->params_.source_noise_model;
-
-            const float photometric_weight = this->params_.photometric.enable ? this->params_.photometric.weight : 0.0f;
-            const float photometric_robust_scale =
-                this->params_.photometric.enable ? this->params_.photometric.robust_scale : 0.0f;
 
             const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
             const float rotation_constraint_robust_scale = rotation_robust_scale;
@@ -836,16 +730,6 @@ private:
                     const auto source_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
                     const auto target_cov = target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
                     const auto target_normal = target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
-                    const auto source_rgb = source_rgb_ptr ? source_rgb_ptr[index] : RGBType::Zero();
-                    const auto target_rgb = target_rgb_ptr ? target_rgb_ptr[target_idx] : RGBType::Zero();
-                    const auto target_grad = target_grad_ptr ? target_grad_ptr[target_idx] : ColorGradient::Zero();
-                    const float source_intensity = source_intensity_ptr ? source_intensity_ptr[index] : 0.0f;
-                    const float target_intensity = target_intensity_ptr ? target_intensity_ptr[target_idx] : 0.0f;
-                    const auto target_intensity_grad =
-                        target_intensity_grad_ptr ? target_intensity_grad_ptr[target_idx] : IntensityGradient::Zero();
-                    const bool use_color = source_rgb_ptr && target_rgb_ptr && target_grad_ptr;
-                    const bool use_intensity =
-                        source_intensity_ptr && target_intensity_ptr && target_intensity_grad_ptr;
 
                     float total_error = 0.0f;
                     // ICP term
@@ -855,7 +739,7 @@ private:
                             cur_T,                                              //
                             source_ptr[index], source_cov,                      // source
                             target_ptr[target_idx], target_cov, target_normal,  // target
-                            genz_alpha, genz_weight, source_noise_model, genz_planarity_threshold);
+                            genz_alpha, genz_weight, genz_planarity_threshold);
                         const float residual_norm = sycl::sqrt(squared_error);
 
                         // Apply robust kernel
@@ -865,24 +749,6 @@ private:
                         } else {
                             total_error = robust::kernel::compute_error<loss>(residual_norm, robust_scale);
                         }
-                    }
-
-                    // Photometric term
-                    if (use_color) {
-                        const float squared_error_color =
-                            kernel::calculate_color_error(cur_T, source_ptr[index], target_ptr[target_idx], source_rgb,
-                                                          target_rgb, target_normal, target_grad);
-                        const float residual_norm_color = sycl::sqrt(squared_error_color);
-                        total_error += photometric_weight * robust::kernel::compute_error<loss>(
-                                                                residual_norm_color, photometric_robust_scale);
-                    }
-                    if (use_intensity) {
-                        const float squared_error_intensity = kernel::calculate_intensity_error(
-                            cur_T, source_ptr[index], target_ptr[target_idx], source_intensity, target_intensity,
-                            target_normal, target_intensity_grad);
-                        const float residual_norm_intensity = sycl::sqrt(squared_error_intensity);
-                        total_error += photometric_weight * robust::kernel::compute_error<loss>(
-                                                                residual_norm_intensity, photometric_robust_scale);
                     }
 
                     // Rotation constraint term
@@ -928,44 +794,6 @@ private:
         }
         solution.setZero();
         return false;
-    }
-
-    void apply_anderson_acceleration(const PointCloudShared& source, const PointCloudShared& target,
-                                     RegistrationResult& result, const Eigen::Isometry3f& T_initial, float robust_scale,
-                                     float rotation_robust_scale) {
-        if (!this->params_.anderson.enabled) {
-            return;
-        }
-
-        // Gauss-Newton leaves result.error as the pre-step linearized error,
-        // so recompute the baseline at result.T for a fair Anderson comparison.
-        // LM/Dogleg already store the post-step error, so no recomputation needed.
-        float baseline_error = result.error;
-        int baseline_inlier = result.inlier;
-        if (this->params_.optimization_method == OptimizationMethod::GAUSS_NEWTON) {
-            std::tie(baseline_error, baseline_inlier) = compute_error(
-                source, target, this->neighbors_->at(0), result.T.matrix(), robust_scale, rotation_robust_scale);
-            baseline_error += this->map_prior_.prior_error(result.T);
-        }
-
-        const Eigen::Isometry3f T_anderson = this->anderson_acc_.apply(result.T, T_initial);
-        const auto [anderson_gicp_error, anderson_inlier] = compute_error(
-            source, target, this->neighbors_->at(0), T_anderson.matrix(), robust_scale, rotation_robust_scale);
-        const float anderson_error = anderson_gicp_error + this->map_prior_.prior_error(T_anderson);
-
-        const bool accepted = anderson_error <= baseline_error;
-        if (this->params_.verbose) {
-            std::cout << "  anderson: " << (accepted ? "accepted" : "rejected")  //
-                      << ", error: " << baseline_error << " -> " << anderson_error << std::endl;
-        }
-        if (accepted) {
-            result.T = T_anderson;
-            result.error = anderson_error;
-            result.inlier = anderson_inlier;
-        } else {
-            result.error = baseline_error;
-            result.inlier = baseline_inlier;
-        }
     }
 
     void optimize_gauss_newton(RegistrationResult& result, const LinearizedResult& linearized_result,

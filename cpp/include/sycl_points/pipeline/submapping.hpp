@@ -5,7 +5,6 @@
 #include <utility>
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
-#include "sycl_points/algorithms/feature/photometric_gradient.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
@@ -69,12 +68,9 @@ public:
                     this->submap_params_.occupancy_grid_map.enable_pruning);
                 this->occupancy_grid_->set_stale_frame_threshold(
                     this->submap_params_.occupancy_grid_map.stale_frame_threshold);
-                this->occupancy_grid_->set_covariance_aggregation_mode(
-                    this->submap_params_.covariance_aggregation_mode);
             } else {
                 this->submap_voxel_ =
                     std::make_shared<algorithms::mapping::VoxelHashMap>(this->queue_, this->submap_params_.voxel_size);
-                this->submap_voxel_->set_covariance_aggregation_mode(this->submap_params_.covariance_aggregation_mode);
             }
         }
     }
@@ -200,43 +196,13 @@ private:
         // Build target search structure for registration. Neighbor queries are launched lazily only when needed.
         this->submap_tree_ = algorithms::knn::KDTree::build(this->queue_, *this->submap_pc_ptr_);
 
-        // compute gradient and covariances
-        sycl_utils::events knn_events;
+        // compute covariances
+        compute_covariances();
+    }
+
+    void compute_covariances() {
         bool knn_ready = false;
-        compute_grad(knn_ready, knn_events);
-        compute_covariances(knn_ready, knn_events);
-
-        if (knn_ready) {
-            knn_events.wait_and_throw();
-        }
-    }
-
-    void compute_grad(bool& knn_ready, sycl_utils::events& knn_events) {
-        auto ensure_knn = [&]() {
-            if (!knn_ready) {
-                knn_events = this->submap_tree_->knn_search_async(*this->submap_pc_ptr_, this->cov_params_.neighbor_num,
-                                                                  this->knn_result_);
-                knn_ready = true;
-            }
-        };
-
-        sycl_utils::events grad_events;
-        const bool photometric_enabled = this->reg_params_.pipeline.registration.photometric.enable;
-        if (photometric_enabled) {
-            if (this->submap_pc_ptr_->has_rgb()) {
-                ensure_knn();
-                grad_events +=
-                    algorithms::color_gradient::compute_async(*this->submap_pc_ptr_, this->knn_result_, knn_events.evs);
-            } else if (this->submap_pc_ptr_->has_intensity()) {
-                ensure_knn();
-                grad_events += algorithms::intensity_gradient::compute_async(*this->submap_pc_ptr_, this->knn_result_,
-                                                                             knn_events.evs);
-            }
-        }
-        grad_events.wait_and_throw();
-    }
-
-    void compute_covariances(bool& knn_ready, sycl_utils::events& knn_events) {
+        sycl_utils::events knn_events;
         auto ensure_knn = [&]() {
             if (!knn_ready) {
                 knn_events = this->submap_tree_->knn_search_async(*this->submap_pc_ptr_, this->cov_params_.neighbor_num,
@@ -248,15 +214,13 @@ private:
         // compute covariances and normals
         sycl_utils::events cov_events;
         const auto reg_type = this->reg_params_.pipeline.registration.reg_type;
-        const bool photometric_enabled = this->reg_params_.pipeline.registration.photometric.enable;
         {
             const bool need_covariances = reg_type == algorithms::registration::RegType::GICP ||
                                           reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
                                           reg_type == algorithms::registration::RegType::GENZ ||
                                           this->reg_params_.pipeline.registration.rotation_constraint.enable;
             const bool need_normals = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
-                                       reg_type == algorithms::registration::RegType::GENZ ||  //
-                                       photometric_enabled);
+                                       reg_type == algorithms::registration::RegType::GENZ);
 
             const bool submap_has_cov = this->submap_pc_ptr_->has_cov();
             bool normals_are_ready = false;
@@ -277,16 +241,6 @@ private:
                 ensure_knn();
                 cov_events +=
                     algorithms::covariance::estimate_async(this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
-            }
-
-            if (photometric_enabled && !normals_are_ready) {
-                if (covariances_are_ready) {
-                    cov_events += algorithms::covariance::extract_normals_async(*this->submap_pc_ptr_, cov_events.evs);
-                } else {
-                    ensure_knn();
-                    cov_events += algorithms::covariance::estimate_normals_async(this->knn_result_,
-                                                                                 *this->submap_pc_ptr_, knn_events.evs);
-                }
             }
         }
         cov_events.wait_and_throw();

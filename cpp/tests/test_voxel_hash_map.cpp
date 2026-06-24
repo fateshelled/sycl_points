@@ -4,9 +4,11 @@
 #include <numbers>
 #include <vector>
 
+#include "sycl_points/algorithms/common/transform.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 #include "sycl_points/points/types.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
 namespace {
@@ -67,6 +69,20 @@ sycl_points::Covariance MakeCovariance(float xx, float xy, float xz, float yy, f
     cov(2, 1) = yz;
     cov(2, 2) = zz;
     return cov;
+}
+
+sycl_points::Covariance ComputeExpectCovariance(const std::vector<sycl_points::Covariance>& covariances,
+                                                Eigen::Isometry3f pose = Eigen::Isometry3f::Identity()) {
+    sycl_points::Covariance expect_cov = sycl_points::Covariance::Zero();
+    for (const auto& c : covariances) {
+        expect_cov.block<3, 3>(0, 0) += sycl_points::eigen_utils::log_spd_3x3(c.block<3, 3>(0, 0));
+    }
+    expect_cov /= covariances.size();
+    expect_cov.block<3, 3>(0, 0) = sycl_points::eigen_utils::exp_spd_3x3(expect_cov.block<3, 3>(0, 0));
+    // rotate
+    const auto T = sycl_points::eigen_utils::to_sycl_vec(pose.matrix());
+    sycl_points::algorithms::transform::kernel::transform_covs(expect_cov, expect_cov, T);
+    return expect_cov;
 }
 
 }  // namespace
@@ -209,15 +225,16 @@ TEST(VoxelHashMapTest, AggregatesCovariancesWithinVoxel) {
         ASSERT_TRUE(result.has_intensity());
 
         const auto& cov = (*result.covs)[0];
-        EXPECT_NEAR(cov(0, 0), 2.0f, 1e-5f);
-        EXPECT_NEAR(cov(0, 1), 0.4f, 1e-5f);
-        EXPECT_NEAR(cov(1, 0), 0.4f, 1e-5f);
-        EXPECT_NEAR(cov(0, 2), 0.6f, 1e-5f);
-        EXPECT_NEAR(cov(2, 0), 0.6f, 1e-5f);
-        EXPECT_NEAR(cov(1, 1), 3.0f, 1e-5f);
-        EXPECT_NEAR(cov(1, 2), 0.6f, 1e-5f);
-        EXPECT_NEAR(cov(2, 1), 0.6f, 1e-5f);
-        EXPECT_NEAR(cov(2, 2), 4.0f, 1e-5f);
+        const sycl_points::Covariance expect_cov = ComputeExpectCovariance(covariances);
+        EXPECT_NEAR(cov(0, 0), expect_cov(0, 0), 1e-5f);
+        EXPECT_NEAR(cov(0, 1), expect_cov(0, 1), 1e-5f);
+        EXPECT_NEAR(cov(1, 0), expect_cov(1, 0), 1e-5f);
+        EXPECT_NEAR(cov(0, 2), expect_cov(0, 2), 1e-5f);
+        EXPECT_NEAR(cov(2, 0), expect_cov(2, 0), 1e-5f);
+        EXPECT_NEAR(cov(1, 1), expect_cov(1, 1), 1e-5f);
+        EXPECT_NEAR(cov(1, 2), expect_cov(1, 2), 1e-5f);
+        EXPECT_NEAR(cov(2, 1), expect_cov(2, 1), 1e-5f);
+        EXPECT_NEAR(cov(2, 2), expect_cov(2, 2), 1e-5f);
         EXPECT_NEAR(cov.row(3).norm(), 0.0f, 1e-5f);
         EXPECT_NEAR(cov.col(3).norm(), 0.0f, 1e-5f);
 
@@ -264,51 +281,13 @@ TEST(VoxelHashMapTest, RotatesCovariancesIntoMapFrame) {
         ASSERT_TRUE(result.has_cov());
 
         const auto& cov = (*result.covs)[0];
-        EXPECT_NEAR(cov(0, 0), 10.0f, 1e-4f);
-        EXPECT_NEAR(cov(1, 1), 5.0f, 1e-4f);
-        EXPECT_NEAR(cov(2, 2), 17.0f, 1e-4f);
-        EXPECT_NEAR(cov(0, 1), 0.0f, 1e-4f);
-        EXPECT_NEAR(cov(0, 2), 0.0f, 1e-4f);
-        EXPECT_NEAR(cov(1, 2), 0.0f, 1e-4f);
-    } catch (const sycl::exception& e) {
-        FAIL() << "SYCL exception caught: " << e.what();
-    }
-}
-
-TEST(VoxelHashMapTest, SupportsLogEuclideanCovarianceAggregation) {
-    try {
-        sycl::device device = sycl::device(sycl_points::sycl_utils::device_selector::default_selector_v);
-        sycl_points::sycl_utils::DeviceQueue queue(device);
-
-        sycl_points::algorithms::mapping::VoxelHashMap voxel_map(queue, 0.5f);
-        voxel_map.set_covariance_aggregation_mode(
-            sycl_points::algorithms::mapping::CovarianceAggregationMode::LOG_EUCLIDEAN);
-
-        const std::vector<Eigen::Vector3f> input_positions = {
-            {0.0f, 0.0f, 0.0f},
-            {0.1f, 0.0f, 0.0f},
-        };
-        const std::vector<sycl_points::Covariance> covariances = {
-            MakeCovariance(1.0f, 0.0f, 0.0f, 4.0f, 0.0f, 9.0f),
-            MakeCovariance(9.0f, 0.0f, 0.0f, 16.0f, 0.0f, 25.0f),
-        };
-
-        auto cloud = MakePointCloud(queue, input_positions, &covariances);
-        voxel_map.add_point_cloud(cloud, Eigen::Isometry3f::Identity());
-
-        sycl_points::PointCloudShared result(queue);
-        voxel_map.downsampling(result, Eigen::Vector3f::Zero());
-
-        ASSERT_EQ(result.size(), 1U);
-        ASSERT_TRUE(result.has_cov());
-
-        const auto& cov = (*result.covs)[0];
-        EXPECT_NEAR(cov(0, 0), 3.0f, 1e-4f);
-        EXPECT_NEAR(cov(1, 1), 8.0f, 1e-4f);
-        EXPECT_NEAR(cov(2, 2), 15.0f, 1e-4f);
-        EXPECT_NEAR(cov(0, 1), 0.0f, 1e-4f);
-        EXPECT_NEAR(cov(0, 2), 0.0f, 1e-4f);
-        EXPECT_NEAR(cov(1, 2), 0.0f, 1e-4f);
+        sycl_points::Covariance expect_cov = ComputeExpectCovariance(covariances, pose);
+        EXPECT_NEAR(cov(0, 0), expect_cov(0, 0), 1e-4f);
+        EXPECT_NEAR(cov(1, 1), expect_cov(1, 1), 1e-4f);
+        EXPECT_NEAR(cov(2, 2), expect_cov(2, 2), 1e-4f);
+        EXPECT_NEAR(cov(0, 1), expect_cov(0, 1), 1e-4f);
+        EXPECT_NEAR(cov(0, 2), expect_cov(0, 2), 1e-4f);
+        EXPECT_NEAR(cov(1, 2), expect_cov(1, 2), 1e-4f);
     } catch (const sycl::exception& e) {
         FAIL() << "SYCL exception caught: " << e.what();
     }

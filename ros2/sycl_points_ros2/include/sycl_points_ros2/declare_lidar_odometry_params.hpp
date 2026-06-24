@@ -270,36 +270,12 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             velocity_update.iter =
                 node->declare_parameter<int64_t>("registration/velocity_update/iter", velocity_update.iter);
         }
-        // photometric
-        {
-            auto& photometric = solver.photometric;
-
-            photometric.enable = node->declare_parameter<bool>("registration/photometric/enable", photometric.enable);
-            photometric.weight = node->declare_parameter<double>("registration/photometric/weight", photometric.weight);
-            photometric.robust_scale =
-                node->declare_parameter<double>("registration/photometric/robust_scale", photometric.robust_scale);
-        }
         // GenZ
         {
             auto& genz = solver.genz;
 
             genz.planarity_threshold =
                 node->declare_parameter<double>("registration/genz/planarity_threshold", genz.planarity_threshold);
-        }
-        // Source noise model (GICP planar regularization)
-        // sigma_range = sigma_grazing = 0 reproduces the standard {1e-3, 1, 1} behavior.
-        {
-            auto& nm = solver.source_noise_model;
-            nm.sigma_range = static_cast<float>(
-                node->declare_parameter<double>("registration/source_noise_model/sigma_range", nm.sigma_range));
-            nm.sigma_grazing = static_cast<float>(
-                node->declare_parameter<double>("registration/source_noise_model/sigma_grazing", nm.sigma_grazing));
-            nm.min_eigenvalue = static_cast<float>(
-                node->declare_parameter<double>("registration/source_noise_model/min_eigenvalue", nm.min_eigenvalue));
-            nm.max_eigenvalue = static_cast<float>(
-                node->declare_parameter<double>("registration/source_noise_model/max_eigenvalue", nm.max_eigenvalue));
-            nm.cos_min = static_cast<float>(
-                node->declare_parameter<double>("registration/source_noise_model/cos_min", nm.cos_min));
         }
         // Rotation Constraint
         {
@@ -317,16 +293,6 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                 "registration/rotation_constraint/robust/init_scale", pipeline_robust.rotation_init_scale);
             pipeline_robust.rotation_min_scale = node->declare_parameter<double>(
                 "registration/rotation_constraint/robust/min_scale", pipeline_robust.rotation_min_scale);
-        }
-
-        // Anderson Acceleration
-        {
-            auto& anderson = solver.anderson;
-
-            anderson.enabled = node->declare_parameter<bool>("registration/anderson/enabled", anderson.enabled);
-            anderson.window_size =
-                node->declare_parameter<int64_t>("registration/anderson/window_size", anderson.window_size);
-            anderson.beta = node->declare_parameter<double>("registration/anderson/beta", anderson.beta);
         }
 
         // Optimization

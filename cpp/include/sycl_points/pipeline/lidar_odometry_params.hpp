@@ -9,7 +9,6 @@
 
 #include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
-#include "sycl_points/algorithms/mapping/covariance_aggregation_mode.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
 #include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 
@@ -161,8 +160,6 @@ struct Parameters {
         float max_distance_range = 30.0f;
         size_t point_random_sampling_num = 512;
         float weighted_sampling_ratio = 0.8f;
-        algorithms::mapping::CovarianceAggregationMode covariance_aggregation_mode =
-            algorithms::mapping::CovarianceAggregationMode::ARITHMETIC;
         Keyframe keyframe;
         OccupancyGridMap occupancy_grid_map;
     };
