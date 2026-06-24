@@ -20,7 +20,8 @@ TEST(LioRegistration, DirectionalIcpWeightingAttenuatesWeakDirections) {
     Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Identity();
 
     lio::DirectionalIcpWeightingParams params;
-    params.min_eigenvalue_per_inlier = 0.05f;  // threshold = 5 for 100 inliers
+    params.trans_min_eigenvalue_per_inlier = 0.05f;  // threshold = 5 for 100 inliers
+    params.rot_min_eigenvalue_per_inlier = 0.0f;
     params.weak_direction_scale = 0.1f;
     params.max_icp_to_imu_ratio = 0.0f;
 
@@ -42,7 +43,8 @@ TEST(LioRegistration, DirectionalIcpWeightingCapsInformationRelativeToImu) {
     H_imu(imu::State::kIdxRot, imu::State::kIdxRot) = 10.0f;
 
     lio::DirectionalIcpWeightingParams params;
-    params.min_eigenvalue_per_inlier = 0.0f;
+    params.trans_min_eigenvalue_per_inlier = 0.0f;
+    params.rot_min_eigenvalue_per_inlier = 0.0f;
     params.max_icp_to_imu_ratio = 2.0f;
     params.imu_information_floor = 0.0f;
 
