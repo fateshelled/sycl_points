@@ -113,10 +113,6 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                 "[declare_lidar_odometry_params] `submap/weighted_sampling_ratio` must be "
                 "within [0.0, 1.0]");
         }
-        params.submap.covariance_aggregation_mode =
-            algorithms::mapping::CovarianceAggregationMode_from_string(node->declare_parameter<std::string>(
-                "submap/covariance_aggregation_mode",
-                algorithms::mapping::CovarianceAggregationMode_to_string(params.submap.covariance_aggregation_mode)));
 
         params.submap.keyframe.inlier_ratio_threshold = node->declare_parameter<double>(
             "submap/keyframe/inlier_ratio_threshold", params.submap.keyframe.inlier_ratio_threshold);
