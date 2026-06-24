@@ -610,8 +610,14 @@ private:
             if (icp_dof > 0.0f && std::isfinite(last_icp.error) && last_icp.error >= 0.0f) {
                 icp_weight = 1.0f / std::max(1.0f, 2.0f * last_icp.error / icp_dof);
             }
-            algorithms::lio::LIOLinearizedResult lio;
-            algorithms::lio::add_icp_factor(lio, last_icp, x_op.rotation, icp_weight);
+            algorithms::lio::LIOLinearizedResult icp_lio;
+            algorithms::lio::add_icp_factor(icp_lio, last_icp, x_op.rotation, icp_weight);
+            if (imu_valid) {
+                algorithms::lio::apply_directional_icp_weighting(icp_lio, H_imu,
+                                                                 this->params_.lio.directional_icp_weighting);
+            }
+
+            algorithms::lio::LIOLinearizedResult lio = icp_lio;
             if (imu_valid) {
                 algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
             } else {

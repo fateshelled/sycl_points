@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+
 #include <Eigen/Dense>
 
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
@@ -72,6 +75,25 @@ struct LIOLinearizedResult {
     uint32_t inlier = 0;                                                    ///< Number of valid ICP correspondences
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};
+
+/// @brief Direction-wise ICP information shaping for degenerate LIO frames.
+///
+/// The reduced-chi² scalar weight handles globally bad alignments, but geometric
+/// degeneracy is directional: an ICP frame can be very confident in wall-normal
+/// motion while providing almost no information along a corridor.  This filter
+/// works in the 6-DOF pose eigenspace of the embedded ICP factor and attenuates
+/// weak or IMU-dominating directions before the IMU prior is added.
+struct DirectionalIcpWeightingParams {
+    bool enable = true;
+    /// Treat ICP pose eigen-directions below this per-inlier information as weak.
+    float min_eigenvalue_per_inlier = 0.05f;
+    /// Multiplicative scale applied to weak directions. 0 removes them entirely.
+    float weak_direction_scale = 0.05f;
+    /// Cap ICP pose information to this multiple of the IMU pose prior.
+    float max_icp_to_imu_ratio = 50.0f;
+    /// Lower bound used when the IMU pose information is also very small.
+    float imu_information_floor = 1.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -151,6 +173,83 @@ inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<floa
     result.H += H_imu;
     result.b += b_imu;
     result.error_imu = error;
+}
+
+// ---------------------------------------------------------------------------
+// apply_directional_icp_weighting
+// ---------------------------------------------------------------------------
+
+/// @brief Attenuate ICP pose information in weak/over-confident directions.
+///
+/// @param icp_factor  LIO factor containing only the embedded ICP contribution.
+/// @param H_imu       IMU information matrix already expressed in the LIO state.
+/// @param params      Directional weighting parameters.
+inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
+                                            const Eigen::Matrix<float, 15, 15>& H_imu,
+                                            const DirectionalIcpWeightingParams& params) {
+    if (!params.enable || icp_factor.inlier == 0) return;
+
+    constexpr int kPoseDof = 6;
+    Eigen::Matrix<float, kPoseDof, kPoseDof> H_pose = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
+    Eigen::Matrix<float, kPoseDof, 1> b_pose = Eigen::Matrix<float, kPoseDof, 1>::Zero();
+    Eigen::Matrix<float, kPoseDof, kPoseDof> H_imu_pose = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
+
+    H_pose.block<3, 3>(0, 0) = icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos);
+    H_pose.block<3, 3>(0, 3) = icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot);
+    H_pose.block<3, 3>(3, 0) = icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos);
+    H_pose.block<3, 3>(3, 3) = icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot);
+    H_pose = 0.5f * (H_pose + H_pose.transpose());
+
+    b_pose.segment<3>(0) = icp_factor.b.segment<3>(imu::State::kIdxPos);
+    b_pose.segment<3>(3) = icp_factor.b.segment<3>(imu::State::kIdxRot);
+
+    H_imu_pose.block<3, 3>(0, 0) = H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos);
+    H_imu_pose.block<3, 3>(0, 3) = H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot);
+    H_imu_pose.block<3, 3>(3, 0) = H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos);
+    H_imu_pose.block<3, 3>(3, 3) = H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot);
+    H_imu_pose = 0.5f * (H_imu_pose + H_imu_pose.transpose());
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, kPoseDof, kPoseDof>> solver(H_pose);
+    if (solver.info() != Eigen::Success) return;
+
+    const Eigen::Matrix<float, kPoseDof, kPoseDof>& Q = solver.eigenvectors();
+    const Eigen::Matrix<float, kPoseDof, 1> b_eig = Q.transpose() * b_pose;
+    Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
+    Eigen::Matrix<float, kPoseDof, 1> b_filtered = Eigen::Matrix<float, kPoseDof, 1>::Zero();
+
+    const float min_info = std::max(0.0f, params.min_eigenvalue_per_inlier) * static_cast<float>(icp_factor.inlier);
+    const float weak_scale = std::clamp(params.weak_direction_scale, 0.0f, 1.0f);
+    const float ratio_cap = params.max_icp_to_imu_ratio;
+    const float imu_floor = std::max(0.0f, params.imu_information_floor);
+
+    for (int i = 0; i < kPoseDof; ++i) {
+        const float lambda = std::max(0.0f, solver.eigenvalues()(i));
+        if (lambda <= 0.0f || !std::isfinite(lambda)) continue;
+
+        float scale = 1.0f;
+        if (min_info > 0.0f && lambda < min_info) {
+            scale *= weak_scale;
+        }
+        if (ratio_cap > 0.0f) {
+            const Eigen::Matrix<float, kPoseDof, 1> q = Q.col(i);
+            const float imu_info = std::max(imu_floor, q.dot(H_imu_pose * q));
+            const float max_icp_info = ratio_cap * imu_info;
+            if (max_icp_info > 0.0f && scale * lambda > max_icp_info) {
+                scale = max_icp_info / lambda;
+            }
+        }
+
+        const Eigen::Matrix<float, kPoseDof, 1> q = Q.col(i);
+        H_filtered.noalias() += (scale * lambda) * (q * q.transpose());
+        b_filtered.noalias() += (scale * b_eig(i)) * q;
+    }
+
+    icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) = H_filtered.block<3, 3>(0, 0);
+    icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) = H_filtered.block<3, 3>(0, 3);
+    icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) = H_filtered.block<3, 3>(3, 0);
+    icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) = H_filtered.block<3, 3>(3, 3);
+    icp_factor.b.segment<3>(imu::State::kIdxPos) = b_filtered.segment<3>(0);
+    icp_factor.b.segment<3>(imu::State::kIdxRot) = b_filtered.segment<3>(3);
 }
 
 // ---------------------------------------------------------------------------
