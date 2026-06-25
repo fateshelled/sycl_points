@@ -201,7 +201,6 @@ lidar_inertial_odometry_node:
     lio/bias_estimation/max_gyro_bias: 0.2    # [rad/s]
 
     # ICP registration backend (used for linearization inside the LIO loop)
-    # registration/solver_iterations is unused; the loop count is lio/total_iterations.
     registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
     registration/random_sampling/enable: true
@@ -247,10 +246,6 @@ lidar_inertial_odometry_node:
     registration/dogleg/gamma_decrease: 0.80
     registration/dogleg/gamma_increase: 1.25
 
-    registration/degenerate_regularization/type: "NONE" # NONE, NL_REG
-    registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold: 10.0
-    registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold: 10.0
-    registration/degenerate_regularization/nl_reg/base_factor: 0.2
     registration/verbose: false
 
     # Visualization
