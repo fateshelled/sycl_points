@@ -92,10 +92,6 @@ struct DirectionalIcpWeightingParams {
     float rot_min_eigenvalue_per_inlier = 3.0f;
     /// Multiplicative scale applied to weak directions. 0 removes them entirely.
     float weak_direction_scale = 0.05f;
-    /// Cap ICP pose information to this multiple of the IMU pose prior.
-    float max_icp_to_imu_ratio = 50.0f;
-    /// Lower bound used when the IMU pose information is also very small.
-    float imu_information_floor = 1.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -185,9 +181,8 @@ inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<floa
 /// @brief Attenuate ICP pose information in weak/over-confident directions.
 ///
 /// @param icp_factor  LIO factor containing only the embedded ICP contribution.
-/// @param H_imu       IMU information matrix already expressed in the LIO state.
 /// @param params      Directional weighting parameters.
-inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, const Eigen::Matrix<float, 15, 15>& H_imu,
+inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
                                             const DirectionalIcpWeightingParams& params) {
     if (!params.enable || icp_factor.inlier == 0) return;
 
@@ -195,7 +190,6 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
     constexpr int kBlockDof = 3;
     Eigen::Matrix<float, kPoseDof, kPoseDof> H_pose = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
     Eigen::Matrix<float, kPoseDof, 1> b_pose = Eigen::Matrix<float, kPoseDof, 1>::Zero();
-    Eigen::Matrix<float, kPoseDof, kPoseDof> H_imu_pose = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
 
     H_pose.block<3, 3>(0, 0) = icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos);
     H_pose.block<3, 3>(0, 3) = icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot);
@@ -206,16 +200,8 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
     b_pose.segment<3>(0) = icp_factor.b.segment<3>(imu::State::kIdxPos);
     b_pose.segment<3>(3) = icp_factor.b.segment<3>(imu::State::kIdxRot);
 
-    H_imu_pose.block<3, 3>(0, 0) = H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos);
-    H_imu_pose.block<3, 3>(0, 3) = H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot);
-    H_imu_pose.block<3, 3>(3, 0) = H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos);
-    H_imu_pose.block<3, 3>(3, 3) = H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot);
-    H_imu_pose = 0.5f * (H_imu_pose + H_imu_pose.transpose());
-
     const float weak_scale = std::clamp(params.weak_direction_scale, 0.0f, 1.0f);
-    const float ratio_cap = params.max_icp_to_imu_ratio;
-    const float imu_floor = std::max(0.0f, params.imu_information_floor);
-    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block, const Eigen::Matrix3f& H_imu_block,
+    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block,
                                           float min_eigenvalue_per_inlier) -> Eigen::Matrix3f {
         const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
@@ -232,14 +218,6 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
                 if (min_info > 0.0f && lambda < min_info) {
                     scale *= weak_scale;
                 }
-                if (ratio_cap > 0.0f) {
-                    const Eigen::Vector3f q = solver.eigenvectors().col(i);
-                    const float imu_info = std::max(imu_floor, q.dot(H_imu_block * q));
-                    const float max_icp_info = ratio_cap * imu_info;
-                    if (max_icp_info > 0.0f && scale * lambda > max_icp_info) {
-                        scale = max_icp_info / lambda;
-                    }
-                }
             }
 
             const Eigen::Vector3f q = solver.eigenvectors().col(i);
@@ -249,10 +227,8 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
     };
 
     Eigen::Matrix<float, kPoseDof, kPoseDof> filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
-    filter.block<3, 3>(0, 0) = compute_block_filter(H_pose.block<3, 3>(0, 0), H_imu_pose.block<3, 3>(0, 0),
-                                                    params.trans_min_eigenvalue_per_inlier);
-    filter.block<3, 3>(3, 3) = compute_block_filter(H_pose.block<3, 3>(3, 3), H_imu_pose.block<3, 3>(3, 3),
-                                                    params.rot_min_eigenvalue_per_inlier);
+    filter.block<3, 3>(0, 0) = compute_block_filter(H_pose.block<3, 3>(0, 0), params.trans_min_eigenvalue_per_inlier);
+    filter.block<3, 3>(3, 3) = compute_block_filter(H_pose.block<3, 3>(3, 3), params.rot_min_eigenvalue_per_inlier);
 
     const Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = filter * H_pose * filter;
     const Eigen::Matrix<float, kPoseDof, 1> b_filtered = filter * filter * b_pose;

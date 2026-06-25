@@ -49,12 +49,6 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     params.lio.directional_icp_weighting.weak_direction_scale =
         static_cast<float>(node->declare_parameter<double>("lio/directional_icp_weighting/weak_direction_scale",
                                                            params.lio.directional_icp_weighting.weak_direction_scale));
-    params.lio.directional_icp_weighting.max_icp_to_imu_ratio =
-        static_cast<float>(node->declare_parameter<double>("lio/directional_icp_weighting/max_icp_to_imu_ratio",
-                                                           params.lio.directional_icp_weighting.max_icp_to_imu_ratio));
-    params.lio.directional_icp_weighting.imu_information_floor =
-        static_cast<float>(node->declare_parameter<double>("lio/directional_icp_weighting/imu_information_floor",
-                                                           params.lio.directional_icp_weighting.imu_information_floor));
 
     // Bias-estimation safeguards
     params.lio.bias_estimation.freeze_on_low_excitation = node->declare_parameter<bool>(

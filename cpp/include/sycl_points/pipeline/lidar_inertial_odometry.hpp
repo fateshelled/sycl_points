@@ -612,10 +612,7 @@ private:
             }
             algorithms::lio::LIOLinearizedResult icp_lio;
             algorithms::lio::add_icp_factor(icp_lio, last_icp, x_op.rotation, icp_weight);
-            if (imu_valid) {
-                algorithms::lio::apply_directional_icp_weighting(icp_lio, H_imu,
-                                                                 this->params_.lio.directional_icp_weighting);
-            }
+            algorithms::lio::apply_directional_icp_weighting(icp_lio, this->params_.lio.directional_icp_weighting);
 
             algorithms::lio::LIOLinearizedResult lio = icp_lio;
             if (imu_valid) {
