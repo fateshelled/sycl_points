@@ -187,10 +187,10 @@ lidar_inertial_odometry_node:
     # detects weak translation and rotation directions separately so corridor /
     # stairwell degeneracy leans on the IMU prediction instead of noisy LiDAR increments.
     lio/directional_icp_weighting/enable: true
-    lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier: 3.0
-    lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 3.0
-    lio/directional_icp_weighting/weak_direction_scale: 0.05
-    lio/directional_icp_weighting/max_icp_to_imu_ratio: 50.0
+    lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier: 10.0
+    lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 10.0
+    lio/directional_icp_weighting/weak_direction_scale: 0.1
+    lio/directional_icp_weighting/max_icp_to_imu_ratio: 0.0
     lio/directional_icp_weighting/imu_information_floor: 1.0
     # Bias-estimation safeguards for the weakly-observable IMU bias states.
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
