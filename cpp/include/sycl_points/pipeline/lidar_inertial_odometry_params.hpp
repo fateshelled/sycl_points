@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sycl_points/algorithms/lio/lio_registration.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
 
@@ -43,6 +44,12 @@ struct Parameters : public lidar_odometry::Parameters {
         /// Because this velocity seeds the next window's IMU prediction, a lower
         /// blend reduces position-difference noise leaking into the prior.
         float velocity_fd_blend = 1.0f;
+
+        /// Direction-wise balance between the LiDAR ICP factor and IMU prior.
+        /// This attenuates geometrically weak pose directions and caps ICP
+        /// information relative to the IMU pose information, preventing a
+        /// degenerate scan from driving the state along poorly observed axes.
+        algorithms::lio::DirectionalIcpWeightingParams directional_icp_weighting;
 
         /// Bias-estimation safeguards for the weakly-observable IMU bias states.
         struct BiasEstimation {

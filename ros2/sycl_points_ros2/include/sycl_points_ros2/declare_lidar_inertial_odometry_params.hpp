@@ -38,6 +38,17 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         static_cast<float>(node->declare_parameter<double>("lio/icp_rotation_sigma", params.lio.icp_rotation_sigma));
     params.lio.velocity_fd_blend =
         static_cast<float>(node->declare_parameter<double>("lio/velocity_fd_blend", params.lio.velocity_fd_blend));
+    params.lio.directional_icp_weighting.enable = node->declare_parameter<bool>(
+        "lio/directional_icp_weighting/enable", params.lio.directional_icp_weighting.enable);
+    params.lio.directional_icp_weighting.trans_min_eigenvalue_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier",
+                                        params.lio.directional_icp_weighting.trans_min_eigenvalue_per_inlier));
+    params.lio.directional_icp_weighting.rot_min_eigenvalue_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier",
+                                        params.lio.directional_icp_weighting.rot_min_eigenvalue_per_inlier));
+    params.lio.directional_icp_weighting.weak_direction_scale =
+        static_cast<float>(node->declare_parameter<double>("lio/directional_icp_weighting/weak_direction_scale",
+                                                           params.lio.directional_icp_weighting.weak_direction_scale));
 
     // Bias-estimation safeguards
     params.lio.bias_estimation.freeze_on_low_excitation = node->declare_parameter<bool>(

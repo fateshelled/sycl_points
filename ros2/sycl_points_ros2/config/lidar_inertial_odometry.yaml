@@ -182,6 +182,14 @@ lidar_inertial_odometry_node:
     # 0.0 trusts the smooth IEKF filter velocity (less position-noise leakage into
     # the next window's IMU prior); 1.0 is the legacy pure finite-difference estimate.
     lio/velocity_fd_blend: 0.5
+    # Direction-wise ICP/IMU balance for degenerate geometry.
+    # The scalar reduced-chi² weight handles globally bad matches; this filter
+    # detects weak translation and rotation directions separately so corridor /
+    # stairwell degeneracy leans on the IMU prediction instead of noisy LiDAR increments.
+    lio/directional_icp_weighting/enable: true
+    lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier: 10.0
+    lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 10.0
+    lio/directional_icp_weighting/weak_direction_scale: 0.1
     # Bias-estimation safeguards for the weakly-observable IMU bias states.
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
     #   little motion (biases are unobservable there and would absorb noise).
