@@ -315,9 +315,10 @@ inline imu::State retract(const imu::State& state, const Eigen::Matrix<float, 15
 // ---------------------------------------------------------------------------
 // imu_to_lidar_jacobian / transform_covariance_imu_to_lidar (15-DOF)
 //
-// The IMU preintegration propagates a 15-D covariance in the IMU body
-// error-state [δp_imu, δφ_imu, δv, δb_a, δb_g].  The LIO optimiser maintains
-// the state in the LiDAR body frame [δp_lidar, δφ_lidar, δv, δb_a, δb_g].
+// The IMU preintegration propagates a 15-D covariance with world-frame
+// position/velocity errors and an IMU right-rotation error
+// [δp_world, δφ_imu, δv_world, δb_a, δb_g].  The LIO optimiser uses the same
+// world-frame position/velocity errors and a LiDAR right-rotation error.
 //
 // When T_imu_to_lidar ≠ Identity the two frames differ, and the covariance
 // must be transformed before it can be used as the IMU prior.  These functions

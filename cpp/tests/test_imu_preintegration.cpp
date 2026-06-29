@@ -14,6 +14,9 @@ namespace imu = sycl_points::imu;
 
 static constexpr float kEps = 1e-4f;       // loose tolerance for float integration
 static constexpr float kEpsTight = 1e-5f;  // tight tolerance for algebraic checks
+static constexpr int kIdxPos = 0;
+static constexpr int kIdxRot = 3;
+static constexpr int kIdxVel = 6;
 
 /// Build a batch of IMU measurements with constant gyro/accel over [t0, t0+T].
 static std::vector<imu::IMUMeasurement> make_constant_imu(double t0, double T, int n_steps, const Eigen::Vector3f& gyro,
@@ -476,4 +479,103 @@ TEST(IMUPreintegration, GetCorrectedSameBiasEqualsRaw) {
     EXPECT_TRUE(corrected.Delta_R.isApprox(raw.Delta_R, kEpsTight));
     EXPECT_TRUE(corrected.Delta_v.isApprox(raw.Delta_v, kEpsTight));
     EXPECT_TRUE(corrected.Delta_p.isApprox(raw.Delta_p, kEpsTight));
+}
+
+// 22. Midpoint gyro-bias Jacobians include the direct effect of the current
+//     interval's half-step rotation on Delta_v and Delta_p.
+TEST(IMUPreintegration, MidpointGyroBiasJacobiansMatchFiniteDifference) {
+    constexpr double dt = 0.2;
+    constexpr float eps = 1e-3f;
+    const Eigen::Vector3f gyro(0.2f, -0.1f, 1.0f);
+    const Eigen::Vector3f accel(4.0f, 1.0f, 8.0f);
+    const auto measurements = make_constant_imu(0.0, dt, 1, gyro, accel);
+
+    imu::IMUPreintegration nominal;
+    nominal.integrate_batch(measurements);
+
+    imu::IMUBias bias_plus;
+    bias_plus.gyro_bias.z() = eps;
+    imu::IMUPreintegration plus;
+    plus.reset(bias_plus);
+    plus.integrate_batch(measurements);
+
+    imu::IMUBias bias_minus;
+    bias_minus.gyro_bias.z() = -eps;
+    imu::IMUPreintegration minus;
+    minus.reset(bias_minus);
+    minus.integrate_batch(measurements);
+
+    const Eigen::Vector3f numerical_v = (plus.get_raw().Delta_v - minus.get_raw().Delta_v) / (2.0f * eps);
+    const Eigen::Vector3f numerical_p = (plus.get_raw().Delta_p - minus.get_raw().Delta_p) / (2.0f * eps);
+
+    EXPECT_TRUE(nominal.get_raw().J.J_v_bg.col(2).isApprox(numerical_v, 5e-4f))
+        << "analytic=" << nominal.get_raw().J.J_v_bg.col(2).transpose() << " numerical=" << numerical_v.transpose();
+    EXPECT_TRUE(nominal.get_raw().J.J_p_bg.col(2).isApprox(numerical_p, 1e-4f))
+        << "analytic=" << nominal.get_raw().J.J_p_bg.col(2).transpose() << " numerical=" << numerical_p.transpose();
+}
+
+// 23. Position/velocity covariance is represented in the world frame.  A
+//     non-identity reset orientation must therefore rotate the acceleration
+//     coupling from body coordinates into world coordinates.
+TEST(IMUPreintegration, CovarianceUsesWorldFrameAtReset) {
+    constexpr float dt = 0.1f;
+    const Eigen::Matrix3f R_world_body = rot_z(std::numbers::pi_v<float> / 2.0f);
+    const Eigen::Vector3f accel(1.0f, 2.0f, 9.0f);
+
+    Eigen::Matrix<float, 15, 15> P0 = Eigen::Matrix<float, 15, 15>::Zero();
+    Eigen::Matrix3f P_rotation = Eigen::Matrix3f::Zero();
+    P_rotation.diagonal() = Eigen::Vector3f(1e-4f, 2e-4f, 3e-4f);
+    P0.block<3, 3>(kIdxRot, kIdxRot) = P_rotation;
+
+    imu::IMUPreintegration integ;
+    integ.reset(imu::IMUBias{}, P0, R_world_body);
+    integ.integrate_batch(make_constant_imu(0.0, dt, 1, Eigen::Vector3f::Zero(), accel));
+
+    const Eigen::Matrix3f A = -R_world_body * sp::eigen_utils::lie::skew(accel) * dt;
+    const Eigen::Matrix3f expected_velocity_cov = A * P_rotation * A.transpose();
+    const Eigen::Matrix3f actual_velocity_cov = integ.get_raw().covariance.block<3, 3>(kIdxVel, kIdxVel);
+    EXPECT_TRUE(actual_velocity_cov.isApprox(expected_velocity_cov, 1e-6f)) << "actual=\n"
+                                                                            << actual_velocity_cov << "\nexpected=\n"
+                                                                            << expected_velocity_cov;
+}
+
+// 24. Gyro white noise perturbs the midpoint attitude and therefore induces
+//     position/velocity uncertainty during the same interval when acceleration
+//     is non-zero.
+TEST(IMUPreintegration, GyroNoiseCouplesIntoPositionAndVelocity) {
+    imu::IMUPreintegrationParams params;
+    params.gyro_noise_density = 1e-2f;
+
+    imu::IMUPreintegration integ(params);
+    integ.integrate_batch(
+        make_constant_imu(0.0, 0.1, 1, Eigen::Vector3f(0.0f, 0.0f, 1.0f), Eigen::Vector3f(4.0f, 1.0f, 8.0f)));
+
+    const auto& covariance = integ.get_raw().covariance;
+    const float position_trace = covariance.block<3, 3>(kIdxPos, kIdxPos).trace();
+    const float velocity_trace = covariance.block<3, 3>(kIdxVel, kIdxVel).trace();
+    const float velocity_rotation_cross_norm = covariance.block<3, 3>(kIdxVel, kIdxRot).norm();
+    EXPECT_GT(position_trace, 0.0f);
+    EXPECT_GT(velocity_trace, 0.0f);
+    EXPECT_GT(velocity_rotation_cross_norm, 0.0f);
+}
+
+// 25. A preintegration window retains an exact start sample instead of dropping
+//     the first interval, and interpolates both non-aligned boundaries.
+TEST(IMUPreintegration, MeasurementWindowInterpolatesBoundaries) {
+    std::vector<imu::IMUMeasurement> measurements(3);
+    for (size_t i = 0; i < measurements.size(); ++i) {
+        measurements[i].timestamp = static_cast<double>(i);
+        measurements[i].gyro = Eigen::Vector3f::Constant(static_cast<float>(i));
+        measurements[i].accel = Eigen::Vector3f::Constant(10.0f * static_cast<float>(i));
+    }
+
+    std::vector<imu::IMUMeasurement> window;
+    imu::build_measurement_window(measurements, 0.25, 1.75, window);
+
+    ASSERT_EQ(window.size(), 3U);
+    EXPECT_DOUBLE_EQ(window.front().timestamp, 0.25);
+    EXPECT_DOUBLE_EQ(window[1].timestamp, 1.0);
+    EXPECT_DOUBLE_EQ(window.back().timestamp, 1.75);
+    EXPECT_TRUE(window.front().gyro.isApprox(Eigen::Vector3f::Constant(0.25f)));
+    EXPECT_TRUE(window.back().accel.isApprox(Eigen::Vector3f::Constant(17.5f)));
 }

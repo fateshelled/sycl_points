@@ -209,7 +209,7 @@ public:
                 const Eigen::Matrix3f R_world_imu =
                     this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
-                this->imu_preintegration_->reset(this->imu_bias_);
+                this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
                 this->imu_R_world_at_reset_ = R_world_imu;
                 this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
                 this->last_imu_reset_timestamp_ = timestamp;
@@ -224,11 +224,8 @@ public:
             {
                 std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_batch_.reserve(this->imu_buffer_.size());
-                for (const auto& meas : this->imu_buffer_) {
-                    if (meas.timestamp <= this->last_imu_reset_timestamp_) continue;
-                    if (meas.timestamp > timestamp) break;
-                    this->imu_batch_.push_back(meas);
-                }
+                imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
+                                              this->imu_batch_);
             }
             this->imu_preintegration_->integrate_batch(this->imu_batch_);
         }
@@ -451,7 +448,7 @@ private:
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
                 this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            this->imu_preintegration_->reset(this->imu_bias_);
+            this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
             this->imu_R_world_at_reset_ = R_world_imu;
             this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
 
@@ -532,6 +529,7 @@ private:
 
     algorithms::registration::RegistrationResult registration() {
         Eigen::Isometry3f init_T;
+        Eigen::Vector3f v_reset = Eigen::Vector3f::Zero();
         if (this->imu_preintegration_) {
             if (this->imu_preintegration_->get_dt_total() > 0.0) {
                 init_T = this->imu_motion_prediction();
@@ -540,14 +538,8 @@ private:
                                                           this->dt_, this->reg_result_, this->registrated_);
             }
             // linear_velocity_ is in the prev_odom_ body frame, so use prev_odom_.rotation() to convert to world frame.
-            const Eigen::Vector3f v_reset = this->imu_velocity_corrector_.get_reset_velocity(
+            v_reset = this->imu_velocity_corrector_.get_reset_velocity(
                 *this->imu_preintegration_, this->imu_bias_, this->prev_odom_.rotation() * this->linear_velocity_);
-            this->imu_preintegration_->reset(this->imu_bias_);
-            this->imu_v_world_at_reset_ = v_reset;
-            // imu_R_world_at_reset_ is set after align() below, from the just-registered pose.
-            // The window being reset here starts at t_k, where the LiDAR orientation is the ICP
-            // result (reg_result.T), not the pre-registration odom_ (= t_{k-1} pose), which would
-            // lag the window-start orientation by one frame.
         } else {
             init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
                                                       this->dt_, this->reg_result_, this->registrated_);
@@ -566,14 +558,17 @@ private:
         auto result = this->registration_pipeline_->align(*this->preprocessed_pc_, this->submap_->get_submap_point_cloud(),
                                                           this->submap_->get_submap_kdtree(), init_T.matrix(), options);
 
-        // Snapshot the window-start IMU orientation from the just-registered pose (t_k), so the
-        // next frame's imu_motion_prediction() compensates gravity around the correct orientation.
-        // imu_v_world_at_reset_ above intentionally retains the velocity corrector's value, which
+        // Reset from the just-registered pose (t_k), so both covariance propagation and the
+        // next frame's imu_motion_prediction() use the correct window-start orientation.
+        // imu_v_world_at_reset_ intentionally retains the velocity corrector's value, which
         // carries a known one-frame (~100 ms @ 10 Hz) approximation that IMU gravity/bias
         // compensation absorbs; only the orientation is corrected here. Fixing the velocity lag too
         // would require splitting the corrector's snapshot/return protocol (see IMUVelocityCorrector).
         if (this->imu_preintegration_) {
             this->imu_R_world_at_reset_ = result.T.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+            this->imu_v_world_at_reset_ = v_reset;
+            this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(),
+                                             this->imu_R_world_at_reset_);
         }
 
         return result;
