@@ -207,11 +207,8 @@ public:
             this->imu_batch_.clear();
             std::lock_guard<std::mutex> lock(this->imu_mutex_);
             this->imu_batch_.reserve(this->imu_buffer_.size());
-            for (const auto& m : this->imu_buffer_) {
-                if (m.timestamp <= this->last_imu_reset_timestamp_) continue;
-                if (m.timestamp > timestamp) break;
-                this->imu_batch_.push_back(m);
-            }
+            imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
+                                          this->imu_batch_);
         }
         this->imu_preintegration_->integrate_batch(this->imu_batch_);
 
@@ -424,13 +421,14 @@ private:
         const float sr2 = this->params_.lio.icp_rotation_sigma * this->params_.lio.icp_rotation_sigma;
         P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
 
-        // P_post_ is in LiDAR error-state frame; IMUPreintegration expects IMU body frame.
+        // P_post_ uses LiDAR right-rotation error; IMUPreintegration uses IMU
+        // right-rotation error. Position and velocity remain in the world frame.
         // Convert before passing so that get_raw().covariance → transform_covariance_imu_to_lidar
         // yields the correct P_pred_lidar without double-transformation.
         const Eigen::Matrix<float, 15, 15> P_initial_imu =
             algorithms::lio::transform_covariance_lidar_to_imu(P_initial, T_i2l, this->x_.rotation);
 
-        this->imu_preintegration_->reset({this->x_.gyro_bias, this->x_.accel_bias}, P_initial_imu);
+        this->imu_preintegration_->reset({this->x_.gyro_bias, this->x_.accel_bias}, P_initial_imu, R_world_imu);
         this->imu_R_world_at_reset_ = R_world_imu;
         this->imu_v_world_at_reset_ = this->x_.velocity;
     }
@@ -857,7 +855,8 @@ private:
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
                 this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            this->imu_preintegration_->reset(this->params_.imu.bias);
+            this->imu_preintegration_->reset(this->params_.imu.bias, Eigen::Matrix<float, 15, 15>::Zero(),
+                                             R_world_imu);
             this->imu_R_world_at_reset_ = R_world_imu;
             this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
         }

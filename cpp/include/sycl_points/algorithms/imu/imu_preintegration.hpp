@@ -1,9 +1,11 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <ranges>
+#include <vector>
 
 #include "sycl_points/points/types.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
@@ -20,10 +22,69 @@ struct IMUMeasurement {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
+/// @brief Linearly interpolate an IMU sample at a timestamp between two samples.
+///
+/// This boundary interpolation is intended for the usual LIO setup where IMU
+/// samples are much denser than LiDAR frames.  For very low-rate or irregular
+/// IMU streams, the caller should prefer better timestamp alignment or a
+/// higher-order sensor model rather than relying on this helper to recover
+/// intra-sample dynamics.
+inline IMUMeasurement interpolate_measurement(const IMUMeasurement& before, const IMUMeasurement& after,
+                                              double timestamp) {
+    const double span = after.timestamp - before.timestamp;
+    if (span <= 0.0) return before;
+    const double alpha = std::clamp((timestamp - before.timestamp) / span, 0.0, 1.0);
+    IMUMeasurement out;
+    out.timestamp = timestamp;
+    out.gyro = ((1.0 - alpha) * before.gyro.cast<double>() + alpha * after.gyro.cast<double>()).cast<float>();
+    out.accel = ((1.0 - alpha) * before.accel.cast<double>() + alpha * after.accel.cast<double>()).cast<float>();
+    return out;
+}
+
 template <typename Range>
 concept imu_measurement_range = std::ranges::range<Range> && requires(Range& r) {
     { *std::begin(r) } -> std::convertible_to<IMUMeasurement>;
 };
+
+/// @brief Extract an IMU window and interpolate samples at its exact boundaries
+///        when bracketing measurements are available.
+///
+/// Boundary interpolation is linear by design; this is a small endpoint
+/// correction for high-rate IMU data, not a replacement for sufficient IMU
+/// sampling frequency.
+template <imu_measurement_range Range>
+void build_measurement_window(const Range& measurements, double start_timestamp, double end_timestamp,
+                              std::vector<IMUMeasurement>& window) {
+    window.clear();
+    if (end_timestamp <= start_timestamp) return;
+
+    IMUMeasurement before_start;
+    bool has_before_start = false;
+    for (const auto& measurement : measurements) {
+        if (measurement.timestamp <= start_timestamp) {
+            before_start = measurement;
+            has_before_start = true;
+            continue;
+        }
+
+        if (measurement.timestamp > end_timestamp) {
+            if (window.empty() && has_before_start) {
+                window.push_back(interpolate_measurement(before_start, measurement, start_timestamp));
+            }
+            if (!window.empty() && window.back().timestamp < end_timestamp) {
+                window.push_back(interpolate_measurement(window.back(), measurement, end_timestamp));
+            }
+            break;
+        }
+
+        if (window.empty() && has_before_start) {
+            window.push_back(before_start.timestamp < start_timestamp
+                                 ? interpolate_measurement(before_start, measurement, start_timestamp)
+                                 : before_start);
+        }
+        window.push_back(measurement);
+    }
+}
 
 /// @brief Gyroscope and accelerometer biases.
 struct IMUBias {
@@ -131,14 +192,20 @@ public:
     ///                           compute_imu_hessian_gradient().
     ///                           Defaults to zero (uncertainty from IMU noise only).
     ///
-    /// Note: the window-start orientation and velocity required by
-    /// predict_relative_transform() are now passed directly to that function,
-    /// so callers must retain them externally.
+    /// @param R_world_body       Body-to-world orientation at the window start.
+    ///                           Position and velocity errors in initial_covariance
+    ///                           are world-frame quantities, so this rotation is
+    ///                           required to build their propagation Jacobians.
+    ///
+    /// Note: the window-start velocity required by predict_relative_transform()
+    /// is passed directly to that function, so callers must retain it externally.
     void reset(const IMUBias& bias = IMUBias(),
-               const Eigen::Matrix<float, 15, 15>& initial_covariance = Eigen::Matrix<float, 15, 15>::Zero()) {
+               const Eigen::Matrix<float, 15, 15>& initial_covariance = Eigen::Matrix<float, 15, 15>::Zero(),
+               const Eigen::Matrix3f& R_world_body = Eigen::Matrix3f::Identity()) {
         bias_lin_ = bias;
         result_ = PreintegrationResult{};
         result_.covariance = initial_covariance;
+        R_world_body_at_reset_ = R_world_body;
         has_prev_ = false;
         num_measurements_ = 0;
         step_count_ = 0;
@@ -206,10 +273,10 @@ public:
 
     /// @brief Predict the absolute world-frame pose at the end of the window.
     ///
-    /// @param T_world_body_i  World-to-body transform at window start (4x4 SE3).
+    /// @param T_world_body_i  Body pose expressed in world at window start (4x4 SE3).
     /// @param v_world_i       Body velocity in the world frame at window start [m/s].
     /// @param current_bias    Current bias estimate (may differ from linearization bias).
-    /// @return Predicted world-frame pose T_world_body_j (TransformMatrix = Matrix4f).
+    /// @return Predicted body pose expressed in world, T_world_body_j.
     TransformMatrix predict_transform(const TransformMatrix& T_world_body_i, const Eigen::Vector3f& v_world_i,
                                       const IMUBias& current_bias) const {
         const PreintegrationResult c = get_corrected(current_bias);
@@ -330,15 +397,21 @@ private:
 
         // --- Jacobian propagation (first-order discrete-time recurrence) ---
         const Eigen::Matrix3f Jr = right_jacobian_so3(phi_mid);
+        const Eigen::Matrix3f Jr_half = right_jacobian_so3(phi_half);
         const Eigen::Matrix3f skew_a = eigen_utils::lie::skew(a_mid);
+
+        // Right-perturbation Jacobian of the midpoint orientation w.r.t. gyro
+        // bias.  The direct -Jr_half*dt/2 term is essential even in the first
+        // integration interval, where J_R_bg_old is still zero.
+        const Eigen::Matrix3f J_R_mid_bg = R_half.transpose() * J_R_bg_old - Jr_half * (0.5f * dt_f);
 
         result_.J.J_R_bg = R_step.transpose() * J_R_bg_old - Jr * dt_f;
 
-        result_.J.J_v_bg = J_v_bg_old - Delta_R_mid * skew_a * J_R_bg_old * dt_f;
+        result_.J.J_v_bg = J_v_bg_old - Delta_R_mid * skew_a * J_R_mid_bg * dt_f;
         result_.J.J_v_ba = result_.J.J_v_ba - Delta_R_mid * dt_f;
 
         result_.J.J_p_bg =
-            result_.J.J_p_bg + J_v_bg_old * dt_f - 0.5f * Delta_R_mid * skew_a * J_R_bg_old * dt_f * dt_f;
+            result_.J.J_p_bg + J_v_bg_old * dt_f - 0.5f * Delta_R_mid * skew_a * J_R_mid_bg * dt_f * dt_f;
         result_.J.J_p_ba = result_.J.J_p_ba + J_v_ba_old * dt_f - 0.5f * Delta_R_mid * dt_f * dt_f;
 
         // --- 15×15 covariance propagation ---
@@ -346,21 +419,28 @@ private:
         // Error-state ordering: [δp(0:3), δφ(3:6), δv(6:9), δba(9:12), δbg(12:15)]
         //
         // Discrete state-transition matrix F (15×15):
-        //   δp_{k+1} = δp_k + δv_k·dt  − 0.5·ΔRm·[am×]·dt²·δφ_k − 0.5·ΔRm·dt²·δba
+        // Position and velocity errors are expressed in the world frame; rotation
+        // and bias errors use the current IMU body frame.
+        //
+        //   δp_{k+1} = δp_k + δv_k·dt
+        //                − 0.5·Rwm·[am×]·Rhᵀ·dt²·δφ_k
+        //                − 0.5·Rwm·dt²·δba
+        //                + 0.25·Rwm·[am×]·Jrh·dt³·δbg
         //   δφ_{k+1} = R_step^T·δφ_k   − Jr·dt·δbg
-        //   δv_{k+1} = δv_k             − ΔRm·[am×]·dt·δφ_k − ΔRm·dt·δba
+        //   δv_{k+1} = δv_k − Rwm·[am×]·Rhᵀ·dt·δφ_k − Rwm·dt·δba
+        //                        + 0.5·Rwm·[am×]·Jrh·dt²·δbg
         //   δba_{k+1}= δba_k
         //   δbg_{k+1}= δbg_k
         //
-        // Note: Jr only appears in F[δφ, δbg].  The rotation-error effect on position
-        // and velocity (F[δp,δφ] and F[δv,δφ]) arises from the rotation of the
-        // accelerometer measurement, which does not involve the exponential-map Jacobian.
+        // Rwm = R_world_body_at_reset · ΔR_mid, Rh = R_half, Jrh = Jr(phi_half).
         //
         // Process noise Q = G·Q_d·G^T (computed analytically, sparse):
         //   Accel white noise (σ_a, PSD σ_a²):
-        //     G[δp, na] = 0.5·ΔRm·dt²,  G[δv, na] = ΔRm·dt,  Q_na = σ_a²/dt · I
+        //     G[δp, na] = -0.5·Rwm·dt²,  G[δv, na] = -Rwm·dt,  Q_na = σ_a²/dt · I
         //   Gyro white noise (σ_g, PSD σ_g²):
-        //     G[δφ, ng] = Jr·dt,                              Q_ng = σ_g²/dt · I
+        //     G[δφ, ng] = -Jr·dt,
+        //     G[δp, ng] = 0.25·Rwm·[am×]·Jrh·dt³,
+        //     G[δv, ng] = 0.5·Rwm·[am×]·Jrh·dt²,              Q_ng = σ_g²/dt · I
         //   Bias random-walk noise:
         //     G[δba, nba] = I,  Q_nba = σ_ba²·dt · I
         //     G[δbg, nbg] = I,  Q_nbg = σ_bg²·dt · I
@@ -374,19 +454,24 @@ private:
         if (has_noise || !result_.covariance.isZero()) {
             // --- Build F (15×15) ---
             Eigen::Matrix<float, 15, 15> F = Eigen::Matrix<float, 15, 15>::Identity();
+            const Eigen::Matrix3f R_world_mid = R_world_body_at_reset_ * Delta_R_mid;
+            const Eigen::Matrix3f rotation_error_to_mid = R_half.transpose();
+            const Eigen::Matrix3f gyro_bias_to_mid = -Jr_half * (0.5f * dt_f);
 
-            // δp row  (Jr is NOT used here; only needed for the bias→rotation block)
-            F.block<3, 3>(0, 3) = -0.5f * Delta_R_mid * skew_a * dt_f * dt_f;
+            // δp row
+            F.block<3, 3>(0, 3) = -0.5f * R_world_mid * skew_a * rotation_error_to_mid * dt_f * dt_f;
             F.block<3, 3>(0, 6) = Eigen::Matrix3f::Identity() * dt_f;
-            F.block<3, 3>(0, 9) = -0.5f * Delta_R_mid * dt_f * dt_f;
+            F.block<3, 3>(0, 9) = -0.5f * R_world_mid * dt_f * dt_f;
+            F.block<3, 3>(0, 12) = -0.5f * R_world_mid * skew_a * gyro_bias_to_mid * dt_f * dt_f;
 
             // δφ row  (Jr applies only to the bias term)
             F.block<3, 3>(3, 3) = R_step.transpose();
             F.block<3, 3>(3, 12) = -Jr * dt_f;
 
-            // δv row  (Jr is NOT used here)
-            F.block<3, 3>(6, 3) = -Delta_R_mid * skew_a * dt_f;
-            F.block<3, 3>(6, 9) = -Delta_R_mid * dt_f;
+            // δv row
+            F.block<3, 3>(6, 3) = -R_world_mid * skew_a * rotation_error_to_mid * dt_f;
+            F.block<3, 3>(6, 9) = -R_world_mid * dt_f;
+            F.block<3, 3>(6, 12) = -R_world_mid * skew_a * gyro_bias_to_mid * dt_f;
 
             // --- Build process noise Q = G·Q_d·G^T (sparse, closed-form) ---
             const float dt2 = dt_f * dt_f;
@@ -400,22 +485,24 @@ private:
                 const float sba2 = params_.accel_bias_rw_density * params_.accel_bias_rw_density;
                 const float sbg2 = params_.gyro_bias_rw_density * params_.gyro_bias_rw_density;
 
-                // Accel noise contributions (Q_na = sa2/dt·I):
-                //   [δp,δp]: G[δp,na]·Q_na·G[δp,na]^T = 0.5·dt²·(sa2/dt)·0.5·dt²·I = sa2·dt³/4·I
-                //   [δp,δv]: G[δp,na]·Q_na·G[δv,na]^T = 0.5·dt²·(sa2/dt)·dt·I      = sa2·dt²/2·I
-                //   [δv,δv]: G[δv,na]·Q_na·G[δv,na]^T = dt·(sa2/dt)·dt·I            = sa2·dt·I
-                Q.block<3, 3>(0, 0) += (sa2 * dt3 / 4.0f) * Eigen::Matrix3f::Identity();
-                Q.block<3, 3>(0, 6) += (sa2 * dt2 / 2.0f) * Eigen::Matrix3f::Identity();
-                Q.block<3, 3>(6, 0) += (sa2 * dt2 / 2.0f) * Eigen::Matrix3f::Identity();
-                Q.block<3, 3>(6, 6) += (sa2 * dt_f) * Eigen::Matrix3f::Identity();
+                // Noise injection for [n_a, n_g, n_ba, n_bg].  Building G explicitly
+                // preserves all midpoint-induced cross-covariances, especially the
+                // gyro-noise coupling into position and velocity.
+                Eigen::Matrix<float, 15, 12> G = Eigen::Matrix<float, 15, 12>::Zero();
+                G.block<3, 3>(0, 0) = -0.5f * R_world_mid * dt2;
+                G.block<3, 3>(6, 0) = -R_world_mid * dt_f;
+                G.block<3, 3>(3, 3) = -Jr * dt_f;
+                G.block<3, 3>(0, 3) = 0.25f * R_world_mid * skew_a * Jr_half * dt3;
+                G.block<3, 3>(6, 3) = 0.5f * R_world_mid * skew_a * Jr_half * dt2;
+                G.block<3, 3>(9, 6) = Eigen::Matrix3f::Identity();
+                G.block<3, 3>(12, 9) = Eigen::Matrix3f::Identity();
 
-                // Gyro noise contribution (Q_ng = sg2/dt·I):
-                //   [δφ,δφ]: Jr·dt·(sg2/dt)·dt·Jr^T = sg2·dt·Jr·Jr^T
-                Q.block<3, 3>(3, 3) += (sg2 * dt_f) * (Jr * Jr.transpose());
-
-                // Bias random-walk contributions (Q_nba = sba2·dt·I, Q_nbg = sbg2·dt·I):
-                Q.block<3, 3>(9, 9) += (sba2 * dt_f) * Eigen::Matrix3f::Identity();
-                Q.block<3, 3>(12, 12) += (sbg2 * dt_f) * Eigen::Matrix3f::Identity();
+                Eigen::Matrix<float, 12, 12> Qd = Eigen::Matrix<float, 12, 12>::Zero();
+                Qd.block<3, 3>(0, 0) = (sa2 / dt_f) * Eigen::Matrix3f::Identity();
+                Qd.block<3, 3>(3, 3) = (sg2 / dt_f) * Eigen::Matrix3f::Identity();
+                Qd.block<3, 3>(6, 6) = (sba2 * dt_f) * Eigen::Matrix3f::Identity();
+                Qd.block<3, 3>(9, 9) = (sbg2 * dt_f) * Eigen::Matrix3f::Identity();
+                Q = G * Qd * G.transpose();
             }
 
             // Propagate: Σ_{k+1} = F·Σ_k·F^T + Q
@@ -434,6 +521,7 @@ private:
     IMUPreintegrationParams params_;
     IMUBias bias_lin_;
     PreintegrationResult result_;
+    Eigen::Matrix3f R_world_body_at_reset_ = Eigen::Matrix3f::Identity();
     IMUMeasurement prev_meas_;
     bool has_prev_ = false;
     int num_measurements_ = 0;
