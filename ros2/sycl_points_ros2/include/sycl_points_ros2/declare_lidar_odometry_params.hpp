@@ -7,6 +7,19 @@
 namespace sycl_points {
 namespace ros2 {
 
+inline void declare_registration_robust_schedule_parameters(
+    rclcpp::Node* node, algorithms::registration::RegistrationRobustScheduleParams& params) {
+    params.init_scale = node->declare_parameter<double>("registration/robust/init_scale", params.init_scale);
+    params.auto_scale = node->declare_parameter<bool>("registration/robust/auto_scale", params.auto_scale);
+    params.min_scale = node->declare_parameter<double>("registration/robust/min_scale", params.min_scale);
+    params.auto_scaling_iter =
+        node->declare_parameter<int64_t>("registration/robust/auto_scaling_iter", params.auto_scaling_iter);
+    params.rotation_init_scale = node->declare_parameter<double>("registration/rotation_constraint/robust/init_scale",
+                                                                 params.rotation_init_scale);
+    params.rotation_min_scale =
+        node->declare_parameter<double>("registration/rotation_constraint/robust/min_scale", params.rotation_min_scale);
+}
+
 inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::Node* node) {
     // Declare shared odometry parameters (scan, submap, registration, IMU, ...).
     pipeline::lidar_odometry::Parameters params;
@@ -46,17 +59,20 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
                                             params.motion_prediction.adaptive.translation.min_eigenvalue_high);
     }
 
-    auto& pipeline = params.registration.pipeline;
-    auto& solver = pipeline.registration;
+    auto& registration = params.lo.registration;
+    auto& pipeline = params.lo.pipeline;
+
+    declare_registration_optimization_parameters(node, registration.optimization);
+    declare_registration_robust_schedule_parameters(node, pipeline.robust);
 
     // LiDAR-only registration pipeline loop controls.
     {
-        solver.max_iterations =
-            node->declare_parameter<int64_t>("registration/solver_iterations", solver.max_iterations);
-        solver.criteria.translation =
-            node->declare_parameter<double>("registration/criteria/translation", solver.criteria.translation);
-        solver.criteria.rotation =
-            node->declare_parameter<double>("registration/criteria/rotation", solver.criteria.rotation);
+        registration.max_iterations =
+            node->declare_parameter<int64_t>("registration/solver_iterations", registration.max_iterations);
+        registration.criteria.translation =
+            node->declare_parameter<double>("registration/criteria/translation", registration.criteria.translation);
+        registration.criteria.rotation =
+            node->declare_parameter<double>("registration/criteria/rotation", registration.criteria.rotation);
 
         auto& velocity_update = pipeline.velocity_update;
         velocity_update.enable =
@@ -67,7 +83,7 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
 
     // MAP prior using the previous LiDAR odometry frame Hessian.
     {
-        auto& map_prior = solver.map_prior;
+        auto& map_prior = registration.map_prior;
         map_prior.enabled = node->declare_parameter<bool>("registration/map_prior/enabled", map_prior.enabled);
         map_prior.rot_vel_sigma =
             node->declare_parameter<double>("registration/map_prior/rot_vel_sigma", map_prior.rot_vel_sigma);
@@ -81,7 +97,7 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
 
     // LiDAR-only degeneracy regularization. LIO uses directional ICP weighting.
     {
-        auto& degenerate_reg = solver.degenerate_reg;
+        auto& degenerate_reg = registration.degenerate_regularization;
 
         const std::string degenerate_reg_type =
             node->declare_parameter<std::string>("registration/degenerate_regularization/type", "NONE");

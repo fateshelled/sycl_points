@@ -213,12 +213,12 @@ private:
 
         // compute covariances and normals
         sycl_utils::events cov_events;
-        const auto reg_type = this->reg_params_.pipeline.registration.reg_type;
+        const auto reg_type = this->reg_params_.factor.reg_type;
         {
             const bool need_covariances = reg_type == algorithms::registration::RegType::GICP ||
                                           reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
                                           reg_type == algorithms::registration::RegType::GENZ ||
-                                          this->reg_params_.pipeline.registration.rotation_constraint.enable;
+                                          this->reg_params_.factor.rotation_constraint.enable;
             const bool need_normals = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
                                        reg_type == algorithms::registration::RegType::GENZ);
 

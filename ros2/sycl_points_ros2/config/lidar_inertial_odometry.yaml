@@ -209,15 +209,12 @@ lidar_inertial_odometry_node:
     registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     registration/robust/default_scale: 10.0
     registration/robust/auto_scale: true
-    registration/robust/auto_scaling_iter: 4
     registration/robust/init_scale: 10.0
     registration/robust/min_scale: 1.25
 
     registration/rotation_constraint/enable:
       true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
     registration/rotation_constraint/weight: 1.0
-    registration/rotation_constraint/robust/init_scale: 5.0
-    registration/rotation_constraint/robust/min_scale: 2.5
     registration/rotation_constraint/robust/default_scale: 5.0
 
     registration/genz/planarity_threshold: 0.2

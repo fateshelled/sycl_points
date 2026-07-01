@@ -113,6 +113,10 @@ public:
         this->map_prior_.set_params(this->params_.map_prior);
     }
 
+    /// @brief Construct a factor evaluator without LiDAR-only solver settings.
+    Registration(const sycl_utils::DeviceQueue& queue, const RegistrationFactorParams& params)
+        : Registration(queue, RegistrationParams(params)) {}
+
     /// @brief Set the MAP prior state for the upcoming align() call.
     ///        Must be called once per frame, after motion prediction and before align().
     /// @param prev_result  Registration result of the previous frame.

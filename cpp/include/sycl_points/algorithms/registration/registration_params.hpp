@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
@@ -36,11 +37,13 @@ inline OptimizationMethod OptimizationMethod_from_string(const std::string& str)
     throw std::runtime_error(error_str);
 }
 
-struct RegistrationParams {
-    struct Criteria {
-        float translation = 1e-3f;  // translation tolerance [m]
-        float rotation = 1e-3f;     // rotation tolerance [rad]
-    };
+struct RegistrationConvergenceCriteria {
+    float translation = 1e-3f;  // translation tolerance [m]
+    float rotation = 1e-3f;     // rotation tolerance [rad]
+};
+
+/// @brief Parameters used to build and evaluate an ICP factor.
+struct RegistrationFactorParams {
     struct Robust {
         robust::RobustLossType type = robust::RobustLossType::NONE;  // robust loss function type
         float default_scale = 10.0f;                                 // default scale for robust loss function
@@ -58,6 +61,16 @@ struct RegistrationParams {
         Robust robust;
     };
 
+    RegType reg_type = RegType::GICP;
+    float max_correspondence_distance = 2.0f;
+    Robust robust;
+    RotationConstraint rotation_constraint;
+    GenZ genz;
+    bool verbose = false;
+};
+
+/// @brief Parameters selecting and configuring a nonlinear optimizer.
+struct RegistrationOptimizationParams {
     struct GaussNewton {
         float lambda = 1.0f;  // damping factor
     };
@@ -78,25 +91,28 @@ struct RegistrationParams {
         float gamma_increase = 2.0f;               // Expand factor for trust region (for Powell's dogleg method)
     };
 
-    RegType reg_type = RegType::GICP;          // Registration Type
-    size_t max_iterations = 20;                // max iteration
-    float lambda = 1e-6f;                      // damping factor
-    float max_correspondence_distance = 2.0f;  // max correspondence distance
-
-    Criteria criteria;
-    Robust robust;
-    RotationConstraint rotation_constraint;
-    GenZ genz;
     GaussNewton gn;
     LevenbergMarquardt lm;
     Dogleg dogleg;
     OptimizationMethod optimization_method = OptimizationMethod::GAUSS_NEWTON;  // Optimization method selector
+};
+
+/// @brief Parameters for the complete LiDAR-only registration solver.
+struct RegistrationParams : public RegistrationFactorParams, public RegistrationOptimizationParams {
+    using Criteria = RegistrationConvergenceCriteria;
+
+    RegistrationParams() = default;
+    explicit RegistrationParams(const RegistrationFactorParams& factor_params,
+                                const RegistrationOptimizationParams& optimization_params = {})
+        : RegistrationFactorParams(factor_params), RegistrationOptimizationParams(optimization_params) {}
+
+    size_t max_iterations = 20;
+    Criteria criteria;
 
     DegenerateRegularizationParams degenerate_reg;  // Degenerate Regularization
     MapPriorParams map_prior;                       // MAP estimation prior using previous-frame Hessian
-
-    bool verbose = false;  // If true, print debug messages
 };
+
 }  // namespace registration
 }  // namespace algorithms
 }  // namespace sycl_points

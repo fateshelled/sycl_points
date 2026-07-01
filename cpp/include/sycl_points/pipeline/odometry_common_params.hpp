@@ -207,7 +207,7 @@ struct CommonParameters {
 
     struct Registration {
         size_t min_num_points = 100;
-        algorithms::registration::RegistrationPipelineParams pipeline;
+        algorithms::registration::RegistrationFactorParams factor;
     };
 
     struct Pose {
@@ -220,6 +220,7 @@ struct CommonParameters {
     CovarianceEstimation covariance_estimation;
     IMU imu;
     Registration registration;
+    algorithms::registration::RegistrationRandomSamplingParams registration_sampling;
     Pose pose;
 };
 

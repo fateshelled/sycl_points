@@ -12,8 +12,6 @@
 #include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/lio/lio_registration.hpp"
-#include "sycl_points/algorithms/registration/dogleg_step.hpp"
-#include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/pipeline/lidar_inertial_odometry_params.hpp"
 #include "sycl_points/pipeline/pointcloud_processing.hpp"
 #include "sycl_points/pipeline/submapping.hpp"
@@ -22,13 +20,10 @@
 // ---------------------------------------------------------------------------
 // LiDAR-Inertial Odometry Pipeline
 //
-// Each frame runs an iterative optimisation loop (Gauss-Newton, Levenberg-
-// Marquardt, or Powell dogleg, selected by optimization_method) that combines
-// the ICP Hessian/gradient (6×6, from SYCL parallel reduction) with the IMU
-// prior Hessian/gradient (15×15) into a unified 15-DOF normal equation solved
-// by LDLT.  GN commits the damped step unconditionally; LM and dogleg accept or
-// reject each trial step on the combined cost (reduced-chi²-weighted robust ICP
-// error with frozen correspondences + IMU prior Mahalanobis distance).
+// Each frame prepares the predicted state, covariance, and ICP input, then
+// delegates the tightly-coupled optimization loop to algorithms::lio::LIORegistration.
+// This pipeline owns sensor buffering, preprocessing, state application, and
+// submap updates; the ICP+IMU optimizer lives entirely under algorithms/lio.
 //
 // Frame convention: single-stage, REP-105 style (FAST-LIO2-like).
 //   odom ──(estimated, dynamic)──▶ lidar     (odom is the gravity-aligned world frame)
@@ -249,7 +244,7 @@ public:
         {
             double dt_reg = 0.0;
             try {
-                *this->reg_result_ = time_utils::measure_execution([&]() { return this->lio_registration(); }, dt_reg);
+                *this->reg_result_ = time_utils::measure_execution([&]() { return this->register_frame(); }, dt_reg);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("lio_registration: ") + e.what();
                 std::cerr << "[LidarInertialOdometry] " << this->error_message_ << std::endl;
@@ -289,7 +284,7 @@ private:
 
     PointCloudShared::Ptr preprocessed_pc_ = nullptr;
     PointCloudShared::Ptr registration_input_pc_ = nullptr;  // random-sampled source for ICP linearization
-    /// Point cloud actually used as the ICP source in the last lio_registration() call.
+    /// Point cloud actually used as the ICP source in the last register_frame() call.
     /// Points either to registration_input_pc_ (when random sampling ran) or to
     /// preprocessed_pc_ (when sampling was skipped).  submapping() must add this same
     /// cloud to the map; using registration_input_pc_ unconditionally would feed a
@@ -302,7 +297,7 @@ private:
     shared_vector_ptr<float> icp_weights_ = nullptr;
 
     pointcloud_processing::PCProcessor::Ptr pc_processor_ = nullptr;
-    algorithms::registration::Registration::Ptr registration_ = nullptr;
+    algorithms::lio::LIORegistration::Ptr lio_registration_ = nullptr;
 
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
 
@@ -358,11 +353,6 @@ private:
         return T;
     }
 
-    bool is_lio_converged(const Eigen::Matrix<float, 15, 1>& delta) const {
-        return delta.segment<3>(imu::State::kIdxRot).norm() < params_.lio.criteria.rotation &&
-               delta.segment<3>(imu::State::kIdxPos).norm() < params_.lio.criteria.translation;
-    }
-
     /// @brief Decide whether the IMU bias states are observable in this window.
     ///
     /// Returns true (always update biases) unless freeze_on_low_excitation is set,
@@ -416,9 +406,11 @@ private:
         // Velocity floor: ensures P_pred[p,p] ≳ (fd_velocity_sigma × dt)², keeping
         //   H_imu[p,p] on the same scale as H_icp regardless of accel_noise_density.
         // Rotation floor: same mechanism for H_imu[φ,φ] vs gyro_noise_density.
-        const float sv2 = this->params_.lio.fd_velocity_sigma * this->params_.lio.fd_velocity_sigma;
+        const float sv2 = this->params_.lio.preintegration_reset.fd_velocity_sigma *
+                          this->params_.lio.preintegration_reset.fd_velocity_sigma;
         P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += sv2 * Eigen::Matrix3f::Identity();
-        const float sr2 = this->params_.lio.icp_rotation_sigma * this->params_.lio.icp_rotation_sigma;
+        const float sr2 = this->params_.lio.preintegration_reset.icp_rotation_sigma *
+                          this->params_.lio.preintegration_reset.icp_rotation_sigma;
         P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
 
         // P_post_ uses LiDAR right-rotation error; IMUPreintegration uses IMU
@@ -463,328 +455,32 @@ private:
         return pred;
     }
 
-    /// @brief Combined LIO Gauss-Newton optimization for one LiDAR frame.
-    algorithms::registration::RegistrationResult lio_registration() {
-        // ---- Build prior from IMU preintegration ----
-        imu::State x_pred = predict_state();
+    /// @brief Prepare one frame and delegate optimization to algorithms::lio.
+    algorithms::registration::RegistrationResult register_frame() {
+        const imu::State predicted_state = predict_state();
+        const Eigen::Matrix<float, 15, 15> predicted_covariance = algorithms::lio::transform_covariance_imu_to_lidar(
+            this->imu_preintegration_->get_raw().covariance, this->params_.imu.T_imu_to_lidar,
+            predicted_state.rotation);
 
-        // Transform IMU-frame preintegration covariance into the LiDAR error-state frame.
-        const Eigen::Matrix<float, 15, 15> P_pred = algorithms::lio::transform_covariance_imu_to_lidar(
-            this->imu_preintegration_->get_raw().covariance, this->params_.imu.T_imu_to_lidar, x_pred.rotation);
-
-        Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
-        Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
-        const bool imu_valid = imu::compute_imu_hessian_gradient(x_pred, x_pred, P_pred, H_imu, b_imu);
-
-        // ---- Prepare ICP source (random sampling) ----
-        // Record the cloud actually used so submapping() adds the same points to the
-        // map.  When sampling is skipped this is preprocessed_pc_, not the (stale)
-        // registration_input_pc_.
-        const auto& rs = this->params_.registration.pipeline.random_sampling;
+        const auto& sampling = this->params_.registration_sampling;
         PointCloudShared::ConstPtr source =
-            (rs.enable && this->preprocessed_pc_->size() > rs.num)
-                ? (this->pc_processor_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_, rs.num),
+            (sampling.enable && this->preprocessed_pc_->size() > sampling.num)
+                ? (this->pc_processor_->random_sampling(*this->preprocessed_pc_, *this->registration_input_pc_,
+                                                        sampling.num),
                    this->registration_input_pc_)
                 : this->preprocessed_pc_;
         this->registration_source_pc_ = source;
 
-        // ---- Gauss-Newton loop ----
-        imu::State x_op = x_pred;
+        auto result = this->lio_registration_->align(
+            *source, this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(), predicted_state,
+            predicted_covariance, this->P_post_, this->imu_bias_observable(), this->dt_, this->odom_.matrix());
 
-        algorithms::registration::Registration::ExecutionOptions options;
-        options.dt = this->dt_;
-        options.prev_pose = this->odom_.matrix();
-
-        const TransformMatrix T_initial = state_to_pose(x_pred).matrix();
-        const auto& robust = this->params_.registration.pipeline.robust;
-
-        // When excitation is too low the bias states are unobservable; hold them
-        // fixed for this frame so the optimizer does not absorb noise into them.
-        const bool update_bias = imu_bias_observable();
-
-        // Per-point residual dimension for the chi-squared DOF estimate:
-        // point-to-plane constrains 1 dimension per correspondence; point-to-point /
-        // GICP / point-to-distribution use 3-D residuals.  GenZ blends both — using
-        // the smaller dimension is the conservative (loosening-only) choice.
-        const auto reg_type = this->params_.registration.pipeline.registration.reg_type;
-        const float icp_residual_dim = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
-                                        reg_type == algorithms::registration::RegType::GENZ)
-                                           ? 1.0f
-                                           : 3.0f;
-
-        algorithms::registration::LinearizedResult last_icp;
-        last_icp.inlier = 0;
-        size_t actual_iterations = 0;
-
-        // Undamped normal-equation Hessian of the last solved iteration; used to
-        // recover the posterior covariance without the damping term.
-        Eigen::Matrix<float, 15, 15> H_undamped = Eigen::Matrix<float, 15, 15>::Zero();
-        bool has_H_undamped = false;
-
-        // Optimizer selection shared with the LO registration backend.
-        // GN: cheapest — damped solve only (λ escalated when H is ill-conditioned).
-        // LM/DOGLEG: step acceptance on the combined cost (weighted robust ICP error
-        //            with frozen correspondences + IMU prior Mahalanobis cost), at one
-        //            extra device error-evaluation pass per trial step.
-        const auto opt_method = this->params_.registration.pipeline.registration.optimization_method;
-        const auto& gn_params = this->params_.registration.pipeline.registration.gn;
-        const auto& lm_params = this->params_.registration.pipeline.registration.lm;
-        const auto& dl_params = this->params_.registration.pipeline.registration.dogleg;
-        float lm_lambda = lm_params.init_lambda;
-        float trust_region_radius = dl_params.initial_trust_region_radius;
-        const auto clamp_radius = [&](float radius) {
-            return std::clamp(radius, dl_params.min_trust_region_radius, dl_params.max_trust_region_radius);
-        };
-
-        // ---- Step-acceptance cost helpers (LM / dogleg) ----
-        // The combined LIO cost evaluated at an arbitrary operating state x:
-        //   J(x) = icp_weight · E_icp(x) + ½ · r(x)ᵀ H_imu r(x)
-        // where E_icp is the robust ICP error evaluated with the correspondences
-        // frozen at the current linearisation point (compute_error_frozen), and the
-        // IMU term is the prior Mahalanobis distance (H_imu = P_pred⁻¹ is constant
-        // across iterations; only the residual r = x ⊖ x_pred changes).  GN does not
-        // need this — it commits the damped step unconditionally — but LM and dogleg
-        // accept/reject trial steps by comparing J(x_trial) against J(x_op).
-        const auto imu_cost = [&](const imu::State& x) -> float {
-            if (!imu_valid) return 0.0f;
-            const Eigen::Matrix<float, 15, 1> r = imu::compute_manifold_residual(x_pred, x);
-            return 0.5f * r.dot(H_imu * r);
-        };
-
-        // First-order bias freeze: solve the full coupled system and then drop the bias
-        // increment when the window lacks excitation (update_bias == false).  Because H
-        // couples pose/velocity with the bias states, the retained pose/velocity step
-        // technically assumes the bias also moves, so this is a slight inconsistency.
-        // The iterative re-linearization absorbs most of it and the approximation is
-        // empirically stable (PR #177 eval).  Applied to every trial step so that the
-        // state evaluated by the LM/dogleg acceptance test matches the state retracted
-        // on acceptance.  A fully consistent freeze would, when !update_bias, zero the
-        // bias cross-terms / set the bias block of lio.H to identity and lio.b's bias
-        // segment to zero BEFORE the solve, and restore P_post_'s bias block from P_pred
-        // (zero cross-covariance) after it.
-        const auto apply_bias_freeze = [&](Eigen::Matrix<float, 15, 1>& d) {
-            if (!update_bias) {
-                d.segment<3>(imu::State::kIdxAccBias).setZero();
-                d.segment<3>(imu::State::kIdxGyrBias).setZero();
-            }
-        };
-
-        for (size_t iter = 0; iter < this->params_.lio.total_iterations; ++iter) {
-            ++actual_iterations;
-
-            if (robust.auto_scale && this->params_.lio.total_iterations > 1) {
-                const float t = static_cast<float>(iter) / static_cast<float>(this->params_.lio.total_iterations - 1);
-                options.robust_scale =
-                    std::max(robust.init_scale * std::pow(robust.min_scale / robust.init_scale, t), robust.min_scale);
-            }
-
-            const TransformMatrix T_op = state_to_pose(x_op).matrix();
-            last_icp = this->registration_->compute_linearized_result(*source, this->submap_->get_submap_point_cloud(),
-                                                                      this->submap_->get_submap_kdtree(), T_op,
-                                                                      T_initial, options);
-
-            // H_imu = P_pred^{-1} is constant for this frame, so we only recompute
-            // the residual r and b_imu = H_imu · r (no LDLT inversion needed).
-            if (iter > 0 && imu_valid) {
-                imu::compute_imu_gradient(x_pred, x_op, H_imu, b_imu);
-            }
-
-            // Combine ICP + IMU into 15×15 normal equations.
-            // Reduced chi-squared calibration of the ICP information (same scheme as
-            // MapPrior::update): the ICP Hessian assumes unit-variance Mahalanobis
-            // residuals, which real data violates.  Calibrate by the actual residual
-            // statistics so a poor fit (map mismatch, degeneracy, sensor noise above
-            // the model) loosens the ICP factor relative to the IMU prior:
-            //   DOF = d·N_inlier − 6        (d = per-point residual dim, 6 = SE(3) params)
-            //   s²  = max(1, 2·error/DOF)   (factor 2 cancels the ½ in the robust error;
-            //                                clamp ≥ 1 so the factor is never tightened)
-            //   w   = 1 / s²
-            // Note: error is evaluated at the current annealed robust scale.  Early
-            // (coarse-scale) iterations see larger error → stronger downweighting →
-            // prediction-driven steps; the calibration relaxes toward w = 1 as the
-            // scale shrinks and the fit converges, which matches the GNC intent.
-            float icp_weight = 1.0f;
-            const float icp_dof = icp_residual_dim * static_cast<float>(last_icp.inlier) - 6.0f;
-            if (icp_dof > 0.0f && std::isfinite(last_icp.error) && last_icp.error >= 0.0f) {
-                icp_weight = 1.0f / std::max(1.0f, 2.0f * last_icp.error / icp_dof);
-            }
-            algorithms::lio::LIOLinearizedResult icp_lio;
-            algorithms::lio::add_icp_factor(icp_lio, last_icp, x_op.rotation, icp_weight);
-            algorithms::lio::apply_directional_icp_weighting(icp_lio, this->params_.lio.directional_icp_weighting);
-
-            algorithms::lio::LIOLinearizedResult lio = icp_lio;
-            if (imu_valid) {
-                algorithms::lio::add_imu_factor(lio, H_imu, b_imu);
-            } else {
-                const float kReg = this->params_.lio.invalid_regularization_factor;
-                lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += kReg * Eigen::Matrix3f::Identity();
-                lio.H.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) +=
-                    kReg * Eigen::Matrix3f::Identity();
-                lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) +=
-                    kReg * Eigen::Matrix3f::Identity();
-            }
-
-            // ICP error at a trial state, reusing the correspondences frozen by the
-            // compute_linearized_result() call above (same source cloud).  Scaled by the
-            // reduced chi-squared icp_weight so the trial cost matches the information
-            // baked into lio.H/lio.b.
-            const auto icp_cost = [&](const imu::State& x) -> float {
-                const auto [e, in] = this->registration_->compute_error_frozen(
-                    *source, this->submap_->get_submap_point_cloud(), state_to_pose(x).matrix(), options);
-                (void)in;
-                return icp_weight * e;
-            };
-
-            const Eigen::Matrix<float, 15, 15> I15 = Eigen::Matrix<float, 15, 15>::Identity();
-            Eigen::Matrix<float, 15, 1> delta = Eigen::Matrix<float, 15, 1>::Zero();
-            // step_accepted: a usable increment was produced and should be retracted.
-            //   GN  — true unless the damped solve fails (then we stop: cannot progress).
-            //   LM  — true when an inner trial lowered the combined cost; if none does
-            //         within max_inner_iterations, we stop: re-linearising at the same
-            //         x_op would reproduce the same H/b and fail again.
-            //   DL  — true when the gain ratio cleared eta1.
-            // A rejected dogleg step leaves x_op untouched and re-linearises next
-            // iteration with the adjusted trust-region radius, so it must NOT run the
-            // convergence test (delta == 0 would otherwise falsely converge).
-            bool step_accepted = false;
-            bool stop = false;
-
-            switch (opt_method) {
-                case algorithms::registration::OptimizationMethod::GAUSS_NEWTON: {
-                    if (algorithms::lio::solve_ldlt(lio.H + gn_params.lambda * I15, lio.b, delta)) {
-                        apply_bias_freeze(delta);
-                        step_accepted = true;
-                    } else {
-                        stop = true;  // ill-conditioned: keep x_op and end the loop
-                    }
-                    break;
-                }
-                case algorithms::registration::OptimizationMethod::LEVENBERG_MARQUARDT: {
-                    // Damped trials around the fixed linearisation point: accept the first
-                    // λ whose step lowers the combined cost (then relax λ), otherwise grow
-                    // λ and retry up to max_inner_iterations.  One frozen-correspondence
-                    // error pass per trial.
-                    const float current_cost = icp_cost(x_op) + imu_cost(x_op);
-                    for (size_t inner = 0; inner < lm_params.max_inner_iterations; ++inner) {
-                        Eigen::Matrix<float, 15, 1> trial_delta = Eigen::Matrix<float, 15, 1>::Zero();
-                        if (algorithms::lio::solve_ldlt(lio.H + lm_lambda * I15, lio.b, trial_delta)) {
-                            apply_bias_freeze(trial_delta);
-                            const imu::State x_trial = algorithms::lio::retract(x_op, trial_delta);
-                            const float trial_cost = icp_cost(x_trial) + imu_cost(x_trial);
-                            if (trial_cost <= current_cost) {
-                                delta = trial_delta;
-                                step_accepted = true;
-                                lm_lambda = std::clamp(lm_lambda / lm_params.lambda_factor, lm_params.min_lambda,
-                                                       lm_params.max_lambda);
-                                break;
-                            }
-                        }
-                        lm_lambda =
-                            std::clamp(lm_lambda * lm_params.lambda_factor, lm_params.min_lambda, lm_params.max_lambda);
-                    }
-                    if (!step_accepted) {
-                        // max_inner_iterations exhausted without a cost-reducing step;
-                        // re-linearising at the same x_op would reproduce the same H/b
-                        // and fail again.
-                        stop = true;
-                    }
-                    break;
-                }
-                case algorithms::registration::OptimizationMethod::POWELL_DOGLEG: {
-                    // Trust-region step (GN / Cauchy / dogleg blend) accepted on the gain
-                    // ratio rho = actual / predicted cost reduction.  predicted_reduction is
-                    // recomputed on the (possibly bias-frozen) step so it stays consistent
-                    // with the increment actually evaluated and retracted.
-                    const float current_cost = icp_cost(x_op) + imu_cost(x_op);
-                    trust_region_radius = clamp_radius(trust_region_radius);
-                    const algorithms::registration::DoglegStep<15> dl =
-                        algorithms::registration::compute_dogleg_step<15>(lio.H, lio.b, trust_region_radius);
-                    Eigen::Matrix<float, 15, 1> trial_delta = dl.p;
-                    apply_bias_freeze(trial_delta);
-                    const float predicted_reduction =
-                        -(lio.b.dot(trial_delta) + 0.5f * trial_delta.dot(lio.H * trial_delta));
-                    if (predicted_reduction <= 0.0f) {
-                        trust_region_radius = clamp_radius(trust_region_radius * dl_params.gamma_decrease);
-                        break;
-                    }
-                    const imu::State x_trial = algorithms::lio::retract(x_op, trial_delta);
-                    const float trial_cost = icp_cost(x_trial) + imu_cost(x_trial);
-                    const float rho = (current_cost - trial_cost) / predicted_reduction;
-                    if (rho < dl_params.eta1) {
-                        trust_region_radius = clamp_radius(trust_region_radius * dl_params.gamma_decrease);
-                        break;
-                    }
-                    delta = trial_delta;
-                    step_accepted = true;
-                    if (rho > dl_params.eta2 && dl.step_norm >= trust_region_radius * 0.99f) {
-                        trust_region_radius = clamp_radius(trust_region_radius * dl_params.gamma_increase);
-                    }
-                    break;
-                }
-            }
-            H_undamped = lio.H;
-            has_H_undamped = true;
-
-            if (step_accepted) {
-                x_op = algorithms::lio::retract(x_op, delta);
-                if (is_lio_converged(delta)) break;
-            } else if (stop) {
-                break;
-            }
-            // Dogleg rejection: x_op unchanged; retry next iteration with the
-            // updated trust-region radius.
-        }
-
-        // Posterior covariance from the undamped Hessian.  delta is solved with the
-        // damping term λI for step control, but including λI in the inverse would
-        // understate P_post_ and over-tighten the next window's IMU prior.
-        if (has_H_undamped) {
-            Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(H_undamped);
-            if (ldlt.info() == Eigen::Success && ldlt.vectorD().minCoeff() > 0.0f) {
-                this->P_post_.setIdentity();
-                ldlt.solveInPlace(this->P_post_);  // P_post = H⁻¹
-            } else {
-                // H_undamped is singular along unobserved directions (e.g. at startup
-                // before any well-conditioned frame, or during a degenerate window).
-                // Keeping the previous P_post_ (Zero() at startup) would mean exactly
-                // zero covariance -- i.e. infinite confidence -- in those directions,
-                // which can later make P_pred singular.  A tiny diagonal regularization
-                // restores invertibility while leaving well-observed directions (large
-                // H entries) essentially unchanged; unobserved directions get a
-                // correspondingly large (low-confidence) P_post entry instead.
-                Eigen::Matrix<float, 15, 15> H_damped = H_undamped;
-                H_damped.diagonal().array() += 1e-4f;
-                Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt_damped(H_damped);
-                if (ldlt_damped.info() == Eigen::Success && ldlt_damped.vectorD().minCoeff() > 0.0f) {
-                    this->P_post_.setIdentity();
-                    ldlt_damped.solveInPlace(this->P_post_);
-                } else {
-                    // H_undamped likely contains NaN/Inf from upstream (preintegration
-                    // or degenerate point matching); keep the previous P_post_.
-                    std::cerr << "[LidarInertialOdometry] WARNING: damped posterior solve failed; "
-                                 "keeping previous P_post_."
-                              << std::endl;
-                }
-            }
-        }
-
-        // ---- Update state and reset IMU preintegration ----
-        this->x_.position = x_op.position;
-        this->x_.rotation = x_op.rotation;
-        this->x_.velocity = x_op.velocity;
-        this->x_.accel_bias = x_op.accel_bias;
-        this->x_.gyro_bias = x_op.gyro_bias;
+        this->P_post_ = result.posterior_covariance;
+        this->x_ = result.state;
         clamp_bias_norm(this->x_.accel_bias, this->params_.lio.bias_estimation.max_accel_bias);
         clamp_bias_norm(this->x_.gyro_bias, this->params_.lio.bias_estimation.max_gyro_bias);
         reset_imu_preintegration();
-
-        algorithms::registration::RegistrationResult result;
-        result.T = state_to_pose(this->x_);
-        result.converged = true;
-        result.iterations = actual_iterations;
-        result.inlier = last_icp.inlier;
-        result.error = last_icp.error;
-        return result;
+        return result.registration_result;
     }
 
     // -------------------------------------------------------------------------
@@ -818,12 +514,10 @@ private:
             this->submap_ = std::make_shared<submapping::Submap>(*this->queue_ptr_, this->params_);
         }
 
-        // Registration (provides KNN + linearization backend)
+        // Tightly-coupled LIO registration algorithm.
         {
-            auto& reg_params = this->params_.registration.pipeline;
-            reg_params.velocity_update.enable = false;  // LIO controls its own update loop
-            this->registration_ =
-                std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, reg_params.registration);
+            this->lio_registration_ = std::make_shared<algorithms::lio::LIORegistration>(
+                *this->queue_ptr_, this->params_.registration.factor, this->params_.lio.registration);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
         }
 
@@ -835,8 +529,7 @@ private:
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
                 this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            this->imu_preintegration_->reset(this->params_.imu.bias, Eigen::Matrix<float, 15, 15>::Zero(),
-                                             R_world_imu);
+            this->imu_preintegration_->reset(this->params_.imu.bias, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
             this->imu_R_world_at_reset_ = R_world_imu;
             this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
         }
@@ -898,9 +591,9 @@ private:
     }
 
     void compute_covariances() {
-        const auto reg_type = params_.registration.pipeline.registration.reg_type;
+        const auto reg_type = params_.registration.factor.reg_type;
         const bool needs_covs = (reg_type == algorithms::registration::RegType::GICP ||
-                                 this->params_.registration.pipeline.registration.rotation_constraint.enable ||
+                                 this->params_.registration.factor.rotation_constraint.enable ||
                                  this->params_.scan.preprocess.angle_incidence_filter.enable);
         const bool needs_gaussian =
             this->params_.scan.intensity_gaussian.enable && this->preprocessed_pc_->has_intensity();
@@ -919,20 +612,20 @@ private:
     bool submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
         // Add the same cloud that was used as the ICP source.  This is
         // registration_input_pc_ when random sampling ran, or preprocessed_pc_ when it
-        // was skipped; registration_source_pc_ was set by lio_registration().
+        // was skipped; registration_source_pc_ was set by register_frame().
         PointCloudShared::ConstPtr reg_pc_ptr =
             this->registration_source_pc_ != nullptr ? this->registration_source_pc_ : this->registration_input_pc_;
         bool computed_icp_weights = false;
         const size_t total_samples = this->params_.submap.point_random_sampling_num;
         if (reg_pc_ptr->size() > total_samples) {
             // Robust ICP weighted mixed random sampling
-            const auto robust_auto_scale = this->params_.registration.pipeline.robust.auto_scale;
-            const float robust_scale = robust_auto_scale
-                                           ? this->params_.registration.pipeline.robust.min_scale
-                                           : this->params_.registration.pipeline.registration.robust.default_scale;
-            this->registration_->compute_icp_robust_weights(*reg_pc_ptr, this->submap_->get_submap_point_cloud(),
-                                                            this->submap_->get_submap_kdtree(), reg_result.T.matrix(),
-                                                            robust_scale, *this->icp_weights_);
+            const auto& robust = this->params_.lio.registration.robust;
+            const auto robust_auto_scale = robust.auto_scale;
+            const float robust_scale =
+                robust_auto_scale ? robust.min_scale : this->params_.registration.factor.robust.default_scale;
+            this->lio_registration_->registration_backend()->compute_icp_robust_weights(
+                *reg_pc_ptr, this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(),
+                reg_result.T.matrix(), robust_scale, *this->icp_weights_);
             computed_icp_weights = true;
         }
 
