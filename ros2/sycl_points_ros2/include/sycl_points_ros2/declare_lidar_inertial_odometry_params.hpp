@@ -34,6 +34,12 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         node->declare_parameter<bool>("registration/robust/auto_scale", registration.robust.auto_scale);
     registration.robust.min_scale =
         node->declare_parameter<double>("registration/robust/min_scale", registration.robust.min_scale);
+    registration.robust.auto_scaling_iter = node->declare_parameter<int64_t>("registration/robust/auto_scaling_iter",
+                                                                             registration.robust.auto_scaling_iter);
+    registration.robust.rotation_init_scale = node->declare_parameter<double>(
+        "registration/rotation_constraint/robust/init_scale", registration.robust.rotation_init_scale);
+    registration.robust.rotation_min_scale = node->declare_parameter<double>(
+        "registration/rotation_constraint/robust/min_scale", registration.robust.rotation_min_scale);
     registration.total_iterations =
         static_cast<size_t>(node->declare_parameter<int64_t>("lio/total_iterations", registration.total_iterations));
     registration.criteria.rotation =

@@ -12,6 +12,9 @@ struct LIORobustScheduleParams {
     bool auto_scale = false;
     float init_scale = 10.0f;
     float min_scale = 0.5f;
+    float rotation_init_scale = 10.0f;
+    float rotation_min_scale = 0.5f;
+    size_t auto_scaling_iter = 4;
 };
 
 /// @brief Direction-wise ICP information shaping for degenerate LIO frames.
@@ -34,6 +37,7 @@ struct DirectionalIcpWeightingParams {
 
 /// @brief Parameters for the tightly-coupled ICP/IMU optimization loop.
 struct LIORegistrationParams {
+    /// Maximum number of solver iterations summed across all robust levels.
     size_t total_iterations = 10;
     registration::RegistrationConvergenceCriteria criteria;
     registration::RegistrationOptimizationParams optimization;

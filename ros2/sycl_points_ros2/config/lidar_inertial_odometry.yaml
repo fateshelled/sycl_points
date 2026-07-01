@@ -162,8 +162,9 @@ lidar_inertial_odometry_node:
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
     # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
-    # Total IEKF iterations per frame: each iteration = one linearize+solve,
-    # with the robust scale annealed across these iterations (flat loop).
+    # Maximum linearize+solve count per frame, distributed as evenly as possible
+    # across registration/robust/auto_scaling_iter robust levels.
+    # Current config: 8 total / 4 levels = 2 solver iterations per level.
     lio/total_iterations: 8
     lio/criteria/translation: 0.01  # [m]
     lio/criteria/rotation: 0.0017   # [rad]
@@ -209,12 +210,15 @@ lidar_inertial_odometry_node:
     registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     registration/robust/default_scale: 10.0
     registration/robust/auto_scale: true
+    registration/robust/auto_scaling_iter: 4
     registration/robust/init_scale: 10.0
     registration/robust/min_scale: 1.25
 
     registration/rotation_constraint/enable:
       true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
     registration/rotation_constraint/weight: 1.0
+    registration/rotation_constraint/robust/init_scale: 5.0
+    registration/rotation_constraint/robust/min_scale: 2.5
     registration/rotation_constraint/robust/default_scale: 5.0
 
     registration/genz/planarity_threshold: 0.2
