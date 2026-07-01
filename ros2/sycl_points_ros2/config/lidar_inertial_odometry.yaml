@@ -166,7 +166,7 @@ lidar_inertial_odometry_node:
     # with the robust scale annealed across these iterations (flat loop).
     lio/total_iterations: 8
     lio/criteria/translation: 0.01  # [m]
-    lio/criteria/rotation: 0.01     # [rad]
+    lio/criteria/rotation: 0.0017   # [rad]
     lio/invalid_regularization_factor: 1.0e+4
     # Fixed-sigma floors added to P_initial at each IMU reset.
     # Prevents H_imu from dominating H_icp when noise_density is set to a small
@@ -181,7 +181,7 @@ lidar_inertial_odometry_node:
     #   v = (1 - blend) * v_filter + blend * v_finite_difference
     # 0.0 trusts the smooth IEKF filter velocity (less position-noise leakage into
     # the next window's IMU prior); 1.0 is the legacy pure finite-difference estimate.
-    lio/velocity_fd_blend: 0.5
+    lio/velocity_fd_blend: 0.0
     # Direction-wise ICP/IMU balance for degenerate geometry.
     # The scalar reduced-chi² weight handles globally bad matches; this filter
     # detects weak translation and rotation directions separately so corridor /
@@ -189,7 +189,7 @@ lidar_inertial_odometry_node:
     lio/directional_icp_weighting/enable: true
     lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier: 10.0
     lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 10.0
-    lio/directional_icp_weighting/weak_direction_scale: 0.1
+    lio/directional_icp_weighting/weak_direction_scale: 0.2
     # Bias-estimation safeguards for the weakly-observable IMU bias states.
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
     #   little motion (biases are unobservable there and would absorb noise).
