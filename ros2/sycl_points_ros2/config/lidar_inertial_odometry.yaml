@@ -177,11 +177,6 @@ lidar_inertial_odometry_node:
     # icp_rotation_sigma: σ_rot [rad]  → P_pred[φ,φ] ≳ σ_rot²
     #   choose so 1/σ_rot² ≲ H_icp[rot,rot]  (≈ 1e4–1e5 → σ ≈ 0.003–0.01 rad)
     lio/icp_rotation_sigma: 0.01  # [rad]
-    # Post-optimization velocity blend in [0,1]:
-    #   v = (1 - blend) * v_filter + blend * v_finite_difference
-    # 0.0 trusts the smooth IEKF filter velocity (less position-noise leakage into
-    # the next window's IMU prior); 1.0 is the legacy pure finite-difference estimate.
-    lio/velocity_fd_blend: 0.0
     # Direction-wise ICP/IMU balance for degenerate geometry.
     # The scalar reduced-chi² weight handles globally bad matches; this filter
     # detects weak translation and rotation directions separately so corridor /

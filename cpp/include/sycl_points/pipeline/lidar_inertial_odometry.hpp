@@ -769,33 +769,13 @@ private:
         }
 
         // ---- Update state and reset IMU preintegration ----
-        const Eigen::Vector3f prev_position = this->x_.position;
-        const Eigen::Matrix3f prev_rotation = this->x_.rotation;
         this->x_.position = x_op.position;
         this->x_.rotation = x_op.rotation;
+        this->x_.velocity = x_op.velocity;
         this->x_.accel_bias = x_op.accel_bias;
         this->x_.gyro_bias = x_op.gyro_bias;
         clamp_bias_norm(this->x_.accel_bias, this->params_.lio.bias_estimation.max_accel_bias);
         clamp_bias_norm(this->x_.gyro_bias, this->params_.lio.bias_estimation.max_gyro_bias);
-        if (this->dt_ > 0.0f) {
-            const Eigen::Vector3f v_fd = (this->x_.position - prev_position) / this->dt_;
-            const auto c = this->imu_preintegration_->get_corrected(imu::IMUBias{x_op.gyro_bias, x_op.accel_bias});
-            Eigen::Vector3f v_finite_difference;
-            if (c.dt_total > 1e-6) {
-                const Eigen::Matrix3f R_world_imu_prev = prev_rotation * this->params_.imu.T_imu_to_lidar.rotation();
-                const Eigen::Vector3f a_world = this->params_.imu.preintegration.gravity +
-                                                R_world_imu_prev * c.Delta_v / static_cast<float>(c.dt_total);
-                v_finite_difference = v_fd + 0.5f * a_world * this->dt_;
-            } else {
-                v_finite_difference = v_fd;
-            }
-            // Blend the IEKF filter velocity with the finite-difference velocity.
-            // blend == 1.0 reproduces the legacy pure-FD estimate.
-            const float blend = std::clamp(this->params_.lio.velocity_fd_blend, 0.0f, 1.0f);
-            this->x_.velocity = (1.0f - blend) * x_op.velocity + blend * v_finite_difference;
-        } else {
-            this->x_.velocity = x_op.velocity;
-        }
         reset_imu_preintegration();
 
         algorithms::registration::RegistrationResult result;
