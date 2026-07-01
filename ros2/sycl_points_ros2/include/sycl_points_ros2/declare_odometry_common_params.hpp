@@ -1,13 +1,13 @@
 #pragma once
 
 #include <rclcpp/node.hpp>
-#include <sycl_points/pipeline/lidar_odometry_params.hpp>
+#include <sycl_points/pipeline/odometry_common_params.hpp>
 
 namespace sycl_points {
 namespace ros2 {
 
-inline pipeline::lidar_odometry::Parameters declare_odometry_common_parameters(rclcpp::Node* node) {
-    pipeline::lidar_odometry::Parameters params;
+inline pipeline::odometry::CommonParameters declare_odometry_common_parameters(rclcpp::Node* node) {
+    pipeline::odometry::CommonParameters params;
 
     // SYCL
     {
@@ -98,9 +98,8 @@ inline pipeline::lidar_odometry::Parameters declare_odometry_common_parameters(r
 
     // submapping
     {
-        params.submap.map_type =
-            pipeline::lidar_odometry::SubmapMapType_from_string(node->declare_parameter<std::string>(
-                "submap/map_type", pipeline::lidar_odometry::SubmapMapType_to_string(params.submap.map_type)));
+        params.submap.map_type = pipeline::odometry::SubmapMapType_from_string(node->declare_parameter<std::string>(
+            "submap/map_type", pipeline::odometry::SubmapMapType_to_string(params.submap.map_type)));
         params.submap.voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap.voxel_size);
         params.submap.max_distance_range =
             node->declare_parameter<double>("submap/max_distance_range", params.submap.max_distance_range);

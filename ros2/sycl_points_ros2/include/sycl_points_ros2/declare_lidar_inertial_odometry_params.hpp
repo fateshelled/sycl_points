@@ -13,7 +13,7 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     // LIO uses directional ICP weighting, so LiDAR-only degenerate regularization
     // is intentionally not declared here.
     pipeline::lidar_inertial_odometry::Parameters params;
-    static_cast<pipeline::lidar_odometry::Parameters&>(params) = declare_odometry_common_parameters(node);
+    static_cast<pipeline::odometry::CommonParameters&>(params) = declare_odometry_common_parameters(node);
     params.registration.pipeline.registration.degenerate_reg.type =
         algorithms::registration::DegenerateRegularizationType::none;
 

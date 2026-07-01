@@ -1,5 +1,7 @@
 #pragma once
 
+#include <sycl_points/pipeline/lidar_odometry_params.hpp>
+
 #include "sycl_points_ros2/declare_odometry_common_params.hpp"
 
 namespace sycl_points {
@@ -7,7 +9,8 @@ namespace ros2 {
 
 inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::Node* node) {
     // Declare shared odometry parameters (scan, submap, registration, IMU, ...).
-    auto params = declare_odometry_common_parameters(node);
+    pipeline::lidar_odometry::Parameters params;
+    static_cast<pipeline::odometry::CommonParameters&>(params) = declare_odometry_common_parameters(node);
 
     // Declare LiDAR-only odometry parameters.
     params.imu.enable = node->declare_parameter<bool>("imu/enable", params.imu.enable);
