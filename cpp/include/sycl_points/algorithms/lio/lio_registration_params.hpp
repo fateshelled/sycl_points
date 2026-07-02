@@ -28,11 +28,13 @@ struct LIORobustScheduleParams {
 struct DirectionalIcpWeightingParams {
     bool enable = true;
     /// Treat ICP translation eigen-directions below this per-inlier information as weak.
-    float trans_min_eigenvalue_per_inlier = 3.0f;
+    float trans_min_eigenvalue_per_inlier = 10.0f;
     /// Treat ICP rotation eigen-directions below this per-inlier information as weak.
-    float rot_min_eigenvalue_per_inlier = 3.0f;
-    /// Multiplicative scale applied to weak directions. 0 removes them entirely.
-    float weak_direction_scale = 0.05f;
+    float rot_min_eigenvalue_per_inlier = 10.0f;
+    /// Multiplicative scale applied to weak translation directions. 0 removes them entirely.
+    float trans_weak_direction_scale = 0.2f;
+    /// Multiplicative scale applied to weak rotation directions. 0 removes them entirely.
+    float rot_weak_direction_scale = 0.2f;
 };
 
 /// @brief Parameters for the tightly-coupled ICP/IMU optimization loop.

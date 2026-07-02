@@ -185,7 +185,8 @@ lidar_inertial_odometry_node:
     lio/directional_icp_weighting/enable: true
     lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier: 10.0
     lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 10.0
-    lio/directional_icp_weighting/weak_direction_scale: 0.2
+    lio/directional_icp_weighting/trans_weak_direction_scale: 0.2
+    lio/directional_icp_weighting/rot_weak_direction_scale: 0.2
     # Bias-estimation safeguards for the weakly-observable IMU bias states.
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
     #   little motion (biases are unobservable there and would absorb noise).

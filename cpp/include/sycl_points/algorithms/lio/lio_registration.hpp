@@ -159,14 +159,14 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
     b_pose.segment<3>(0) = icp_factor.b.segment<3>(imu::State::kIdxPos);
     b_pose.segment<3>(3) = icp_factor.b.segment<3>(imu::State::kIdxRot);
 
-    const float weak_scale = std::clamp(params.weak_direction_scale, 0.0f, 1.0f);
-    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block,
-                                          float min_eigenvalue_per_inlier) -> Eigen::Matrix3f {
+    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block, float min_eigenvalue_per_inlier,
+                                          float weak_direction_scale) -> Eigen::Matrix3f {
         const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
         if (solver.info() != Eigen::Success) return Eigen::Matrix3f::Identity();
 
         const float min_info = std::max(0.0f, min_eigenvalue_per_inlier) * static_cast<float>(icp_factor.inlier);
+        const float weak_scale = std::clamp(weak_direction_scale, 0.0f, 1.0f);
         Eigen::Matrix3f filter = Eigen::Matrix3f::Zero();
         for (int i = 0; i < kBlockDof; ++i) {
             const float lambda = std::max(0.0f, solver.eigenvalues()(i));
@@ -186,8 +186,10 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
     };
 
     Eigen::Matrix<float, kPoseDof, kPoseDof> filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
-    filter.block<3, 3>(0, 0) = compute_block_filter(H_pose.block<3, 3>(0, 0), params.trans_min_eigenvalue_per_inlier);
-    filter.block<3, 3>(3, 3) = compute_block_filter(H_pose.block<3, 3>(3, 3), params.rot_min_eigenvalue_per_inlier);
+    filter.block<3, 3>(0, 0) = compute_block_filter(H_pose.block<3, 3>(0, 0), params.trans_min_eigenvalue_per_inlier,
+                                                    params.trans_weak_direction_scale);
+    filter.block<3, 3>(3, 3) = compute_block_filter(H_pose.block<3, 3>(3, 3), params.rot_min_eigenvalue_per_inlier,
+                                                    params.rot_weak_direction_scale);
 
     const Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = filter * H_pose * filter;
     const Eigen::Matrix<float, kPoseDof, 1> b_filtered = filter * filter * b_pose;
