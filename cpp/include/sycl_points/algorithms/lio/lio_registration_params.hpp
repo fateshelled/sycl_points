@@ -31,9 +31,9 @@ struct DirectionalIcpWeightingParams {
     float trans_min_eigenvalue_per_inlier = 10.0f;
     /// Treat ICP rotation eigen-directions below this per-inlier information as weak.
     float rot_min_eigenvalue_per_inlier = 10.0f;
-    /// Multiplicative scale applied to weak translation directions. 0 removes them entirely.
+    /// Minimum information scale applied to weak translation directions. 0 allows full removal.
     float trans_weak_direction_scale = 0.2f;
-    /// Multiplicative scale applied to weak rotation directions. 0 removes them entirely.
+    /// Minimum information scale applied to weak rotation directions. 0 allows full removal.
     float rot_weak_direction_scale = 0.2f;
 };
 

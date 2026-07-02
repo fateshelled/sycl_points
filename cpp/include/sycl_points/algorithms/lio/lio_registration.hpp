@@ -173,10 +173,9 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
             float scale = 1.0f;
             if (lambda <= 0.0f || !std::isfinite(lambda)) {
                 scale = 0.0f;
-            } else {
-                if (min_info > 0.0f && lambda < min_info) {
-                    scale *= weak_scale;
-                }
+            } else if (min_info > 0.0f) {
+                const float information_ratio = std::clamp(lambda / min_info, 0.0f, 1.0f);
+                scale = std::max(weak_scale, information_ratio);
             }
 
             const Eigen::Vector3f q = solver.eigenvectors().col(i);

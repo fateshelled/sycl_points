@@ -27,8 +27,10 @@ TEST(LioRegistration, DirectionalIcpWeightingAttenuatesWeakDirections) {
 
     lio::apply_directional_icp_weighting(factor, params);
 
-    EXPECT_NEAR(factor.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.1f, kEps);
-    EXPECT_NEAR(factor.b(imu::State::kIdxPos), 1.0f, kEps);
+    // Translation uses the linear information ratio (1 / 5 = 0.2), while
+    // rotation is clamped to its larger minimum scale (0.25).
+    EXPECT_NEAR(factor.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.2f, kEps);
+    EXPECT_NEAR(factor.b(imu::State::kIdxPos), 2.0f, kEps);
     EXPECT_NEAR(factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 20.0f, kEps);
     EXPECT_NEAR(factor.b(imu::State::kIdxPos + 1), 20.0f, kEps);
     EXPECT_NEAR(factor.H(imu::State::kIdxRot, imu::State::kIdxRot), 0.25f, kEps);
@@ -44,8 +46,8 @@ TEST(LioRegistration, DirectionalIcpWeightingPreservesCoupledFactorStructure) {
     factor.H(imu::State::kIdxRot, imu::State::kIdxPos) = 0.5f;
 
     lio::DirectionalIcpWeightingParams params;
-    params.trans_min_eigenvalue_per_inlier = 0.05f;
-    params.rot_min_eigenvalue_per_inlier = 0.05f;
+    params.trans_min_eigenvalue_per_inlier = 0.1f;
+    params.rot_min_eigenvalue_per_inlier = 0.1f;
     params.trans_weak_direction_scale = 0.1f;
     params.rot_weak_direction_scale = 0.4f;
 
