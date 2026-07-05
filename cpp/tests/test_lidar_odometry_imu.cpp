@@ -55,17 +55,17 @@ static lo::LidarOdometryParams make_test_params() {
     p.scan.preprocess.angle_incidence_filter.enable = false;
 
     // Use voxel hash map to avoid occupancy grid complexity
-    p.submap.map_type = lo::SubmapMapType::VOXEL_HASH_MAP;
+    p.submap.map_type = sp::pipeline::odometry::SubmapMapType::VOXEL_HASH_MAP;
     p.submap.voxel_size = 0.5f;
 
     // Simple POINT_TO_POINT ICP
-    p.registration.pipeline.registration.reg_type = sp::algorithms::registration::RegType::POINT_TO_POINT;
-    p.registration.pipeline.registration.max_iterations = 5;
-    p.registration.pipeline.registration.max_correspondence_distance = 100.0f;
+    p.registration.factor.reg_type = sp::algorithms::registration::RegType::POINT_TO_POINT;
+    p.lo.registration.max_iterations = 5;
+    p.registration.factor.max_correspondence_distance = 100.0f;
     p.registration.min_num_points = 3;
 
     // No rotation constraint term
-    p.registration.pipeline.registration.rotation_constraint.enable = false;
+    p.registration.factor.rotation_constraint.enable = false;
 
     // Disable covariance M-estimation
     p.covariance_estimation.m_estimation.enable = false;

@@ -260,7 +260,7 @@ public:
 
         // Apply constant-velocity deskew to the full (non-sampled) preprocessed_pc_ for publishing.
         // Submap uses the sampled reg_pc_ptr from registration; this keeps the published cloud full-resolution.
-        if (this->params_.registration.pipeline.velocity_update.enable &&  //
+        if (this->params_.lo.pipeline.velocity_update.enable &&  //
             !this->is_imu_deskew_enabled()) {
             algorithms::deskew::deskew_point_cloud_constant_velocity(*this->preprocessed_pc_, *this->preprocessed_pc_,
                                                                      this->odom_, this->reg_result_->T, this->dt_);
@@ -417,10 +417,11 @@ private:
 
         // Registration
         {
-            auto& reg_pipeline_params = this->params_.registration.pipeline;
+            auto reg_pipeline_params = this->params_.make_registration_pipeline_params();
             if (this->is_imu_deskew_enabled() && reg_pipeline_params.velocity_update.enable) {
                 std::cerr << "[LiDAR Odometry] VelocityUpdate is disabled because IMU deskew is enabled." << std::endl;
                 reg_pipeline_params.velocity_update.enable = false;
+                this->params_.lo.pipeline.velocity_update.enable = false;
             }
             this->registration_pipeline_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
                 *this->queue_ptr_, reg_pipeline_params);
@@ -493,8 +494,8 @@ private:
 
     void compute_covariances() {
         const bool needs_covs =
-            (this->params_.registration.pipeline.registration.reg_type == algorithms::registration::RegType::GICP ||
-             this->params_.registration.pipeline.registration.rotation_constraint.enable ||
+            (this->params_.registration.factor.reg_type == algorithms::registration::RegType::GICP ||
+             this->params_.registration.factor.rotation_constraint.enable ||
              this->params_.scan.preprocess.angle_incidence_filter.enable);
         const bool needs_gaussian =
             this->params_.scan.intensity_gaussian.enable && this->preprocessed_pc_->has_intensity();
@@ -555,8 +556,9 @@ private:
         options.dt = this->dt_;
         options.prev_pose = this->odom_.matrix();
 
-        auto result = this->registration_pipeline_->align(*this->preprocessed_pc_, this->submap_->get_submap_point_cloud(),
-                                                          this->submap_->get_submap_kdtree(), init_T.matrix(), options);
+        auto result =
+            this->registration_pipeline_->align(*this->preprocessed_pc_, this->submap_->get_submap_point_cloud(),
+                                                this->submap_->get_submap_kdtree(), init_T.matrix(), options);
 
         // Reset from the just-registered pose (t_k), so both covariance propagation and the
         // next frame's imu_motion_prediction() use the correct window-start orientation.
@@ -585,10 +587,9 @@ private:
         const size_t total_samples = this->params_.submap.point_random_sampling_num;
         if (reg_pc_ptr->size() > total_samples) {
             // Robust ICP weighted mixed random sampling
-            const auto robust_auto_scale = this->params_.registration.pipeline.robust.auto_scale;
-            const float robust_scale = robust_auto_scale
-                                           ? this->params_.registration.pipeline.robust.min_scale
-                                           : this->params_.registration.pipeline.registration.robust.default_scale;
+            const auto robust_auto_scale = this->params_.lo.pipeline.robust.auto_scale;
+            const float robust_scale = robust_auto_scale ? this->params_.lo.pipeline.robust.min_scale
+                                                         : this->params_.registration.factor.robust.default_scale;
             this->registration_pipeline_->compute_icp_robust_weights(
                 this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(), reg_result.T.matrix(),
                 robust_scale, *this->icp_weights_);

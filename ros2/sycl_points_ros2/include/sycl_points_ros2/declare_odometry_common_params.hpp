@@ -1,13 +1,38 @@
 #pragma once
 
 #include <rclcpp/node.hpp>
-#include <sycl_points/pipeline/lidar_odometry_params.hpp>
+#include <sycl_points/pipeline/odometry_common_params.hpp>
 
 namespace sycl_points {
 namespace ros2 {
 
-inline pipeline::lidar_odometry::Parameters declare_odometry_common_parameters(rclcpp::Node* node) {
-    pipeline::lidar_odometry::Parameters params;
+inline void declare_registration_optimization_parameters(
+    rclcpp::Node* node, algorithms::registration::RegistrationOptimizationParams& params) {
+    const std::string method = node->declare_parameter<std::string>("registration/optimization_method", "GN");
+    params.optimization_method = algorithms::registration::OptimizationMethod_from_string(method);
+    params.gn.lambda = node->declare_parameter<double>("registration/gn/lambda", params.gn.lambda);
+    params.lm.max_inner_iterations =
+        node->declare_parameter<int64_t>("registration/lm/max_inner_iterations", params.lm.max_inner_iterations);
+    params.lm.lambda_factor = node->declare_parameter<double>("registration/lm/lambda_factor", params.lm.lambda_factor);
+    params.lm.init_lambda = node->declare_parameter<double>("registration/lm/init_lambda", params.lm.init_lambda);
+    params.lm.max_lambda = node->declare_parameter<double>("registration/lm/max_lambda", params.lm.max_lambda);
+    params.lm.min_lambda = node->declare_parameter<double>("registration/lm/min_lambda", params.lm.min_lambda);
+    params.dogleg.initial_trust_region_radius = node->declare_parameter<double>(
+        "registration/dogleg/initial_trust_region_radius", params.dogleg.initial_trust_region_radius);
+    params.dogleg.max_trust_region_radius = node->declare_parameter<double>(
+        "registration/dogleg/max_trust_region_radius", params.dogleg.max_trust_region_radius);
+    params.dogleg.min_trust_region_radius = node->declare_parameter<double>(
+        "registration/dogleg/min_trust_region_radius", params.dogleg.min_trust_region_radius);
+    params.dogleg.eta1 = node->declare_parameter<double>("registration/dogleg/eta1", params.dogleg.eta1);
+    params.dogleg.eta2 = node->declare_parameter<double>("registration/dogleg/eta2", params.dogleg.eta2);
+    params.dogleg.gamma_decrease =
+        node->declare_parameter<double>("registration/dogleg/gamma_decrease", params.dogleg.gamma_decrease);
+    params.dogleg.gamma_increase =
+        node->declare_parameter<double>("registration/dogleg/gamma_increase", params.dogleg.gamma_increase);
+}
+
+inline pipeline::odometry::CommonParameters declare_odometry_common_parameters(rclcpp::Node* node) {
+    pipeline::odometry::CommonParameters params;
 
     // SYCL
     {
@@ -98,9 +123,8 @@ inline pipeline::lidar_odometry::Parameters declare_odometry_common_parameters(r
 
     // submapping
     {
-        params.submap.map_type =
-            pipeline::lidar_odometry::SubmapMapType_from_string(node->declare_parameter<std::string>(
-                "submap/map_type", pipeline::lidar_odometry::SubmapMapType_to_string(params.submap.map_type)));
+        params.submap.map_type = pipeline::odometry::SubmapMapType_from_string(node->declare_parameter<std::string>(
+            "submap/map_type", pipeline::odometry::SubmapMapType_to_string(params.submap.map_type)));
         params.submap.voxel_size = node->declare_parameter<double>("submap/voxel_size", params.submap.voxel_size);
         params.submap.max_distance_range =
             node->declare_parameter<double>("submap/max_distance_range", params.submap.max_distance_range);
@@ -168,12 +192,11 @@ inline pipeline::lidar_odometry::Parameters declare_odometry_common_parameters(r
     // Registration
     {
         auto& reg = params.registration;
-        auto& pipeline = reg.pipeline;
-        auto& solver = pipeline.registration;
+        auto& factor = reg.factor;
 
         // common
         {
-            auto& random_sampling = pipeline.random_sampling;
+            auto& random_sampling = params.registration_sampling;
 
             reg.min_num_points = node->declare_parameter<int64_t>("registration/min_num_points", reg.min_num_points);
             random_sampling.enable =
@@ -191,45 +214,35 @@ inline pipeline::lidar_odometry::Parameters declare_odometry_common_parameters(r
             }
 
             const std::string reg_type = node->declare_parameter<std::string>("registration/type", "gicp");
-            solver.reg_type = algorithms::registration::RegType_from_string(reg_type);
-            solver.verbose = node->declare_parameter<bool>("registration/verbose", solver.verbose);
+            factor.reg_type = algorithms::registration::RegType_from_string(reg_type);
+            factor.verbose = node->declare_parameter<bool>("registration/verbose", factor.verbose);
         }
         // Outlier removal
         {
-            solver.max_correspondence_distance = node->declare_parameter<double>(
-                "registration/max_correspondence_distance", solver.max_correspondence_distance);
+            factor.max_correspondence_distance = node->declare_parameter<double>(
+                "registration/max_correspondence_distance", factor.max_correspondence_distance);
         }
 
         // robust
         {
-            auto& robust = solver.robust;
-            auto& pipeline_robust = pipeline.robust;
+            auto& robust = factor.robust;
 
             const std::string robust_loss = node->declare_parameter<std::string>("registration/robust/type", "NONE");
             robust.type = algorithms::robust::RobustLossType_from_string(robust_loss);
             robust.default_scale =
                 node->declare_parameter<double>("registration/robust/default_scale", robust.default_scale);
-            pipeline_robust.init_scale =
-                node->declare_parameter<double>("registration/robust/init_scale", pipeline_robust.init_scale);
-            pipeline_robust.auto_scale =
-                node->declare_parameter<bool>("registration/robust/auto_scale", pipeline_robust.auto_scale);
-            pipeline_robust.min_scale =
-                node->declare_parameter<double>("registration/robust/min_scale", pipeline_robust.min_scale);
-            pipeline_robust.auto_scaling_iter = node->declare_parameter<int64_t>(
-                "registration/robust/auto_scaling_iter", pipeline_robust.auto_scaling_iter);
         }
         // GenZ
         {
-            auto& genz = solver.genz;
+            auto& genz = factor.genz;
 
             genz.planarity_threshold =
                 node->declare_parameter<double>("registration/genz/planarity_threshold", genz.planarity_threshold);
         }
         // Rotation Constraint
         {
-            auto& rotation_constraint = solver.rotation_constraint;
+            auto& rotation_constraint = factor.rotation_constraint;
             auto& rotation_robust = rotation_constraint.robust;
-            auto& pipeline_robust = pipeline.robust;
 
             rotation_constraint.enable =
                 node->declare_parameter<bool>("registration/rotation_constraint/enable", rotation_constraint.enable);
@@ -237,43 +250,6 @@ inline pipeline::lidar_odometry::Parameters declare_odometry_common_parameters(r
                 node->declare_parameter<double>("registration/rotation_constraint/weight", rotation_constraint.weight);
             rotation_robust.default_scale = node->declare_parameter<double>(
                 "registration/rotation_constraint/robust/default_scale", rotation_robust.default_scale);
-            pipeline_robust.rotation_init_scale = node->declare_parameter<double>(
-                "registration/rotation_constraint/robust/init_scale", pipeline_robust.rotation_init_scale);
-            pipeline_robust.rotation_min_scale = node->declare_parameter<double>(
-                "registration/rotation_constraint/robust/min_scale", pipeline_robust.rotation_min_scale);
-        }
-
-        // Optimization
-        {
-            auto& gn = solver.gn;
-            auto& lm = solver.lm;
-            auto& dogleg = solver.dogleg;
-
-            const std::string optimization_method =
-                node->declare_parameter<std::string>("registration/optimization_method", "GN");
-            solver.optimization_method = algorithms::registration::OptimizationMethod_from_string(optimization_method);
-
-            gn.lambda = node->declare_parameter<double>("registration/gn/lambda", gn.lambda);
-
-            lm.max_inner_iterations =
-                node->declare_parameter<int64_t>("registration/lm/max_inner_iterations", lm.max_inner_iterations);
-            lm.lambda_factor = node->declare_parameter<double>("registration/lm/lambda_factor", lm.lambda_factor);
-            lm.init_lambda = node->declare_parameter<double>("registration/lm/init_lambda", lm.init_lambda);
-            lm.max_lambda = node->declare_parameter<double>("registration/lm/max_lambda", lm.max_lambda);
-            lm.min_lambda = node->declare_parameter<double>("registration/lm/min_lambda", lm.min_lambda);
-
-            dogleg.initial_trust_region_radius = node->declare_parameter<double>(
-                "registration/dogleg/initial_trust_region_radius", dogleg.initial_trust_region_radius);
-            dogleg.max_trust_region_radius = node->declare_parameter<double>(
-                "registration/dogleg/max_trust_region_radius", dogleg.max_trust_region_radius);
-            dogleg.min_trust_region_radius = node->declare_parameter<double>(
-                "registration/dogleg/min_trust_region_radius", dogleg.min_trust_region_radius);
-            dogleg.eta1 = node->declare_parameter<double>("registration/dogleg/eta1", dogleg.eta1);
-            dogleg.eta2 = node->declare_parameter<double>("registration/dogleg/eta2", dogleg.eta2);
-            dogleg.gamma_decrease =
-                node->declare_parameter<double>("registration/dogleg/gamma_decrease", dogleg.gamma_decrease);
-            dogleg.gamma_increase =
-                node->declare_parameter<double>("registration/dogleg/gamma_increase", dogleg.gamma_increase);
         }
     }
 

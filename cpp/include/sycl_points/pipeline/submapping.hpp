@@ -10,7 +10,7 @@
 #include "sycl_points/algorithms/mapping/occupancy_grid_map.hpp"
 #include "sycl_points/algorithms/mapping/voxel_hash_map.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
-#include "sycl_points/pipeline/lidar_odometry_params.hpp"
+#include "sycl_points/pipeline/odometry_common_params.hpp"
 
 namespace sycl_points {
 namespace pipeline {
@@ -19,8 +19,8 @@ class Submap {
 public:
     using Ptr = std::shared_ptr<Submap>;
     using ConstPtr = std::shared_ptr<const Submap>;
-    using LidarOdometryParams = lidar_odometry::Parameters;
-    using SubmapMapType = lidar_odometry::SubmapMapType;
+    using OdometryCommonParams = odometry::CommonParameters;
+    using SubmapMapType = odometry::SubmapMapType;
 
     const auto& get_last_keyframe_pose() const { return this->last_keyframe_pose_; }
     const auto& get_keyframe_poses() const { return this->keyframe_poses_; }
@@ -29,7 +29,7 @@ public:
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_last_keyframe_point_cloud() const { return *this->last_keyframe_pc_; }
 
-    Submap(const sycl_utils::DeviceQueue& queue, const LidarOdometryParams& params) : queue_(queue) {
+    Submap(const sycl_utils::DeviceQueue& queue, const OdometryCommonParams& params) : queue_(queue) {
         this->last_keyframe_pc_ = std::make_shared<PointCloudShared>(this->queue_);
         this->submap_pc_ptr_ = std::make_shared<PointCloudShared>(this->queue_);
         this->submap_pc_tmp_ = std::make_shared<PointCloudShared>(this->queue_);
@@ -123,9 +123,9 @@ public:
 private:
     sycl_points::sycl_utils::DeviceQueue queue_;
 
-    LidarOdometryParams::Submap submap_params_;
-    LidarOdometryParams::CovarianceEstimation cov_params_;
-    LidarOdometryParams::Registration reg_params_;
+    OdometryCommonParams::Submap submap_params_;
+    OdometryCommonParams::CovarianceEstimation cov_params_;
+    OdometryCommonParams::Registration reg_params_;
 
     algorithms::knn::KNNResult knn_result_;
 
@@ -213,12 +213,12 @@ private:
 
         // compute covariances and normals
         sycl_utils::events cov_events;
-        const auto reg_type = this->reg_params_.pipeline.registration.reg_type;
+        const auto reg_type = this->reg_params_.factor.reg_type;
         {
             const bool need_covariances = reg_type == algorithms::registration::RegType::GICP ||
                                           reg_type == algorithms::registration::RegType::POINT_TO_DISTRIBUTION ||
                                           reg_type == algorithms::registration::RegType::GENZ ||
-                                          this->reg_params_.pipeline.registration.rotation_constraint.enable;
+                                          this->reg_params_.factor.rotation_constraint.enable;
             const bool need_normals = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
                                        reg_type == algorithms::registration::RegType::GENZ);
 

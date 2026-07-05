@@ -12,7 +12,7 @@
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
-#include "sycl_points/pipeline/lidar_odometry_params.hpp"
+#include "sycl_points/pipeline/odometry_common_params.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
@@ -32,9 +32,9 @@ public:
     using Ptr = std::shared_ptr<PCProcessor>;
     using ConstPtr = std::shared_ptr<const PCProcessor>;
 
-    PCProcessor(const sycl_utils::DeviceQueue& q, const lidar_odometry::Parameters::Scan& scan_params,
-                const lidar_odometry::Parameters::CovarianceEstimation& covs_params,
-                const lidar_odometry::Parameters::IMU& imu_params)
+    PCProcessor(const sycl_utils::DeviceQueue& q, const odometry::CommonParameters::Scan& scan_params,
+                const odometry::CommonParameters::CovarianceEstimation& covs_params,
+                const odometry::CommonParameters::IMU& imu_params)
         : queue_(q), scan_params_(scan_params), covs_params_(covs_params), imu_params_(imu_params) {
         this->initialize();
     }
@@ -80,9 +80,9 @@ private:
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
     algorithms::filter::VoxelGrid::Ptr voxel_filter_ = nullptr;
     algorithms::filter::PolarGrid::Ptr polar_filter_ = nullptr;
-    lidar_odometry::Parameters::Scan scan_params_;
-    lidar_odometry::Parameters::CovarianceEstimation covs_params_;
-    lidar_odometry::Parameters::IMU imu_params_;
+    odometry::CommonParameters::Scan scan_params_;
+    odometry::CommonParameters::CovarianceEstimation covs_params_;
+    odometry::CommonParameters::IMU imu_params_;
 
     void initialize() {
         this->preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(this->queue_);

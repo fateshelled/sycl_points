@@ -50,7 +50,7 @@ lidar_inertial_odometry_node:
 
     # IMU (always enabled for LIO)
     imu/accel_unit: "m_s2"              # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
-    imu/buffer_duration_sec: 1.0        # IMU buffering duration
+    imu/buffer_duration_sec: 2.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew
     imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
     imu/preintegration/gravity/y: 0.0
@@ -75,7 +75,7 @@ lidar_inertial_odometry_node:
     # Yaw is preserved from initial_base_link_pose; gravity does not constrain it.
     # The first few scans before alignment converges are dropped (waiting_initial_alignment).
     imu/initial_alignment/enable: true
-    imu/initial_alignment/required_duration_sec: 0.2  # IMU window length [s]; must be <= imu/buffer_duration_sec
+    imu/initial_alignment/required_duration_sec: 1.0  # IMU window length [s]; must be <= imu/buffer_duration_sec
     imu/initial_alignment/max_gyro_std: 0.05          # [rad/s] per-axis stationarity threshold
     imu/initial_alignment/max_accel_std: 0.2          # [m/s^2] per-axis stationarity threshold
     imu/initial_alignment/max_accel_norm_error: 0.5   # [m/s^2] tolerance on |a_mean| vs |gravity|
@@ -162,11 +162,12 @@ lidar_inertial_odometry_node:
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
     # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
-    # Total IEKF iterations per frame: each iteration = one linearize+solve,
-    # with the robust scale annealed across these iterations (flat loop).
-    lio/total_iterations: 8
+    # Maximum linearize+solve count per frame, distributed as evenly as possible
+    # across registration/robust/auto_scaling_iter robust levels.
+    # Current config: 8 total / 4 levels = 2 solver iterations per level.
+    lio/total_iterations: 12
     lio/criteria/translation: 0.01  # [m]
-    lio/criteria/rotation: 0.01     # [rad]
+    lio/criteria/rotation: 0.0017   # [rad]
     lio/invalid_regularization_factor: 1.0e+4
     # Fixed-sigma floors added to P_initial at each IMU reset.
     # Prevents H_imu from dominating H_icp when noise_density is set to a small
@@ -177,19 +178,15 @@ lidar_inertial_odometry_node:
     # icp_rotation_sigma: σ_rot [rad]  → P_pred[φ,φ] ≳ σ_rot²
     #   choose so 1/σ_rot² ≲ H_icp[rot,rot]  (≈ 1e4–1e5 → σ ≈ 0.003–0.01 rad)
     lio/icp_rotation_sigma: 0.01  # [rad]
-    # Post-optimization velocity blend in [0,1]:
-    #   v = (1 - blend) * v_filter + blend * v_finite_difference
-    # 0.0 trusts the smooth IEKF filter velocity (less position-noise leakage into
-    # the next window's IMU prior); 1.0 is the legacy pure finite-difference estimate.
-    lio/velocity_fd_blend: 0.5
     # Direction-wise ICP/IMU balance for degenerate geometry.
     # The scalar reduced-chi² weight handles globally bad matches; this filter
     # detects weak translation and rotation directions separately so corridor /
     # stairwell degeneracy leans on the IMU prediction instead of noisy LiDAR increments.
     lio/directional_icp_weighting/enable: true
     lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier: 10.0
-    lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 10.0
-    lio/directional_icp_weighting/weak_direction_scale: 0.1
+    lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 50.0
+    lio/directional_icp_weighting/trans_weak_direction_scale: 0.2
+    lio/directional_icp_weighting/rot_weak_direction_scale: 0.02
     # Bias-estimation safeguards for the weakly-observable IMU bias states.
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
     #   little motion (biases are unobservable there and would absorb noise).
