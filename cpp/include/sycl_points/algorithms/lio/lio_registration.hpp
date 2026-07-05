@@ -478,6 +478,9 @@ public:
         for (size_t robust_level = 0; robust_level < robust_levels; ++robust_level) {
             options.robust_scale = robust_scale;
             options.rotation_robust_scale = rotation_robust_scale;
+            if (enable_auto_scaling && this->factor_params_.verbose) {
+                std::cout << "Robust scale: " << robust_scale << std::endl;
+            }
             float lm_lambda = lm_params.init_lambda;
             float trust_region_radius = dl_params.initial_trust_region_radius;
             const size_t solver_iterations = base_iterations + (robust_level < extra_iterations ? 1 : 0);
@@ -535,15 +538,37 @@ public:
                         } else {
                             stop = true;
                         }
+                        if (this->factor_params_.verbose) {
+                            const float current_cost = icp_weight * last_icp.error + imu_cost(operating_state);
+                            std::cout << "iter [" << actual_iterations - 1 << "] ";
+                            std::cout << "error: " << current_cost << ", ";
+                            std::cout << "inlier: " << last_icp.inlier << ", ";
+                            std::cout << "dt: " << delta.segment<3>(imu::State::kIdxPos).norm() << ", ";
+                            std::cout << "dr: " << delta.segment<3>(imu::State::kIdxRot).norm() << std::endl;
+                        }
                         break;
                     case registration::OptimizationMethod::LEVENBERG_MARQUARDT: {
                         const float current_cost = icp_cost(operating_state) + imu_cost(operating_state);
                         for (size_t inner = 0; inner < lm_params.max_inner_iterations; ++inner) {
+                            const float trial_lambda = lm_lambda;
                             Eigen::Matrix<float, 15, 1> trial_delta = Eigen::Matrix<float, 15, 1>::Zero();
                             if (solve_ldlt(lio.H + lm_lambda * I15, lio.b, trial_delta)) {
                                 apply_bias_freeze(trial_delta);
                                 const imu::State trial_state = retract(operating_state, trial_delta);
-                                if (icp_cost(trial_state) + imu_cost(trial_state) <= current_cost) {
+                                const auto [trial_icp_error, trial_inlier] = this->registration_->compute_error_frozen(
+                                    source, target, state_to_pose(trial_state).matrix(), options);
+                                const float trial_cost = icp_weight * trial_icp_error + imu_cost(trial_state);
+                                if (this->factor_params_.verbose) {
+                                    std::cout << "iter [" << actual_iterations - 1 << "] ";
+                                    std::cout << "inner: " << inner << ", ";
+                                    std::cout << "lambda: " << trial_lambda << ", ";
+                                    std::cout << "error: " << trial_cost << ", ";
+                                    std::cout << "inlier: " << trial_inlier << ", ";
+                                    std::cout << "dt: " << trial_delta.segment<3>(imu::State::kIdxPos).norm() << ", ";
+                                    std::cout << "dr: " << trial_delta.segment<3>(imu::State::kIdxRot).norm()
+                                              << std::endl;
+                                }
+                                if (trial_cost <= current_cost) {
                                     delta = trial_delta;
                                     step_accepted = true;
                                     lm_lambda = std::clamp(lm_lambda / lm_params.lambda_factor, lm_params.min_lambda,
@@ -571,8 +596,19 @@ public:
                             break;
                         }
                         const imu::State trial_state = retract(operating_state, trial_delta);
-                        const float rho =
-                            (current_cost - (icp_cost(trial_state) + imu_cost(trial_state))) / predicted_reduction;
+                        const auto [trial_icp_error, trial_inlier] = this->registration_->compute_error_frozen(
+                            source, target, state_to_pose(trial_state).matrix(), options);
+                        const float trial_cost = icp_weight * trial_icp_error + imu_cost(trial_state);
+                        const float rho = (current_cost - trial_cost) / predicted_reduction;
+                        if (this->factor_params_.verbose) {
+                            std::cout << "iter [" << actual_iterations - 1 << "] ";
+                            std::cout << "radius: " << trust_region_radius << ", ";
+                            std::cout << "rho: " << rho << ", ";
+                            std::cout << "error: " << trial_cost << ", ";
+                            std::cout << "inlier: " << trial_inlier << ", ";
+                            std::cout << "dt: " << trial_delta.segment<3>(imu::State::kIdxPos).norm() << ", ";
+                            std::cout << "dr: " << trial_delta.segment<3>(imu::State::kIdxRot).norm() << std::endl;
+                        }
                         if (rho < dl_params.eta1) {
                             trust_region_radius = clamp_radius(trust_region_radius * dl_params.gamma_decrease);
                             break;
