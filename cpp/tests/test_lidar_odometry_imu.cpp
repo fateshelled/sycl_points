@@ -55,7 +55,7 @@ static lo::LidarOdometryParams make_test_params() {
     p.scan.preprocess.angle_incidence_filter.enable = false;
 
     // Use voxel hash map to avoid occupancy grid complexity
-    p.submap.map_type = lo::SubmapMapType::VOXEL_HASH_MAP;
+    p.submap.map_type = sp::pipeline::odometry::SubmapMapType::VOXEL_HASH_MAP;
     p.submap.voxel_size = 0.5f;
 
     // Simple POINT_TO_POINT ICP
