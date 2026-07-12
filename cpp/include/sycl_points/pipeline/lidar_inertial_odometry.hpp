@@ -61,6 +61,7 @@ public:
         success = 0,
         first_frame,
         waiting_initial_alignment,
+        imu_only,
         error = 100,
         old_timestamp,
         small_number_of_points,
@@ -192,20 +193,22 @@ public:
             this->add_delta_time(ProcessName::preprocessing, dt_preprocessing);
         }
 
-        if (this->preprocessed_pc_->size() <= this->params_.registration.min_num_points) {
+        const bool insufficient_points = this->preprocessed_pc_->size() <= this->params_.registration.min_num_points;
+
+        // The first LiDAR frame initializes the submap and frame convention, so it
+        // cannot fall back to IMU-only propagation.  Keep this check before IMU
+        // integration to avoid advancing the preintegration state on a rejected
+        // first frame.
+        if (this->is_first_frame_ && insufficient_points) {
             this->error_message_ = "point cloud size is too small";
             return ResultType::small_number_of_points;
         }
 
-        // Integrate IMU measurements for this window
-        {
-            this->imu_batch_.clear();
-            std::lock_guard<std::mutex> lock(this->imu_mutex_);
-            this->imu_batch_.reserve(this->imu_buffer_.size());
-            imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
-                                          this->imu_batch_);
+        this->integrate_imu_window(timestamp);
+
+        if (insufficient_points) {
+            return this->process_imu_only(timestamp);
         }
-        this->imu_preintegration_->integrate_batch(this->imu_batch_);
 
         // First frame: initialize state and submap, no registration
         if (this->is_first_frame_) {
@@ -453,6 +456,56 @@ private:
         pred.accel_bias = this->x_.accel_bias;
         pred.gyro_bias = this->x_.gyro_bias;
         return pred;
+    }
+
+    void integrate_imu_window(double timestamp) {
+        this->imu_batch_.clear();
+        {
+            std::lock_guard<std::mutex> lock(this->imu_mutex_);
+            this->imu_batch_.reserve(this->imu_buffer_.size());
+            imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
+                                          this->imu_batch_);
+        }
+        this->imu_preintegration_->integrate_batch(this->imu_batch_);
+    }
+
+    ResultType process_imu_only(double timestamp) {
+        const imu::State predicted_state = this->predict_state();
+        const Eigen::Matrix<float, 15, 15> predicted_covariance = algorithms::lio::transform_covariance_imu_to_lidar(
+            this->imu_preintegration_->get_raw().covariance, this->params_.imu.T_imu_to_lidar,
+            predicted_state.rotation);
+
+        if (!predicted_state.position.allFinite() || !predicted_state.rotation.allFinite() ||
+            !predicted_state.velocity.allFinite() || !predicted_covariance.allFinite()) {
+            this->error_message_ = "imu-only propagation produced non-finite state or covariance";
+            return ResultType::error;
+        }
+
+        // Accept the IMU prediction as the posterior because no LiDAR measurement
+        // update is available for this frame.
+        this->prev_odom_ = this->odom_;
+        this->x_ = predicted_state;
+        this->P_post_ = predicted_covariance;
+        this->odom_ = state_to_pose(this->x_);
+
+        // Do not leave the previous ICP result visible as the latest result.
+        this->reg_result_->T = this->odom_;
+        this->reg_result_->converged = true;
+        this->reg_result_->iterations = 0;
+        this->reg_result_->H.setZero();
+        this->reg_result_->b.setZero();
+        this->reg_result_->error = 0.0f;
+        this->reg_result_->H_raw.setZero();
+        this->reg_result_->b_raw.setZero();
+        this->reg_result_->error_raw = 0.0f;
+        this->reg_result_->inlier = 0;
+
+        this->last_frame_time_ = timestamp;
+        this->last_imu_reset_timestamp_ = timestamp;
+        this->reset_imu_preintegration();
+
+        this->error_message_ = "point cloud size is too small; propagated with IMU only";
+        return ResultType::imu_only;
     }
 
     /// @brief Prepare one frame and delegate optimization to algorithms::lio.
