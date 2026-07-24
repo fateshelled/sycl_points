@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -11,8 +12,8 @@
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/imu/imu_velocity_corrector.hpp"
 #include "sycl_points/algorithms/registration/registration_pipeline.hpp"
-#include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
+#include "sycl_points/pipeline/motion_predictor.hpp"
 #include "sycl_points/pipeline/pointcloud_processing.hpp"
 #include "sycl_points/pipeline/submapping.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -227,6 +228,12 @@ public:
                 imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
                                               this->imu_batch_);
             }
+            constexpr double kTimestampToleranceSec = 1e-6;
+            this->imu_window_complete_ =
+                this->imu_batch_.size() >= 2 &&
+                std::abs(this->imu_batch_.front().timestamp - this->last_imu_reset_timestamp_) <=
+                    kTimestampToleranceSec &&
+                std::abs(this->imu_batch_.back().timestamp - timestamp) <= kTimestampToleranceSec;
             this->imu_preintegration_->integrate_batch(this->imu_batch_);
         }
 
@@ -278,7 +285,7 @@ public:
             this->linear_velocity_ = delta_pose.translation() / this->dt_;
             this->angular_velocity_ = Eigen::AngleAxisf(delta_angle_axis.angle() / this->dt_, delta_angle_axis.axis());
 
-            if (this->imu_preintegration_) {
+            if (this->imu_preintegration_ && this->params_.motion_prediction.mode == MotionPredictionMode::IMU_SE3) {
                 const Eigen::Matrix3f R_world_imu_prev =
                     this->prev_odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 this->imu_velocity_corrector_.update(this->odom_.translation() - this->prev_odom_.translation(),
@@ -319,7 +326,7 @@ private:
 
     Parameters params_;
 
-    AdaptiveMotionPredictor::Ptr motion_predictor_ = nullptr;
+    MotionPredictor::Ptr motion_predictor_ = nullptr;
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     imu::IMUVelocityCorrector imu_velocity_corrector_;
@@ -337,6 +344,7 @@ private:
     Eigen::Matrix3f imu_R_world_at_reset_ = Eigen::Matrix3f::Identity();
     Eigen::Vector3f imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
     std::vector<imu::IMUMeasurement> imu_batch_;  ///< Reusable buffer for per-frame IMU snapshots.
+    bool imu_window_complete_ = false;
 
     std::string error_message_;
 
@@ -435,7 +443,12 @@ private:
 
         // Motion predictor
         {
-            this->motion_predictor_ = std::make_shared<AdaptiveMotionPredictor>(this->params_.motion_prediction);
+            this->motion_predictor_ = std::make_shared<MotionPredictor>(this->params_.motion_prediction);
+            if (!this->params_.imu.enable &&
+                this->params_.motion_prediction.mode == MotionPredictionMode::GYRO_LIDAR_CV) {
+                std::cerr << "[LiDAR Odometry] " << MotionPredictionMode_to_string(this->params_.motion_prediction.mode)
+                          << " requires IMU; falling back to LIDAR_CV." << std::endl;
+            }
         }
 
         // Held IMU bias (mutated by initial alignment; default = configured bias)
@@ -445,15 +458,15 @@ private:
         // R_world_imu is the IMU's rotation in the odom (world) frame at startup.
         // The first-frame block will overwrite this with the post-alignment value
         // (gravity-corrected) before any IMU integration runs.
-        if (this->params_.imu.enable) {
+        if (this->params_.imu.enable && this->params_.motion_prediction.mode != MotionPredictionMode::LIDAR_CV) {
             this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
             const Eigen::Matrix3f R_world_imu =
                 this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
             this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
             this->imu_R_world_at_reset_ = R_world_imu;
             this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
-
-            // Initial gravity-aligned alignment estimator
+        }
+        if (this->params_.imu.enable) {
             this->alignment_estimator_ = std::make_shared<imu::InitialAlignmentEstimator>(
                 this->params_.imu.initial_alignment, this->params_.imu.preintegration.gravity,
                 this->params_.imu.T_imu_to_lidar);
@@ -529,21 +542,28 @@ private:
     }
 
     algorithms::registration::RegistrationResult registration() {
-        Eigen::Isometry3f init_T;
         Eigen::Vector3f v_reset = Eigen::Vector3f::Zero();
-        if (this->imu_preintegration_) {
-            if (this->imu_preintegration_->get_dt_total() > 0.0) {
-                init_T = this->imu_motion_prediction();
-            } else {
-                init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
-                                                          this->dt_, this->reg_result_, this->registrated_);
+        const bool has_imu_prediction =
+            this->imu_preintegration_ && this->imu_window_complete_ && this->imu_preintegration_->get_dt_total() > 0.0;
+
+        MotionPredictionCandidates candidates;
+        if (has_imu_prediction) {
+            const Eigen::Matrix3f delta_R_imu = this->imu_preintegration_->get_corrected(this->imu_bias_).Delta_R;
+            const Eigen::Matrix3f& R_i2l = this->params_.imu.T_imu_to_lidar.rotation();
+            candidates.gyro_delta_rotation_lidar = R_i2l * delta_R_imu * R_i2l.transpose();
+            if (this->params_.motion_prediction.mode == MotionPredictionMode::IMU_SE3) {
+                candidates.imu_se3_pose = this->imu_motion_prediction();
             }
-            // linear_velocity_ is in the prev_odom_ body frame, so use prev_odom_.rotation() to convert to world frame.
+        }
+
+        const Eigen::Isometry3f init_T =
+            this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_, this->dt_,
+                                             this->reg_result_, this->registrated_, candidates);
+
+        if (this->imu_preintegration_ && this->params_.motion_prediction.mode == MotionPredictionMode::IMU_SE3) {
+            // linear_velocity_ is in the previous LiDAR body frame.
             v_reset = this->imu_velocity_corrector_.get_reset_velocity(
                 *this->imu_preintegration_, this->imu_bias_, this->prev_odom_.rotation() * this->linear_velocity_);
-        } else {
-            init_T = this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_,
-                                                      this->dt_, this->reg_result_, this->registrated_);
         }
 
         // Provide the previous registration result as a MAP prior so the optimizer

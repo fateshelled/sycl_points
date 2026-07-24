@@ -30,6 +30,11 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
 
     // Motion prediction without tightly-coupled LIO.
     {
+        const std::string prediction_mode = node->declare_parameter<std::string>(
+            "motion_prediction/mode",
+            pipeline::lidar_odometry::MotionPredictionMode_to_string(params.motion_prediction.mode));
+        params.motion_prediction.mode =
+            pipeline::lidar_odometry::MotionPredictionMode_from_string(prediction_mode);
         params.motion_prediction.verbose =
             node->declare_parameter<bool>("motion_prediction/verbose", params.motion_prediction.verbose);
         params.motion_prediction.velocity_ema_alpha = node->declare_parameter<double>(

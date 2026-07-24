@@ -1,7 +1,7 @@
 #pragma once
 
 #include "sycl_points/algorithms/registration/registration_pipeline_params.hpp"
-#include "sycl_points/pipeline/adaptive_motion_predictor.hpp"
+#include "sycl_points/pipeline/motion_predictor.hpp"
 #include "sycl_points/pipeline/odometry_common_params.hpp"
 
 namespace sycl_points {
@@ -10,7 +10,7 @@ namespace lidar_odometry {
 
 /// @brief Parameters specific to the LiDAR-only odometry pipeline.
 struct Parameters : public odometry::CommonParameters {
-    using MotionPrediction = AdaptiveMotionPredictor::Params;
+    using MotionPrediction = MotionPredictor::Params;
 
     struct LO {
         struct Registration {
