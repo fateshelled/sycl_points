@@ -125,6 +125,12 @@ public:
         this->map_prior_.update(prev_result, T_pred);
     }
 
+    /// @brief Set a MAP prior whose process covariance spans multiple prediction intervals.
+    void set_map_prior_state(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred,
+                             const MapPriorMatrix& process_covariance) {
+        this->map_prior_.update(prev_result, T_pred, process_covariance);
+    }
+
     /// @brief validate parameters
     void validate_params(const PointCloudShared& source, const PointCloudShared& target,
                          RegistrationParams& params) const {

@@ -33,6 +33,7 @@ public:
         success = 0,  //
         first_frame,
         waiting_initial_alignment,
+        prediction_only,
         error = 100,
         old_timestamp,
         small_number_of_points
@@ -178,8 +179,11 @@ public:
             this->add_delta_time(ProcessName::preprocessing, dt_preprocessing);
         }
 
-        // check point cloud size
-        if (this->preprocessed_pc_->size() <= this->params_.registration.min_num_points) {
+        const bool insufficient_points = this->preprocessed_pc_->size() <= this->params_.registration.min_num_points;
+
+        // The first frame must initialize the submap. There is no registered pose
+        // or Hessian to propagate yet, so prediction-only fallback is not possible.
+        if (this->is_first_frame_ && insufficient_points) {
             this->error_message_ = "point cloud size is too small";
             return ResultType::small_number_of_points;
         }
@@ -237,12 +241,21 @@ public:
             this->imu_preintegration_->integrate_batch(this->imu_batch_);
         }
 
+        const MotionPrediction prediction = this->predict_motion();
+        this->accumulate_prior_process_covariance(this->odom_, prediction.pose);
+
+        if (insufficient_points) {
+            return this->commit_prediction_only(prediction, timestamp);
+        }
+
         // Registration
         {
             double dt_registration = 0.0;
             try {
-                *this->reg_result_ = time_utils::measure_execution([&]() { return registration(); }, dt_registration);
+                *this->reg_result_ =
+                    time_utils::measure_execution([&]() { return registration(prediction); }, dt_registration);
             } catch (const std::exception& e) {
+                this->imu_velocity_corrector_.cancel_update();
                 this->error_message_ = std::string("registration: ") + e.what();
                 std::cerr << "[LiDAR Odometry] " << this->error_message_ << std::endl;
                 return ResultType::error;
@@ -292,7 +305,19 @@ public:
                                                      R_world_imu_prev, this->params_.imu.preintegration.gravity);
             }
 
-            this->registrated_ = true;
+            if (this->is_valid_prior_source(*this->reg_result_)) {
+                this->last_valid_reg_result_ =
+                    std::make_shared<algorithms::registration::RegistrationResult>(*this->reg_result_);
+                this->accumulated_prior_process_covariance_.setZero();
+                this->prior_accumulation_pose_ = this->odom_;
+                this->prior_accumulation_initialized_ = true;
+                this->last_frame_registered_ = true;
+            } else {
+                // The pose remains accepted to preserve existing LO behavior, but
+                // an unusable Hessian must not replace the last valid prior source.
+                this->accumulate_prior_process_covariance(prediction.pose, this->odom_);
+                this->last_frame_registered_ = false;
+            }
         }
         return ResultType::success;
     }
@@ -310,8 +335,13 @@ private:
     pointcloud_processing::PCProcessor::Ptr pc_processor_ = nullptr;
     algorithms::registration::RegistrationPipeline::Ptr registration_pipeline_ = nullptr;
 
-    bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
+    algorithms::registration::RegistrationResult::Ptr last_valid_reg_result_ = nullptr;
+    bool last_frame_registered_ = false;
+    algorithms::registration::MapPriorMatrix accumulated_prior_process_covariance_ =
+        algorithms::registration::MapPriorMatrix::Zero();
+    Eigen::Isometry3f prior_accumulation_pose_ = Eigen::Isometry3f::Identity();
+    bool prior_accumulation_initialized_ = false;
 
     Eigen::Vector3f linear_velocity_;     // [m/s] in previous LiDAR body frame
     Eigen::AngleAxisf angular_velocity_;  // [rad/s]
@@ -434,7 +464,11 @@ private:
             this->registration_pipeline_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
                 *this->queue_ptr_, reg_pipeline_params);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
-            this->registrated_ = false;
+            this->last_valid_reg_result_ = nullptr;
+            this->last_frame_registered_ = false;
+            this->accumulated_prior_process_covariance_.setZero();
+            this->prior_accumulation_pose_ = this->odom_;
+            this->prior_accumulation_initialized_ = false;
         }
         // utilities
         {
@@ -541,8 +575,14 @@ private:
         return this->odom_ * T_lidar_rel;
     }
 
-    algorithms::registration::RegistrationResult registration() {
-        Eigen::Vector3f v_reset = Eigen::Vector3f::Zero();
+    struct MotionPrediction {
+        Eigen::Isometry3f pose = Eigen::Isometry3f::Identity();
+        Eigen::Vector3f imu_reset_velocity = Eigen::Vector3f::Zero();
+        bool has_imu_reset_velocity = false;
+    };
+
+    MotionPrediction predict_motion() {
+        MotionPrediction prediction;
         const bool has_imu_prediction =
             this->imu_preintegration_ && this->imu_window_complete_ && this->imu_preintegration_->get_dt_total() > 0.0;
 
@@ -556,20 +596,26 @@ private:
             }
         }
 
-        const Eigen::Isometry3f init_T =
-            this->motion_predictor_->predict(this->linear_velocity_, this->angular_velocity_, this->odom_, this->dt_,
-                                             this->reg_result_, this->registrated_, candidates);
+        prediction.pose = this->motion_predictor_->predict(
+            this->linear_velocity_, this->angular_velocity_, this->odom_, this->dt_, this->last_valid_reg_result_,
+            this->last_frame_registered_ && this->last_valid_reg_result_ != nullptr, candidates);
 
         if (this->imu_preintegration_ && this->params_.motion_prediction.mode == MotionPredictionMode::IMU_SE3) {
             // linear_velocity_ is in the previous LiDAR body frame.
-            v_reset = this->imu_velocity_corrector_.get_reset_velocity(
+            prediction.imu_reset_velocity = this->imu_velocity_corrector_.get_reset_velocity(
                 *this->imu_preintegration_, this->imu_bias_, this->prev_odom_.rotation() * this->linear_velocity_);
+            prediction.has_imu_reset_velocity = true;
         }
 
+        return prediction;
+    }
+
+    algorithms::registration::RegistrationResult registration(const MotionPrediction& prediction) {
         // Provide the previous registration result as a MAP prior so the optimizer
         // stays anchored to init_T in directions with weak geometric constraints.
-        if (this->registrated_) {
-            this->registration_pipeline_->registration()->set_map_prior_state(*this->reg_result_, init_T);
+        if (this->last_valid_reg_result_ && this->prior_accumulation_initialized_) {
+            this->registration_pipeline_->registration()->set_map_prior_state(
+                *this->last_valid_reg_result_, prediction.pose, this->accumulated_prior_process_covariance_);
         }
 
         algorithms::registration::Registration::ExecutionOptions options;
@@ -578,7 +624,7 @@ private:
 
         auto result =
             this->registration_pipeline_->align(*this->preprocessed_pc_, this->submap_->get_submap_point_cloud(),
-                                                this->submap_->get_submap_kdtree(), init_T.matrix(), options);
+                                                this->submap_->get_submap_kdtree(), prediction.pose.matrix(), options);
 
         // Reset from the just-registered pose (t_k), so both covariance propagation and the
         // next frame's imu_motion_prediction() use the correct window-start orientation.
@@ -588,12 +634,64 @@ private:
         // would require splitting the corrector's snapshot/return protocol (see IMUVelocityCorrector).
         if (this->imu_preintegration_) {
             this->imu_R_world_at_reset_ = result.T.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            this->imu_v_world_at_reset_ = v_reset;
+            if (prediction.has_imu_reset_velocity) {
+                this->imu_v_world_at_reset_ = prediction.imu_reset_velocity;
+            }
             this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(),
                                              this->imu_R_world_at_reset_);
         }
 
         return result;
+    }
+
+    void accumulate_prior_process_covariance(const Eigen::Isometry3f& from, const Eigen::Isometry3f& to) {
+        if (!this->params_.lo.registration.map_prior.enabled || !this->last_valid_reg_result_) return;
+
+        if (!this->prior_accumulation_initialized_) {
+            this->prior_accumulation_pose_ = from;
+            this->accumulated_prior_process_covariance_.setZero();
+            this->prior_accumulation_initialized_ = true;
+        }
+
+        // Keep the accumulator continuous even if a caller provides an equivalent
+        // pose through a different path (e.g. an accepted but unusable ICP result).
+        const Eigen::Isometry3f& step_from = this->prior_accumulation_pose_;
+        this->accumulated_prior_process_covariance_ = algorithms::registration::accumulate_map_prior_process_covariance(
+            this->params_.lo.registration.map_prior, this->accumulated_prior_process_covariance_, step_from, to);
+        this->prior_accumulation_pose_ = to;
+    }
+
+    bool is_valid_prior_source(const algorithms::registration::RegistrationResult& result) const {
+        return result.T.matrix().allFinite() && result.H_raw.allFinite() && std::isfinite(result.error_raw) &&
+               result.error_raw >= 0.0f && result.inlier > 2;
+    }
+
+    ResultType commit_prediction_only(const MotionPrediction& prediction, double timestamp) {
+        const Eigen::Isometry3f odom_before_prediction = this->odom_;
+
+        if (this->imu_preintegration_) {
+            this->imu_R_world_at_reset_ = prediction.pose.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+            if (prediction.has_imu_reset_velocity) {
+                const Eigen::Matrix3f R_world_imu_start =
+                    odom_before_prediction.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+                this->imu_v_world_at_reset_ = this->imu_velocity_corrector_.update_without_icp(
+                    R_world_imu_start, this->params_.imu.preintegration.gravity);
+            }
+            this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(),
+                                             this->imu_R_world_at_reset_);
+        }
+
+        this->prev_odom_ = this->odom_;
+        this->odom_ = prediction.pose;
+        this->last_frame_time_ = timestamp;
+        this->last_imu_reset_timestamp_ = timestamp;
+        this->last_frame_registered_ = false;
+
+        *this->reg_result_ = algorithms::registration::RegistrationResult{};
+        this->reg_result_->T = prediction.pose;
+
+        this->error_message_ = "point cloud size is too small; propagated with motion prediction";
+        return ResultType::prediction_only;
     }
 
     void submapping(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {

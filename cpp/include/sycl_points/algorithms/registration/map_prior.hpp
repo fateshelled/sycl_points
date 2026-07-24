@@ -33,13 +33,51 @@ struct MapPriorParams {
     float trans_base_sigma = 1e-2f;  // sqrt(1e-4) m = 1 cm
 };
 
+using MapPriorMatrix = Eigen::Matrix<float, 6, 6>;
+
+/// @brief Process covariance for one prediction interval, expressed in the
+///        destination pose's body frame.
+inline MapPriorMatrix make_map_prior_process_covariance(const MapPriorParams& params, const Eigen::Isometry3f& from,
+                                                        const Eigen::Isometry3f& to) {
+    const Eigen::Matrix3f R_rel = from.rotation().transpose() * to.rotation();
+    const Eigen::AngleAxisf aa(R_rel);
+    const Eigen::Vector3f delta_rot_body = aa.axis() * aa.angle();
+    const Eigen::Vector3f delta_trans_body = to.rotation().transpose() * (to.translation() - from.translation());
+
+    const float rot_var_per_unit = params.rot_vel_sigma * params.rot_vel_sigma;
+    const float trans_var_per_unit = params.trans_vel_sigma * params.trans_vel_sigma;
+    const float rot_base_var = params.rot_base_sigma * params.rot_base_sigma;
+    const float trans_base_var = params.trans_base_sigma * params.trans_base_sigma;
+
+    MapPriorMatrix Q = MapPriorMatrix::Zero();
+    Q.diagonal().head<3>() = delta_rot_body.cwiseAbs() * rot_var_per_unit + Eigen::Vector3f::Constant(rot_base_var);
+    Q.diagonal().tail<3>() =
+        delta_trans_body.cwiseAbs() * trans_var_per_unit + Eigen::Vector3f::Constant(trans_base_var);
+    return Q;
+}
+
+/// @brief Rotate accumulated process covariance into @p to's body frame and
+///        append the covariance of the new prediction interval.
+inline MapPriorMatrix accumulate_map_prior_process_covariance(const MapPriorParams& params,
+                                                              const MapPriorMatrix& accumulated,
+                                                              const Eigen::Isometry3f& from,
+                                                              const Eigen::Isometry3f& to) {
+    const Eigen::Matrix3f R_rel = from.rotation().transpose() * to.rotation();
+    MapPriorMatrix Ad = MapPriorMatrix::Zero();
+    Ad.block<3, 3>(0, 0) = R_rel;
+    Ad.block<3, 3>(3, 3) = R_rel;
+
+    const MapPriorMatrix next = Ad.transpose() * accumulated * Ad + make_map_prior_process_covariance(params, from, to);
+    return 0.5f * (next + next.transpose());
+}
+
 /// @brief MAP estimation prior using the previous frame's Hessian as the information matrix.
 ///
 /// Adds a Gaussian prior N(T_pred, Omega_prior^{-1}) to the GICP normal equations each
 /// iteration.  The information matrix is computed once per frame via the Matrix Inversion
 /// Lemma to avoid directly inverting H_raw_prev (which may be singular in degenerate cases):
 ///
-///   R = Q^{-1}  (trivial: diagonal)
+///   R = Q^{-1}
 ///   Omega_prior = (H^{-1} + Q)^{-1} = R - R(H + R)^{-1}R
 ///
 /// Since R is positive-definite, (H + R) is always invertible even when H is singular,
@@ -104,8 +142,20 @@ public:
     ///                     (used to scale H_raw via the reduced chi-squared statistic).
     /// @param T_pred       Predicted pose used as the initial guess for the current frame.
     void update(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
+        this->update(prev_result, T_pred, make_map_prior_process_covariance(this->params_, prev_result.T, T_pred));
+    }
+
+    /// @brief Precompute the prior using process covariance accumulated across
+    ///        one or more prediction-only intervals.
+    /// @param process_covariance Process covariance expressed in T_pred's body frame.
+    void update(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred,
+                const MapPriorMatrix& process_covariance) {
         this->has_prior_ = false;
         if (!this->params_.enabled) return;
+        if (!prev_result.T.matrix().allFinite() || !T_pred.matrix().allFinite() || !prev_result.H_raw.allFinite() ||
+            !process_covariance.allFinite()) {
+            return;
+        }
 
         // Reduced chi-squared scaling: convert the raw Hessian (J^T Sigma^{-1} J under
         // unit-variance residual assumption) into a calibrated information matrix.
@@ -120,54 +170,36 @@ public:
         if (dof <= 0.0f) return;
         if (!std::isfinite(prev_result.error_raw) || prev_result.error_raw < 0.0f) return;
         const float s_sq = std::max(1.0f, 2.0f * prev_result.error_raw / dof);
-        const Eigen::Matrix<float, 6, 6> H_calibrated = prev_result.H_raw / s_sq;
+        const MapPriorMatrix H_calibrated = prev_result.H_raw / s_sq;
 
         // R_rel = R_opt_prev^T * R_pred: relative rotation from the optimized previous frame
         // to the predicted current frame.  H_raw was built at prev_result.T, so this is
         // the correct rotation for the Adjoint transformation and for the per-axis delta.
         const Eigen::Matrix3f R_rel = prev_result.T.rotation().transpose() * T_pred.rotation();
 
-        // Per-axis inter-frame delta expressed in T_pred body frame.
-        const Eigen::AngleAxisf aa(R_rel);
-        const Eigen::Vector3f delta_rot_body = aa.axis() * aa.angle();
-        const Eigen::Vector3f delta_trans_body =
-            T_pred.rotation().transpose() * (T_pred.translation() - prev_result.T.translation());
-
-        // Per-axis process noise Q: velocity-proportional term plus an isotropic baseline.
-        // Linear (|delta|) rather than quadratic scaling — quadratic would make the prior
-        // nearly vanish at high speed (delta ~ 1m/frame).  Both vel_sigma and base_sigma are
-        // parameterised as std-dev (units of [rad] / [m]) and appear squared in the variance
-        // formula.  The baseline (base_sigma^2) is always added so the prior stays responsive
-        // to sudden acceleration regardless of current speed.
-        //   Q_rot[i]   = rot_base_sigma^2   + rot_vel_sigma^2   * |delta_rot_body[i]|
-        //   Q_trans[i] = trans_base_sigma^2 + trans_vel_sigma^2 * |delta_trans_body[i]|
-        const float rot_var_per_unit = this->params_.rot_vel_sigma * this->params_.rot_vel_sigma;
-        const float trans_var_per_unit = this->params_.trans_vel_sigma * this->params_.trans_vel_sigma;
-        const float rot_base_var = this->params_.rot_base_sigma * this->params_.rot_base_sigma;
-        const float trans_base_var = this->params_.trans_base_sigma * this->params_.trans_base_sigma;
-        const Eigen::Vector3f q_rot =
-            delta_rot_body.cwiseAbs() * rot_var_per_unit + Eigen::Vector3f::Constant(rot_base_var);
-        const Eigen::Vector3f q_trans =
-            delta_trans_body.cwiseAbs() * trans_var_per_unit + Eigen::Vector3f::Constant(trans_base_var);
-
         // Rotate H_calibrated from T_opt_prev body frame into T_pred body frame via
         // rotation-only Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_cal * Ad
-        Eigen::Matrix<float, 6, 6> Ad = Eigen::Matrix<float, 6, 6>::Zero();
+        MapPriorMatrix Ad = MapPriorMatrix::Zero();
         Ad.block<3, 3>(0, 0) = R_rel;
         Ad.block<3, 3>(3, 3) = R_rel;
-        const Eigen::Matrix<float, 6, 6> H_curr = Ad.transpose() * H_calibrated * Ad;
+        const MapPriorMatrix H_curr = Ad.transpose() * H_calibrated * Ad;
 
-        // R = Q^{-1}: per-axis diagonal (safe because q[i] >= base_sigma^2 > 0 by construction)
-        Eigen::Vector<float, 6> R_diag;
-        R_diag.head<3>() = q_rot.cwiseInverse();
-        R_diag.tail<3>() = q_trans.cwiseInverse();
-        const Eigen::Matrix<float, 6, 6> R = R_diag.asDiagonal();
+        // Q may contain off-diagonal terms after covariance from multiple body
+        // frames has been accumulated. Symmetrize before factorization to remove
+        // harmless floating-point asymmetry.
+        const MapPriorMatrix Q = 0.5f * (process_covariance + process_covariance.transpose());
+        Eigen::LDLT<MapPriorMatrix> q_ldlt(Q);
+        if (q_ldlt.info() != Eigen::Success || !q_ldlt.isPositive()) return;
+        const MapPriorMatrix R = q_ldlt.solve(MapPriorMatrix::Identity());
+        if (!R.allFinite()) return;
 
         // Omega_prior = (H^{-1} + Q)^{-1} = R - R(H + R)^{-1}R
         // (H + R) is always PD since R is PD, so this is robust to singular H.
-        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt(H_curr + R);
+        Eigen::LDLT<MapPriorMatrix> ldlt(H_curr + R);
         if (ldlt.info() != Eigen::Success) return;
         this->Omega_prior_ = R - R * ldlt.solve(R);
+        this->Omega_prior_ = 0.5f * (this->Omega_prior_ + this->Omega_prior_.transpose());
+        if (!this->Omega_prior_.allFinite()) return;
 
         // Precompute inverse once; reused every iteration inside apply() and prior_error()
         this->T_pred_inv_ = T_pred.inverse();
@@ -202,11 +234,12 @@ public:
     }
 
     bool is_active() const { return this->params_.enabled && this->has_prior_; }
+    const MapPriorMatrix& information_matrix() const { return this->Omega_prior_; }
 
 private:
     MapPriorParams params_;
     bool has_prior_ = false;
-    Eigen::Matrix<float, 6, 6> Omega_prior_ = Eigen::Matrix<float, 6, 6>::Zero();
+    MapPriorMatrix Omega_prior_ = MapPriorMatrix::Zero();
     Eigen::Isometry3f T_pred_inv_ = Eigen::Isometry3f::Identity();
 };
 
