@@ -25,6 +25,9 @@ namespace imu {
 ///
 ///      The result is stored and returned on the next get_reset_velocity() call.
 ///
+/// When no ICP observation is available, update_without_icp() advances the
+/// velocity with IMU dynamics and preserves it for the next window.
+///
 /// On the first frame (no prior correction) get_reset_velocity() falls back to the
 /// supplied @p fallback_v_world (typically the LiDAR-period average velocity).
 class IMUVelocityCorrector {
@@ -42,12 +45,12 @@ public:
     Eigen::Vector3f get_reset_velocity(const IMUPreintegration& preintegration, const IMUBias& bias,
                                        const Eigen::Vector3f& fallback_v_world) {
         const Eigen::Vector3f v_reset = corrected_v_valid_ ? corrected_v_world_ : fallback_v_world;
-        corrected_v_valid_ = false;
 
         const PreintegrationResult snap = preintegration.get_corrected(bias);
         snapshot_delta_v_ = snap.Delta_v;
         snapshot_delta_p_ = snap.Delta_p;
         snapshot_dt_ = static_cast<float>(snap.dt_total);
+        snapshot_v_reset_world_ = v_reset;
         snapshot_valid_ = true;
 
         return v_reset;
@@ -70,11 +73,29 @@ public:
         snapshot_valid_ = false;
     }
 
+    /// @brief Advance the saved window-start velocity without an ICP correction.
+    ///        Used by prediction-only LiDAR frames.
+    Eigen::Vector3f update_without_icp(const Eigen::Matrix3f& R_world_imu, const Eigen::Vector3f& gravity) {
+        if (!snapshot_valid_ || snapshot_dt_ <= 0.0f) {
+            snapshot_valid_ = false;
+            return snapshot_v_reset_world_;
+        }
+
+        corrected_v_world_ = snapshot_v_reset_world_ + gravity * snapshot_dt_ + R_world_imu * snapshot_delta_v_;
+        corrected_v_valid_ = corrected_v_world_.allFinite();
+        snapshot_valid_ = false;
+        return corrected_v_valid_ ? corrected_v_world_ : snapshot_v_reset_world_;
+    }
+
+    /// @brief Abandon the pending snapshot without discarding the last confirmed velocity.
+    void cancel_update() { snapshot_valid_ = false; }
+
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 private:
     Eigen::Vector3f snapshot_delta_v_ = Eigen::Vector3f::Zero();
     Eigen::Vector3f snapshot_delta_p_ = Eigen::Vector3f::Zero();
+    Eigen::Vector3f snapshot_v_reset_world_ = Eigen::Vector3f::Zero();
     float snapshot_dt_ = 0.0f;
     bool snapshot_valid_ = false;
 

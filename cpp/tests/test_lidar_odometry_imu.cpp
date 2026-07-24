@@ -329,3 +329,79 @@ TEST(LidarOdometryIMU, MultipleFramesWithIMU) {
         t += 0.1;
     }
 }
+
+TEST(LidarOdometryIMU, RejectsSparseFirstFrame) {
+    auto params = make_test_params();
+    lo::LiDAROdometryPipeline pipeline(params);
+    const auto sparse_scan = make_flat_cloud(*pipeline.get_device_queue(), params.registration.min_num_points);
+
+    const Eigen::Isometry3f initial_odom = pipeline.get_odom();
+    EXPECT_EQ(pipeline.process(sparse_scan, 0.1), lo::LiDAROdometryPipeline::ResultType::small_number_of_points);
+    EXPECT_TRUE(pipeline.get_odom().isApprox(initial_odom));
+}
+
+TEST(LidarOdometryIMU, SparseInitializedFrameUsesPredictionOnlyFallback) {
+    auto params = make_test_params();
+    params.motion_prediction.mode = lo::MotionPredictionMode::LIDAR_CV;
+    lo::LiDAROdometryPipeline pipeline(params);
+
+    const auto normal_scan = make_flat_cloud(*pipeline.get_device_queue(), 20);
+    const auto sparse_scan = make_flat_cloud(*pipeline.get_device_queue(), params.registration.min_num_points);
+
+    ASSERT_EQ(pipeline.process(normal_scan, 0.1), lo::LiDAROdometryPipeline::ResultType::first_frame);
+    EXPECT_EQ(pipeline.process(normal_scan, 0.2), lo::LiDAROdometryPipeline::ResultType::success);
+    const size_t keyframe_count = pipeline.get_keyframe_poses().size();
+
+    EXPECT_EQ(pipeline.process(sparse_scan, 0.3), lo::LiDAROdometryPipeline::ResultType::prediction_only);
+    EXPECT_EQ(pipeline.get_registration_result().inlier, 0u);
+    EXPECT_FALSE(pipeline.get_registration_result().converged);
+    EXPECT_EQ(pipeline.get_keyframe_poses().size(), keyframe_count);
+
+    // The fallback frame is accepted as the current time boundary.
+    EXPECT_EQ(pipeline.process(normal_scan, 0.25), lo::LiDAROdometryPipeline::ResultType::old_timestamp);
+    EXPECT_EQ(pipeline.process(normal_scan, 0.4), lo::LiDAROdometryPipeline::ResultType::success);
+}
+
+TEST(LidarOdometryIMU, ConsecutiveSparseFramesWithIMUKeepPropagating) {
+    auto params = make_test_params();
+    params.imu.enable = true;
+    params.motion_prediction.mode = lo::MotionPredictionMode::IMU_SE3;
+    lo::LiDAROdometryPipeline pipeline(params);
+
+    const auto normal_scan = make_flat_cloud(*pipeline.get_device_queue(), 20);
+    const auto sparse_scan = make_flat_cloud(*pipeline.get_device_queue(), params.registration.min_num_points);
+
+    for (const auto& m : make_static_imu(0.0, 0.1, 10)) pipeline.add_imu_measurement(m);
+    ASSERT_EQ(pipeline.process(normal_scan, 0.1), lo::LiDAROdometryPipeline::ResultType::first_frame);
+
+    for (const auto& m : make_static_imu(0.1, 0.1, 10)) pipeline.add_imu_measurement(m);
+    EXPECT_EQ(pipeline.process(sparse_scan, 0.2), lo::LiDAROdometryPipeline::ResultType::prediction_only);
+
+    for (const auto& m : make_static_imu(0.2, 0.1, 10)) pipeline.add_imu_measurement(m);
+    EXPECT_EQ(pipeline.process(sparse_scan, 0.3), lo::LiDAROdometryPipeline::ResultType::prediction_only);
+    EXPECT_TRUE(pipeline.get_odom().matrix().allFinite());
+
+    for (const auto& m : make_static_imu(0.3, 0.1, 10)) pipeline.add_imu_measurement(m);
+    EXPECT_EQ(pipeline.process(normal_scan, 0.4), lo::LiDAROdometryPipeline::ResultType::success);
+}
+
+TEST(LidarOdometryIMU, VelocityCorrectorPreservesPredictionOnlyVelocity) {
+    imu::IMUPreintegrationParams imu_params;
+    imu_params.gravity = Eigen::Vector3f(0.0f, 0.0f, -9.81f);
+    imu::IMUPreintegration integrator(imu_params);
+    integrator.reset(imu::IMUBias());
+    integrator.integrate_batch(make_static_imu(0.0, 0.1, 10));
+
+    imu::IMUVelocityCorrector corrector;
+    const Eigen::Vector3f initial_velocity(1.0f, -0.5f, 0.25f);
+    EXPECT_TRUE(
+        corrector.get_reset_velocity(integrator, imu::IMUBias(), initial_velocity).isApprox(initial_velocity, kEps));
+
+    const Eigen::Vector3f propagated = corrector.update_without_icp(Eigen::Matrix3f::Identity(), imu_params.gravity);
+    EXPECT_TRUE(propagated.isApprox(initial_velocity, 1e-3f));
+
+    integrator.reset(imu::IMUBias());
+    integrator.integrate_batch(make_static_imu(0.1, 0.1, 10));
+    const Eigen::Vector3f next = corrector.get_reset_velocity(integrator, imu::IMUBias(), Eigen::Vector3f::Zero());
+    EXPECT_TRUE(next.isApprox(propagated, kEps));
+}
