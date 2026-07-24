@@ -90,10 +90,40 @@ static sp::PointCloudShared::Ptr make_flat_cloud(const sp::sycl_utils::DeviceQue
 TEST(LidarOdometryIMU, IMUParamDefaults) {
     lo::Parameters p;
     EXPECT_FALSE(p.imu.enable);
+    EXPECT_EQ(p.motion_prediction.mode, lo::MotionPredictionMode::GYRO_LIDAR_CV);
     EXPECT_TRUE(p.imu.T_imu_to_lidar.isApprox(Eigen::Isometry3f::Identity()));
     EXPECT_NEAR(p.imu.preintegration.gravity.norm(), 9.80665f, 1e-3f);
     EXPECT_TRUE(p.imu.bias.gyro_bias.isZero());
     EXPECT_TRUE(p.imu.bias.accel_bias.isZero());
+}
+
+TEST(LidarOdometryIMU, MotionPredictionModeConversion) {
+    EXPECT_EQ(lo::MotionPredictionMode_from_string("lidar_cv"), lo::MotionPredictionMode::LIDAR_CV);
+    EXPECT_EQ(lo::MotionPredictionMode_from_string("GYRO_LIDAR_CV"), lo::MotionPredictionMode::GYRO_LIDAR_CV);
+    EXPECT_EQ(lo::MotionPredictionMode_from_string("imu_se3"), lo::MotionPredictionMode::IMU_SE3);
+    EXPECT_EQ(lo::MotionPredictionMode_to_string(lo::MotionPredictionMode::GYRO_LIDAR_CV), "GYRO_LIDAR_CV");
+    EXPECT_THROW(lo::MotionPredictionMode_from_string("invalid"), std::runtime_error);
+}
+
+TEST(LidarOdometryIMU, GyroLidarCVFusionKeepsCVTranslation) {
+    lo::MotionPredictor::Params params;
+    params.mode = lo::MotionPredictionMode::GYRO_LIDAR_CV;
+    lo::MotionPredictor predictor(params);
+
+    Eigen::Isometry3f odom = Eigen::Isometry3f::Identity();
+    odom.translation() = Eigen::Vector3f(2.0f, -1.0f, 0.5f);
+
+    const Eigen::Matrix3f delta_R_imu = Eigen::AngleAxisf(0.4f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
+    lo::MotionPredictionCandidates candidates;
+    candidates.gyro_delta_rotation_lidar = delta_R_imu;
+
+    const auto reg_result = std::make_shared<sp::algorithms::registration::RegistrationResult>();
+    const Eigen::Isometry3f fused =
+        predictor.predict(Eigen::Vector3f(1.0f, 2.0f, 3.0f), Eigen::AngleAxisf(0.2f, Eigen::Vector3f::UnitX()), odom,
+                          1.0f, reg_result, false, candidates);
+
+    EXPECT_TRUE(fused.translation().isApprox(odom.translation() + Eigen::Vector3f(1.0f, 2.0f, 3.0f), kEps));
+    EXPECT_TRUE(fused.rotation().isApprox(delta_R_imu, kEps));
 }
 
 // 2. add_imu_measurement() is a no-op when IMU is disabled (guard on null ptr).
@@ -235,6 +265,7 @@ TEST(LidarOdometryIMU, SecondFrameWithIMUEnabled) {
 TEST(LidarOdometryIMU, SecondFrameWithIMUDisabledFallsBack) {
     auto params = make_test_params();
     params.imu.enable = false;
+    params.motion_prediction.mode = lo::MotionPredictionMode::GYRO_LIDAR_CV;
 
     lo::LiDAROdometryPipeline pipeline(params);
 
@@ -248,6 +279,24 @@ TEST(LidarOdometryIMU, SecondFrameWithIMUDisabledFallsBack) {
     {
         const auto r = pipeline.process(scan, 0.2);
         EXPECT_EQ(r, lo::LiDAROdometryPipeline::ResultType::success);
+    }
+}
+
+TEST(LidarOdometryIMU, IMUAvailableWithLidarAndGyroCVModes) {
+    for (const auto mode : {lo::MotionPredictionMode::LIDAR_CV, lo::MotionPredictionMode::GYRO_LIDAR_CV}) {
+        auto params = make_test_params();
+        params.imu.enable = true;
+        params.motion_prediction.mode = mode;
+
+        lo::LiDAROdometryPipeline pipeline(params);
+        const auto scan = make_flat_cloud(*pipeline.get_device_queue(), 20);
+
+        for (const auto& m : make_static_imu(0.0, 0.1, 10)) pipeline.add_imu_measurement(m);
+        EXPECT_EQ(pipeline.process(scan, 0.1), lo::LiDAROdometryPipeline::ResultType::first_frame);
+
+        for (const auto& m : make_static_imu(0.1, 0.1, 10)) pipeline.add_imu_measurement(m);
+        EXPECT_EQ(pipeline.process(scan, 0.2), lo::LiDAROdometryPipeline::ResultType::success)
+            << "mode=" << lo::MotionPredictionMode_to_string(mode);
     }
 }
 
