@@ -117,6 +117,7 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 ///                              (e.g., pure LO); the deskew will then omit the v0 * t term
 ///                              and only correct for rotation and acceleration-induced motion.
 /// @param[out] status           Optional detailed result code.
+/// @param gyro_only             If true, integrate rotation only and omit IMU translation.
 /// @return true on success, false if prerequisites are not met.
 template <imu::imu_measurement_range Range>
 inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
@@ -124,7 +125,7 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
                                    const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
                                    const imu::IMUPreintegrationParams& preintegration_params,
                                    const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
-                                   IMUDeskewStatus* status = nullptr) {
+                                   IMUDeskewStatus* status = nullptr, bool gyro_only = false) {
     auto set_status = [&](IMUDeskewStatus s) {
         if (status) *status = s;
     };
@@ -244,15 +245,21 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
             const float t_rel_sec = static_cast<float>(it->timestamp - scan_start_time_sec);
             if (t_rel_sec < 0.0f) continue;
 
-            // predict_relative_transform() applies gravity compensation using dt_total,
-            // which equals t_rel_sec because the integrator was reset at scan_start.
-            const sycl_points::TransformMatrix T_imu_rel =
-                local_integrator.predict_relative_transform(R_world_body_i, v_world_body_i, bias);
+            Eigen::Isometry3f T_imu_rel = Eigen::Isometry3f::Identity();
+            if (gyro_only) {
+                // Rotation is directly constrained by the gyroscope. Do not let
+                // uncertain velocity or double-integrated acceleration affect points.
+                T_imu_rel.linear() = local_integrator.get_corrected(bias).Delta_R;
+            } else {
+                // predict_relative_transform() applies gravity compensation using dt_total,
+                // which equals t_rel_sec because the integrator was reset at scan_start.
+                T_imu_rel = Eigen::Isometry3f(
+                    local_integrator.predict_relative_transform(R_world_body_i, v_world_body_i, bias));
+            }
 
             // Convert to LiDAR-frame relative transform:
             //   T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
-            const Eigen::Isometry3f T_lidar_rel =
-                T_imu_to_lidar * Eigen::Isometry3f(T_imu_rel) * T_imu_to_lidar.inverse();
+            const Eigen::Isometry3f T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar.inverse();
 
             // Store as flat quaternion + translation for SYCL kernel access.
             const Eigen::Quaternionf q_lidar(T_lidar_rel.rotation());

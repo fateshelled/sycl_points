@@ -9,7 +9,6 @@
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/points/point_cloud.hpp"
-#include "sycl_points/utils/eigen_utils.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
 namespace sycl_points::algorithms::deskew {
@@ -111,6 +110,17 @@ TEST(IMUDeskewTest, PureRotationDeskew) {
         EXPECT_NEAR((corrected - world_points[i]).norm(), 0.0f, kEps)
             << "Point " << i << ": corrected=" << corrected.transpose() << "  expected=" << world_points[i].transpose();
     }
+
+    PointCloudShared deskewed_gyro_only(queue);
+    ASSERT_TRUE(deskew_point_cloud_imu(cloud, deskewed_gyro_only, imu_buf, scan_start_sec,
+                                       Eigen::Isometry3f::Identity(), imu::IMUBias(), preint_params,
+                                       Eigen::Matrix3f::Identity(), Eigen::Vector3f::Zero(), &status, true));
+    for (size_t i = 0; i < world_points.size(); ++i) {
+        const Eigen::Vector3f corrected = (*deskewed_gyro_only.points)[i].head<3>();
+        EXPECT_NEAR((corrected - world_points[i]).norm(), 0.0f, kEps)
+            << "Gyro-only point " << i << ": corrected=" << corrected.transpose()
+            << "  expected=" << world_points[i].transpose();
+    }
 }
 
 // 2. Pure translation (zero gyro, zero gravity): constant acceleration.
@@ -168,6 +178,44 @@ TEST(IMUDeskewTest, PureTranslationDeskew) {
     for (size_t i = 0; i < world_pts.size(); ++i) {
         const Eigen::Vector3f corrected = (*deskewed.points)[i].head<3>();
         EXPECT_NEAR((corrected - world_pts[i]).norm(), 0.0f, kEps) << "Point " << i << " mismatch";
+    }
+}
+
+TEST(IMUDeskewTest, GyroOnlyIgnoresAccelerationAndInitialVelocity) {
+    auto queue = make_queue();
+    PointCloudShared cloud(queue);
+
+    constexpr double scan_start_sec = 3.0;
+    constexpr double scan_duration_sec = 0.1;
+    cloud.start_time_ms = scan_start_sec * 1e3;
+    cloud.end_time_ms = (scan_start_sec + scan_duration_sec) * 1e3;
+
+    const std::vector<Eigen::Vector3f> input_points = {
+        {1.0f, 2.0f, 3.0f},
+        {-2.0f, 0.5f, 1.0f},
+        {0.25f, -0.75f, 4.0f},
+    };
+    const std::vector<float> offsets_ms = {0.0f, 50.0f, 100.0f};
+    for (size_t i = 0; i < input_points.size(); ++i) {
+        PointType point;
+        point << input_points[i].x(), input_points[i].y(), input_points[i].z(), 1.0f;
+        cloud.points->push_back(point);
+        cloud.timestamp_offsets->push_back(offsets_ms[i]);
+    }
+
+    const auto imu_buf = make_imu_buffer(scan_start_sec - 0.02, scan_duration_sec + 0.04, 24, Eigen::Vector3f::Zero(),
+                                         Eigen::Vector3f(3.0f, -2.0f, 11.0f));
+
+    imu::IMUPreintegrationParams preint_params;
+    PointCloudShared deskewed(queue);
+    IMUDeskewStatus status;
+    const bool ok = deskew_point_cloud_imu(cloud, deskewed, imu_buf, scan_start_sec, Eigen::Isometry3f::Identity(),
+                                           imu::IMUBias(), preint_params, Eigen::Matrix3f::Identity(),
+                                           Eigen::Vector3f(5.0f, -4.0f, 2.0f), &status, true);
+
+    ASSERT_TRUE(ok) << "deskew failed with status " << static_cast<int>(status);
+    for (size_t i = 0; i < input_points.size(); ++i) {
+        EXPECT_NEAR(((*deskewed.points)[i].head<3>() - input_points[i]).norm(), 0.0f, kEps);
     }
 }
 
