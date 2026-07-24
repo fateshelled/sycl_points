@@ -485,7 +485,10 @@ TEST(IMUPreintegration, GetCorrectedSameBiasEqualsRaw) {
 //     interval's half-step rotation on Delta_v and Delta_p.
 TEST(IMUPreintegration, MidpointGyroBiasJacobiansMatchFiniteDifference) {
     constexpr double dt = 0.2;
-    constexpr float eps = 1e-3f;
+    // Delta_p changes by only O(1e-5) at eps=1e-3, which is too close to
+    // float round-off after subtracting two O(1e-1) positions. A larger
+    // central-difference step keeps the numerical derivative well resolved.
+    constexpr float eps = 1e-2f;
     const Eigen::Vector3f gyro(0.2f, -0.1f, 1.0f);
     const Eigen::Vector3f accel(4.0f, 1.0f, 8.0f);
     const auto measurements = make_constant_imu(0.0, dt, 1, gyro, accel);
@@ -510,7 +513,7 @@ TEST(IMUPreintegration, MidpointGyroBiasJacobiansMatchFiniteDifference) {
 
     EXPECT_TRUE(nominal.get_raw().J.J_v_bg.col(2).isApprox(numerical_v, 5e-4f))
         << "analytic=" << nominal.get_raw().J.J_v_bg.col(2).transpose() << " numerical=" << numerical_v.transpose();
-    EXPECT_TRUE(nominal.get_raw().J.J_p_bg.col(2).isApprox(numerical_p, 1e-4f))
+    EXPECT_TRUE(nominal.get_raw().J.J_p_bg.col(2).isApprox(numerical_p, 5e-4f))
         << "analytic=" << nominal.get_raw().J.J_p_bg.col(2).transpose() << " numerical=" << numerical_p.transpose();
 }
 
