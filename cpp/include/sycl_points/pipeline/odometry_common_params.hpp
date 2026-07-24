@@ -197,6 +197,8 @@ struct CommonParameters {
             /// Enable pre-processing deskew using IMU measurements.
             /// Applied before downsampling and ICP to correct per-point motion distortion.
             bool enable = false;
+            /// If true, omit velocity, gravity, and accelerometer translation integration.
+            bool gyro_only = false;
         };
         Deskew deskew;
 

@@ -308,6 +308,8 @@ inline pipeline::odometry::CommonParameters declare_odometry_common_parameters(r
             node->declare_parameter<double>("imu/buffer_duration_sec", params.imu.buffer_duration_sec);
 
         params.imu.deskew.enable = node->declare_parameter<bool>("imu/deskew/enable", params.imu.deskew.enable);
+        params.imu.deskew.gyro_only =
+            node->declare_parameter<bool>("imu/deskew/gyro_only", params.imu.deskew.gyro_only);
 
         // Stationary-IMU initial roll/pitch alignment
         params.imu.initial_alignment.enable =

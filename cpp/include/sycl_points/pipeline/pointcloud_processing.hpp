@@ -106,9 +106,9 @@ private:
                               const Eigen::Vector3f& v_world_body_i) const {
         const double scan_start_sec = src.start_time_ms * 1e-3;
         const Eigen::Matrix3f R_world_imu = current_pose.rotation() * this->imu_params_.T_imu_to_lidar.rotation();
-        algorithms::deskew::deskew_point_cloud_imu(src, dst, imu_buffer, scan_start_sec,
-                                                   this->imu_params_.T_imu_to_lidar, bias,
-                                                   this->imu_params_.preintegration, R_world_imu, v_world_body_i);
+        algorithms::deskew::deskew_point_cloud_imu(
+            src, dst, imu_buffer, scan_start_sec, this->imu_params_.T_imu_to_lidar, bias,
+            this->imu_params_.preintegration, R_world_imu, v_world_body_i, nullptr, this->imu_params_.deskew.gyro_only);
     }
 
     void prefilter_impl(const PointCloudShared& src, PointCloudShared& dst) const {
