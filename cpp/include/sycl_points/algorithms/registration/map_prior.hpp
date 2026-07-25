@@ -152,10 +152,6 @@ public:
                 const MapPriorMatrix& process_covariance) {
         this->has_prior_ = false;
         if (!this->params_.enabled) return;
-        if (!prev_result.T.matrix().allFinite() || !T_pred.matrix().allFinite() || !prev_result.H_raw.allFinite() ||
-            !process_covariance.allFinite()) {
-            return;
-        }
 
         // Reduced chi-squared scaling: convert the raw Hessian (J^T Sigma^{-1} J under
         // unit-variance residual assumption) into a calibrated information matrix.
@@ -177,6 +173,10 @@ public:
         // the correct rotation for the Adjoint transformation and for the per-axis delta.
         const Eigen::Matrix3f R_rel = prev_result.T.rotation().transpose() * T_pred.rotation();
 
+        // Per-axis inter-frame delta expressed in T_pred body frame.
+        // Recompute from process_covariance diagonal for the diagonal Q inversion.
+        const Eigen::Vector<float, 6> q_diag = process_covariance.diagonal();
+
         // Rotate H_calibrated from T_opt_prev body frame into T_pred body frame via
         // rotation-only Adjoint: Ad = block_diag(R_rel, R_rel), H_curr = Ad^T * H_cal * Ad
         MapPriorMatrix Ad = MapPriorMatrix::Zero();
@@ -184,14 +184,11 @@ public:
         Ad.block<3, 3>(3, 3) = R_rel;
         const MapPriorMatrix H_curr = Ad.transpose() * H_calibrated * Ad;
 
-        // Q may contain off-diagonal terms after covariance from multiple body
-        // frames has been accumulated. Symmetrize before factorization to remove
-        // harmless floating-point asymmetry.
-        const MapPriorMatrix Q = 0.5f * (process_covariance + process_covariance.transpose());
-        Eigen::LDLT<MapPriorMatrix> q_ldlt(Q);
-        if (q_ldlt.info() != Eigen::Success || !q_ldlt.isPositive()) return;
-        const MapPriorMatrix R = q_ldlt.solve(MapPriorMatrix::Identity());
-        if (!R.allFinite()) return;
+        // R = Q^{-1}: per-axis diagonal (safe because q[i] >= base_sigma^2 > 0 by construction)
+        Eigen::Vector<float, 6> R_diag;
+        R_diag.head<3>() = q_diag.head<3>().cwiseInverse();
+        R_diag.tail<3>() = q_diag.tail<3>().cwiseInverse();
+        const MapPriorMatrix R = R_diag.asDiagonal();
 
         // Omega_prior = (H^{-1} + Q)^{-1} = R - R(H + R)^{-1}R
         // (H + R) is always PD since R is PD, so this is robust to singular H.

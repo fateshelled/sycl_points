@@ -634,9 +634,7 @@ private:
         // would require splitting the corrector's snapshot/return protocol (see IMUVelocityCorrector).
         if (this->imu_preintegration_) {
             this->imu_R_world_at_reset_ = result.T.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            if (prediction.has_imu_reset_velocity) {
-                this->imu_v_world_at_reset_ = prediction.imu_reset_velocity;
-            }
+            this->imu_v_world_at_reset_ = prediction.imu_reset_velocity;
             this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(),
                                              this->imu_R_world_at_reset_);
         }

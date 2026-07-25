@@ -45,6 +45,7 @@ public:
     Eigen::Vector3f get_reset_velocity(const IMUPreintegration& preintegration, const IMUBias& bias,
                                        const Eigen::Vector3f& fallback_v_world) {
         const Eigen::Vector3f v_reset = corrected_v_valid_ ? corrected_v_world_ : fallback_v_world;
+        corrected_v_valid_ = false;
 
         const PreintegrationResult snap = preintegration.get_corrected(bias);
         snapshot_delta_v_ = snap.Delta_v;
