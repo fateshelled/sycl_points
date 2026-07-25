@@ -54,11 +54,10 @@ This project was developed with reference to small_gicp and gtsam_points
 
 ### Supported Device
 - Intel CPU (OpenCL backend)
-- Intel iGPU (OpenCL backend)
+- Intel iGPU (Level Zero or OpenCL backend)
 - NVIDIA GPU (CUDA backend)
 
 note:
-- `level_zero` backend is not supported.
 - AMD CPU will work fine.
 - I do not own an AMD GPU, so it is not supported.
 
@@ -160,9 +159,11 @@ sycl-ls
 # [cuda:gpu][cuda:0] NVIDIA CUDA BACKEND, NVIDIA GeForce RTX 3060 8.6 [CUDA 12.9]
 
 # specify the device to be used with `ONEAPI_DEVICE_SELECTOR`
-# note: level_zero is not supported.
 
-# run example with OpenCL device (iGPU)
+# run example with Level Zero device (iGPU)
+ONEAPI_DEVICE_SELECTOR=level_zero:0 ./example_registration
+
+# run example with OpenCL device (iGPU, alternative backend)
 ONEAPI_DEVICE_SELECTOR=opencl:1 ./example_registration
 
 # run example with CUDA device
@@ -194,9 +195,11 @@ acpp-info -l
 
 # specify the device to be used with `ACPP_VISIBILITY_MASK`
 # if specify cuda devive number, use `CUDA_VISIBLE_DEVICES`
-# note: level_zero is not supported.
 
-# run example with OpenCL device
+# run example with Level Zero device
+ACPP_VISIBILITY_MASK=ze ./example_registration
+
+# run example with OpenCL device (alternative backend)
 ACPP_VISIBILITY_MASK=ocl ./example_registration
 
 # run example with CPU OpenMP

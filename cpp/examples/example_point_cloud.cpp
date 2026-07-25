@@ -8,7 +8,8 @@
 #include "sycl_points/io/point_cloud_reader.hpp"
 
 int main() {
-    std::string source_filename = "../data/source.ply";
+    const std::string source_filename = "../data/source.ply";
+    constexpr size_t LOOP_NUM = 10;
 
     const sycl_points::PointCloudCPU source_points = sycl_points::PointCloudReader::readFile(source_filename);
 
@@ -27,20 +28,20 @@ int main() {
 
     // KDTree
     double dt_build_kdtree = 0.0;
-    for (size_t i = 0; i < 10; ++i) {
+    for (size_t i = 0; i < LOOP_NUM; ++i) {
         s = std::chrono::high_resolution_clock::now();
         auto tmp = sycl_points::algorithms::knn::KDTree::build(queue, shared_points);
         dt_build_kdtree +=
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
     }
-    dt_build_kdtree /= 10;
+    dt_build_kdtree /= LOOP_NUM;
 
     // Covariance
     double dt_covariances = 0.0;
     const size_t k_correspondence_covariance = 10;
     auto kdtree = sycl_points::algorithms::knn::KDTree::build(queue, shared_points);
-    for (size_t i = 0; i < 11; ++i) {
+    for (size_t i = 0; i < LOOP_NUM + 1; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::covariance::estimate_async(*kdtree, shared_points, k_correspondence_covariance)
             .wait_and_throw();
@@ -50,13 +51,13 @@ int main() {
                     .count();
         }
     }
-    dt_covariances /= 10;
+    dt_covariances /= LOOP_NUM;
 
     // Downsampling
     double dt_voxel_downsampling = 0.0;
     const float voxel_size = 1.0;
     sycl_points::algorithms::filter::VoxelGrid voxel_grid(queue, voxel_size);
-    for (size_t i = 0; i < 11; ++i) {
+    for (size_t i = 0; i < LOOP_NUM + 1; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::PointCloudShared downsampled(queue);
         voxel_grid.downsampling(shared_points, downsampled);
@@ -66,11 +67,11 @@ int main() {
                     .count();
         }
     }
-    dt_voxel_downsampling /= 10;
+    dt_voxel_downsampling /= LOOP_NUM;
 
     // Transform
     double dt_transform_cpu_copy = 0.0;
-    for (size_t i = 0; i < 11; ++i) {
+    for (size_t i = 0; i < LOOP_NUM + 1; ++i) {
         s = std::chrono::high_resolution_clock::now();
         auto tmp = sycl_points::algorithms::transform::transform_cpu_copy(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
@@ -79,10 +80,10 @@ int main() {
                     .count();
         }
     }
-    dt_transform_cpu_copy /= 10;
+    dt_transform_cpu_copy /= LOOP_NUM;
 
     double dt_transform_cpu_inplace = 0.0;
-    for (size_t i = 0; i < 11; ++i) {
+    for (size_t i = 0; i < LOOP_NUM + 1; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::transform::transform_cpu(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
@@ -91,15 +92,14 @@ int main() {
                     .count();
         }
     }
-    dt_transform_cpu_inplace /= 10;
+    dt_transform_cpu_inplace /= LOOP_NUM;
 
     double dt_transform_copy = 0.0;
-    for (size_t i = 0; i < 11; ++i) {
+    for (size_t i = 0; i < LOOP_NUM + 1; ++i) {
         s = std::chrono::high_resolution_clock::now();
-        auto ret =
-            sycl_points::algorithms::transform::transform_cpu_copy(shared_points, Eigen::Matrix4f::Identity() * 2);
+        auto ret = sycl_points::algorithms::transform::transform_copy(shared_points, Eigen::Matrix4f::Identity() * 2);
         if (i == 0) {
-            // for (size_t j = 0; j < 10; ++j) {
+            // for (size_t j = 0; j < LOOP_NUM; ++j) {
             //   std::cout << "source: " << source_points.points[j].transpose() << std::endl;
             //   std::cout << "shared: " << (*shared_points.points)[j].transpose() << std::endl;
             //   std::cout << "ret: " << (*ret.points)[j].transpose() << std::endl;
@@ -110,10 +110,10 @@ int main() {
                     .count();
         }
     }
-    dt_transform_copy /= 10;
+    dt_transform_copy /= LOOP_NUM;
 
     double dt_transform_inplace = 0.0;
-    for (size_t i = 0; i < 11; ++i) {
+    for (size_t i = 0; i < LOOP_NUM + 1; ++i) {
         s = std::chrono::high_resolution_clock::now();
         sycl_points::algorithms::transform::transform(shared_points, Eigen::Matrix4f::Identity());
         if (i > 0) {
@@ -122,10 +122,10 @@ int main() {
                     .count();
         }
     }
-    dt_transform_inplace /= 10;
+    dt_transform_inplace /= LOOP_NUM;
 
     {
-        // for (size_t i = 0; i < 10; ++i) {
+        // for (size_t i = 0; i < LOOP_NUM; ++i) {
         //   std::cout << "[" << i << "] " << source_points.points[i].transpose() << std::endl;
         // }
 

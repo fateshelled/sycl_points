@@ -307,7 +307,10 @@ inline sycl_utils::events estimate_async(const knn::KNNBase& knn, const PointClo
                                          const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     knn::KNNResult neighbors;
     auto knn_events = knn.knn_search_async(points, k_correspondences, neighbors, depends);
-    return estimate_async(neighbors, points, knn_events.evs);
+    auto events = estimate_async(neighbors, points, knn_events.evs);
+    events.add_resource(neighbors.indices);
+    events.add_resource(neighbors.distances);
+    return events;
 }
 
 /// @brief Async estimate covariances with M-estimation using SYCL
@@ -405,8 +408,11 @@ inline sycl_utils::events estimate_robust_async(const knn::KNNBase& knn, const P
                                                 const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     knn::KNNResult neighbors;
     auto knn_events = knn.knn_search_async(points, k_correspondences, neighbors, depends);
-    return estimate_robust_async(neighbors, points, robust_type, mad_scale, min_robust_scale, robust_max_iterations,
-                                 knn_events.evs);
+    auto events = estimate_robust_async(neighbors, points, robust_type, mad_scale, min_robust_scale,
+                                        robust_max_iterations, knn_events.evs);
+    events.add_resource(neighbors.indices);
+    events.add_resource(neighbors.distances);
+    return events;
 }
 
 /// @brief Async estimate normal vectors from KNN neighborhood using SYCL
@@ -455,7 +461,10 @@ inline sycl_utils::events estimate_normals_async(const knn::KNNBase& knn, const 
                                                  const std::vector<sycl::event>& depends = std::vector<sycl::event>()) {
     knn::KNNResult neighbors;
     auto knn_events = knn.knn_search_async(points, k_correspondences, neighbors, depends);
-    return estimate_normals_async(neighbors, points, knn_events.evs);
+    auto events = estimate_normals_async(neighbors, points, knn_events.evs);
+    events.add_resource(neighbors.indices);
+    events.add_resource(neighbors.distances);
+    return events;
 }
 
 /// @brief Async extract normal vectors from pre-computed covariances using SYCL
