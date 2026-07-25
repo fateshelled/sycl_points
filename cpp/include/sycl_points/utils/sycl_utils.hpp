@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <string>
 #include <sycl/sycl.hpp>
 
 #ifdef SYCL_IMPL_ADAPTIVECPP
@@ -117,80 +118,85 @@ inline std::string get_backend_name(sycl::backend backend) {
 #endif
 }
 
-/// @brief Print device info
+/// @brief Get device info
 /// @param device SYCL device
-inline void print_device_info(const sycl::device& device) {
+inline std::string get_device_info(const sycl::device& device) {
     const auto platform = device.get_platform();
-    std::cout << "Platform: " << platform.get_info<sycl::info::platform::name>() << std::endl;
+    std::ostringstream oss;
+    oss << "Platform: " << platform.get_info<sycl::info::platform::name>() << "\n";
 
     for (auto device : platform.get_devices()) {
-        std::cout << "\tDevice: " << device.get_info<sycl::info::device::name>() << std::endl;
-        std::cout << "\ttype: " << (device.is_cpu() ? "CPU" : "GPU") << std::endl;
-        std::cout << "\tVendor: " << device.get_info<sycl::info::device::vendor>() << std::endl;
-        std::cout << "\tVendorID: " << device.get_info<sycl::info::device::vendor_id>() << std::endl;
-        std::cout << "\tBackend name: " << get_backend_name(device.get_backend()) << std::endl;
+        oss << "\tDevice: " << device.get_info<sycl::info::device::name>() << "\n";
+        oss << "\ttype: " << (device.is_cpu() ? "CPU" : "GPU") << "\n";
+        oss << "\tVendor: " << device.get_info<sycl::info::device::vendor>() << "\n";
+        oss << "\tVendorID: " << device.get_info<sycl::info::device::vendor_id>() << "\n";
+        oss << "\tBackend name: " << get_backend_name(device.get_backend()) << "\n";
 #ifndef SYCL_IMPL_ADAPTIVECPP
-        std::cout << "\tBackend version: " << device.get_info<sycl::info::device::backend_version>() << std::endl;
+        oss << "\tBackend version: " << device.get_info<sycl::info::device::backend_version>() << "\n";
 #endif
-        std::cout << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << std::endl;
-        std::cout << "\tGlobal Memory Size: "
-                  << device.get_info<sycl::info::device::global_mem_size>() / 1024.0 / 1024.0 / 1024.0 << " GB"
-                  << std::endl;
-        std::cout << "\tLocal Memory Size: " << device.get_info<sycl::info::device::local_mem_size>() / 1024.0 << " KB"
-                  << std::endl;
-        std::cout << "\tGlobal Memory Cache Size: "
-                  << device.get_info<sycl::info::device::global_mem_cache_size>() / 1024.0 / 1024.0 << " MB"
-                  << std::endl;
-        std::cout << "\tGlobal Memory Cache Line Size: "
-                  << device.get_info<sycl::info::device::global_mem_cache_line_size>() << " byte" << std::endl;
+        oss << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << "\n";
+        oss << "\tGlobal Memory Size: "
+            << device.get_info<sycl::info::device::global_mem_size>() / 1024.0 / 1024.0 / 1024.0 << " GB" << "\n";
+        oss << "\tLocal Memory Size: " << device.get_info<sycl::info::device::local_mem_size>() / 1024.0 << " KB"
+            << "\n";
+        oss << "\tGlobal Memory Cache Size: "
+            << device.get_info<sycl::info::device::global_mem_cache_size>() / 1024.0 / 1024.0 << " MB" << "\n";
+        oss << "\tGlobal Memory Cache Line Size: " << device.get_info<sycl::info::device::global_mem_cache_line_size>()
+            << " byte" << "\n";
 
-        std::cout << "\tMax Memory Allocation Size: "
-                  << device.get_info<sycl::info::device::max_mem_alloc_size>() / 1024.0 / 1024.0 / 1024.0 << " GB"
-                  << std::endl;
+        oss << "\tMax Memory Allocation Size: "
+            << device.get_info<sycl::info::device::max_mem_alloc_size>() / 1024.0 / 1024.0 / 1024.0 << " GB"
+            << "\n";
 
-        std::cout << "\tMax Work Group Size: " << device.get_info<sycl::info::device::max_work_group_size>()
-                  << std::endl;
-        std::cout << "\tMax Work Item Dimensions: " << device.get_info<sycl::info::device::max_work_item_dimensions>()
-                  << std::endl;
-        std::cout << "\tMax Work Item Sizes: [";
-        std::cout << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << ", ";
-        std::cout << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << ", ";
-        std::cout << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << "]" << std::endl;
-        std::cout << "\tMax Sub Groups num: " << device.get_info<sycl::info::device::max_num_sub_groups>() << std::endl;
-        std::cout << "\tSub Group Sizes: [";
+        oss << "\tMax Work Group Size: " << device.get_info<sycl::info::device::max_work_group_size>() << "\n";
+        oss << "\tMax Work Item Dimensions: " << device.get_info<sycl::info::device::max_work_item_dimensions>()
+            << "\n";
+        oss << "\tMax Work Item Sizes: [";
+        oss << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << ", ";
+        oss << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << ", ";
+        oss << device.get_info<sycl::info::device::max_work_item_sizes<1>>().dimensions << "]" << "\n";
+        oss << "\tMax Sub Groups num: " << device.get_info<sycl::info::device::max_num_sub_groups>() << "\n";
+        oss << "\tSub Group Sizes: [";
         const auto subgroup_sizes = device.get_info<sycl::info::device::sub_group_sizes>();
         for (size_t i = 0; i < subgroup_sizes.size(); ++i) {
-            std::cout << subgroup_sizes[i];
+            oss << subgroup_sizes[i];
             if (i < subgroup_sizes.size() - 1) {
-                std::cout << ", ";
+                oss << ", ";
             }
         }
-        std::cout << "]" << std::endl;
+        oss << "]" << "\n";
 
-        std::cout << "\tMax compute units: " << device.get_info<sycl::info::device::max_compute_units>() << std::endl;
+        oss << "\tMax compute units: " << device.get_info<sycl::info::device::max_compute_units>() << "\n";
 
-        std::cout << "\tMax Clock Frequency: " << device.get_info<sycl::info::device::max_clock_frequency>() / 1000.0
-                  << " GHz" << std::endl;
+        oss << "\tMax Clock Frequency: " << device.get_info<sycl::info::device::max_clock_frequency>() / 1000.0
+            << " GHz" << "\n";
 
-        std::cout << "\tDouble precision support: " << (device.has(sycl::aspect::fp64) ? "true" : "false") << std::endl;
+        oss << "\tDouble precision support: " << (device.has(sycl::aspect::fp64) ? "true" : "false") << "\n";
 
-        std::cout << "\tAtomic 64bit support: " << (device.has(sycl::aspect::atomic64) ? "true" : "false") << std::endl;
+        oss << "\tAtomic 64bit support: " << (device.has(sycl::aspect::atomic64) ? "true" : "false") << "\n";
 
-        std::cout << "\tUSM host allocations: " << (device.has(sycl::aspect::usm_host_allocations) ? "true" : "false")
-                  << std::endl;
-        std::cout << "\tUSM device allocations: "
-                  << (device.has(sycl::aspect::usm_device_allocations) ? "true" : "false") << std::endl;
-        std::cout << "\tUSM shared allocations: "
-                  << (device.has(sycl::aspect::usm_shared_allocations) ? "true" : "false") << std::endl;
+        oss << "\tUSM host allocations: " << (device.has(sycl::aspect::usm_host_allocations) ? "true" : "false")
+            << "\n";
+        oss << "\tUSM device allocations: " << (device.has(sycl::aspect::usm_device_allocations) ? "true" : "false")
+            << "\n";
+        oss << "\tUSM shared allocations: " << (device.has(sycl::aspect::usm_shared_allocations) ? "true" : "false")
+            << "\n";
 
-        std::cout << "\tUSM atomic shared allocations: "
-                  << (device.has(sycl::aspect::usm_atomic_shared_allocations) ? "true" : "false") << std::endl;
+        oss << "\tUSM atomic shared allocations: "
+            << (device.has(sycl::aspect::usm_atomic_shared_allocations) ? "true" : "false") << "\n";
 
-        std::cout << "\tAvailable: " << (device.get_info<sycl::info::device::is_available>() ? "true" : "false")
-                  << std::endl;
-        std::cout << std::endl;
+        oss << "\tAvailable: " << (device.get_info<sycl::info::device::is_available>() ? "true" : "false") << "\n";
     }
+    return oss.str();
 }
+
+/// @brief Get device info
+/// @param queue SYCL queue
+inline std::string get_device_info(const sycl::queue& queue) { return get_device_info(queue.get_device()); }
+
+/// @brief Print selected device info
+/// @param queue SYCL queue
+inline void print_device_info(const sycl::device& device) { std::cout << get_device_info(device) << std::endl; }
 
 /// @brief Print selected device info
 /// @param queue SYCL queue
@@ -520,6 +526,8 @@ public:
     bool is_intel() const { return sycl_utils::is_intel(*this->ptr); }
     /// @brief device vendor is NVIDIA or not
     bool is_nvidia() const { return sycl_utils::is_nvidia(*this->ptr); }
+    /// @brief device vendor is AMD or not
+    bool is_amd() const { return sycl_utils::is_amd(*this->ptr); }
     /// @brief device support double precision or not
     bool is_supported_double() const { return this->ptr->get_device().has(sycl::aspect::fp64); }
 
