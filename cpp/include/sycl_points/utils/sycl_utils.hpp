@@ -365,20 +365,16 @@ void clear_read_mostly(sycl::queue&, T*, size_t) {}
 
 namespace device_selector {
 
-inline bool is_supported_device(const sycl::device& dev) {
-    bool supported = true;
-    const auto backend = dev.get_backend();
-#ifdef SYCL_IMPL_INTEL_DPCPP
-    supported &= (backend != sycl::backend::ext_oneapi_level_zero);
-#endif
-#ifdef SYCL_IMPL_ADAPTIVECPP
-    supported &= (backend != sycl::backend::level_zero);
-#endif
-    supported &= enable_shared_allocations(dev);
-    return supported;
-}
+inline bool is_supported_device(const sycl::device& dev) { return enable_shared_allocations(dev); }
 
-inline int default_selector_v(const sycl::device& dev) { return is_supported_device(dev); }
+inline int default_selector_v(const sycl::device& dev) {
+    if (!is_supported_device(dev)) return -1;
+
+    // AdaptiveCpp always exposes its OpenMP host device, even when a GPU
+    // visibility mask is set. Prefer a GPU so a visible Level Zero device is
+    // actually selected instead of silently falling back to the host.
+    return dev.is_gpu() ? 2 : 1;
+}
 
 inline int intel_cpu_selector_v(const sycl::device& dev) {
     const auto vendor_id = dev.get_info<sycl::info::device::vendor_id>();
@@ -431,17 +427,7 @@ inline sycl::device select_device(const std::string& device_vendor, const std::s
         for (auto device : platform.get_devices()) {
             const auto dev_vendor_id = device.get_info<sycl::info::device::vendor_id>();
             if (vendor_id == dev_vendor_id) {
-#ifdef SYCL_IMPL_INTEL_DPCPP
-                if (device.get_backend() == sycl::backend::ext_oneapi_level_zero) {
-                    // level_zero is not support
-                    continue;
-                }
-#endif
 #ifdef SYCL_IMPL_ADAPTIVECPP
-                if (device.get_backend() == sycl::backend::level_zero) {
-                    // level_zero is not support
-                    continue;
-                }
                 if (vendor_id == VENDOR_ID::OMP) {
                     return device;
                 }
