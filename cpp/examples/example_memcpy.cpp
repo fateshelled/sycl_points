@@ -49,7 +49,6 @@ int main() {
         const auto dt_memcpy_to_device =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - s)
                 .count();
-        sycl::free(device_ptr, queue);
 
         // copy from device ptr to shared container
         s = std::chrono::high_resolution_clock::now();

@@ -40,7 +40,10 @@ struct AvailableDevices {
 #ifdef SYCL_IMPL_INTEL_DPCPP
                 if (cpu_vendor.empty() && device.is_cpu()) {
                     for (const auto& [vid_val, name] : kCpuVendors) {
-                        if (vid == vid_val) { cpu_vendor = name; break; }
+                        if (vid == vid_val) {
+                            cpu_vendor = name;
+                            break;
+                        }
                     }
                 }
 #endif
@@ -61,15 +64,11 @@ static const AvailableDevices g_devices;
 // Error cases: invalid vendor string
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, InvalidVendorThrows) {
-    EXPECT_THROW(
-        { select_device("unknown_vendor", "cpu"); },
-        std::runtime_error);
+    EXPECT_THROW({ select_device("unknown_vendor", "cpu"); }, std::runtime_error);
 }
 
 TEST(SelectDeviceTest, EmptyVendorThrows) {
-    EXPECT_THROW(
-        { select_device("", "cpu"); },
-        std::runtime_error);
+    EXPECT_THROW({ select_device("", "cpu"); }, std::runtime_error);
 }
 
 TEST(SelectDeviceTest, InvalidVendorErrorMessage) {
@@ -86,15 +85,11 @@ TEST(SelectDeviceTest, InvalidVendorErrorMessage) {
 // Error cases: invalid device type string
 // ---------------------------------------------------------------
 TEST(SelectDeviceTest, InvalidDeviceTypeThrows) {
-    EXPECT_THROW(
-        { select_device("intel", "fpga"); },
-        std::runtime_error);
+    EXPECT_THROW({ select_device("intel", "fpga"); }, std::runtime_error);
 }
 
 TEST(SelectDeviceTest, EmptyDeviceTypeThrows) {
-    EXPECT_THROW(
-        { select_device("intel", ""); },
-        std::runtime_error);
+    EXPECT_THROW({ select_device("intel", ""); }, std::runtime_error);
 }
 
 TEST(SelectDeviceTest, InvalidDeviceTypeErrorMessage) {
@@ -166,8 +161,7 @@ TEST(SelectDeviceTest, CpuFound) {
     sycl::device dev;
     ASSERT_NO_THROW({ dev = select_device(g_devices.cpu_vendor, "cpu"); });
     EXPECT_TRUE(dev.is_cpu());
-    EXPECT_EQ(dev.get_backend(), sycl::backend::opencl)
-        << "DPC++: CPU should use opencl backend";
+    EXPECT_EQ(dev.get_backend(), sycl::backend::opencl) << "DPC++: CPU should use opencl backend";
 }
 #endif
 
@@ -196,11 +190,9 @@ TEST(SelectDeviceTest, NvidiaGpuFound) {
     EXPECT_TRUE(dev.is_gpu());
     EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::NVIDIA);
 #ifdef SYCL_IMPL_INTEL_DPCPP
-    EXPECT_EQ(dev.get_backend(), sycl::backend::ext_oneapi_cuda)
-        << "DPC++: NVIDIA GPU should use cuda backend";
+    EXPECT_EQ(dev.get_backend(), sycl::backend::ext_oneapi_cuda) << "DPC++: NVIDIA GPU should use cuda backend";
 #else  // AdaptiveCpp
-    EXPECT_EQ(dev.get_backend(), sycl::backend::cuda)
-        << "AdaptiveCpp: NVIDIA GPU should use cuda backend";
+    EXPECT_EQ(dev.get_backend(), sycl::backend::cuda) << "AdaptiveCpp: NVIDIA GPU should use cuda backend";
 #endif
 }
 
@@ -216,11 +208,9 @@ TEST(SelectDeviceTest, AmdGpuFound) {
     EXPECT_TRUE(dev.is_gpu());
     EXPECT_EQ(dev.get_info<sycl::info::device::vendor_id>(), VENDOR_ID::AMD);
 #ifdef SYCL_IMPL_INTEL_DPCPP
-    EXPECT_EQ(dev.get_backend(), sycl::backend::ext_oneapi_hip)
-        << "DPC++: AMD GPU should use hip backend";
+    EXPECT_EQ(dev.get_backend(), sycl::backend::ext_oneapi_hip) << "DPC++: AMD GPU should use hip backend";
 #else  // AdaptiveCpp
-    EXPECT_EQ(dev.get_backend(), sycl::backend::hip)
-        << "AdaptiveCpp: AMD GPU should use hip backend";
+    EXPECT_EQ(dev.get_backend(), sycl::backend::hip) << "AdaptiveCpp: AMD GPU should use hip backend";
 #endif
 }
 
@@ -329,26 +319,28 @@ TEST(SelectDeviceTest, OmpVendorCaseInsensitive) {
 #endif  // SYCL_IMPL_ADAPTIVECPP
 
 // ---------------------------------------------------------------
-// Level Zero is natively supported by both DPC++ and AdaptiveCpp compilers,
-// but is untested in this library and therefore excluded.
-// select_device skips Level Zero devices and returns opencl/ocl backend instead.
+// Level Zero is supported by both DPC++ and AdaptiveCpp.
+// Verify that every visible Level Zero device passes the support check and can
+// be used to construct the queue wrapper.
 // ---------------------------------------------------------------
-TEST(SelectDeviceTest, LevelZeroDevicesNotReturned) {
-    if (!g_devices.has_intel_gpu) {
-        GTEST_SKIP() << "Intel GPU not available";
-    }
-    const sycl::device dev = select_device("intel", "gpu");
+TEST(SelectDeviceTest, LevelZeroDevicesAreSupported) {
+    bool found = false;
+    for (const auto& platform : sycl::platform::get_platforms()) {
+        for (const auto& device : platform.get_devices()) {
 #ifdef SYCL_IMPL_INTEL_DPCPP
-    EXPECT_NE(dev.get_backend(), sycl::backend::ext_oneapi_level_zero)
-        << "level_zero backend device should not be returned";
-    EXPECT_EQ(dev.get_backend(), sycl::backend::opencl)
-        << "opencl backend device should be returned";
+            const bool is_level_zero = device.get_backend() == sycl::backend::ext_oneapi_level_zero;
 #else  // AdaptiveCpp
-    EXPECT_NE(dev.get_backend(), sycl::backend::level_zero)
-        << "level_zero backend device should not be returned";
-    EXPECT_EQ(dev.get_backend(), sycl::backend::ocl)
-        << "ocl backend device should be returned";
+            const bool is_level_zero = device.get_backend() == sycl::backend::level_zero;
 #endif
+            if (!is_level_zero) continue;
+
+            found = true;
+            EXPECT_TRUE(is_supported_device(device));
+            EXPECT_NO_THROW({ DeviceQueue queue(device); });
+        }
+    }
+
+    if (!found) GTEST_SKIP() << "Level Zero device not available";
 }
 
 }  // namespace test

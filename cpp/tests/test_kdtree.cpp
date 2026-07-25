@@ -5,6 +5,7 @@
 #include <random>
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/knn/bruteforce.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -295,6 +296,22 @@ TEST_F(KDTreeTest, BasicKNNSearch) {
             EXPECT_GE((*kdtree_result.distances)[index], 0.0f);
         }
     }
+}
+
+TEST_F(KDTreeTest, AsyncCovarianceOperationsKeepInternalNeighborsAlive) {
+    auto covariance_events = sycl_points::algorithms::covariance::estimate_async(*kdtree, *target_cloud, 10);
+    EXPECT_EQ(covariance_events.keep_alive.size(), 2U);
+    EXPECT_NO_THROW(covariance_events.wait_and_throw());
+    EXPECT_EQ(target_cloud->covs->size(), target_cloud->size());
+
+    auto robust_events = sycl_points::algorithms::covariance::estimate_robust_async(*kdtree, *target_cloud, 10);
+    EXPECT_EQ(robust_events.keep_alive.size(), 2U);
+    EXPECT_NO_THROW(robust_events.wait_and_throw());
+
+    auto normal_events = sycl_points::algorithms::covariance::estimate_normals_async(*kdtree, *target_cloud, 10);
+    EXPECT_EQ(normal_events.keep_alive.size(), 2U);
+    EXPECT_NO_THROW(normal_events.wait_and_throw());
+    EXPECT_EQ(target_cloud->normals->size(), target_cloud->size());
 }
 
 // Test comparing KDTree and brute force results
