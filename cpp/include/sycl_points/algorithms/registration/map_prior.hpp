@@ -132,26 +132,73 @@ public:
     void set_params(const MapPriorParams& params) {
         this->params_ = params;
         this->has_prior_ = false;
+        this->last_valid_result_.reset();
+        this->last_frame_registered_ = false;
+        this->accumulated_process_covariance_.setZero();
+        this->accumulation_pose_ = Eigen::Isometry3f::Identity();
+        this->accumulation_initialized_ = false;
     }
 
-    /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align() call.
-    ///        Call this once per frame, after motion prediction and before align().
-    /// @param prev_result  Registration result of the previous frame.
-    ///                     Uses H_raw (unregularized Hessian), T (optimized pose), error
-    ///                     (sum of Mahalanobis-weighted squared residuals) and inlier count
-    ///                     (used to scale H_raw via the reduced chi-squared statistic).
-    /// @param T_pred       Predicted pose used as the initial guess for the current frame.
-    void update(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
-        this->update(prev_result, T_pred, make_map_prior_process_covariance(this->params_, prev_result.T, T_pred));
+    /// @brief Accumulate process covariance over a single prediction interval
+    ///        [from -> to].  No-op until a valid prior source has been registered
+    ///        via notify_registration_success(); the first call seeds
+    ///        accumulation_pose_ from @p from, subsequent calls ignore @p from and
+    ///        chain from the internal accumulation pose.
+    ///        This is the entry point for both the regular inter-frame path and
+    ///        the prediction-only fallback path (called once per process()).
+    void accumulate_process_covariance(const Eigen::Isometry3f& from, const Eigen::Isometry3f& to) {
+        if (!this->params_.enabled || !this->last_valid_result_) return;
+
+        if (!this->accumulation_initialized_) {
+            this->accumulation_pose_ = from;
+            this->accumulated_process_covariance_.setZero();
+            this->accumulation_initialized_ = true;
+        }
+
+        this->accumulated_process_covariance_ = accumulate_map_prior_process_covariance(
+            this->params_, this->accumulated_process_covariance_, this->accumulation_pose_, to);
+        this->accumulation_pose_ = to;
     }
 
-    /// @brief Precompute the prior using process covariance accumulated across
-    ///        one or more prediction-only intervals.
-    /// @param process_covariance Process covariance expressed in T_pred's body frame.
-    void update(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred,
-                const MapPriorMatrix& process_covariance) {
+    /// @brief Commit the registration result of the current frame and refresh
+    ///        prior-source bookkeeping.  Call once after align() returns.
+    ///        - On a valid result: replace last_valid_result_, reset the
+    ///          accumulated process covariance, and seed accumulation_pose_ at
+    ///          @p T_post so the next prediction interval starts fresh.
+    ///        - On an invalid/unusable result: keep last_valid_result_ unchanged
+    ///          and continue accumulating process covariance up to @p T_post, so
+    ///          the prior weakens across successive unusable frames exactly as
+    ///          the prediction-only fallback does.
+    void notify_registration_success(const RegistrationResult& result, const Eigen::Isometry3f& T_post) {
+        if (this->is_valid_prior_source(result)) {
+            this->last_valid_result_ = std::make_shared<RegistrationResult>(result);
+            this->accumulated_process_covariance_.setZero();
+            this->accumulation_pose_ = T_post;
+            this->accumulation_initialized_ = true;
+            this->last_frame_registered_ = true;
+        } else {
+            this->accumulate_process_covariance(this->accumulation_pose_, T_post);
+            this->last_frame_registered_ = false;
+        }
+    }
+
+    /// @brief Mark the most recent frame as prediction-only (no registration
+    ///        was run).  Does not touch the accumulated process covariance,
+    ///        which was already advanced by the per-frame
+    ///        accumulate_process_covariance() call in process().
+    void notify_prediction_only() { this->last_frame_registered_ = false; }
+
+    /// @brief Precompute Omega_prior and T_pred_inv for the upcoming align()
+    ///        call using the internally tracked prior source and accumulated
+    ///        process covariance.  Call once per frame, after motion prediction
+    ///        and before align().  No-op when no valid prior source exists or
+    ///        when accumulation has not been initialised yet.
+    void prepare_for_align(const Eigen::Isometry3f& T_pred) {
         this->has_prior_ = false;
         if (!this->params_.enabled) return;
+        if (!this->last_valid_result_ || !this->accumulation_initialized_) return;
+        const RegistrationResult& prev_result = *this->last_valid_result_;
+        const MapPriorMatrix& process_covariance = this->accumulated_process_covariance_;
 
         // Reduced chi-squared scaling: convert the raw Hessian (J^T Sigma^{-1} J under
         // unit-variance residual assumption) into a calibrated information matrix.
@@ -233,11 +280,52 @@ public:
     bool is_active() const { return this->params_.enabled && this->has_prior_; }
     const MapPriorMatrix& information_matrix() const { return this->Omega_prior_; }
 
+    /// @brief Whether a registration result valid enough to anchor the MAP
+    ///        prior is currently held.  Exposed so upstream pipelines can feed
+    ///        motion predictors that gate Hessian-based adaptive weighting on
+    ///        the availability of a prior source.
+    bool has_valid_prior_source() const { return this->last_valid_result_ != nullptr; }
+    /// @brief Last registration result accepted as a prior source (or null).
+    const RegistrationResult::Ptr& last_valid_result() const { return this->last_valid_result_; }
+    /// @brief Whether the most recent frame produced a usable registration
+    ///        (true) or fell back to prediction-only / unusable result (false).
+    bool last_frame_registered() const { return this->last_frame_registered_; }
+
 private:
+    /// @brief Heuristic validity test for a registration result being used as
+    ///        the prior source.  Mirrors the conditions originally inlined in
+    ///        the LiDAR odometry pipeline (lidar_odometry.hpp).
+    static bool is_valid_prior_source(const RegistrationResult& result) {
+        return result.T.matrix().allFinite() && result.H_raw.allFinite() && std::isfinite(result.error_raw) &&
+               result.error_raw >= 0.0f && result.inlier > 2;
+    }
+
     MapPriorParams params_;
     bool has_prior_ = false;
     MapPriorMatrix Omega_prior_ = MapPriorMatrix::Zero();
     Eigen::Isometry3f T_pred_inv_ = Eigen::Isometry3f::Identity();
+
+    /// @brief Last registration result accepted as the MAP prior source.
+    ///        Reset only by set_params() or by notify_registration_success()
+    ///        receiving a valid result; retained across prediction-only and
+    ///        unusable-result frames to keep Omega_prior anchored.
+    RegistrationResult::Ptr last_valid_result_ = nullptr;
+    /// @brief True iff the most recent frame produced a usable registration.
+    ///        Read by motion-prediction callers gating Hessian-based adaptive
+    ///        weighting.
+    bool last_frame_registered_ = false;
+    /// @brief Process covariance accumulated across prediction intervals since
+    ///        the last valid registration.  Expressed in accumulation_pose_'s
+    ///        body frame; rotated forward each time accumulate_process_covariance()
+    ///        is called and reset to zero by notify_registration_success().
+    MapPriorMatrix accumulated_process_covariance_ = MapPriorMatrix::Zero();
+    /// @brief Body-frame anchor for the next accumulate_process_covariance()
+    ///        step.  Updated to @p to after every accumulation.
+    Eigen::Isometry3f accumulation_pose_ = Eigen::Isometry3f::Identity();
+    /// @brief False until the first accumulate_process_covariance() call
+    ///        following a valid registration seeds accumulation_pose_.
+    ///        prepare_for_align() refuses to build a prior until this is true.
+    bool accumulation_initialized_ = false;
 };
 
 }  // namespace registration

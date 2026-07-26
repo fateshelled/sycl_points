@@ -242,7 +242,7 @@ public:
         }
 
         const MotionPrediction prediction = this->predict_motion();
-        this->accumulate_prior_process_covariance(this->odom_, prediction.pose);
+        this->map_prior().accumulate_process_covariance(this->odom_, prediction.pose);
 
         if (insufficient_points) {
             return this->commit_prediction_only(prediction, timestamp);
@@ -305,19 +305,11 @@ public:
                                                      R_world_imu_prev, this->params_.imu.preintegration.gravity);
             }
 
-            if (this->is_valid_prior_source(*this->reg_result_)) {
-                this->last_valid_reg_result_ =
-                    std::make_shared<algorithms::registration::RegistrationResult>(*this->reg_result_);
-                this->accumulated_prior_process_covariance_.setZero();
-                this->prior_accumulation_pose_ = this->odom_;
-                this->prior_accumulation_initialized_ = true;
-                this->last_frame_registered_ = true;
-            } else {
-                // The pose remains accepted to preserve existing LO behavior, but
-                // an unusable Hessian must not replace the last valid prior source.
-                this->accumulate_prior_process_covariance(prediction.pose, this->odom_);
-                this->last_frame_registered_ = false;
-            }
+            // The pose remains accepted to preserve existing LO behavior, but
+            // an unusable Hessian must not replace the last valid prior source;
+            // MapPrior::notify_registration_success() makes that decision and
+            // advances the accumulator when the result is unusable.
+            this->map_prior().notify_registration_success(*this->reg_result_, this->odom_);
         }
         return ResultType::success;
     }
@@ -336,12 +328,6 @@ private:
     algorithms::registration::RegistrationPipeline::Ptr registration_pipeline_ = nullptr;
 
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
-    algorithms::registration::RegistrationResult::Ptr last_valid_reg_result_ = nullptr;
-    bool last_frame_registered_ = false;
-    algorithms::registration::MapPriorMatrix accumulated_prior_process_covariance_ =
-        algorithms::registration::MapPriorMatrix::Zero();
-    Eigen::Isometry3f prior_accumulation_pose_ = Eigen::Isometry3f::Identity();
-    bool prior_accumulation_initialized_ = false;
 
     Eigen::Vector3f linear_velocity_;     // [m/s] in previous LiDAR body frame
     Eigen::AngleAxisf angular_velocity_;  // [rad/s]
@@ -464,11 +450,6 @@ private:
             this->registration_pipeline_ = std::make_shared<algorithms::registration::RegistrationPipeline>(
                 *this->queue_ptr_, reg_pipeline_params);
             this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
-            this->last_valid_reg_result_ = nullptr;
-            this->last_frame_registered_ = false;
-            this->accumulated_prior_process_covariance_.setZero();
-            this->prior_accumulation_pose_ = this->odom_;
-            this->prior_accumulation_initialized_ = false;
         }
         // utilities
         {
@@ -596,9 +577,10 @@ private:
             }
         }
 
+        auto& mp = this->map_prior();
         prediction.pose = this->motion_predictor_->predict(
-            this->linear_velocity_, this->angular_velocity_, this->odom_, this->dt_, this->last_valid_reg_result_,
-            this->last_frame_registered_ && this->last_valid_reg_result_ != nullptr, candidates);
+            this->linear_velocity_, this->angular_velocity_, this->odom_, this->dt_, mp.last_valid_result(),
+            mp.last_frame_registered() && mp.has_valid_prior_source(), candidates);
 
         if (this->imu_preintegration_ && this->params_.motion_prediction.mode == MotionPredictionMode::IMU_SE3) {
             // linear_velocity_ is in the previous LiDAR body frame.
@@ -613,10 +595,9 @@ private:
     algorithms::registration::RegistrationResult registration(const MotionPrediction& prediction) {
         // Provide the previous registration result as a MAP prior so the optimizer
         // stays anchored to init_T in directions with weak geometric constraints.
-        if (this->last_valid_reg_result_ && this->prior_accumulation_initialized_) {
-            this->registration_pipeline_->registration()->set_map_prior_state(
-                *this->last_valid_reg_result_, prediction.pose, this->accumulated_prior_process_covariance_);
-        }
+        // MapPrior tracks the prior source and accumulated process covariance
+        // internally; prepare_for_align() is a no-op when no valid source exists.
+        this->map_prior().prepare_for_align(prediction.pose);
 
         algorithms::registration::Registration::ExecutionOptions options;
         options.dt = this->dt_;
@@ -642,26 +623,11 @@ private:
         return result;
     }
 
-    void accumulate_prior_process_covariance(const Eigen::Isometry3f& from, const Eigen::Isometry3f& to) {
-        if (!this->params_.lo.registration.map_prior.enabled || !this->last_valid_reg_result_) return;
-
-        if (!this->prior_accumulation_initialized_) {
-            this->prior_accumulation_pose_ = from;
-            this->accumulated_prior_process_covariance_.setZero();
-            this->prior_accumulation_initialized_ = true;
-        }
-
-        // Keep the accumulator continuous even if a caller provides an equivalent
-        // pose through a different path (e.g. an accepted but unusable ICP result).
-        const Eigen::Isometry3f& step_from = this->prior_accumulation_pose_;
-        this->accumulated_prior_process_covariance_ = algorithms::registration::accumulate_map_prior_process_covariance(
-            this->params_.lo.registration.map_prior, this->accumulated_prior_process_covariance_, step_from, to);
-        this->prior_accumulation_pose_ = to;
-    }
-
-    bool is_valid_prior_source(const algorithms::registration::RegistrationResult& result) const {
-        return result.T.matrix().allFinite() && result.H_raw.allFinite() && std::isfinite(result.error_raw) &&
-               result.error_raw >= 0.0f && result.inlier > 2;
+    /// @brief Convenience accessor for the MapPrior owned by the registration
+    ///        backend.  State management (accumulate / notify / prepare) is
+    ///        delegated to MapPrior; the pipeline only forwards events.
+    algorithms::registration::MapPrior& map_prior() {
+        return this->registration_pipeline_->registration()->map_prior();
     }
 
     ResultType commit_prediction_only(const MotionPrediction& prediction, double timestamp) {
@@ -683,7 +649,7 @@ private:
         this->odom_ = prediction.pose;
         this->last_frame_time_ = timestamp;
         this->last_imu_reset_timestamp_ = timestamp;
-        this->last_frame_registered_ = false;
+        this->map_prior().notify_prediction_only();
 
         *this->reg_result_ = algorithms::registration::RegistrationResult{};
         this->reg_result_->T = prediction.pose;

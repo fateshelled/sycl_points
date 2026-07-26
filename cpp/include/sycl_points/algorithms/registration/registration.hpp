@@ -117,19 +117,17 @@ public:
     Registration(const sycl_utils::DeviceQueue& queue, const RegistrationFactorParams& params)
         : Registration(queue, RegistrationParams(params)) {}
 
-    /// @brief Set the MAP prior state for the upcoming align() call.
-    ///        Must be called once per frame, after motion prediction and before align().
-    /// @param prev_result  Registration result of the previous frame.
-    /// @param T_pred       Predicted pose used as the initial guess for the current frame.
-    void set_map_prior_state(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred) {
-        this->map_prior_.update(prev_result, T_pred);
-    }
-
-    /// @brief Set a MAP prior whose process covariance spans multiple prediction intervals.
-    void set_map_prior_state(const RegistrationResult& prev_result, const Eigen::Isometry3f& T_pred,
-                             const MapPriorMatrix& process_covariance) {
-        this->map_prior_.update(prev_result, T_pred, process_covariance);
-    }
+    /// @brief Access the MAP prior owned by this registration instance.
+    ///        The prior manages its own state (last valid registration result,
+    ///        accumulated process covariance, prior-source validity) and is
+    ///        updated by upstream pipelines via accumulate_process_covariance()
+    ///        / notify_registration_success() / notify_prediction_only() /
+    ///        prepare_for_align().  Only the prior's internal state is mutated;
+    ///        the geometric Registration invariant (params_, aligner state) is
+    ///        preserved, so align() remains safe to call with prior state set
+    ///        up before the call.
+    MapPrior& map_prior() { return this->map_prior_; }
+    const MapPrior& map_prior() const { return this->map_prior_; }
 
     /// @brief validate parameters
     void validate_params(const PointCloudShared& source, const PointCloudShared& target,
