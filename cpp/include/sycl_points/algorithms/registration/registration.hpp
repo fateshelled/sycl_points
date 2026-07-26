@@ -117,15 +117,11 @@ public:
     Registration(const sycl_utils::DeviceQueue& queue, const RegistrationFactorParams& params)
         : Registration(queue, RegistrationParams(params)) {}
 
-    /// @brief Access the MAP prior owned by this registration instance.
-    ///        The prior manages its own state (last valid registration result,
-    ///        accumulated process covariance, prior-source validity) and is
-    ///        updated by upstream pipelines via accumulate_process_covariance()
-    ///        / notify_registration_success() / notify_prediction_only() /
-    ///        prepare_for_align().  Only the prior's internal state is mutated;
-    ///        the geometric Registration invariant (params_, aligner state) is
-    ///        preserved, so align() remains safe to call with prior state set
-    ///        up before the call.
+    /// @brief Access the MAP prior.  Upstream pipelines drive the prior state via
+    ///        accumulate_process_covariance() / submit_registration_result() /
+    ///        submit_prediction_only() / prepare_for_align(); only the prior's
+    ///        internal state changes, so align() remains safe with prior state
+    ///        set up before the call.
     MapPrior& map_prior() { return this->map_prior_; }
     const MapPrior& map_prior() const { return this->map_prior_; }
 

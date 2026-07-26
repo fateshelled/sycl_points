@@ -247,12 +247,11 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
 
             Eigen::Isometry3f T_imu_rel = Eigen::Isometry3f::Identity();
             if (gyro_only) {
-                // Rotation is directly constrained by the gyroscope. Do not let
-                // uncertain velocity or double-integrated acceleration affect points.
+                // Use gyroscope rotation only; skip uncertain velocity/acceleration.
                 T_imu_rel.linear() = local_integrator.get_corrected(bias).Delta_R;
             } else {
-                // predict_relative_transform() applies gravity compensation using dt_total,
-                // which equals t_rel_sec because the integrator was reset at scan_start.
+                // predict_relative_transform() applies gravity compensation with
+                // dt_total == t_rel_sec (integrator was reset at scan_start).
                 T_imu_rel = Eigen::Isometry3f(
                     local_integrator.predict_relative_transform(R_world_body_i, v_world_body_i, bias));
             }

@@ -181,8 +181,7 @@ public:
 
         const bool insufficient_points = this->preprocessed_pc_->size() <= this->params_.registration.min_num_points;
 
-        // The first frame must initialize the submap. There is no registered pose
-        // or Hessian to propagate yet, so prediction-only fallback is not possible.
+        // The first frame must initialize the submap; no prior source to fall back on.
         if (this->is_first_frame_ && insufficient_points) {
             this->error_message_ = "point cloud size is too small";
             return ResultType::small_number_of_points;
@@ -305,11 +304,12 @@ public:
                                                      R_world_imu_prev, this->params_.imu.preintegration.gravity);
             }
 
-            // The pose remains accepted to preserve existing LO behavior, but
-            // an unusable Hessian must not replace the last valid prior source;
-            // MapPrior::notify_registration_success() makes that decision and
-            // advances the accumulator when the result is unusable.
-            this->map_prior().notify_registration_success(*this->reg_result_, this->odom_);
+            // Invalid result must not replace the last valid prior source; advance the
+            // accumulator over [T_pred -> T_post] so the prior weakens across
+            // successive unusable frames, matching the prediction-only path.
+            if (!this->map_prior().submit_registration_result(*this->reg_result_, this->odom_)) {
+                this->map_prior().accumulate_process_covariance(prediction.pose, this->odom_);
+            }
         }
         return ResultType::success;
     }
@@ -593,10 +593,8 @@ private:
     }
 
     algorithms::registration::RegistrationResult registration(const MotionPrediction& prediction) {
-        // Provide the previous registration result as a MAP prior so the optimizer
-        // stays anchored to init_T in directions with weak geometric constraints.
-        // MapPrior tracks the prior source and accumulated process covariance
-        // internally; prepare_for_align() is a no-op when no valid source exists.
+        // MAP prior anchors the optimizer to init_T in weakly constrained directions.
+        // prepare_for_align() is a no-op when no valid prior source exists.
         this->map_prior().prepare_for_align(prediction.pose);
 
         algorithms::registration::Registration::ExecutionOptions options;
@@ -607,12 +605,11 @@ private:
             this->registration_pipeline_->align(*this->preprocessed_pc_, this->submap_->get_submap_point_cloud(),
                                                 this->submap_->get_submap_kdtree(), prediction.pose.matrix(), options);
 
-        // Reset from the just-registered pose (t_k), so both covariance propagation and the
-        // next frame's imu_motion_prediction() use the correct window-start orientation.
-        // imu_v_world_at_reset_ intentionally retains the velocity corrector's value, which
-        // carries a known one-frame (~100 ms @ 10 Hz) approximation that IMU gravity/bias
-        // compensation absorbs; only the orientation is corrected here. Fixing the velocity lag too
-        // would require splitting the corrector's snapshot/return protocol (see IMUVelocityCorrector).
+        // Reset the IMU integrator at the just-registered pose (t_k) so the next
+        // window starts with the correct orientation.  Velocity intentionally
+        // retains the corrector's one-frame (~100 ms @ 10 Hz) approximation; IMU
+        // gravity/bias compensation absorbs it.  Fixing the lag would require
+        // splitting the corrector's snapshot/return protocol.
         if (this->imu_preintegration_) {
             this->imu_R_world_at_reset_ = result.T.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
             this->imu_v_world_at_reset_ = prediction.imu_reset_velocity;
@@ -623,9 +620,7 @@ private:
         return result;
     }
 
-    /// @brief Convenience accessor for the MapPrior owned by the registration
-    ///        backend.  State management (accumulate / notify / prepare) is
-    ///        delegated to MapPrior; the pipeline only forwards events.
+    /// @brief Accessor for the MapPrior owned by the registration backend.
     algorithms::registration::MapPrior& map_prior() {
         return this->registration_pipeline_->registration()->map_prior();
     }
@@ -649,7 +644,7 @@ private:
         this->odom_ = prediction.pose;
         this->last_frame_time_ = timestamp;
         this->last_imu_reset_timestamp_ = timestamp;
-        this->map_prior().notify_prediction_only();
+        this->map_prior().submit_prediction_only();
 
         *this->reg_result_ = algorithms::registration::RegistrationResult{};
         this->reg_result_->T = prediction.pose;
