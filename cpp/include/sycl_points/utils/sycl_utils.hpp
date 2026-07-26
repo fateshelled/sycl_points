@@ -134,7 +134,9 @@ inline std::string get_device_info(const sycl::device& device) {
 #ifndef SYCL_IMPL_ADAPTIVECPP
         oss << "\tBackend version: " << device.get_info<sycl::info::device::backend_version>() << "\n";
 #endif
-        oss << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << "\n";
+        // NOTE: driver_version cannot be obtained on the Level Zero backend (AdaptiveCpp bug:
+        // uninitialized ze_driver_properties_t is passed to zeDriverGetProperties, causing SEGV).
+        // oss << "\tDriver version: " << device.get_info<sycl::info::device::driver_version>() << "\n";
         oss << "\tGlobal Memory Size: "
             << device.get_info<sycl::info::device::global_mem_size>() / 1024.0 / 1024.0 / 1024.0 << " GB" << "\n";
         oss << "\tLocal Memory Size: " << device.get_info<sycl::info::device::local_mem_size>() / 1024.0 << " KB"
