@@ -40,6 +40,7 @@ cpp/build_acpp/*
 cpp/build_cuda/*
 cpp/build_hip/*
 cpp/build_omp/*
+cpp/build*
 .vscode/*
 .claude/*
 CLAUDE.md
