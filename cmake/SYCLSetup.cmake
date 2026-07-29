@@ -4,7 +4,7 @@
 #   - find_package for the chosen implementation
 #   - SYCL_IMPL_INTEL_DPCPP / SYCL_IMPL_ADAPTIVECPP compile definition
 #   - SYCL_TARGET_FLAGS (IntelDPCPP only)
-#   - ACPP_TARGETS auto-detection (AdaptiveCpp only)
+#   - ACPP_TARGETS default (AdaptiveCpp only)
 #   - apply_sycl_settings(TARGET) macro
 
 if(CMAKE_PROJECT_NAME) # project() 実行後のみ動作するようにガード
@@ -28,15 +28,22 @@ if(SYCL_IMPL STREQUAL "IntelDPCPP")
 
   set(SYCL_TARGET_FLAGS "spir64")
 
-  # Check for Intel oneAPI NVIDIA GPU support
+  # Check for Intel oneAPI NVIDIA GPU support robustly without spawning bash
   function(check_oneapi_nvidia_support RESULT_VAR)
+    find_program(SYCL_LS_PATH sycl-ls)
+    if(NOT SYCL_LS_PATH)
+      set(${RESULT_VAR} FALSE PARENT_SCOPE)
+      return()
+    endif()
+
     execute_process(
-      COMMAND bash -c "sycl-ls | grep -q NVIDIA"
-      RESULT_VARIABLE EXIT_CODE
-      OUTPUT_QUIET
+      COMMAND ${SYCL_LS_PATH}
+      OUTPUT_VARIABLE _sycl_devices
       ERROR_QUIET
+      RESULT_VARIABLE _sycl_result
     )
-    if(EXIT_CODE EQUAL 0)
+
+    if(_sycl_result EQUAL 0 AND _sycl_devices MATCHES "NVIDIA")
       set(${RESULT_VAR} TRUE PARENT_SCOPE)
     else()
       set(${RESULT_VAR} FALSE PARENT_SCOPE)
@@ -54,39 +61,14 @@ if(SYCL_IMPL STREQUAL "IntelDPCPP")
   message(STATUS "SYCL_IMPL: IntelDPCPP (targets: ${SYCL_TARGET_FLAGS})")
 
 elseif(SYCL_IMPL STREQUAL "AdaptiveCpp")
-  # Auto-detect ACPP_TARGETS from available hardware if not specified by user
+  # Default ACPP_TARGETS to "generic" (SSCP/JIT) if not specified by user.
+  # The generic flow JIT-compiles for the device available at runtime
+  # (CPU, Intel GPU, NVIDIA GPU, ...) and is the flow recommended by AdaptiveCpp.
+  # Explicit AOT targets (e.g. -DACPP_TARGETS="generic;cuda:sm_90") use the legacy
+  # cuda/hip flows, which AdaptiveCpp discourages outside specific use cases
+  # (acpp emits a warning unless --acpp-no-warn-legacy-flows is given).
   if(NOT ACPP_TARGETS)
-    # Base target is always "generic" (SSCP/JIT) to support CPU and Intel GPU at runtime
-    set(_acpp_auto_targets "generic")
-
-    # Detect NVIDIA GPUs via nvidia-smi and add cuda:sm_XX targets
-    execute_process(
-      COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-      OUTPUT_VARIABLE _nvidia_compute_caps
-      RESULT_VARIABLE _nvidia_result
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-      ERROR_QUIET
-    )
-    if(_nvidia_result EQUAL 0 AND _nvidia_compute_caps)
-      string(REPLACE "\n" ";" _cap_list "${_nvidia_compute_caps}")
-      set(_cuda_targets "")
-      foreach(_cap IN LISTS _cap_list)
-        string(STRIP "${_cap}" _cap)
-        if(_cap)
-          string(REPLACE "." "" _sm "${_cap}")
-          list(APPEND _cuda_targets "cuda:sm_${_sm}")
-        endif()
-      endforeach()
-      list(REMOVE_DUPLICATES _cuda_targets)
-      foreach(_t IN LISTS _cuda_targets)
-        string(APPEND _acpp_auto_targets ";${_t}")
-      endforeach()
-      message(STATUS "AdaptiveCpp: detected NVIDIA GPU(s): ${_cuda_targets}")
-    else()
-      message(STATUS "AdaptiveCpp: no NVIDIA GPU detected")
-    endif()
-
-    set(ACPP_TARGETS "${_acpp_auto_targets}" CACHE STRING "AdaptiveCpp compilation targets" FORCE)
+    set(ACPP_TARGETS "generic" CACHE STRING "AdaptiveCpp compilation targets" FORCE)
     message(STATUS "AdaptiveCpp: auto-set ACPP_TARGETS=${ACPP_TARGETS}")
   endif()
 

@@ -3,23 +3,30 @@
 Intel 内蔵 GPU (OpenCL & Level Zero) および NVIDIA GPU (CUDA) の両方に対応した AdaptiveCpp のビルド手順です。
 
 最新情報は公式ドキュメントを参照してください:
-- https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md
+
+- <https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md>
 
 ## 動作確認環境
 
 | 項目 | バージョン / 値 |
-|------|----------------|
+| ------ | ---------------- |
 | OS | Ubuntu 24.04 |
 | CPU | x86_64 (20コア) |
 | Intel GPU | Intel(R) Graphics (内蔵 GPU) |
 | NVIDIA GPU | NVIDIA GeForce RTX 5060 Ti |
-| NVIDIA ドライバ | 570.172.08 |
+| NVIDIA ドライバ | 570.172.08 ※ |
 | CUDA | 12.8 (`/usr/local/cuda`) |
 | LLVM / Clang | 20.1.2 |
 | Boost | 1.83 |
 | Level Zero | 1.24.1 |
 | CMake | 3.28.3 |
 | AdaptiveCpp | v25.10.0 |
+
+※ NVIDIA ドライバ のバージョンについて
+
+- **595**系では処理速度が異常に遅くなる現象を確認しています。
+  - USM Sharedメモリのホストデバイスからのアクセス速度が遅くなっているようです。
+- **570**, **580**系では正常に動作することを確認しています。
 
 ---
 
@@ -37,8 +44,9 @@ sudo apt-get install -y \
 
 
 # OpenCL・Level Zero
-# (intel-opencl-icd, libze-dev, libze-intel-gpu1, libze1 がインストール済みであること)
+# (ocl-icd-opencl-dev, intel-opencl-icd, libze-dev, libze-intel-gpu1, libze1 がインストール済みであること)
 sudo apt-get install -y \
+    ocl-icd-opencl-dev \
     intel-opencl-icd \
     libze-dev \
     libze-intel-gpu1 \
@@ -93,7 +101,7 @@ cmake .. \
 ### 主要な CMake オプションの説明
 
 | オプション | 値 | 説明 |
-|-----------|-----|------|
+| ----------- | ----- | ------ |
 | `CMAKE_BUILD_TYPE` | `Release` | リリースビルド (最適化あり) |
 | `CMAKE_CXX_COMPILER` | `clang++-20` | C++ コンパイラに Clang 20 を指定 |
 | `LLVM_DIR` | `/usr/lib/llvm-20/lib/cmake/llvm` | LLVM 20 の cmake 設定ディレクトリ |
