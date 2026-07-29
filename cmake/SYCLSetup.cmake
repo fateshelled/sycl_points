@@ -28,15 +28,22 @@ if(SYCL_IMPL STREQUAL "IntelDPCPP")
 
   set(SYCL_TARGET_FLAGS "spir64")
 
-  # Check for Intel oneAPI NVIDIA GPU support
+  # Check for Intel oneAPI NVIDIA GPU support robustly without spawning bash
   function(check_oneapi_nvidia_support RESULT_VAR)
+    find_program(SYCL_LS_PATH sycl-ls)
+    if(NOT SYCL_LS_PATH)
+      set(${RESULT_VAR} FALSE PARENT_SCOPE)
+      return()
+    endif()
+
     execute_process(
-      COMMAND bash -c "sycl-ls | grep -q NVIDIA"
-      RESULT_VARIABLE EXIT_CODE
-      OUTPUT_QUIET
+      COMMAND ${SYCL_LS_PATH}
+      OUTPUT_VARIABLE _sycl_devices
       ERROR_QUIET
+      RESULT_VARIABLE _sycl_result
     )
-    if(EXIT_CODE EQUAL 0)
+
+    if(_sycl_result EQUAL 0 AND _sycl_devices MATCHES "NVIDIA")
       set(${RESULT_VAR} TRUE PARENT_SCOPE)
     else()
       set(${RESULT_VAR} FALSE PARENT_SCOPE)
