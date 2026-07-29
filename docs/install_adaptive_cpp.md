@@ -3,12 +3,13 @@
 Intel 内蔵 GPU (OpenCL & Level Zero) および NVIDIA GPU (CUDA) の両方に対応した AdaptiveCpp のビルド手順です。
 
 最新情報は公式ドキュメントを参照してください:
-- https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md
+
+- <https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/installing.md>
 
 ## 動作確認環境
 
 | 項目 | バージョン / 値 |
-|------|----------------|
+| ------ | ---------------- |
 | OS | Ubuntu 24.04 |
 | CPU | x86_64 (20コア) |
 | Intel GPU | Intel(R) Graphics (内蔵 GPU) |
@@ -37,8 +38,9 @@ sudo apt-get install -y \
 
 
 # OpenCL・Level Zero
-# (intel-opencl-icd, libze-dev, libze-intel-gpu1, libze1 がインストール済みであること)
+# (ocl-icd-opencl-dev, intel-opencl-icd, libze-dev, libze-intel-gpu1, libze1 がインストール済みであること)
 sudo apt-get install -y \
+    ocl-icd-opencl-dev \
     intel-opencl-icd \
     libze-dev \
     libze-intel-gpu1 \
@@ -93,7 +95,7 @@ cmake .. \
 ### 主要な CMake オプションの説明
 
 | オプション | 値 | 説明 |
-|-----------|-----|------|
+| ----------- | ----- | ------ |
 | `CMAKE_BUILD_TYPE` | `Release` | リリースビルド (最適化あり) |
 | `CMAKE_CXX_COMPILER` | `clang++-20` | C++ コンパイラに Clang 20 を指定 |
 | `LLVM_DIR` | `/usr/lib/llvm-20/lib/cmake/llvm` | LLVM 20 の cmake 設定ディレクトリ |
