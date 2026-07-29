@@ -33,7 +33,7 @@
 
 build/*
 build_test/*
-cpp/build*
+cpp/build*/
 .vscode/*
 .claude/*
 CLAUDE.md
