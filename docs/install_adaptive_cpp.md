@@ -14,13 +14,19 @@ Intel 内蔵 GPU (OpenCL & Level Zero) および NVIDIA GPU (CUDA) の両方に�
 | CPU | x86_64 (20コア) |
 | Intel GPU | Intel(R) Graphics (内蔵 GPU) |
 | NVIDIA GPU | NVIDIA GeForce RTX 5060 Ti |
-| NVIDIA ドライバ | 570.172.08 |
+| NVIDIA ドライバ | 570.172.08 ※ |
 | CUDA | 12.8 (`/usr/local/cuda`) |
 | LLVM / Clang | 20.1.2 |
 | Boost | 1.83 |
 | Level Zero | 1.24.1 |
 | CMake | 3.28.3 |
 | AdaptiveCpp | v25.10.0 |
+
+※ NVIDIA ドライバ のバージョンについて
+
+- **595**系では処理速度が異常に遅くなる現象を確認しています。
+  - USM Sharedメモリのホストデバイスからのアクセス速度が遅くなっているようです。
+- **570**, **580**系では正常に動作することを確認しています。
 
 ---
 
