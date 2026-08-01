@@ -667,9 +667,13 @@ inline size_t compute_work_group_size_for_slm(const DeviceQueue& queue, const si
     }
 
     // Cap the work-group size so the local reduction buffer fits in SLM.
+    // The kernel consumes additional SLM beyond the accessor (e.g. for barriers and
+    // sub-group shuffles). Measured overhead on Intel GPUs is ~1 KB, so reserve a
+    // 2 KB safety margin below the device limit.
     const size_t local_mem_size = device.get_info<sycl::info::device::local_mem_size>();
-    if (local_mem_size > 0UL) {
-        const size_t max_by_slm = std::max<size_t>(1UL, local_mem_size / slm_entry_size);
+    const size_t slm_margin = 2UL * 1024UL;
+    if (local_mem_size > slm_margin) {
+        const size_t max_by_slm = std::max<size_t>(1UL, (local_mem_size - slm_margin) / slm_entry_size);
         wg_size = std::min(wg_size, max_by_slm);
     }
 
