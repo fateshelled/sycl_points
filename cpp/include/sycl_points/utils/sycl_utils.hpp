@@ -82,6 +82,21 @@ inline size_t get_work_group_size_for_parallel_reduction(const sycl::queue& queu
     return get_work_group_size_for_parallel_reduction(queue.get_device(), work_group_size);
 }
 
+/// @brief Get the maximum supported sub-group size of a device.
+/// @param device SYCL device
+/// @return Maximum supported sub-group size, or 1 when the device does not report any.
+inline size_t get_max_sub_group_size(const sycl::device& device) {
+    try {
+        const auto sub_group_sizes = device.get_info<sycl::info::device::sub_group_sizes>();
+        if (!sub_group_sizes.empty()) {
+            return *std::max_element(sub_group_sizes.begin(), sub_group_sizes.end());
+        }
+    } catch (...) {
+        // sub_group_sizes is not supported on every backend; fall back to 1.
+    }
+    return 1UL;
+}
+
 /// @brief Calculate global_size for a kernel execution based on total number of elements and work_group_size.
 /// @param N total number of elements to process.
 /// @param work_group_size size of each work group.
@@ -486,6 +501,7 @@ class DeviceQueue {
 private:
     size_t work_group_size;
     size_t work_group_size_for_parallel_reduction;
+    size_t max_sub_group_size;
 
 public:
     using Ptr = std::shared_ptr<DeviceQueue>;
@@ -514,6 +530,7 @@ public:
         }
         this->work_group_size = sycl_utils::get_work_group_size(device);
         this->work_group_size_for_parallel_reduction = sycl_utils::get_work_group_size_for_parallel_reduction(device);
+        this->max_sub_group_size = sycl_utils::get_max_sub_group_size(device);
     }
 
     /// @brief Print device info
@@ -546,6 +563,10 @@ public:
     /// @brief get work group size for parallel reduction
     /// @return work group size for parallel reduction
     size_t get_work_group_size_for_parallel_reduction() const { return this->work_group_size_for_parallel_reduction; }
+
+    /// @brief Get the maximum supported sub-group size of the device.
+    /// @return maximum supported sub-group size
+    size_t get_max_sub_group_size() const { return this->max_sub_group_size; }
 
     /// @brief set work group size for parallel reduction
     /// @param wg_size work group size
@@ -620,6 +641,47 @@ public:
         sycl_utils::mem_advise::clear_read_mostly<T>(*this->ptr, data_ptr, N);
     }
 };
+
+/// @brief Compute a work-group size for kernels that allocate a local (SLM) reduction buffer.
+/// @param queue Device queue carrying the cached device properties.
+/// @param slm_entry_size Size in bytes of the per work-item local memory entry.
+/// @return Work-group size that fits in the device's shared local memory and is aligned
+///         to a multiple of the maximum supported sub-group size.
+/// @note The work-group size is first derived from a device heuristic (vendor and compute unit
+///       count) and then capped so that `wg_size * slm_entry_size` does not exceed the device's
+///       local memory. A work-group requesting more SLM than available is rejected by the JIT
+///       compiler (e.g. Level Zero returns ZE_RESULT_ERROR_INVALID_ARGUMENT at zeModuleCreate).
+inline size_t compute_work_group_size_for_slm(const DeviceQueue& queue, const size_t slm_entry_size) {
+    const sycl::device& device = queue.get_device();
+    const size_t max_work_group_size = device.get_info<sycl::info::device::max_work_group_size>();
+    const size_t compute_units = static_cast<size_t>(device.get_info<sycl::info::device::max_compute_units>());
+    const bool is_cpu = device.is_cpu();
+
+    const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
+    const bool is_nvidia_device = (vendor_id == VENDOR_ID::NVIDIA);
+    const bool is_intel_device = (vendor_id == VENDOR_ID::INTEL);
+
+    size_t wg_size = std::min<size_t>(128, max_work_group_size);
+    if (is_nvidia_device) {
+        wg_size = std::min(max_work_group_size, size_t{64});
+    } else if (is_intel_device && !is_cpu) {
+        wg_size = std::min(max_work_group_size, compute_units * size_t{8});
+    } else if (is_cpu) {
+        wg_size = std::min(max_work_group_size, compute_units * size_t{100});
+    }
+
+    // Cap the work-group size so the local reduction buffer fits in SLM.
+    const size_t local_mem_size = device.get_info<sycl::info::device::local_mem_size>();
+    if (local_mem_size > 0UL) {
+        const size_t max_by_slm = std::max<size_t>(1UL, local_mem_size / slm_entry_size);
+        wg_size = std::min(wg_size, max_by_slm);
+    }
+
+    // Align the work-group size down to a multiple of the sub-group size.
+    const size_t sub_group_size = std::max<size_t>(1UL, queue.get_max_sub_group_size());
+    wg_size -= wg_size % sub_group_size;
+    return std::max<size_t>(1UL, wg_size);
+}
 
 }  // namespace sycl_utils
 

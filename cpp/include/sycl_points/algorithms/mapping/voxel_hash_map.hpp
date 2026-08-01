@@ -545,20 +545,7 @@ private:
     }
 
     size_t compute_wg_size_add_point_cloud() const {
-        const size_t max_work_group_size =
-            this->queue_.get_device().get_info<sycl::info::device::max_work_group_size>();
-        const size_t compute_units = this->queue_.get_device().get_info<sycl::info::device::max_compute_units>();
-        if (this->queue_.is_nvidia()) {
-            // NVIDIA:
-            return std::min(max_work_group_size, 64UL);
-        } else if (this->queue_.is_intel() && this->queue_.is_gpu()) {
-            // Intel iGPU:
-            return std::min(max_work_group_size, compute_units * 8UL);
-        } else if (this->queue_.is_cpu()) {
-            // CPU:
-            return std::min(max_work_group_size, compute_units * 100UL);
-        }
-        return 128UL;
+        return sycl_utils::compute_work_group_size_for_slm(this->queue_, sizeof(VoxelLocalData));
     }
 
     size_t compute_local_size_for_add_point_cloud(bool has_cov) const {

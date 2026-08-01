@@ -1639,19 +1639,7 @@ private:
     }
 
     size_t compute_work_group_size() const {
-        const size_t max_work_group_size =
-            this->queue_.get_device().get_info<sycl::info::device::max_work_group_size>();
-        const size_t compute_units = this->queue_.get_device().get_info<sycl::info::device::max_compute_units>();
-        if (this->queue_.is_nvidia()) {
-            return std::min(max_work_group_size, size_t{64});
-        }
-        if (this->queue_.is_intel() && this->queue_.is_gpu()) {
-            return std::min(max_work_group_size, compute_units * size_t{8});
-        }
-        if (this->queue_.is_cpu()) {
-            return std::min(max_work_group_size, compute_units * size_t{100});
-        }
-        return std::min<size_t>(128, max_work_group_size);
+        return sycl_utils::compute_work_group_size_for_slm(this->queue_, sizeof(VoxelLocalData));
     }
 
     sycl_utils::DeviceQueue queue_;
