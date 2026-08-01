@@ -655,16 +655,12 @@ inline size_t compute_work_group_size_for_slm(const DeviceQueue& queue, const si
     const sycl::device& device = queue.get_device();
     const size_t max_work_group_size = device.get_info<sycl::info::device::max_work_group_size>();
     const size_t compute_units = static_cast<size_t>(device.get_info<sycl::info::device::max_compute_units>());
-    const bool is_cpu = device.is_cpu();
-
-    const auto vendor_id = device.get_info<sycl::info::device::vendor_id>();
-    const bool is_nvidia_device = (vendor_id == VENDOR_ID::NVIDIA);
-    const bool is_intel_device = (vendor_id == VENDOR_ID::INTEL);
+    const bool is_cpu = queue.is_cpu();
 
     size_t wg_size = std::min<size_t>(128, max_work_group_size);
-    if (is_nvidia_device) {
+    if (queue.is_nvidia()) {
         wg_size = std::min(max_work_group_size, size_t{64});
-    } else if (is_intel_device && !is_cpu) {
+    } else if (queue.is_intel() && !is_cpu) {
         wg_size = std::min(max_work_group_size, compute_units * size_t{8});
     } else if (is_cpu) {
         wg_size = std::min(max_work_group_size, compute_units * size_t{100});
