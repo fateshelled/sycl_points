@@ -1639,7 +1639,7 @@ private:
     }
 
     size_t compute_work_group_size() const {
-        return sycl_utils::compute_work_group_size_for_slm(this->queue_, sizeof(VoxelLocalData));
+        return sycl_utils::compute_work_group_size_for_slm(this->queue_.get_device(), sizeof(VoxelLocalData));
     }
 
     sycl_utils::DeviceQueue queue_;

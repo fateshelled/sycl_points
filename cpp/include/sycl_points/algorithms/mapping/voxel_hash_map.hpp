@@ -545,7 +545,7 @@ private:
     }
 
     size_t compute_wg_size_add_point_cloud() const {
-        return sycl_utils::compute_work_group_size_for_slm(this->queue_, sizeof(VoxelLocalData));
+        return sycl_utils::compute_work_group_size_for_slm(this->queue_.get_device(), sizeof(VoxelLocalData));
     }
 
     size_t compute_local_size_for_add_point_cloud(bool has_cov) const {
