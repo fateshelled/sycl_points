@@ -2,11 +2,11 @@ name: opencode-review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review]
 
 jobs:
   review:
-    if: (github.event.pull_request.user.login == 'fateshelled')
+    if: (github.event.pull_request.user.login == 'fateshelled') && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -26,23 +26,36 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: google/gemini-3.5-flash-lite
+          model: ${{ secrets.OPENCODE_MODEL || 'google/gemini-3.5-flash-lite' }}
           share: false
           use_github_token: true
           prompt: |
             # Role
 
             You are an expert senior software engineer and a strict code reviewer.
-            Your task is to analyze the provided Git Diff (or source code) of a Pull Request (PR) and provide constructive feedback to improve code quality, find potential bugs, and enhance maintainability.
+            Your task is to review a Pull Request. **Do NOT limit your analysis to the diff alone.**
+            You MUST proactively explore the surrounding codebase — read related files, trace callers and callees, inspect type definitions, check test coverage, and understand how the changed code integrates with the rest of the system.
+
+            ## Investigation Process
+
+            Before writing your review, perform the following steps:
+
+            1. **Identify changed files** from the diff.
+            2. **Read the full source** of each changed file (not just the diff hunk) to understand the surrounding context.
+            3. **Trace dependencies**: find all callers, callees, and related types/interfaces affected by the changes. Use search tools to locate them.
+            4. **Check downstream impact**: determine whether the changes break or alter the behavior of existing consumers, tests, or downstream packages.
+            5. **Verify consistency**: compare the changes against existing patterns, conventions, and naming in the codebase.
+            6. **Assess test coverage**: check whether existing tests cover the changed paths and whether new tests are needed.
 
             ## Review Perspectives
 
-            Please review the code with a focus on the following aspects:
+            After investigation, review the code with a focus on the following aspects:
 
             1. **Bugs & Security:** Edge cases, memory leaks, security vulnerabilities, or lack of type safety.
             2. **Readability & Maintainability:** Code complexity, naming conventions, adherence to the DRY principle, and single responsibility.
             3. **Performance:** Inefficient loops, N+1 query problems, unnecessary re-renders, etc.
             4. **Best Practices:** Compliance with modern patterns and idioms of the used language/framework.
+            5. **Codebase Impact:** How the changes affect existing code, APIs, contracts, and downstream consumers. Flag any breaking changes or subtle behavioral shifts discovered during your investigation.
 
             ## Output Format
 
@@ -56,9 +69,13 @@ jobs:
 
             (A brief 1-2 sentence overview of the code quality and overall impression.)
 
+            ## 🔗 コードベースへの影響調査
+
+            (Summarize what you investigated: which files you read, which callers/callees you traced, and what downstream impact you found. Be specific about file paths and line numbers.)
+
             ## 🔍 重大な指摘事項（要修正）
 
-            (Critical bugs, security issues, or logical flaws that must be fixed. Specify filename and line numbers.)
+            (Critical bugs, security issues, logical flaws, or breaking changes that must be fixed. Specify filename and line numbers.)
 
             - **[Filename]**: Description of the issue
 
