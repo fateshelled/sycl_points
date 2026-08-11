@@ -271,7 +271,9 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
                 }
             }
 
-            if (this->covariance_marker_publisher_ != nullptr) {
+            // Registration input remains cached across prediction-only frames.
+            // Publish its covariance markers only when it belongs to this frame.
+            if (frame.registration_result != nullptr && this->covariance_marker_publisher_ != nullptr) {
                 if (const auto* registration_input_pc = this->pipeline_->get_registration_input_point_cloud();
                     registration_input_pc != nullptr) {
                     this->covariance_marker_publisher_->publish_if_subscribed(header, *registration_input_pc);

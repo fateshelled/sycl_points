@@ -115,6 +115,7 @@ void LiDAROdometryBagEvalNode::run() {
             this->record_processing_times(frame);
 
             const bool should_write_tum = frame.result == ResultType::success ||
+                                          frame.result == ResultType::prediction_only ||
                                           (frame.result == ResultType::first_frame && this->write_first_frame_);
             if (should_write_tum) {
                 const auto pose_msg = this->make_pose_message(msg.header, frame.odom);

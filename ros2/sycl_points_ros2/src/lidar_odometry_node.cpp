@@ -45,7 +45,8 @@ LiDAROdometryNode::~LiDAROdometryNode() = default;
 
 void LiDAROdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2::UniquePtr msg) {
     auto frame = this->process_point_cloud_message(*msg);
-    if (frame.result == ResultType::success || frame.result == ResultType::first_frame) {
+    if (frame.result == ResultType::success || frame.result == ResultType::first_frame ||
+        frame.result == ResultType::prediction_only) {
         this->publish_processed_frame(msg->header, frame);
     }
     this->record_processing_times(frame);
