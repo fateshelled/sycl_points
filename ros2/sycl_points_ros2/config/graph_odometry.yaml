@@ -48,7 +48,9 @@ graph_odometry_node:
     T_imu_to_lidar/qz: 0.0
     T_imu_to_lidar/qw: 1.0
 
-    # IMU (always enabled for LIO)
+    # IMU is OPTIONAL for graph odometry. imu/enable defaults to false (LiDAR-only).
+    # Set imu/enable: true only when an IMU topic is provided and IMU coupling is desired.
+    imu/enable: false
     imu/accel_unit: "m_s2"              # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
     imu/buffer_duration_sec: 2.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew
