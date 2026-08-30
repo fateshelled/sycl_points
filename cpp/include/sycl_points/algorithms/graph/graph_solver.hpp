@@ -65,7 +65,6 @@ public:
                 if (!node) continue;
                 const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
                 node->pose = Eigen::Isometry3f(node->pose.matrix() * eigen_utils::lie::se3_exp(d));
-                node->linearization_pose = node->pose;
             }
 
             result.final_error = sys.error;
@@ -99,7 +98,8 @@ private:
         }
 
         for (auto& factor : window.factors()) {
-            auto lin = factor->linearize(queue_);
+            auto lin = factor->get_linearization(
+                queue_, params_.relinearize_rotation_thresh, params_.relinearize_translation_thresh);
             auto [sid, tid] = factor->node_ids();
             int si = idx.at(sid);
             sys.H.block<6, 6>(6 * si, 6 * si) += lin.H00;

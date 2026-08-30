@@ -73,6 +73,7 @@ public:
         for (int i = 0; i < static_cast<int>(K); ++i) id_to_idx[nodes_[i]->id] = i;
 
         for (auto& f : factors_) {
+            f->clear_cache();
             auto lin = f->linearize(queue);
             auto [sid, tid] = f->node_ids();
             int si = id_to_idx[sid];

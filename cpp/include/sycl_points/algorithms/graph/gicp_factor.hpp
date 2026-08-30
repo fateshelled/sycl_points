@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "sycl_points/algorithms/graph/graph_factor.hpp"
@@ -55,11 +56,26 @@ public:
 
     std::pair<NodeId, NodeId> node_ids() const override { return {source_id_, INVALID_NODE_ID}; }
 
-    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
-                               float) const override {
-        // Phase 1: fixed linearization point.
-        return false;
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float rot_th,
+                               float trans_th) const override {
+        // Reuse is allowed only when the connected node pose is still close to the
+        // pose at which this factor was last linearized.
+        return relinearization_needed(source_node_->pose, source_node_->linearization_pose, rot_th,
+                                      trans_th);
     }
+
+    FactorLinearization get_linearization(const sycl_utils::DeviceQueue& queue, float rot_th,
+                                         float trans_th) override {
+        if (cached_lin_ && !needs_relinearization(Eigen::Isometry3f::Identity(),
+                                                 Eigen::Isometry3f::Identity(), rot_th, trans_th)) {
+            return *cached_lin_;
+        }
+        source_node_->linearization_pose = source_node_->pose;
+        cached_lin_ = this->linearize(queue);
+        return *cached_lin_;
+    }
+
+    void clear_cache() override { cached_lin_.reset(); }
 
 private:
     sycl_utils::DeviceQueue queue_;
@@ -68,6 +84,7 @@ private:
     std::shared_ptr<const PointCloudShared> target_;
     std::shared_ptr<const knn::KNNBase> target_knn_;
     registration::RegistrationParams params_;
+    std::optional<FactorLinearization> cached_lin_;
 };
 
 /// @brief Binary GICP factor: two pose nodes against each other (current <-> window_i).
@@ -110,11 +127,37 @@ public:
 
     std::pair<NodeId, NodeId> node_ids() const override { return {source_id_, target_id_}; }
 
-    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
-                               float) const override {
-        // Phase 2: fixed linearization point.
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float rot_th,
+                               float trans_th) const override {
+        if (relinearization_needed(source_node_->pose, source_node_->linearization_pose, rot_th,
+                                  trans_th))
+            return true;
+        if (target_node_ &&
+            relinearization_needed(target_node_->pose, target_node_->linearization_pose, rot_th,
+                                  trans_th))
+            return true;
         return false;
     }
+
+    FactorLinearization get_linearization(const sycl_utils::DeviceQueue& queue, float rot_th,
+                                         float trans_th) override {
+        const bool reuse =
+            cached_lin_ &&
+            !relinearization_needed(source_node_->pose, source_node_->linearization_pose, rot_th,
+                                   trans_th) &&
+            (!target_node_ ||
+             !relinearization_needed(target_node_->pose, target_node_->linearization_pose, rot_th,
+                                    trans_th));
+        if (reuse) {
+            return *cached_lin_;
+        }
+        source_node_->linearization_pose = source_node_->pose;
+        if (target_node_) target_node_->linearization_pose = target_node_->pose;
+        cached_lin_ = this->linearize(queue);
+        return *cached_lin_;
+    }
+
+    void clear_cache() override { cached_lin_.reset(); }
 
 private:
     sycl_utils::DeviceQueue queue_;
@@ -124,6 +167,7 @@ private:
     std::shared_ptr<PoseNode> target_node_;
     BinaryGicpLinearizer linearizer_;
     registration::RegistrationParams params_;
+    std::optional<FactorLinearization> cached_lin_;
 };
 
 }  // namespace graph
