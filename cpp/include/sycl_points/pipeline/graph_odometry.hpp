@@ -70,6 +70,10 @@ public:
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
     const PointCloudShared* get_registration_input_point_cloud() const { return this->preprocessed_pc_.get(); }
     const auto& get_graph_window() const { return this->graph_opt_->window(); }
+    std::map<std::string, double> get_current_processing_time() const { return this->current_processing_time_; }
+    std::map<std::string, std::vector<double>> get_total_processing_times() const {
+        return this->total_processing_times_;
+    }
 
     void add_imu_measurement(const imu::IMUMeasurement& meas) {
         if (!this->params_.imu.enable) return;
