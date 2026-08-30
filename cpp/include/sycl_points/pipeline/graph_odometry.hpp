@@ -235,16 +235,20 @@ public:
                                 this->prev_odom_.rotation() * this->linear_velocity_);
                         }
 
-                        auto source_knn =
-                            algorithms::knn::KDTree::build(*this->queue_ptr_, *this->preprocessed_pc_);
+                        // Deep-copy the source cloud: preprocessed_pc_ is reused next frame,
+                        // so the window must own an immutable snapshot (and its kNN).
+                        auto source_cloud = std::make_shared<PointCloudShared>(*this->preprocessed_pc_);
+                        auto source_knn = algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
 
-                        std::shared_ptr<const PointCloudShared> submap_cloud_ptr(
-                            this->submap_, &this->submap_->get_submap_point_cloud());
-                        std::shared_ptr<const algorithms::knn::KNNBase> submap_knn_ptr(
-                            this->submap_, &this->submap_->get_submap_kdtree());
+                        // Snapshot the submap: Submap replaces its cloud/kd-tree on every
+                        // add_frame(), so aliasing into it dangles. Build a fresh kd-tree on
+                        // the copy so the target stays stable.
+                        auto submap_cloud = std::make_shared<PointCloudShared>(this->submap_->get_submap_point_cloud());
+                        std::shared_ptr<const algorithms::knn::KNNBase> submap_knn =
+                            algorithms::knn::KDTree::build(*this->queue_ptr_, *submap_cloud);
 
                         auto result = this->graph_opt_->process_frame(
-                            this->preprocessed_pc_, submap_cloud_ptr, submap_knn_ptr, source_knn, init_T,
+                            source_cloud, submap_cloud, submap_knn, source_knn, init_T,
                             timestamp, this->reg_params_);
 
                         if (this->imu_preintegration_) {
