@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 
@@ -16,6 +17,7 @@
 #include "sycl_points/algorithms/graph/gicp_factor.hpp"
 #include "sycl_points/algorithms/graph/graph_solver.hpp"
 #include "sycl_points/algorithms/graph/pose_node.hpp"
+#include "sycl_points/algorithms/graph/relative_pose_factor.hpp"
 #include "sycl_points/algorithms/graph/sliding_window.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
@@ -456,6 +458,122 @@ TEST_F(GraphCacheTest, ReusesLinearizationUntilPoseMovesBeyondThreshold) {
     f.clear_cache();
     auto lin5 = f.get_linearization(queue, 0.02f, 0.05f);
     EXPECT_EQ(f.linearize_calls, 3);
+}
+
+// ---------------------------------------------------------------------------
+// RelativePoseFactor: independent Jacobian / information check + chain solve
+// ---------------------------------------------------------------------------
+
+// A 6D right-perturbation of an Isometry: T * exp(v).
+static Eigen::Isometry3f rright(const Eigen::Isometry3f& T, const Eigen::Matrix<float, 6, 1>& v) {
+    return Eigen::Isometry3f(T.matrix() * eigen_utils::lie::se3_exp(v));
+}
+
+class RelativePoseTest : public ::testing::Test {
+protected:
+    sycl_utils::DeviceQueue queue = make_queue();
+};
+
+// Numerically differentiate the residual of a RelativePoseFactor and confirm
+// the assembled b = J^T Omega r and H = J^T Omega J match what linearize()
+// returns. This independently validates the -Adjoint(Tt^-1 Ts) source Jacobian
+// (a plain -I would fail the H00 test whenever G has an off-axis translation).
+TEST_F(RelativePoseTest, JacobianAndInformationAreConsistent) {
+    auto win_src = std::make_shared<graph::PoseNode>();
+    auto win_tgt = std::make_shared<graph::PoseNode>();
+    win_src->id = 0;
+    win_tgt->id = 1;
+
+    Eigen::Isometry3f Ts = Eigen::Isometry3f::Identity();
+    Ts.translate(Eigen::Vector3f(0.2f, -0.1f, 0.05f));
+    Ts.rotate(Eigen::AngleAxisf(0.13f, Eigen::Vector3f::UnitZ()));
+    Eigen::Isometry3f Tt = Eigen::Isometry3f::Identity();
+    Tt.translate(Eigen::Vector3f(0.5f, 0.3f, -0.2f));
+    Tt.rotate(Eigen::AngleAxisf(-0.21f, Eigen::Vector3f::UnitY()));
+    Eigen::Isometry3f G = Eigen::Isometry3f::Identity();
+    G.translate(Eigen::Vector3f(0.35f, 0.4f, -0.25f));
+    G.rotate(Eigen::AngleAxisf(0.07f, Eigen::Vector3f(0.3f, 0.6f, 0.7f).normalized()));
+
+    win_src->pose = Ts;
+    win_tgt->pose = Tt;
+
+    graph::RelativePoseParams rp;
+    graph::RelativePoseFactor f(0, win_src, 1, win_tgt, G, rp);
+    const Eigen::Matrix<float, 6, 6> Omega = graph::RelativePoseFactor::make_information(rp);
+
+    auto residual = [&](const Eigen::Isometry3f& s, const Eigen::Isometry3f& t) {
+        return eigen_utils::lie::se3_log(G.inverse() * (s.inverse() * t));
+    };
+    const Eigen::Matrix<float, 6, 1> r0 = residual(Ts, Tt);
+
+    // Numerical Jacobians d r / d(right perturbation) at the linearization pose.
+    const float eps = 1e-3f;
+    Eigen::Matrix<float, 6, 6> Js = Eigen::Matrix<float, 6, 6>::Zero();
+    Eigen::Matrix<float, 6, 6> Jt = Eigen::Matrix<float, 6, 6>::Zero();
+    for (int k = 0; k < 6; ++k) {
+        Eigen::Matrix<float, 6, 1> e = Eigen::Matrix<float, 6, 1>::Zero();
+        e[k] = eps;
+        Js.col(k) = (residual(rright(Ts, e), Tt) - residual(rright(Ts, -e), Tt)) / (2 * eps);
+        Jt.col(k) = (residual(Ts, rright(Tt, e)) - residual(Ts, rright(Tt, -e))) / (2 * eps);
+    }
+
+    const Eigen::Matrix<float, 6, 1> b0_num = Js.transpose() * Omega * r0;
+    const Eigen::Matrix<float, 6, 1> b1_num = Jt.transpose() * Omega * r0;
+    const Eigen::Matrix<float, 6, 6> H00_num = Js.transpose() * Omega * Js;
+    const Eigen::Matrix<float, 6, 6> H01_num = Js.transpose() * Omega * Jt;
+    const Eigen::Matrix<float, 6, 6> H11_num = Jt.transpose() * Omega * Jt;
+
+    auto lin = f.linearize(queue);
+    auto rel_err = [](const Eigen::Matrix<float, 6, 1>& a, const Eigen::Matrix<float, 6, 1>& b) {
+        return (a - b).norm() / std::max(1.0f, a.norm());
+    };
+    auto rel_err_m = [](const Eigen::Matrix<float, 6, 6>& a, const Eigen::Matrix<float, 6, 6>& b) {
+        return (a - b).norm() / std::max(1.0f, a.norm());
+    };
+    EXPECT_LT(rel_err(lin.b0, b0_num), 2e-2f);   // float32 FD noise ~1%
+    EXPECT_LT(rel_err(lin.b1, b1_num), 2e-2f);
+    EXPECT_LT(rel_err_m(lin.H00, H00_num), 2e-2f);
+    EXPECT_LT(rel_err_m(lin.H01, H01_num), 2e-2f);
+    EXPECT_LT(rel_err_m(lin.H11, H11_num), 2e-2f);
+
+    // Sanity: a plain -I source Jacobian (ignoring the adjoint) must NOT match,
+    // otherwise the adjoint term is doing nothing and the test is vacuous.
+    const Eigen::Matrix<float, 6, 6> H00_naive = Eigen::Matrix<float, 6, 6>::Identity() * Omega;
+    EXPECT_GT(rel_err_m(lin.H00, H00_naive), 1e-2f);
+}
+
+// A 3-node chain (anchor T0, relative T0->T1, relative T1->T2) with exact
+// measurements must be recovered, and needs_relinearization() is always true
+// so the base cache never goes stale for this factor.
+TEST_F(RelativePoseTest, ChainRecoversWithAnchor) {
+    graph::SlidingWindow window(5);
+    Eigen::Isometry3f T0 = Eigen::Isometry3f::Identity();
+    T0.translate(Eigen::Vector3f(1.0f, 0.5f, 0.0f));
+    Eigen::Isometry3f G01 = Eigen::Isometry3f::Identity();
+    G01.translate(Eigen::Vector3f(0.5f, 0.0f, 0.0f));
+    G01.rotate(Eigen::AngleAxisf(0.1f, Eigen::Vector3f::UnitZ()));
+    Eigen::Isometry3f G12 = Eigen::Isometry3f::Identity();
+    G12.translate(Eigen::Vector3f(0.0f, 0.4f, 0.0f));
+    G12.rotate(Eigen::AngleAxisf(-0.15f, Eigen::Vector3f::UnitZ()));
+    const Eigen::Isometry3f T1 = T0 * G01;
+    const Eigen::Isometry3f T2 = T1 * G12;
+
+    const graph::NodeId id0 = window.add_node(T0, 0.0);
+    const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    const graph::NodeId id2 = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+
+    // Anchor node 0 so the chain has an absolute reference.
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id0), T0, 100.0f));
+    window.add_factor(std::make_shared<graph::RelativePoseFactor>(
+        id0, window.get_node(id0), id1, window.get_node(id1), G01));
+    window.add_factor(std::make_shared<graph::RelativePoseFactor>(
+        id1, window.get_node(id1), id2, window.get_node(id2), G12));
+
+    graph::GraphSolver solver(queue);
+    auto result = solver.optimize(window);
+    EXPECT_TRUE(result.converged);
+    expect_pose_near(window.get_node(id1)->pose, T1, 1e-2f, 1e-2f);
+    expect_pose_near(window.get_node(id2)->pose, T2, 1e-2f, 1e-2f);
 }
 
 }  // namespace
