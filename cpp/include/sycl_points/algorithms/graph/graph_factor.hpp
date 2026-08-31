@@ -47,6 +47,11 @@ public:
     virtual bool needs_relinearization(const Eigen::Isometry3f& src, const Eigen::Isometry3f& tgt,
                                        float rot_th, float trans_th) const = 0;
 
+    /// @brief True for point-cloud based binary factors (BinaryGicpFactor). The
+    ///        sparse-chain topology prunes/converts exactly these; host-only
+    ///        factors (chain relatives) are always kept.
+    virtual bool is_point_cloud_binary() const { return false; }
+
     /// @brief Return the linearization, reusing a cached result when the connected
     ///        node poses have not moved beyond the relinearization thresholds.
     ///        The cache lives in the base class so every factor type shares identical

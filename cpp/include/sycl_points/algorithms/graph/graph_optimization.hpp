@@ -23,10 +23,27 @@ namespace graph {
 /// later phases.
 class GraphOptimization {
 public:
+    /// @brief Graph connectivity strategy for binary factors.
+    enum class BinaryTopology {
+        clique,        ///< every co-existing pair keeps its BinaryGicpFactor (legacy)
+        sparse_chain,  ///< point-cloud binaries touch only the current tip; older
+                       ///< adjacent pairs live on as host-only RelativePoseFactors
+    };
+
+    struct Options {
+        BinaryTopology binary_topology = BinaryTopology::sparse_chain;
+        RelativePoseParams relative_pose;
+    };
+
     GraphOptimization(const sycl_utils::DeviceQueue& queue,
                       const GraphSolverParams& solver_params = GraphSolverParams(),
                       size_t max_window_size = 5)
-        : queue_(queue), solver_(queue_, solver_params), window_(max_window_size) {}
+        : GraphOptimization(queue, solver_params, max_window_size, Options{}) {}
+
+    GraphOptimization(const sycl_utils::DeviceQueue& queue,
+                      const GraphSolverParams& solver_params, size_t max_window_size,
+                      const Options& options)
+        : queue_(queue), solver_(queue_, solver_params), window_(max_window_size), opts_(options) {}
 
     struct FrameResult {
         Eigen::Isometry3f current_pose;
@@ -47,6 +64,18 @@ public:
         // 1. Add the new scan as a node (with its own kNN for future binary factors).
         NodeId current_id = window_.add_node(initial_pose, timestamp, source_cloud, std::move(source_knn));
 
+        // 1b. Sparse-chain bookkeeping: the previous tip's point-cloud star is now
+        //     stale; drop it except for the adjacent pair, which is frozen into a
+        //     host-only RelativePoseFactor chain edge.
+        if (opts_.binary_topology == BinaryTopology::sparse_chain) {
+            auto& nodes = window_.active_nodes();
+            const size_t n = nodes.size();
+            const NodeId convert_a = (n >= 3) ? nodes[n - 3]->id : INVALID_NODE_ID;
+            const NodeId convert_b = (n >= 3) ? nodes[n - 2]->id : INVALID_NODE_ID;
+            window_.prune_point_cloud_binaries(current_id, convert_a, convert_b,
+                                               opts_.relative_pose);
+        }
+
         // 2a. Unary GICP factor: current <-> fixed submap.
         auto current_node = window_.get_node(current_id);
         window_.add_factor(std::make_shared<UnaryGicpFactor>(
@@ -65,7 +94,10 @@ public:
 
         // 4. Marginalize the oldest node once the window exceeds its max size.
         if (window_.window_size() > window_.max_window_size()) {
-            window_.marginalize_oldest(queue_);
+            window_.marginalize_oldest(
+                queue_, opts_.binary_topology == BinaryTopology::sparse_chain
+                            ? SlidingWindow::MarginalizationAnchor::OldestSurviving
+                            : SlidingWindow::MarginalizationAnchor::Newest);
         }
 
         // 5. Results.
@@ -85,6 +117,7 @@ private:
     sycl_utils::DeviceQueue queue_;
     GraphSolver solver_;
     SlidingWindow window_;
+    Options opts_;
 
     std::shared_ptr<const PointCloudShared> submap_;
     std::shared_ptr<const knn::KNNBase> submap_knn_;

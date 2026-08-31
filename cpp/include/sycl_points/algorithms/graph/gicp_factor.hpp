@@ -128,6 +128,8 @@ public:
         return false;
     }
 
+    bool is_point_cloud_binary() const override { return true; }
+
 private:
     sycl_utils::DeviceQueue queue_;
     NodeId source_id_ = INVALID_NODE_ID;

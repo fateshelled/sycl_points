@@ -15,6 +15,7 @@
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/graph/gicp_factor.hpp"
+#include "sycl_points/algorithms/graph/graph_optimization.hpp"
 #include "sycl_points/algorithms/graph/graph_solver.hpp"
 #include "sycl_points/algorithms/graph/pose_node.hpp"
 #include "sycl_points/algorithms/graph/relative_pose_factor.hpp"
@@ -574,6 +575,131 @@ TEST_F(RelativePoseTest, ChainRecoversWithAnchor) {
     EXPECT_TRUE(result.converged);
     expect_pose_near(window.get_node(id1)->pose, T1, 1e-2f, 1e-2f);
     expect_pose_near(window.get_node(id2)->pose, T2, 1e-2f, 1e-2f);
+}
+
+// ---------------------------------------------------------------------------
+// Topology invariants: sparse_chain vs clique (real GICP factors, SYCL)
+// ---------------------------------------------------------------------------
+
+class GraphTopologyTest : public ::testing::Test {
+protected:
+    sycl_utils::DeviceQueue queue = make_queue();
+
+    graph::GraphOptimization::FrameResult feed_frame(graph::GraphOptimization& opt,
+                                                     const PointCloudShared::Ptr& submap,
+                                                     const std::shared_ptr<knn::KNNBase>& submap_knn,
+                                                     const Eigen::Isometry3f& T_gt, double t) {
+        auto scan = transform_cloud(queue, *submap, T_gt.inverse());
+        auto knn = knn::KDTree::build(queue, *scan);
+        estimate_covariances(*knn, *scan);
+        return opt.process_frame(scan, submap, submap_knn, knn, T_gt, t, gicp_params());
+    }
+
+    struct TopoCounts {
+        size_t pc_binary = 0;
+        size_t chain = 0;
+        size_t unary = 0;
+    };
+
+    static TopoCounts count_factors(const graph::SlidingWindow& w) {
+        TopoCounts c;
+        for (auto& f : w.factors()) {
+            if (f->is_point_cloud_binary()) {
+                ++c.pc_binary;
+            } else if (std::dynamic_pointer_cast<const graph::RelativePoseFactor>(f)) {
+                ++c.chain;
+            } else {
+                ++c.unary;
+            }
+        }
+        return c;
+    }
+
+    PointCloudShared::Ptr make_submap(std::mt19937& gen,
+                                      std::shared_ptr<knn::KNNBase>& knn_out) {
+        auto submap = make_cube_cloud(queue, 3000, 1.0f, gen);
+        auto knn = knn::KDTree::build(queue, *submap);
+        estimate_covariances(*knn, *submap);
+        knn_out = knn;
+        return submap;
+    }
+};
+
+// In sparse_chain mode the point-cloud star must only ever touch the current
+// tip, older adjacent pairs live on chain RelativePoseFactors, and the
+// marginalization prior must anchor to the oldest surviving node.
+TEST_F(GraphTopologyTest, SparseChainKeepsStarAtTipOnly) {
+    std::mt19937 gen(7);
+    std::shared_ptr<knn::KNNBase> submap_knn;
+    auto submap = make_submap(gen, submap_knn);
+
+    graph::GraphOptimization::Options opts;
+    opts.binary_topology = graph::GraphOptimization::BinaryTopology::sparse_chain;
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4, opts);
+
+    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f step = Eigen::Isometry3f::Identity();
+    step.translate(Eigen::Vector3f(0.02f, 0.0f, 0.0f));
+    step.rotate(Eigen::AngleAxisf(0.004f, Eigen::Vector3f::UnitZ()));
+
+    for (size_t f = 0; f < 7; ++f) {
+        T = T * step;
+        auto fr = feed_frame(opt, submap, submap_knn, T, 0.1 * static_cast<double>(f));
+        EXPECT_TRUE(fr.converged) << "frame " << f;
+        expect_pose_near(fr.current_pose, T, 0.05f, 0.05f);
+
+        auto& w = opt.window();
+        if (f + 1 >= 4) {  // window full from here on
+            const auto c = count_factors(w);
+            EXPECT_EQ(c.pc_binary, w.window_size() - 1) << "frame " << f;
+            EXPECT_EQ(c.chain, w.window_size() - 2) << "frame " << f;
+            EXPECT_EQ(c.unary, w.window_size()) << "frame " << f;
+            // every point-cloud binary touches the tip
+            const graph::NodeId tip = w.active_nodes().back()->id;
+            for (auto& fac : w.factors()) {
+                if (fac->is_point_cloud_binary()) {
+                    EXPECT_EQ(fac->node_ids().first, tip) << "frame " << f;
+                }
+            }
+            if (w.prior().is_valid()) {
+                EXPECT_EQ(w.prior().node_ids[0], w.active_nodes().front()->id) << "frame " << f;
+            }
+        }
+    }
+}
+
+// Clique mode must keep the legacy structure (all pairs of point-cloud
+// binaries, no chain factors, prior anchored to the newest node).
+TEST_F(GraphTopologyTest, CliqueModeKeepsLegacyStructure) {
+    std::mt19937 gen(7);
+    std::shared_ptr<knn::KNNBase> submap_knn;
+    auto submap = make_submap(gen, submap_knn);
+
+    graph::GraphOptimization::Options opts;
+    opts.binary_topology = graph::GraphOptimization::BinaryTopology::clique;
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4, opts);
+
+    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f step = Eigen::Isometry3f::Identity();
+    step.translate(Eigen::Vector3f(0.02f, 0.0f, 0.0f));
+    step.rotate(Eigen::AngleAxisf(0.004f, Eigen::Vector3f::UnitZ()));
+
+    for (size_t f = 0; f < 7; ++f) {
+        T = T * step;
+        auto fr = feed_frame(opt, submap, submap_knn, T, 0.1 * static_cast<double>(f));
+        EXPECT_TRUE(fr.converged) << "frame " << f;
+
+        auto& w = opt.window();
+        if (f + 1 >= 4) {
+            const size_t K = w.window_size();
+            const auto c = count_factors(w);
+            EXPECT_EQ(c.pc_binary, K * (K - 1) / 2) << "frame " << f;
+            EXPECT_EQ(c.chain, 0u) << "frame " << f;
+            if (w.prior().is_valid()) {
+                EXPECT_EQ(w.prior().node_ids[0], w.active_nodes().back()->id) << "frame " << f;
+            }
+        }
+    }
 }
 
 }  // namespace

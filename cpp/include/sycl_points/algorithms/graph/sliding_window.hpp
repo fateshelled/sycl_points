@@ -6,6 +6,7 @@
 #include "sycl_points/algorithms/graph/gicp_factor.hpp"
 #include "sycl_points/algorithms/graph/marginalization_prior.hpp"
 #include "sycl_points/algorithms/graph/pose_node.hpp"
+#include "sycl_points/algorithms/graph/relative_pose_factor.hpp"
 
 namespace sycl_points {
 namespace algorithms {
@@ -54,10 +55,64 @@ public:
     size_t window_size() const { return nodes_.size(); }
     size_t max_window_size() const { return max_window_size_; }
 
+    /// @brief Sparse-chain topology maintenance: drop point-cloud binary factors
+    ///        that do not touch `keep_tip` (their scan-to-scan information is
+    ///        re-expressed by the new tip's fresh star), and make sure the
+    ///        adjacent pair (convert_a, convert_b) keeps a chain constraint by
+    ///        converting the matching binary into a RelativePoseFactor frozen at
+    ///        the current estimates (a relative factor already present is kept
+    ///        as-is). Idempotent w.r.t. repeated calls with the same pair.
+    void prune_point_cloud_binaries(NodeId keep_tip, NodeId convert_a, NodeId convert_b,
+                                    const RelativePoseParams& rel_params = RelativePoseParams()) {
+        bool chain_present = false;
+        std::vector<std::shared_ptr<GicpFactorBase>> kept;
+        kept.reserve(factors_.size());
+        for (auto& f : factors_) {
+            const auto [s, t] = f->node_ids();
+            if (!f->is_point_cloud_binary()) {
+                if (f->node_ids() == std::make_pair(convert_a, convert_b)) chain_present = true;
+                kept.push_back(f);
+                continue;
+            }
+            if (s == keep_tip) {
+                kept.push_back(f);  // fresh star edge of the current tip
+                continue;
+            }
+            if (!chain_present && (s == convert_a || s == convert_b) &&
+                (t == convert_a || t == convert_b)) {
+                auto na = get_node(convert_a);
+                auto nb = get_node(convert_b);
+                const Eigen::Isometry3f G = na->pose.inverse() * nb->pose;
+                kept.push_back(std::make_shared<RelativePoseFactor>(convert_a, na, convert_b, nb,
+                                                                    G, rel_params));
+                chain_present = true;
+                continue;
+            }
+            // stale point-cloud binary -> dropped
+        }
+        if (!chain_present && convert_a != INVALID_NODE_ID && convert_b != INVALID_NODE_ID) {
+            auto na = get_node(convert_a);
+            auto nb = get_node(convert_b);
+            if (na && nb) {
+                const Eigen::Isometry3f G = na->pose.inverse() * nb->pose;
+                kept.push_back(std::make_shared<RelativePoseFactor>(convert_a, na, convert_b, nb,
+                                                                    G, rel_params));
+            }
+        }
+        factors_ = std::move(kept);
+    }
+
+    /// @brief Where the Schur-complement prior produced by marginalize_oldest is
+    ///        anchored. Newest preserves the original clique-era behavior;
+    ///        OldestSurviving follows the dominant chain coupling of the
+    ///        marginalized node (sparse-chain topology).
+    enum class MarginalizationAnchor { Newest, OldestSurviving };
+
     /// @brief Marginalize the oldest active node via Schur complement, producing a
     ///        star-shaped unary prior on the newest node. Returns the marginalized
     ///        node id, or INVALID_NODE_ID if the window has not exceeded its max size.
-    NodeId marginalize_oldest(const sycl_utils::DeviceQueue& queue) {
+    NodeId marginalize_oldest(const sycl_utils::DeviceQueue& queue,
+                              MarginalizationAnchor anchor = MarginalizationAnchor::Newest) {
         if (nodes_.size() <= max_window_size_) return INVALID_NODE_ID;
 
         auto oldest = nodes_.front();
@@ -110,14 +165,16 @@ public:
         Eigen::MatrixXf H_prior_new = H_rr - H_mr.transpose() * ldlt_mm.solve(H_mr);
         Eigen::VectorXf b_prior_new = b_r - H_mr.transpose() * ldlt_mm.solve(b_m);
 
-        // Step 4: star-shaped prior on the newest remaining node (diagonal 6x6 block).
+        // Step 4: star-shaped prior on the chosen anchor node (diagonal 6x6 block).
+        const int anchor_pos =
+            (anchor == MarginalizationAnchor::Newest) ? static_cast<int>(K) - 1 : 1;
         MarginalizationPrior new_prior;
-        new_prior.node_ids = {nodes_.back()->id};
-        new_prior.linearization_poses = {nodes_.back()->pose};
-        const int newest_reduced = static_cast<int>(K) - 2;
+        new_prior.node_ids = {nodes_[anchor_pos]->id};
+        new_prior.linearization_poses = {nodes_[anchor_pos]->pose};
+        const int anchor_reduced = anchor_pos - 1;  // index after dropping nodes_[0]
         new_prior.H_prior = eigen_utils::ensure_symmetric<6>(
-            H_prior_new.block<6, 6>(6 * newest_reduced, 6 * newest_reduced));
-        new_prior.b_prior = b_prior_new.segment<6>(6 * newest_reduced);
+            H_prior_new.block<6, 6>(6 * anchor_reduced, 6 * anchor_reduced));
+        new_prior.b_prior = b_prior_new.segment<6>(6 * anchor_reduced);
         new_prior.error_constant = 0.0f;
 
         // Step 5: drop factors/nodes touching the marginalized node, replace prior.
