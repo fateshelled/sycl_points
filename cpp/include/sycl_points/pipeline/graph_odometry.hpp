@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numbers>
 #include <stdexcept>
 #include <vector>
 
@@ -240,16 +241,19 @@ public:
                         auto source_cloud = std::make_shared<PointCloudShared>(*this->preprocessed_pc_);
                         auto source_knn = algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
 
-                        // Snapshot the submap: Submap replaces its cloud/kd-tree on every
-                        // add_frame(), so aliasing into it dangles. Build a fresh kd-tree on
-                        // the copy so the target stays stable.
-                        auto submap_cloud = std::make_shared<PointCloudShared>(this->submap_->get_submap_point_cloud());
-                        std::shared_ptr<const algorithms::knn::KNNBase> submap_knn =
-                            algorithms::knn::KDTree::build(*this->queue_ptr_, *submap_cloud);
+                        // Submap generations are immutable snapshots handed to the graph.
+                        // In voxel mode the submap only changes when a keyframe is merged,
+                        // so the copy + KDTree rebuild runs at keyframe rate, not scan rate.
+                        if (this->submap_dirty_) {
+                            this->submap_gen_cloud_ = std::make_shared<PointCloudShared>(this->submap_->get_submap_point_cloud());
+                            this->submap_gen_knn_ =
+                                algorithms::knn::KDTree::build(*this->queue_ptr_, *this->submap_gen_cloud_);
+                            this->submap_dirty_ = false;
+                        }
 
                         auto result = this->graph_opt_->process_frame(
-                            source_cloud, submap_cloud, submap_knn, source_knn, init_T,
-                            timestamp, this->reg_params_);
+                            source_cloud, this->submap_gen_cloud_, this->submap_gen_knn_, source_knn,
+                            init_T, timestamp, this->reg_params_);
 
                         if (this->imu_preintegration_) {
                             this->imu_R_world_at_reset_ =
@@ -315,6 +319,10 @@ private:
     pointcloud_processing::PCProcessor::Ptr pc_processor_ = nullptr;
     submapping::Submap::Ptr submap_ = nullptr;
     std::shared_ptr<algorithms::graph::GraphOptimization> graph_opt_ = nullptr;
+    // Current immutable submap generation (cloud + kNN) shared by the whole graph.
+    std::shared_ptr<PointCloudShared> submap_gen_cloud_ = nullptr;
+    std::shared_ptr<const algorithms::knn::KNNBase> submap_gen_knn_ = nullptr;
+    bool submap_dirty_ = true;
     algorithms::registration::RegistrationParams reg_params_;
 
     bool registrated_ = false;
@@ -390,10 +398,17 @@ private:
         this->reg_params_ = algorithms::registration::RegistrationParams(this->params_.registration.factor,
                                                                         this->params_.lo.registration.optimization);
 
-        // Graph optimizer (sliding window local BA).
-        const size_t window_size = 5;
-        this->graph_opt_ = std::make_shared<algorithms::graph::GraphOptimization>(*this->queue_ptr_, algorithms::graph::GraphSolverParams(),
-                                                                     window_size);
+        // Graph optimizer (sliding window local BA). The keyframe gate shares the
+        // submap's keyframe thresholds so node promotion and map updates coincide.
+        const size_t window_size = 5;  // persistent nodes = keyframes
+        algorithms::graph::GraphOptimization::Options gopts;
+        gopts.gate.enabled = true;
+        gopts.gate.min_translation = this->params_.submap.keyframe.distance_threshold;
+        gopts.gate.min_rotation = this->params_.submap.keyframe.angle_threshold_degrees *
+                                  (std::numbers::pi_v<float> / 180.0f);
+        gopts.gate.min_time_seconds = this->params_.submap.keyframe.time_threshold_seconds;
+        this->graph_opt_ = std::make_shared<algorithms::graph::GraphOptimization>(
+            *this->queue_ptr_, algorithms::graph::GraphSolverParams(), window_size, gopts);
 
         this->clear_total_processing_times();
         this->motion_predictor_ = std::make_shared<lidar_odometry::MotionPredictor>(this->params_.motion_prediction);
@@ -467,7 +482,11 @@ private:
         this->reg_result_->iterations = frame_result.iterations;
         this->reg_result_->error = frame_result.error;
 
-        this->submap_->add_frame(*this->preprocessed_pc_, *this->reg_result_, 1.0f, timestamp, nullptr);
+        const bool map_changed =
+            this->submap_->add_frame(*this->preprocessed_pc_, *this->reg_result_, 1.0f, timestamp, nullptr);
+        if (map_changed) {
+            this->submap_dirty_ = true;
+        }
     }
 };
 

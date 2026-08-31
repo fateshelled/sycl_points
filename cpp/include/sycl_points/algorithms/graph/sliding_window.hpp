@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 
@@ -37,6 +38,23 @@ public:
     }
 
     void add_factor(std::shared_ptr<GicpFactorBase> factor) { factors_.push_back(std::move(factor)); }
+
+    /// @brief Drop a transient (non-promoted) tip node and every factor that
+    ///        touches it. Unlike marginalization no information is preserved:
+    ///        the observation lives on only in the returned pose, and the next
+    ///        frame re-observes the same region through its fresh tip star.
+    void remove_node(NodeId id) {
+        factors_.erase(std::remove_if(factors_.begin(), factors_.end(),
+                                      [&](const auto& f) {
+                                          auto [s, t] = f->node_ids();
+                                          return s == id || t == id;
+                                      }),
+                       factors_.end());
+        nodes_.erase(std::remove_if(nodes_.begin(), nodes_.end(),
+                                    [&](const auto& n) { return n->id == id; }),
+                     nodes_.end());
+        nodes_by_id_.erase(id);
+    }
 
     std::shared_ptr<PoseNode> get_node(NodeId id) {
         auto it = nodes_by_id_.find(id);

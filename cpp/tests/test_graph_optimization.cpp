@@ -581,6 +581,10 @@ TEST_F(RelativePoseTest, ChainRecoversWithAnchor) {
 // Topology invariants: sparse_chain vs clique (real GICP factors, SYCL)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Topology invariants: sparse_chain vs clique (real GICP factors, SYCL)
+// ---------------------------------------------------------------------------
+
 class GraphTopologyTest : public ::testing::Test {
 protected:
     sycl_utils::DeviceQueue queue = make_queue();
@@ -700,6 +704,43 @@ TEST_F(GraphTopologyTest, CliqueModeKeepsLegacyStructure) {
             }
         }
     }
+}
+
+// Keyframe gate: with small steps and a gate that fires only on accumulated
+// motion, far fewer nodes persist than frames, yet the current pose must still
+// track the (submap-anchored) trajectory.
+TEST_F(GraphTopologyTest, KeyframeGateThinsPersistentNodes) {
+    std::mt19937 gen(7);
+    std::shared_ptr<knn::KNNBase> submap_knn;
+    auto submap = make_submap(gen, submap_knn);
+
+    graph::GraphOptimization::Options opts;
+    opts.binary_topology = graph::GraphOptimization::BinaryTopology::sparse_chain;
+    opts.gate.enabled = true;
+    opts.gate.min_translation = 0.05f;  // fires every ~3rd frame at 0.02 steps
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 8, opts);
+
+    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f step = Eigen::Isometry3f::Identity();
+    step.translate(Eigen::Vector3f(0.02f, 0.0f, 0.0f));
+
+    size_t keyframes = 0;
+    for (size_t f = 0; f < 9; ++f) {
+        T = T * step;
+        auto fr = feed_frame(opt, submap, submap_knn, T, 0.1 * static_cast<double>(f));
+        EXPECT_TRUE(fr.converged) << "frame " << f;
+        expect_pose_near(fr.current_pose, T, 0.05f, 0.05f);
+        if (fr.keyframe) ++keyframes;
+    }
+    // 9 frames but only ~4 should have persisted as keyframes.
+    EXPECT_GT(keyframes, 1u);
+    EXPECT_LT(keyframes, 9u);
+    EXPECT_LE(opt.window().window_size(), keyframes);
+
+    // Persistent graph is pure keyframes + chain (no stale point-cloud star
+    // left after a transient tip is dropped): binaries <= nodes-1.
+    const auto c = count_factors(opt.window());
+    EXPECT_LE(c.pc_binary + c.chain, opt.window().window_size() * (opt.window().window_size() - 1) / 2);
 }
 
 }  // namespace

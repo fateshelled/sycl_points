@@ -31,8 +31,21 @@ public:
     };
 
     struct Options {
+        /// @brief Keyframe gating for the sliding window. When enabled, a frame
+        ///        is retained as a persistent node only if it moved beyond the
+        ///        thresholds relative to the last kept keyframe; otherwise the
+        ///        transient tip (and its fresh factors) is dropped after the
+        ///        solve. Disabled => every frame persists (legacy per-frame window).
+        struct KeyframeGate {
+            bool enabled = false;
+            float min_translation = 0.3f;  // [m]
+            float min_rotation = 0.0873f;  // [rad] (~5 deg)
+            float min_time_seconds = 0.0f;  // <=0: disabled
+        };
+
         BinaryTopology binary_topology = BinaryTopology::sparse_chain;
         RelativePoseParams relative_pose;
+        KeyframeGate gate;
     };
 
     GraphOptimization(const sycl_utils::DeviceQueue& queue,
@@ -50,6 +63,7 @@ public:
         bool converged = false;
         size_t iterations = 0;
         float error = 0.0f;
+        bool keyframe = true;
     };
 
     FrameResult process_frame(std::shared_ptr<PointCloudShared> source_cloud,
@@ -92,7 +106,36 @@ public:
         // 3. Local BA (fixed linearization, Gauss-Newton).
         auto result = solver_.optimize(window_);
 
-        // 4. Marginalize the oldest node once the window exceeds its max size.
+        // 4. Keyframe gate: keep the solved tip pose, then decide persistence.
+        auto cur = window_.get_node(current_id);
+        FrameResult fr;
+        fr.current_pose = cur ? cur->pose : initial_pose;
+        fr.converged = result.converged;
+        fr.iterations = result.iterations;
+        fr.error = result.final_error;
+
+        if (opts_.gate.enabled) {
+            const Eigen::Isometry3f d = last_keyframe_pose_.inverse() * fr.current_pose;
+            const bool time_hit = opts_.gate.min_time_seconds > 0.0f && last_keyframe_time_ >= 0.0 &&
+                                  timestamp - last_keyframe_time_ >= opts_.gate.min_time_seconds;
+            const bool is_keyframe = !has_keyframe_ ||
+                                     d.translation().norm() >= opts_.gate.min_translation ||
+                                     Eigen::AngleAxisf(d.rotation()).angle() >= opts_.gate.min_rotation ||
+                                     time_hit;
+            fr.keyframe = is_keyframe;
+            if (is_keyframe) {
+                last_keyframe_pose_ = fr.current_pose;
+                last_keyframe_time_ = timestamp;
+                has_keyframe_ = true;
+            } else {
+                // Transient tip: its observation lives on only in fr.current_pose;
+                // the next frame re-observes the same region through its fresh tip.
+                window_.remove_node(current_id);
+                return fr;
+            }
+        }
+
+        // 5. Marginalize the oldest node once the window exceeds its max size.
         if (window_.window_size() > window_.max_window_size()) {
             window_.marginalize_oldest(
                 queue_, opts_.binary_topology == BinaryTopology::sparse_chain
@@ -100,13 +143,6 @@ public:
                             : SlidingWindow::MarginalizationAnchor::Newest);
         }
 
-        // 5. Results.
-        auto node = window_.get_node(current_id);
-        FrameResult fr;
-        fr.current_pose = node ? node->pose : initial_pose;
-        fr.converged = result.converged;
-        fr.iterations = result.iterations;
-        fr.error = result.final_error;
         return fr;
     }
 
@@ -114,6 +150,8 @@ public:
     const SlidingWindow& window() const { return window_; }
 
 private:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
     sycl_utils::DeviceQueue queue_;
     GraphSolver solver_;
     SlidingWindow window_;
@@ -121,6 +159,10 @@ private:
 
     std::shared_ptr<const PointCloudShared> submap_;
     std::shared_ptr<const knn::KNNBase> submap_knn_;
+
+    Eigen::Isometry3f last_keyframe_pose_ = Eigen::Isometry3f::Identity();
+    double last_keyframe_time_ = -1.0;
+    bool has_keyframe_ = false;
 };
 
 }  // namespace graph
