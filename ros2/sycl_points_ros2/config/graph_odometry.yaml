@@ -1,3 +1,8 @@
+# Root key is the handle used by launch/graph_odometry_launch.py (it flattens
+# this section into per-node -p args). If you bypass launch and run
+# `ros2 run sycl_points_ros2 graph_odometry_node --params-file <this>`, rename
+# the root key below to the real node name `graph_odometry` (or use **),
+# otherwise every parameter here is silently ignored.
 graph_odometry_node:
   ros__parameters:
     sycl/device_type: gpu      # gpu, cpu
@@ -20,8 +25,7 @@ graph_odometry_node:
 
     odom_frame_id: odom
     base_link_id: base_link
-    lidar_frame_id: os_sensor
-    rviz2: true
+    # lidar_frame_id is not used by the graph node (frame ids: odom_frame_id/base_link_id)
     use_sim_time: false
 
     initial_base_link_pose/x: 0.0
@@ -164,43 +168,29 @@ graph_odometry_node:
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
-    # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
-    # Maximum linearize+solve count per frame, distributed as evenly as possible
-    # across registration/robust/auto_scaling_iter robust levels.
-    # Current config: 8 total / 4 levels = 2 solver iterations per level.
-    lio/total_iterations: 12
-    lio/criteria/translation: 0.01  # [m]
-    lio/criteria/rotation: 0.0017   # [rad]
-    lio/invalid_regularization_factor: 1.0e+4
-    # Fixed-sigma floors added to P_initial at each IMU reset.
-    # Prevents H_imu from dominating H_icp when noise_density is set to a small
-    # physical value (accel / gyro).
-    # fd_velocity_sigma: σ_v [m/s]  → P_pred[p,p] ≳ (σ_v × dt)²  ≈ σ_icp²
-    #   rule of thumb: σ_icp / dt  (e.g. 0.01 m / 0.1 s = 0.1 m/s)
-    lio/fd_velocity_sigma: 0.1    # [m/s]
-    # icp_rotation_sigma: σ_rot [rad]  → P_pred[φ,φ] ≳ σ_rot²
-    #   choose so 1/σ_rot² ≲ H_icp[rot,rot]  (≈ 1e4–1e5 → σ ≈ 0.003–0.01 rad)
-    lio/icp_rotation_sigma: 0.01  # [rad]
-    # Direction-wise ICP/IMU balance for degenerate geometry.
-    # The scalar reduced-chi² weight handles globally bad matches; this filter
-    # detects weak translation and rotation directions separately so corridor /
-    # stairwell degeneracy leans on the IMU prediction instead of noisy LiDAR increments.
-    lio/directional_icp_weighting/enable: true
-    lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier: 10.0
-    lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 50.0
-    lio/directional_icp_weighting/trans_weak_direction_scale: 0.2
-    lio/directional_icp_weighting/rot_weak_direction_scale: 0.02
-    # Bias-estimation safeguards for the weakly-observable IMU bias states.
-    # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
-    #   little motion (biases are unobservable there and would absorb noise).
-    lio/bias_estimation/freeze_on_low_excitation: true
-    lio/bias_estimation/gyro_excitation_threshold: 0.03   # [rad/s] max |w - mean w| in window
-    lio/bias_estimation/accel_excitation_threshold: 0.3   # [m/s^2] max ||a| - mean |a|| in window
-    # Hard clamp on estimated bias L2 norm (0 = disabled). Bounds runaway/drift.
-    lio/bias_estimation/max_accel_bias: 1.0   # [m/s^2]
-    lio/bias_estimation/max_gyro_bias: 0.2    # [rad/s]
+    # Sliding-window graph optimizer (local BA).
+    # graph/window_size counts persistent KEYFRAME nodes (the per-frame tip is
+    # transient when the submap/keyframe/* gate rejects it). The keyframe gate
+    # itself reuses the submap/keyframe/* thresholds above.
+    graph/window_size: 5
+    graph/solver_iterations: 10              # Gauss-Newton iterations per frame
+    graph/convergence/translation: 1.0e-4    # [m]
+    graph/convergence/rotation: 1.0e-4       # [rad]
+    # Delayed relinearization thresholds: cached factor linearizations are
+    # reused while node poses stay within these bounds of the linearization
+    # point (gradients are refreshed at the current pose; correspondences are
+    # only re-searched when the threshold is crossed).
+    graph/relinearize/translation_threshold: 0.05  # [m]
+    graph/relinearize/rotation_threshold: 0.02     # [rad]
+    graph/marginalization_lambda: 1.0e-6           # regularization fallback for LDLT
+    # Keyframe-chain RelativePoseFactor information (per-axis sigma).
+    graph/chain/sigma_rotation: 5.0e-3     # [rad]
+    graph/chain/sigma_translation: 2.0e-2  # [m]
 
-    # ICP registration backend (used for linearization inside the LIO loop)
+    # Registration backend for graph factor linearization (unary/binary GICP).
+    # NOTE: robust/auto_scale, robust/init_scale, robust/min_scale, robust/auto_scaling_iter
+    # and rotation_constraint/robust/{init_scale,min_scale} belong to the single-frame
+    # align path (lidar_odometry robust schedule) and are unused by graph odometry.
     registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
     registration/random_sampling/enable: true
@@ -227,7 +217,7 @@ graph_odometry_node:
 
     registration/genz/planarity_threshold: 0.2
 
-    # Optimizer for the LIO 15-DOF update loop (mirrors the LO solver options).
+    # Optimizer used inside each factor's linearization pass.
     # GN: damped solve only (fastest).
     # LM / DOGLEG: step acceptance on the combined ICP+IMU cost, costing one extra
     #   error-evaluation pass per trial step.
@@ -248,14 +238,5 @@ graph_odometry_node:
 
     registration/verbose: false
 
-    # Visualization
-    vis/covariance_markers/scan/topic_name: "sycl_lo/scan_covariance_markers"
-    vis/covariance_markers/scan/marker_ns: "covariance_ellipsoids"
-    vis/covariance_markers/scan/scale_factor: 0.5
-    vis/covariance_markers/scan/min_scale: 0.0
-    vis/covariance_markers/scan/max_scale: 1.0
-    vis/covariance_markers/scan/alpha: 0.2
-    vis/covariance_markers/scan/color_by_planarity: false
-    vis/covariance_markers/scan/default_r: 0.0
-    vis/covariance_markers/scan/default_g: 1.0
-    vis/covariance_markers/scan/default_b: 0.2
+    # (vis/* and other lidar_inertial-only blocks were removed: they are not
+    # declared by graph_odometry_node and would be ignored with an unused-parameter warning)

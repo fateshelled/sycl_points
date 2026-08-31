@@ -32,8 +32,22 @@ struct Parameters : public odometry::CommonParameters {
         Pipeline pipeline;
     };
 
+    /// @brief Sliding-window graph optimizer (local BA) parameters.
+    struct Graph {
+        size_t window_size = 5;                  ///< persistent keyframe nodes
+        size_t solver_iterations = 10;           ///< GN iterations per frame
+        float convergence_translation = 1e-4f;   ///< [m]
+        float convergence_rotation = 1e-4f;      ///< [rad]
+        float relinearize_translation_thresh = 0.05f;  ///< [m] delayed relinearization
+        float relinearize_rotation_thresh = 0.02f;     ///< [rad]
+        float marginalization_lambda = 1e-6f;    ///< fallback regularization
+        float chain_sigma_rotation = 5e-3f;      ///< [rad] RelativePoseFactor info
+        float chain_sigma_translation = 2e-2f;   ///< [m]
+    };
+
     MotionPrediction motion_prediction;
     LO lo;
+    Graph graph;
 
     algorithms::registration::RegistrationPipelineParams make_registration_pipeline_params() const {
         algorithms::registration::RegistrationPipelineParams result;

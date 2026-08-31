@@ -400,15 +400,24 @@ private:
 
         // Graph optimizer (sliding window local BA). The keyframe gate shares the
         // submap's keyframe thresholds so node promotion and map updates coincide.
-        const size_t window_size = 5;  // persistent nodes = keyframes
+        algorithms::graph::GraphSolverParams solver_params;
+        solver_params.max_iterations = this->params_.graph.solver_iterations;
+        solver_params.convergence_translation = this->params_.graph.convergence_translation;
+        solver_params.convergence_rotation = this->params_.graph.convergence_rotation;
+        solver_params.relinearize_translation_thresh = this->params_.graph.relinearize_translation_thresh;
+        solver_params.relinearize_rotation_thresh = this->params_.graph.relinearize_rotation_thresh;
+        solver_params.marginalization_lambda = this->params_.graph.marginalization_lambda;
+
         algorithms::graph::GraphOptimization::Options gopts;
         gopts.gate.enabled = true;
         gopts.gate.min_translation = this->params_.submap.keyframe.distance_threshold;
         gopts.gate.min_rotation = this->params_.submap.keyframe.angle_threshold_degrees *
                                   (std::numbers::pi_v<float> / 180.0f);
         gopts.gate.min_time_seconds = this->params_.submap.keyframe.time_threshold_seconds;
+        gopts.relative_pose.sigma_rotation = this->params_.graph.chain_sigma_rotation;
+        gopts.relative_pose.sigma_translation = this->params_.graph.chain_sigma_translation;
         this->graph_opt_ = std::make_shared<algorithms::graph::GraphOptimization>(
-            *this->queue_ptr_, algorithms::graph::GraphSolverParams(), window_size, gopts);
+            *this->queue_ptr_, solver_params, this->params_.graph.window_size, gopts);
 
         this->clear_total_processing_times();
         this->motion_predictor_ = std::make_shared<lidar_odometry::MotionPredictor>(this->params_.motion_prediction);

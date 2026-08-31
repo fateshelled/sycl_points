@@ -22,6 +22,29 @@ GraphOdometryBaseNode::~GraphOdometryBaseNode() {
 void GraphOdometryBaseNode::initialize_processing() {
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
 
+    // Sliding-window graph optimizer (local BA) parameters.
+    {
+        auto& graph = this->params_.graph;
+        graph.window_size =
+            static_cast<size_t>(this->declare_parameter<int64_t>("graph/window_size", graph.window_size));
+        graph.solver_iterations = static_cast<size_t>(
+            this->declare_parameter<int64_t>("graph/solver_iterations", graph.solver_iterations));
+        graph.convergence_translation = static_cast<float>(this->declare_parameter<double>(
+            "graph/convergence/translation", graph.convergence_translation));
+        graph.convergence_rotation = static_cast<float>(
+            this->declare_parameter<double>("graph/convergence/rotation", graph.convergence_rotation));
+        graph.relinearize_translation_thresh = static_cast<float>(this->declare_parameter<double>(
+            "graph/relinearize/translation_threshold", graph.relinearize_translation_thresh));
+        graph.relinearize_rotation_thresh = static_cast<float>(this->declare_parameter<double>(
+            "graph/relinearize/rotation_threshold", graph.relinearize_rotation_thresh));
+        graph.marginalization_lambda = static_cast<float>(
+            this->declare_parameter<double>("graph/marginalization_lambda", graph.marginalization_lambda));
+        graph.chain_sigma_rotation = static_cast<float>(
+            this->declare_parameter<double>("graph/chain/sigma_rotation", graph.chain_sigma_rotation));
+        graph.chain_sigma_translation = static_cast<float>(
+            this->declare_parameter<double>("graph/chain/sigma_translation", graph.chain_sigma_translation));
+    }
+
     this->points_topic_ = this->declare_parameter<std::string>("points_topic", this->points_topic_);
     this->imu_topic_ = this->declare_parameter<std::string>("imu_topic", this->imu_topic_);
     this->input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
