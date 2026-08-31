@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "sycl_points/algorithms/graph/pose_node.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
@@ -9,11 +11,12 @@ namespace graph {
 
 /// @brief True if the relative pose (current vs linearization point) moved beyond
 ///        the relinearization thresholds. Rotation/translation norms follow the
-///        same SE(3) convention as the solver (tail<3>() = rotation, head<3>() = translation).
+///        same SE(3) convention as the solver (se3_log packs rotation in head<3>()
+///        and translation in tail<3>()).
 inline bool relinearization_needed(const Eigen::Isometry3f& current, const Eigen::Isometry3f& lin,
                                    float rot_th, float trans_th) {
     const Eigen::Matrix<float, 6, 1> e = eigen_utils::lie::se3_log(lin.inverse() * current);
-    return e.tail<3>().norm() > rot_th || e.head<3>().norm() > trans_th;
+    return e.head<3>().norm() > rot_th || e.tail<3>().norm() > trans_th;
 }
 
 /// @brief Abstract base for all GICP factors.
@@ -46,17 +49,29 @@ public:
 
     /// @brief Return the linearization, reusing a cached result when the connected
     ///        node poses have not moved beyond the relinearization thresholds.
-    ///        The default implementation always re-linearizes (no caching).
+    ///        The cache lives in the base class so every factor type shares identical
+    ///        reuse semantics; subclasses implement only linearize() and
+    ///        needs_relinearization().
     virtual FactorLinearization get_linearization(const sycl_utils::DeviceQueue& queue,
                                                  float relinearize_rotation_thresh,
                                                  float relinearize_translation_thresh) {
-        (void)relinearize_rotation_thresh;
-        (void)relinearize_translation_thresh;
-        return this->linearize(queue);
+        if (cached_lin_ && !needs_relinearization(Eigen::Isometry3f::Identity(),
+                                                 Eigen::Isometry3f::Identity(),
+                                                 relinearize_rotation_thresh,
+                                                 relinearize_translation_thresh)) {
+            return *cached_lin_;
+        }
+        cached_lin_ = this->linearize(queue);
+        return *cached_lin_;
     }
 
     /// @brief Drop any cached linearization so the next get_linearization re-computes.
-    virtual void clear_cache() {}
+    virtual void clear_cache() { cached_lin_.reset(); }
+
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+private:
+    mutable std::optional<FactorLinearization> cached_lin_;
 };
 
 }  // namespace graph

@@ -103,15 +103,42 @@ private:
             auto [sid, tid] = factor->node_ids();
             int si = idx.at(sid);
             sys.H.block<6, 6>(6 * si, 6 * si) += lin.H00;
-            sys.b.segment<6>(6 * si) += lin.b0;
             sys.error += lin.error;
-            if (tid != INVALID_NODE_ID && idx.count(tid)) {
+            bool has_target = tid != INVALID_NODE_ID && idx.count(tid);
+            if (has_target) {
                 int ti = idx.at(tid);
                 sys.H.block<6, 6>(6 * ti, 6 * ti) += lin.H11;
                 sys.H.block<6, 6>(6 * si, 6 * ti) += lin.H01;
                 sys.H.block<6, 6>(6 * ti, 6 * si) += lin.H01.transpose();
-                sys.b.segment<6>(6 * ti) += lin.b1;
             }
+
+            // When a factor reuses a cached (delayed) linearization, b0/b1 are stale
+            // at the current poses. Keep the Jacobians frozen but refresh the gradient
+            // with the linear-model correction g = b + H * [ds; dt], where ds/dt is the
+            // pose change since the linearization point. Without this, stale gradients
+            // make Gauss-Newton stall instead of converging.
+            Eigen::Matrix<float, 6, 1> g0 = lin.b0;
+            Eigen::Matrix<float, 6, 1> g1 = lin.b1;
+            const Eigen::Isometry3f& src_lin = lin.source_linearization_pose;
+            const Eigen::Matrix<float, 6, 1> ds = eigen_utils::lie::se3_log(
+                src_lin.inverse() * window.get_node(sid)->pose);
+            if (ds.norm() > 0.0f) {
+                g0 += lin.H00 * ds;
+                if (has_target) {
+                    g1 += lin.H01.transpose() * ds;
+                }
+            }
+            if (has_target) {
+                int ti = idx.at(tid);
+                const Eigen::Matrix<float, 6, 1> dt = eigen_utils::lie::se3_log(
+                    lin.target_linearization_pose.inverse() * window.get_node(tid)->pose);
+                if (dt.norm() > 0.0f) {
+                    g0 += lin.H01 * dt;
+                    g1 += lin.H11 * dt;
+                }
+                sys.b.segment<6>(6 * ti) += g1;
+            }
+            sys.b.segment<6>(6 * si) += g0;
         }
 
         const auto& prior = window.prior();

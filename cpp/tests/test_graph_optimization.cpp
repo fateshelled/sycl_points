@@ -357,4 +357,105 @@ TEST_F(GraphGicpTest, MarginalizationConsistency) {
     expect_pose_near(marg_n1, T_rel, 0.05f, 0.05f);
 }
 
+// ---------------------------------------------------------------------------
+// Delayed relinearization: cache reuse (host-only; no SYCL kernels needed)
+// ---------------------------------------------------------------------------
+
+// Synthetic factor that runs a trivial CPU "linearization" and counts how many
+// times linearize() is invoked. Reuse is decided by the real threshold check
+// (relinearization_needed) so we can assert the base-class cache semantics.
+class CountingGicpFactor : public graph::GicpFactorBase {
+public:
+    CountingGicpFactor(std::shared_ptr<graph::PoseNode> node, float rot_th, float trans_th)
+        : node_(std::move(node)), rot_th_(rot_th), trans_th_(trans_th) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&) override {
+        ++linearize_calls;
+        node_->linearization_pose = node_->pose;  // mirror real factors
+        graph::FactorLinearization lin;
+        lin.source_linearization_pose = node_->pose;
+        lin.H00.setIdentity();
+        lin.b0.setZero();
+        lin.error = 0.0f;
+        lin.inlier = 1;
+        return lin;
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override { return {node_->id, graph::INVALID_NODE_ID}; }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&, const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float, float) const override {
+        return graph::relinearization_needed(node_->pose, node_->linearization_pose, rot_th_, trans_th_);
+    }
+
+    int linearize_calls = 0;
+
+private:
+    std::shared_ptr<graph::PoseNode> node_;
+    float rot_th_, trans_th_;
+};
+
+class GraphCacheTest : public ::testing::Test {
+protected:
+    sycl_utils::DeviceQueue queue = make_queue();
+};
+
+TEST_F(GraphCacheTest, RelinearizationThresholdLogic) {
+    const Eigen::Isometry3f a = Eigen::Isometry3f::Identity();
+    EXPECT_FALSE(graph::relinearization_needed(a, a, 0.02f, 0.05f));
+
+    Eigen::Isometry3f b = Eigen::Isometry3f::Identity();
+    b.translate(Eigen::Vector3f(0.01f, 0.0f, 0.0f));  // 0.01 m < 0.05 m
+    EXPECT_FALSE(graph::relinearization_needed(a, b, 0.02f, 0.05f));
+
+    Eigen::Isometry3f c = Eigen::Isometry3f::Identity();
+    c.translate(Eigen::Vector3f(0.1f, 0.0f, 0.0f));  // 0.1 m > 0.05 m
+    EXPECT_TRUE(graph::relinearization_needed(a, c, 0.02f, 0.05f));
+
+    Eigen::Isometry3f d = Eigen::Isometry3f::Identity();
+    d.rotate(Eigen::AngleAxisf(0.01f, Eigen::Vector3f::UnitZ()));  // 0.01 rad < 0.02 rad
+    EXPECT_FALSE(graph::relinearization_needed(a, d, 0.02f, 0.05f));
+
+    Eigen::Isometry3f e = Eigen::Isometry3f::Identity();
+    e.rotate(Eigen::AngleAxisf(0.1f, Eigen::Vector3f::UnitZ()));  // 0.1 rad > 0.02 rad
+    EXPECT_TRUE(graph::relinearization_needed(a, e, 0.02f, 0.05f));
+}
+
+TEST_F(GraphCacheTest, ReusesLinearizationUntilPoseMovesBeyondThreshold) {
+    graph::SlidingWindow window(5);
+    const auto id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    auto node = window.get_node(id);
+    CountingGicpFactor f(node, 0.02f, 0.05f);
+
+    // First call must linearize.
+    auto lin1 = f.get_linearization(queue, 0.02f, 0.05f);
+    EXPECT_EQ(f.linearize_calls, 1);
+
+    // Same pose -> reuse cached result (no new linearize).
+    auto lin2 = f.get_linearization(queue, 0.02f, 0.05f);
+    EXPECT_EQ(f.linearize_calls, 1);
+    EXPECT_EQ(lin1.source_linearization_pose.matrix(), lin2.source_linearization_pose.matrix());
+
+    // Move pose beyond threshold; linearization_pose stays stale -> must re-linearize.
+    Eigen::Isometry3f moved = Eigen::Isometry3f::Identity();
+    moved.translate(Eigen::Vector3f(0.2f, 0.0f, 0.0f));
+    node->pose = moved;
+    auto lin3 = f.get_linearization(queue, 0.02f, 0.05f);
+    EXPECT_EQ(f.linearize_calls, 2);
+    // After re-linearize, linearization_pose must track the new pose.
+    expect_pose_near(node->linearization_pose, node->pose, 1e-6f, 1e-6f);
+
+    // Pose unchanged since last relinearize -> reuse again.
+    auto lin4 = f.get_linearization(queue, 0.02f, 0.05f);
+    EXPECT_EQ(f.linearize_calls, 2);
+
+    // clear_cache forces a re-linearize.
+    f.clear_cache();
+    auto lin5 = f.get_linearization(queue, 0.02f, 0.05f);
+    EXPECT_EQ(f.linearize_calls, 3);
+}
+
 }  // namespace

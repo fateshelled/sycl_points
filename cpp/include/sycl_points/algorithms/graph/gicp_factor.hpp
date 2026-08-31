@@ -33,6 +33,7 @@ public:
           params_(params) {}
 
     FactorLinearization linearize(const sycl_utils::DeviceQueue& queue) override {
+        source_node_->linearization_pose = source_node_->pose;
         registration::Registration reg(queue, params_);
         const auto result = reg.compute_linearized_result(
             *source_node_->cloud, *target_, *target_knn_,
@@ -64,19 +65,6 @@ public:
                                       trans_th);
     }
 
-    FactorLinearization get_linearization(const sycl_utils::DeviceQueue& queue, float rot_th,
-                                         float trans_th) override {
-        if (cached_lin_ && !needs_relinearization(Eigen::Isometry3f::Identity(),
-                                                 Eigen::Isometry3f::Identity(), rot_th, trans_th)) {
-            return *cached_lin_;
-        }
-        source_node_->linearization_pose = source_node_->pose;
-        cached_lin_ = this->linearize(queue);
-        return *cached_lin_;
-    }
-
-    void clear_cache() override { cached_lin_.reset(); }
-
 private:
     sycl_utils::DeviceQueue queue_;
     NodeId source_id_ = INVALID_NODE_ID;
@@ -84,7 +72,6 @@ private:
     std::shared_ptr<const PointCloudShared> target_;
     std::shared_ptr<const knn::KNNBase> target_knn_;
     registration::RegistrationParams params_;
-    std::optional<FactorLinearization> cached_lin_;
 };
 
 /// @brief Binary GICP factor: two pose nodes against each other (current <-> window_i).
@@ -107,6 +94,8 @@ public:
           params_(params) {}
 
     FactorLinearization linearize(const sycl_utils::DeviceQueue& queue) override {
+        source_node_->linearization_pose = source_node_->pose;
+        if (target_node_) target_node_->linearization_pose = target_node_->pose;
         const Eigen::Matrix4f T_src = source_node_->linearization_pose.matrix();
         const Eigen::Matrix4f T_tgt = target_node_->linearization_pose.matrix();
         auto lin = linearizer_.linearize(*source_node_->cloud, *target_node_->knn, T_src,
@@ -139,26 +128,6 @@ public:
         return false;
     }
 
-    FactorLinearization get_linearization(const sycl_utils::DeviceQueue& queue, float rot_th,
-                                         float trans_th) override {
-        const bool reuse =
-            cached_lin_ &&
-            !relinearization_needed(source_node_->pose, source_node_->linearization_pose, rot_th,
-                                   trans_th) &&
-            (!target_node_ ||
-             !relinearization_needed(target_node_->pose, target_node_->linearization_pose, rot_th,
-                                    trans_th));
-        if (reuse) {
-            return *cached_lin_;
-        }
-        source_node_->linearization_pose = source_node_->pose;
-        if (target_node_) target_node_->linearization_pose = target_node_->pose;
-        cached_lin_ = this->linearize(queue);
-        return *cached_lin_;
-    }
-
-    void clear_cache() override { cached_lin_.reset(); }
-
 private:
     sycl_utils::DeviceQueue queue_;
     NodeId source_id_ = INVALID_NODE_ID;
@@ -167,7 +136,6 @@ private:
     std::shared_ptr<PoseNode> target_node_;
     BinaryGicpLinearizer linearizer_;
     registration::RegistrationParams params_;
-    std::optional<FactorLinearization> cached_lin_;
 };
 
 }  // namespace graph
