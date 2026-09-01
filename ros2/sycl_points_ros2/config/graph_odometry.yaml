@@ -26,6 +26,7 @@ graph_odometry_node:
     odom_frame_id: odom
     base_link_id: base_link
     # lidar_frame_id is not used by the graph node (frame ids: odom_frame_id/base_link_id)
+    rviz2: true
     use_sim_time: false
 
     initial_base_link_pose/x: 0.0
