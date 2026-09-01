@@ -30,17 +30,23 @@ struct BinaryLinearizedKernelResult {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-/// @brief Per-point binary GICP linearization.
+/// @brief Per-point binary factor linearization, parameterized by RegType.
 ///
 /// Residual:  r = T_tgt * tgt - T_src * src   (world frame, 4D with w=0)
 /// Jacobian:  J0 = d(T_src*src)/dδ_src,  J1 = d(T_tgt*tgt)/dδ_tgt
 /// Because ∂r/∂δ_src = -J0 and ∂r/∂δ_tgt = +J1, the binary blocks accumulate as:
 ///   H00 = J0ᵀ Ω J0,  H11 = J1ᵀ Ω J1,  H01 = -J0ᵀ Ω J1
 ///   b0  = +J0ᵀ Ω r,  b1  = -J1ᵀ Ω r      (so the solver solves H δ = -b)
-/// where Ω is the GICP Mahalanobis (src_cov_w + tgt_cov_w)⁻¹.
-SYCL_EXTERNAL inline BinaryLinearizedKernelResult linearize_gicp_binary(
+/// Per-correspondence information matrix Ω by type:
+///   POINT_TO_POINT        I3
+///   POINT_TO_PLANE        n_w n_wᵀ   (n_w = R_tgt * normal_tgt)
+///   POINT_TO_DISTRIBUTION (C_tgt,w)⁻¹
+///   GICP                  (C_src,w + C_tgt,w)⁻¹
+template <registration::RegType reg = registration::RegType::GICP>
+SYCL_EXTERNAL inline BinaryLinearizedKernelResult linearize_binary(
     const std::array<sycl::float4, 4>& T_src, const std::array<sycl::float4, 4>& T_tgt,
-    const PointType& src_pt, const Covariance& src_cov, const PointType& tgt_pt, const Covariance& tgt_cov) {
+    const PointType& src_pt, const Covariance& src_cov, const PointType& tgt_pt, const Covariance& tgt_cov,
+    const Normal& tgt_normal) {
     PointType src_world;
     transform::kernel::transform_point(src_pt, src_world, T_src);
     PointType tgt_world;
@@ -49,21 +55,34 @@ SYCL_EXTERNAL inline BinaryLinearizedKernelResult linearize_gicp_binary(
     const PointType residual(tgt_world.x() - src_world.x(), tgt_world.y() - src_world.y(),
                              tgt_world.z() - src_world.z(), 0.0f);
 
-    Covariance src_cov_w;
-    transform::kernel::transform_covs(src_cov, src_cov_w, T_src);
-    Covariance tgt_cov_w;
-    transform::kernel::transform_covs(tgt_cov, tgt_cov_w, T_tgt);
-
-    Covariance mahalanobis = Covariance::Zero();
-    mahalanobis.block<3, 3>(0, 0) =
-        eigen_utils::add<3, 3>(src_cov_w.block<3, 3>(0, 0), tgt_cov_w.block<3, 3>(0, 0));
-    const Covariance mah_inv = covariance::kernel::inverse(mahalanobis);
+    Covariance omega = Covariance::Zero();
+    if constexpr (reg == registration::RegType::POINT_TO_POINT) {
+        omega.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity();
+    } else if constexpr (reg == registration::RegType::POINT_TO_PLANE) {
+        Normal normal_w;
+        transform::kernel::transform_normal(tgt_normal, normal_w, T_tgt);
+        const Eigen::Vector3f n = normal_w.head<3>();
+        omega.block<3, 3>(0, 0) = eigen_utils::multiply<3, 1, 3>(n, eigen_utils::transpose<3, 1>(n));
+    } else if constexpr (reg == registration::RegType::POINT_TO_DISTRIBUTION) {
+        Covariance tgt_cov_w;
+        transform::kernel::transform_covs(tgt_cov, tgt_cov_w, T_tgt);
+        omega = covariance::kernel::inverse(tgt_cov_w);
+    } else {  // GICP
+        Covariance src_cov_w;
+        transform::kernel::transform_covs(src_cov, src_cov_w, T_src);
+        Covariance tgt_cov_w;
+        transform::kernel::transform_covs(tgt_cov, tgt_cov_w, T_tgt);
+        Covariance mahalanobis = Covariance::Zero();
+        mahalanobis.block<3, 3>(0, 0) =
+            eigen_utils::add<3, 3>(src_cov_w.block<3, 3>(0, 0), tgt_cov_w.block<3, 3>(0, 0));
+        omega = covariance::kernel::inverse(mahalanobis);
+    }
 
     const Eigen::Matrix<float, 4, 6> J0 = registration::kernel::compute_se3_jacobian(T_src, src_pt);
     const Eigen::Matrix<float, 4, 6> J1 = registration::kernel::compute_se3_jacobian(T_tgt, tgt_pt);
 
-    const Eigen::Matrix<float, 4, 6> J0w = registration::kernel::apply_weight_to_jacobian(J0, mah_inv);
-    const Eigen::Matrix<float, 4, 6> J1w = registration::kernel::apply_weight_to_jacobian(J1, mah_inv);
+    const Eigen::Matrix<float, 4, 6> J0w = registration::kernel::apply_weight_to_jacobian(J0, omega);
+    const Eigen::Matrix<float, 4, 6> J1w = registration::kernel::apply_weight_to_jacobian(J1, omega);
 
     BinaryLinearizedKernelResult ret;
     // H00 = J0ᵀ Ω J0
@@ -79,7 +98,7 @@ SYCL_EXTERNAL inline BinaryLinearizedKernelResult linearize_gicp_binary(
     ret.b1 = eigen_utils::multiply<6>(
         eigen_utils::multiply<6, 4>(eigen_utils::transpose<4, 6>(J1w), residual), -1.0f);
 
-    const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mah_inv, residual));
+    const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(omega, residual));
     ret.squared_error = squared_norm;
     ret.inlier = 1;
     return ret;
@@ -151,8 +170,10 @@ struct BinaryLinearizedDevice {
 };
 }  // namespace
 
-/// @brief Computes the binary GICP factor linearization (both endpoints variable)
-///        via a SYCL parallel reduction, mirroring Registration's reduction.
+/// @brief Computes the binary registration factor linearization (both endpoints
+///        variable) via a SYCL parallel reduction, mirroring Registration's reduction.
+///        Honors params_.reg_type: GICP / POINT_TO_POINT / POINT_TO_PLANE /
+///        POINT_TO_DISTRIBUTION (GENZ rejected).
 class BinaryGicpLinearizer {
 public:
     BinaryGicpLinearizer(const sycl_utils::DeviceQueue& queue,
@@ -166,6 +187,7 @@ public:
     FactorLinearization linearize(const PointCloudShared& source, const knn::KNNBase& target_knn,
                                   const Eigen::Matrix4f& T_src, const PointCloudShared& target,
                                   const Eigen::Matrix4f& T_tgt) const {
+        validate_params(target);
         const float robust_scale = this->params_.robust.default_scale;
         const auto T_search_mat = Eigen::Isometry3f(Eigen::Isometry3f(Eigen::Matrix4f(T_tgt).inverse()) *
                                                      Eigen::Matrix4f(T_src))
@@ -202,6 +224,7 @@ private:
             const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
             const auto target_ptr = target.points_ptr();
             const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
+            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
 
             const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
             const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
@@ -242,9 +265,10 @@ private:
                     const auto src_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
                     const auto tgt_cov = target_cov_ptr ? target_cov_ptr[tgt_idx] : Covariance::Identity();
 
+                    const Normal tgt_normal = target_normal_ptr ? target_normal_ptr[tgt_idx] : Normal::Zero();
                     float residual_norm = 0.0f;
-                    auto lin = linearize_gicp_binary(T_src_v, T_tgt_v, source_ptr[index], src_cov,
-                                                    target_ptr[tgt_idx], tgt_cov);
+                    auto lin = linearize_binary<reg>(T_src_v, T_tgt_v, source_ptr[index], src_cov,
+                                                     target_ptr[tgt_idx], tgt_cov, tgt_normal);
                     residual_norm = sycl::sqrt(lin.squared_error);
 
                     const float weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
@@ -275,22 +299,58 @@ private:
         return events;
     }
 
+    /// @brief Mirror Registration::validate_params for the subset of types the
+    ///        binary factor supports (GENZ needs the single-frame alpha
+    ///        annealing schedule and is rejected).
+    void validate_params(const PointCloudShared& target) const {
+        using registration::RegType;
+        switch (this->params_.reg_type) {
+            case RegType::GENZ:
+                throw std::runtime_error(
+                    "[BinaryGicpLinearizer] GENZ requires the single-frame genz alpha schedule and is "
+                    "not supported for binary factors; choose GICP or a POINT_TO_* type.");
+            case RegType::POINT_TO_PLANE:
+                if (!target.has_normal()) {
+                    if (!target.has_cov()) {
+                        throw std::runtime_error(
+                            "[BinaryGicpLinearizer] POINT_TO_PLANE requires target normals or covariances.");
+                    }
+                    covariance::extract_normals(target);
+                }
+                break;
+            case RegType::GICP:
+            case RegType::POINT_TO_POINT:
+            case RegType::POINT_TO_DISTRIBUTION:
+                break;
+        }
+    }
+
     template <typename Func>
     sycl_utils::events dispatch(Func&& exec) const {
         sycl_utils::events events;
-        auto dispatch_inner = [&]<typename RobustLossTypeTags, size_t... Js>(robust::RobustLossType loss,
-                                                                            std::index_sequence<Js...>) {
+        auto dispatch_inner = [&]<registration::RegType reg, typename RobustLossTypeTags, size_t... Js>(
+                                  robust::RobustLossType loss, std::index_sequence<Js...>) {
             return (((loss == std::tuple_element_t<Js, RobustLossTypeTags>::value)
-                         ? (events += exec.template operator()<registration::RegType::GICP,
-                                                             std::tuple_element_t<Js, RobustLossTypeTags>::value>(),
+                         ? (events += exec.template operator()<reg,
+                                                          std::tuple_element_t<Js, RobustLossTypeTags>::value>(),
                             true)
                          : false) ||
                     ...);
         };
-        auto found = dispatch_inner.template operator()<robust::RobustLossTypeTags>(
-            this->params_.robust.type, std::make_index_sequence<std::tuple_size_v<robust::RobustLossTypeTags>>());
+        auto dispatch_outer = [&]<typename RegTypeTags, typename RobustLossTypeTags, size_t... Is>(
+                                  registration::RegType reg, robust::RobustLossType loss, std::index_sequence<Is...>) {
+            return (((reg == std::tuple_element_t<Is, RegTypeTags>::value)
+                         ? dispatch_inner.template operator()<std::tuple_element_t<Is, RegTypeTags>::value,
+                                                              RobustLossTypeTags>(
+                               loss, std::make_index_sequence<std::tuple_size_v<RobustLossTypeTags>>())
+                         : false) ||
+                    ...);
+        };
+        const bool found = dispatch_outer.template operator()<registration::RegTypeTags, robust::RobustLossTypeTags>(
+            this->params_.reg_type, this->params_.robust.type,
+            std::make_index_sequence<std::tuple_size_v<registration::RegTypeTags>>());
         if (!found) {
-            throw std::runtime_error("[BinaryGicpLinearizer::dispatch] robust type not found");
+            throw std::runtime_error("[BinaryGicpLinearizer::dispatch] combination not found in tags");
         }
         return events;
     }

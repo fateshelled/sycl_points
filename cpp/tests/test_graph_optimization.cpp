@@ -743,4 +743,62 @@ TEST_F(GraphTopologyTest, KeyframeGateThinsPersistentNodes) {
     EXPECT_LE(c.pc_binary + c.chain, opt.window().window_size() * (opt.window().window_size() - 1) / 2);
 }
 
+// ---------------------------------------------------------------------------
+// Binary factor RegType coverage (linearize_binary<reg>)
+// ---------------------------------------------------------------------------
+
+class GraphBinaryRegTypesTest : public ::testing::Test {
+protected:
+    sycl_utils::DeviceQueue queue = make_queue();
+};
+
+TEST_F(GraphBinaryRegTypesTest, SupportedTypesProduceSaneFactors) {
+    std::mt19937 gen(5);
+    auto cloud = make_cube_cloud(queue, 2000, 0.8f, gen);
+    auto knn = knn::KDTree::build(queue, *cloud);
+    estimate_covariances(*knn, *cloud);
+
+    const registration::RegType types[] = {
+        registration::RegType::POINT_TO_POINT, registration::RegType::POINT_TO_PLANE,
+        registration::RegType::POINT_TO_DISTRIBUTION, registration::RegType::GICP};
+
+    for (const auto type : types) {
+        registration::RegistrationParams params = gicp_params();
+        params.reg_type = type;
+        graph::BinaryGicpLinearizer linearizer(queue, params);
+        const int ti = static_cast<int>(type);
+
+        // True relative pose: ~zero residual, full inliers, positive information.
+        auto at_true = linearizer.linearize(*cloud, *knn, Eigen::Matrix4f::Identity(), *cloud,
+                                            Eigen::Matrix4f::Identity());
+        EXPECT_GT(at_true.inlier, 1500u) << "type=" << ti;
+        EXPECT_LT(at_true.error, 1e-2f) << "type=" << ti;
+        EXPECT_GT(at_true.H00.trace(), 0.0f) << "type=" << ti;
+
+        // Wrong relative pose: error and gradient must grow.
+        Eigen::Isometry3f pert = Eigen::Isometry3f::Identity();
+        pert.translate(Eigen::Vector3f(0.15f, 0.0f, 0.0f));
+        auto at_err = linearizer.linearize(*cloud, *knn, Eigen::Matrix4f::Identity(), *cloud, pert.matrix());
+        EXPECT_GT(at_err.error, at_true.error) << "type=" << ti;
+        EXPECT_GT(at_err.b0.norm(), 1e-2f) << "type=" << ti;
+        // H00 must stay symmetric PSD-ish: diagonal blocks positive.
+        EXPECT_GT(at_err.H00(0, 0), 0.0f) << "type=" << ti;
+        EXPECT_GT(at_err.H11(3, 3), 0.0f) << "type=" << ti;
+    }
+}
+
+TEST_F(GraphBinaryRegTypesTest, GenzIsRejectedForBinaryFactors) {
+    std::mt19937 gen(5);
+    auto cloud = make_cube_cloud(queue, 1000, 0.8f, gen);
+    auto knn = knn::KDTree::build(queue, *cloud);
+    estimate_covariances(*knn, *cloud);
+
+    registration::RegistrationParams params = gicp_params();
+    params.reg_type = registration::RegType::GENZ;
+    graph::BinaryGicpLinearizer linearizer(queue, params);
+    EXPECT_THROW(linearizer.linearize(*cloud, *knn, Eigen::Matrix4f::Identity(), *cloud,
+                                      Eigen::Matrix4f::Identity()),
+                 std::runtime_error);
+}
+
 }  // namespace
