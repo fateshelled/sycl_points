@@ -39,6 +39,15 @@ public:
 
     void add_factor(std::shared_ptr<GicpFactorBase> factor) { factors_.push_back(std::move(factor)); }
 
+    /// @brief End the robust ladder for all annealing factors (frame end, after
+    ///        the ladder has reached its floor): locks each factor's scale at the
+    ///        last value used. Scale-free factors are unaffected.
+    void finalize_robust() {
+        for (auto& f : factors_) {
+            f->freeze();
+        }
+    }
+
     /// @brief Drop a transient (non-promoted) tip node and every factor that
     ///        touches it. Unlike marginalization no information is preserved:
     ///        the observation lives on only in the returned pose, and the next
@@ -147,7 +156,7 @@ public:
 
         for (auto& f : factors_) {
             f->clear_cache();
-            auto lin = f->linearize(queue);
+            auto lin = f->linearize(queue, f->scale_now(0.0f));
             auto [sid, tid] = f->node_ids();
             int si = id_to_idx[sid];
             H_all.block<6, 6>(6 * si, 6 * si) += lin.H00;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <vector>
 
@@ -22,7 +23,40 @@ struct GraphSolverParams {
     float relinearize_rotation_thresh = 0.02f;
     float relinearize_translation_thresh = 0.05f;
     float marginalization_lambda = 1e-6f;
+
+    /// @brief Graduated non-convexity (robust scale ladder) for the per-frame
+    ///        tip factors. Disabled by default (existing behavior preserved).
+    struct RobustSchedule {
+        bool enable = false;
+        float init_scale = 10.0f;    ///< starting (convexified) robust scale
+        float min_scale = 1.25f;     ///< ladder floor; also the frozen scale of old factors
+        size_t levels = 4;           ///< number of rungs
+        size_t iters_per_level = 2;  ///< GN iterations spent on each rung
+        /// @brief Re-linearize (with KNN) on every rung change during annealing so
+        ///        the ladder is actually applied even when the pose drift stays under
+        ///        the relinearization threshold. Costs ~levels full tip linearizations
+        ///        per frame (== the align-path ladder); recommended when enable=true.
+        bool relinearize_per_rung = false;
+    };
+    RobustSchedule robust;
 };
+
+/// @brief Robust ladder scale for GN iteration `iter` under schedule r.
+///        Returns 0 when disabled (=> factors use their configured default),
+///        otherwise geometrically descends init_scale -> min_scale across
+///        `levels` rungs, holding each rung for `iters_per_level` iterations.
+inline float robust_ladder_scale(const GraphSolverParams::RobustSchedule& r, size_t iter) {
+    if (!r.enable || r.levels == 0 || r.min_scale <= 0.0f || r.init_scale <= 0.0f) {
+        return 0.0f;
+    }
+    const size_t per = std::max<size_t>(1, r.iters_per_level);
+    const size_t level = std::min(iter / per, r.levels - 1);
+    const float alpha =
+        r.levels == 1
+            ? 0.0f
+            : std::pow(r.min_scale / r.init_scale, 1.0f / static_cast<float>(r.levels - 1));
+    return std::max(r.min_scale, r.init_scale * std::pow(alpha, static_cast<float>(level)));
+}
 
 /// @brief Gauss-Newton solver over the sliding-window pose graph.
 class GraphSolver {
@@ -37,10 +71,12 @@ public:
                 const GraphSolverParams& params = GraphSolverParams())
         : queue_(queue), params_(params) {}
 
+    const GraphSolverParams& params() const { return params_; }
+
     Result optimize(SlidingWindow& window) {
         Result result;
         for (size_t iter = 0; iter < params_.max_iterations; ++iter) {
-            auto sys = assemble(window);
+            auto sys = assemble(window, robust_ladder_scale(params_.robust, iter));
 
             Eigen::LDLT<Eigen::MatrixXf> ldlt(sys.H);
             if (ldlt.info() != Eigen::Success) {
@@ -69,7 +105,15 @@ public:
 
             result.final_error = sys.error;
             result.iterations = iter + 1;
-            if (converged) {
+            // With an active ladder, small steps alone must not stop the loop:
+            // convergence is only granted once the schedule reached its floor
+            // (mirrors align-path RobustAligner running every level).
+            const size_t ladder_iters =
+                std::max<size_t>(1, params_.robust.levels) *
+                std::max<size_t>(1, params_.robust.iters_per_level);
+            const bool ladder_done =
+                !params_.robust.enable || (iter + 1) >= ladder_iters;
+            if (converged && ladder_done) {
                 result.converged = true;
                 break;
             }
@@ -85,7 +129,7 @@ private:
         std::vector<NodeId> node_ids;
     };
 
-    LinearizedSystem assemble(SlidingWindow& window) {
+    LinearizedSystem assemble(SlidingWindow& window, float ladder_scale) {
         auto& nodes = window.active_nodes();
         const size_t K = nodes.size();
         LinearizedSystem sys;
@@ -99,7 +143,8 @@ private:
 
         for (auto& factor : window.factors()) {
             auto lin = factor->get_linearization(
-                queue_, params_.relinearize_rotation_thresh, params_.relinearize_translation_thresh);
+                queue_, params_.relinearize_rotation_thresh, params_.relinearize_translation_thresh,
+                ladder_scale);
             auto [sid, tid] = factor->node_ids();
             int si = idx.at(sid);
             sys.H.block<6, 6>(6 * si, 6 * si) += lin.H00;

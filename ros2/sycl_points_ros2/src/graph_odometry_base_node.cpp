@@ -43,6 +43,17 @@ void GraphOdometryBaseNode::initialize_processing() {
             this->declare_parameter<double>("graph/chain/sigma_rotation", graph.chain_sigma_rotation));
         graph.chain_sigma_translation = static_cast<float>(
             this->declare_parameter<double>("graph/chain/sigma_translation", graph.chain_sigma_translation));
+        graph.robust_enable = this->declare_parameter<bool>("graph/robust/enable", graph.robust_enable);
+        graph.robust_init_scale = static_cast<float>(
+            this->declare_parameter<double>("graph/robust/init_scale", graph.robust_init_scale));
+        graph.robust_min_scale = static_cast<float>(
+            this->declare_parameter<double>("graph/robust/min_scale", graph.robust_min_scale));
+        graph.robust_levels = static_cast<size_t>(
+            this->declare_parameter<int64_t>("graph/robust/levels", graph.robust_levels));
+        graph.robust_iters_per_level = static_cast<size_t>(this->declare_parameter<int64_t>(
+            "graph/robust/iterations_per_level", graph.robust_iters_per_level));
+        graph.robust_relinearize_per_rung = static_cast<bool>(this->declare_parameter<bool>(
+            "graph/robust/relinearize_per_rung", graph.robust_relinearize_per_rung));
     }
 
     this->points_topic_ = this->declare_parameter<std::string>("points_topic", this->points_topic_);

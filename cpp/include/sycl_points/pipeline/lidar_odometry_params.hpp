@@ -43,6 +43,14 @@ struct Parameters : public odometry::CommonParameters {
         float marginalization_lambda = 1e-6f;    ///< fallback regularization
         float chain_sigma_rotation = 5e-3f;      ///< [rad] RelativePoseFactor info
         float chain_sigma_translation = 2e-2f;   ///< [m]
+        // Robust scale ladder (GNC) for per-frame tip factors. Disabled by
+        // default: factors then use registration/robust/default_scale as before.
+        bool robust_enable = false;
+        float robust_init_scale = 10.0f;
+        float robust_min_scale = 1.25f;
+        size_t robust_levels = 4;
+        size_t robust_iters_per_level = 2;
+        bool robust_relinearize_per_rung = false;
     };
 
     MotionPrediction motion_prediction;

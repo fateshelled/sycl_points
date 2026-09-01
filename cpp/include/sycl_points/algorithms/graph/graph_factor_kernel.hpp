@@ -184,11 +184,13 @@ public:
         this->device_ = std::make_shared<BinaryLinearizedDevice>(this->queue_);
     }
 
+    /// @param scale robust loss scale override; <=0 falls back to
+    ///        registration/robust/default_scale (current behavior).
     FactorLinearization linearize(const PointCloudShared& source, const knn::KNNBase& target_knn,
                                   const Eigen::Matrix4f& T_src, const PointCloudShared& target,
-                                  const Eigen::Matrix4f& T_tgt) const {
+                                  const Eigen::Matrix4f& T_tgt, float scale = 0.0f) const {
         validate_params(target);
-        const float robust_scale = this->params_.robust.default_scale;
+        const float robust_scale = scale > 0.0f ? scale : this->params_.robust.default_scale;
         const auto T_search_mat = Eigen::Isometry3f(Eigen::Isometry3f(Eigen::Matrix4f(T_tgt).inverse()) *
                                                      Eigen::Matrix4f(T_src))
                                       .matrix();

@@ -187,6 +187,16 @@ graph_odometry_node:
     # Keyframe-chain RelativePoseFactor information (per-axis sigma).
     graph/chain/sigma_rotation: 5.0e-3     # [rad]
     graph/chain/sigma_translation: 2.0e-2  # [m]
+    # Robust scale ladder (GNC) applied to the per-frame tip factors only.
+    # When enabled: init_scale -> min_scale over levels rungs (iters GN
+    # iterations each); tip factors freeze at the floor when promoted.
+    # Disabled (default) => factors use registration/robust/default_scale.
+    graph/robust/enable: false
+    graph/robust/init_scale: 10.0
+    graph/robust/min_scale: 1.25
+    graph/robust/levels: 4
+    graph/robust/iterations_per_level: 2
+    graph/robust/relinearize_per_rung: false  # true: apply ladder per rung (align-cost, recommended with enable=true)
 
     # Registration backend for graph factor linearization (unary/binary GICP).
     # NOTE: robust/auto_scale, robust/init_scale, robust/min_scale, robust/auto_scaling_iter

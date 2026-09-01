@@ -91,7 +91,7 @@ public:
     AnchorFactor(std::shared_ptr<graph::PoseNode> node, const Eigen::Isometry3f& target, float weight)
         : node_(std::move(node)), target_(target), w_(weight) {}
 
-    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&) override {
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
         const Eigen::Matrix<float, 6, 1> r = eigen_utils::lie::se3_log(target_.inverse() * node_->pose);
         const Eigen::Matrix<float, 6, 6> J = Eigen::Matrix<float, 6, 6>::Identity();
         const Eigen::Matrix<float, 6, 6> Omega = w_ * Eigen::Matrix<float, 6, 6>::Identity();
@@ -131,7 +131,7 @@ public:
     BinaryAnchorFactor(std::shared_ptr<graph::PoseNode> src, std::shared_ptr<graph::PoseNode> tgt, float weight)
         : src_(std::move(src)), tgt_(std::move(tgt)), w_(weight) {}
 
-    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&) override {
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
         const Eigen::Matrix<float, 6, 1> r = eigen_utils::lie::se3_log(tgt_->pose.inverse() * src_->pose);
         const Eigen::Matrix<float, 6, 6> Omega = w_ * Eigen::Matrix<float, 6, 6>::Identity();
         graph::FactorLinearization lin;
@@ -372,7 +372,7 @@ public:
     CountingGicpFactor(std::shared_ptr<graph::PoseNode> node, float rot_th, float trans_th)
         : node_(std::move(node)), rot_th_(rot_th), trans_th_(trans_th) {}
 
-    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&) override {
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
         ++linearize_calls;
         node_->linearization_pose = node_->pose;  // mirror real factors
         graph::FactorLinearization lin;
@@ -799,6 +799,130 @@ TEST_F(GraphBinaryRegTypesTest, GenzIsRejectedForBinaryFactors) {
     EXPECT_THROW(linearizer.linearize(*cloud, *knn, Eigen::Matrix4f::Identity(), *cloud,
                                       Eigen::Matrix4f::Identity()),
                  std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
+// Robust scale ladder (GNC)
+// ---------------------------------------------------------------------------
+
+TEST(RobustScheduleTest, LadderDescendsToFloor) {
+    graph::GraphSolverParams::RobustSchedule r;
+    // disabled => 0 (factors fall back to their configured default)
+    EXPECT_FLOAT_EQ(graph::robust_ladder_scale(r, 0), 0.0f);
+
+    r.enable = true;  // init 10 -> min 1.25, 4 levels x 2 iters: 10,5,2.5,1.25
+    EXPECT_FLOAT_EQ(graph::robust_ladder_scale(r, 0), 10.0f);
+    EXPECT_FLOAT_EQ(graph::robust_ladder_scale(r, 2), 5.0f);
+    EXPECT_FLOAT_EQ(graph::robust_ladder_scale(r, 4), 2.5f);
+    EXPECT_FLOAT_EQ(graph::robust_ladder_scale(r, 6), 1.25f);
+    EXPECT_FLOAT_EQ(graph::robust_ladder_scale(r, 100), 1.25f);  // clamped at floor
+    for (size_t k = 1; k <= 10; ++k) {
+        EXPECT_LE(graph::robust_ladder_scale(r, k), graph::robust_ladder_scale(r, k - 1));
+    }
+}
+
+// Synthetic factor that records the scale it is asked to linearize with.
+class ScaleProbeFactor : public graph::GicpFactorBase {
+public:
+    ScaleProbeFactor() { begin_annealing(); }
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float scale) override {
+        seen_scales.push_back(scale);
+        graph::FactorLinearization lin;
+        lin.H00.setIdentity();
+        return lin;
+    }
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {0, graph::INVALID_NODE_ID};
+    }
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return true;  // always relinearize so every requested scale is observable
+    }
+    std::vector<float> seen_scales;
+};
+
+TEST(RobustScheduleTest, FreezeLocksLastUsedScale) {
+    sycl_utils::DeviceQueue queue = make_queue();
+    ScaleProbeFactor f;
+    f.get_linearization(queue, 0.02f, 0.05f, 5.0f);
+    f.freeze();
+    // After freeze the ladder value is ignored; the locked scale is reused.
+    f.get_linearization(queue, 0.02f, 0.05f, 1.0f);
+    ASSERT_EQ(f.seen_scales.size(), 2u);
+    EXPECT_FLOAT_EQ(f.seen_scales[0], 5.0f);
+    EXPECT_FLOAT_EQ(f.seen_scales[1], 5.0f);
+}
+
+// Deterministic wiring proof: the solver's ladder reaches linearize() only at
+// rung changes when relinearize_per_rung is set, and never when caches hold.
+class CachedProbeFactor : public graph::GicpFactorBase {
+public:
+    CachedProbeFactor() { begin_annealing(); }
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float scale) override {
+        seen_scales.push_back(scale);
+        graph::FactorLinearization lin;
+        lin.H00.setIdentity();
+        // b0 is evaluated at pose=identity while the solver keeps moving the node
+        // away from it -> the gradient correction g = b + H*delta never vanishes,
+        // so the GN loop uses all 8 iterations (2 per rung x 4 rungs).
+        lin.b0 = Eigen::Matrix<float, 6, 1>::Constant(0.1f);
+        lin.source_linearization_pose = Eigen::Isometry3f::Identity();
+        return lin;
+    }
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {0, graph::INVALID_NODE_ID};
+    }
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return false;  // pose-based relinearization disabled: only the rung can force it
+    }
+    std::vector<float> seen_scales;
+};
+
+TEST(RobustScheduleTest, RungForceControlsRelinearizations) {
+    sycl_utils::DeviceQueue queue = make_queue();
+    graph::GraphSolverParams sp;
+    sp.max_iterations = 8;  // exactly levels x iters_per_level
+    sp.robust.enable = true;
+    sp.robust.iters_per_level = 2;
+    sp.robust.levels = 4;
+
+    {  // force off: single linearization, cached weights sleep for the frame
+        graph::SlidingWindow window(5);
+        const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+        (void)id;
+        auto f = std::make_shared<CachedProbeFactor>();
+        window.add_factor(f);
+        graph::GraphSolver solver(queue, sp);
+        f->set_robust_force_mode(false);
+        solver.optimize(window);
+        ASSERT_EQ(f->seen_scales.size(), 1u);
+        EXPECT_FLOAT_EQ(f->seen_scales[0], 10.0f);  // rung 0 at frame start
+    }
+    {  // force on: relinearize exactly once per rung (4 rungs in 8 iters)
+        graph::SlidingWindow window(5);
+        window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+        auto f = std::make_shared<CachedProbeFactor>();
+        window.add_factor(f);
+        graph::GraphSolver solver(queue, sp);
+        f->set_robust_force_mode(true);
+        solver.optimize(window);
+        ASSERT_EQ(f->seen_scales.size(), 4u);
+        EXPECT_FLOAT_EQ(f->seen_scales[0], 10.0f);
+        EXPECT_FLOAT_EQ(f->seen_scales[1], 5.0f);
+        EXPECT_FLOAT_EQ(f->seen_scales[2], 2.5f);
+        EXPECT_FLOAT_EQ(f->seen_scales[3], 1.25f);
+    }
 }
 
 }  // namespace

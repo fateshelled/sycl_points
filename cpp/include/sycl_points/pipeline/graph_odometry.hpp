@@ -407,6 +407,12 @@ private:
         solver_params.relinearize_translation_thresh = this->params_.graph.relinearize_translation_thresh;
         solver_params.relinearize_rotation_thresh = this->params_.graph.relinearize_rotation_thresh;
         solver_params.marginalization_lambda = this->params_.graph.marginalization_lambda;
+        solver_params.robust.enable = this->params_.graph.robust_enable;
+        solver_params.robust.init_scale = this->params_.graph.robust_init_scale;
+        solver_params.robust.min_scale = this->params_.graph.robust_min_scale;
+        solver_params.robust.levels = this->params_.graph.robust_levels;
+        solver_params.robust.iters_per_level = this->params_.graph.robust_iters_per_level;
+        solver_params.robust.relinearize_per_rung = this->params_.graph.robust_relinearize_per_rung;
 
         algorithms::graph::GraphOptimization::Options gopts;
         gopts.gate.enabled = true;

@@ -30,14 +30,20 @@ public:
           source_node_(std::move(source_node)),
           target_(std::move(target)),
           target_knn_(std::move(target_knn)),
-          params_(params) {}
+          params_(params) {
+        begin_annealing();
+    }
 
-    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue) override {
+    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f) override {
         source_node_->linearization_pose = source_node_->pose;
         registration::Registration reg(queue, params_);
+        registration::Registration::ExecutionOptions opts;
+        if (scale > 0.0f) {
+            opts.robust_scale = scale;
+        }
         const auto result = reg.compute_linearized_result(
             *source_node_->cloud, *target_, *target_knn_,
-            source_node_->linearization_pose.matrix(), source_node_->linearization_pose.matrix());
+            source_node_->linearization_pose.matrix(), source_node_->linearization_pose.matrix(), opts);
         FactorLinearization ret;
         ret.H00 = result.H;
         ret.b0 = result.b;
@@ -91,15 +97,17 @@ public:
           target_id_(target_id),
           target_node_(std::move(target_node)),
           linearizer_(queue, params),
-          params_(params) {}
+          params_(params) {
+        begin_annealing();
+    }
 
-    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue) override {
+    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f) override {
         source_node_->linearization_pose = source_node_->pose;
         if (target_node_) target_node_->linearization_pose = target_node_->pose;
         const Eigen::Matrix4f T_src = source_node_->linearization_pose.matrix();
         const Eigen::Matrix4f T_tgt = target_node_->linearization_pose.matrix();
         auto lin = linearizer_.linearize(*source_node_->cloud, *target_node_->knn, T_src,
-                                        *target_node_->cloud, T_tgt);
+                                        *target_node_->cloud, T_tgt, scale);
         lin.source_linearization_pose = source_node_->linearization_pose;
         lin.target_linearization_pose = target_node_->linearization_pose;
         return lin;

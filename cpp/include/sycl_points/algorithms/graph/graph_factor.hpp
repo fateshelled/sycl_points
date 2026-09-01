@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <optional>
 
 #include "sycl_points/algorithms/graph/pose_node.hpp"
@@ -32,7 +33,10 @@ public:
     virtual ~GicpFactorBase() = default;
 
     /// @brief Linearize the factor at the current node estimates.
-    virtual FactorLinearization linearize(const sycl_utils::DeviceQueue& queue) = 0;
+    ///        @param scale robust loss scale override; <=0 means "use the factor's
+    ///        configured default". Scale-free factors (chain relatives) ignore it.
+    virtual FactorLinearization linearize(const sycl_utils::DeviceQueue& queue,
+                                          float scale = 0.0f) = 0;
 
     /// @brief Evaluate the robust error at the given source/target poses
     ///        using frozen correspondences.
@@ -57,26 +61,68 @@ public:
     ///        The cache lives in the base class so every factor type shares identical
     ///        reuse semantics; subclasses implement only linearize() and
     ///        needs_relinearization().
+    ///        @param ladder_scale current robust-schedule ladder scale for annealing
+    ///        factors (see begin_annealing/freeze). A cache hit keeps its weights
+    ///        ("lag" is deliberate and bounded: scale only decreases during annealing).
     virtual FactorLinearization get_linearization(const sycl_utils::DeviceQueue& queue,
                                                  float relinearize_rotation_thresh,
-                                                 float relinearize_translation_thresh) {
-        if (cached_lin_ && !needs_relinearization(Eigen::Isometry3f::Identity(),
-                                                 Eigen::Isometry3f::Identity(),
-                                                 relinearize_rotation_thresh,
-                                                 relinearize_translation_thresh)) {
+                                                 float relinearize_translation_thresh,
+                                                 float ladder_scale = 0.0f) {
+        const float s_eff = scale_now(ladder_scale);
+        const bool rung_changed = force_relin_on_scale_ && annealing_ &&
+                                  std::fabs(s_eff - last_scale_) >
+                                      1e-3f * std::fabs(s_eff > 0.0f ? s_eff : 1.0f);
+        if (cached_lin_ && !rung_changed &&
+            !needs_relinearization(Eigen::Isometry3f::Identity(),
+                                   Eigen::Isometry3f::Identity(),
+                                   relinearize_rotation_thresh,
+                                   relinearize_translation_thresh)) {
             return *cached_lin_;
         }
-        cached_lin_ = this->linearize(queue);
+        cached_lin_ = this->linearize(queue, scale_now(ladder_scale));
+        last_scale_ = scale_now(ladder_scale);
         return *cached_lin_;
     }
 
     /// @brief Drop any cached linearization so the next get_linearization re-computes.
     virtual void clear_cache() { cached_lin_.reset(); }
 
+    /// @brief Scale actually used by this factor for the next relinearization:
+    ///        the live ladder while annealing, the locked value once frozen.
+    float scale_now(float ladder_scale) const {
+        return annealing_ ? ladder_scale : frozen_scale_;
+    }
+
+    bool is_annealing() const { return annealing_; }
+
+    /// @brief When true, an annealing factor relinearizes on every ladder rung
+    ///        change (align-style full KNN per level) instead of letting the
+    ///        cached weights sleep until the pose threshold trips. Only affects
+    ///        the per-frame tip group; frozen factors are untouched.
+    void set_robust_force_mode(bool on) { force_relin_on_scale_ = on; }
+
+protected:
+    /// @brief Mark this factor as participating in the robust ladder (called by
+    ///        constructors of scale-dependent factors: unary/binary point-cloud ones).
+    void begin_annealing() { annealing_ = true; }
+
+public:
+    /// @brief End annealing: lock the factor's robust scale at whatever value it
+    ///        last linearized with (normally the ladder floor at frame end).
+    void freeze() {
+        if (!annealing_) return;
+        annealing_ = false;
+        frozen_scale_ = last_scale_;
+    }
+
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 private:
     mutable std::optional<FactorLinearization> cached_lin_;
+    bool annealing_ = false;        ///< factors opt in via begin_annealing()
+    bool force_relin_on_scale_ = false;  ///< relinearize per ladder rung (robust force mode)
+    float last_scale_ = 0.0f;       ///< scale used by the most recent linearize()
+    float frozen_scale_ = 0.0f;     ///< locked scale after freeze(); 0 = default_scale
 };
 
 }  // namespace graph

@@ -104,7 +104,14 @@ public:
         }
 
         // 3. Local BA (fixed linearization, Gauss-Newton).
+        for (auto& f : window_.factors()) {
+            f->set_robust_force_mode(solver_.params().robust.relinearize_per_rung);
+        }
         auto result = solver_.optimize(window_);
+
+        // 3b. End of the robust ladder for this frame: tip factors lock their
+        //     last (floor) scale; already-frozen factors are unaffected.
+        window_.finalize_robust();
 
         // 4. Keyframe gate: keep the solved tip pose, then decide persistence.
         auto cur = window_.get_node(current_id);
