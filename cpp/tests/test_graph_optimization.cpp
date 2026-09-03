@@ -91,7 +91,7 @@ public:
     AnchorFactor(std::shared_ptr<graph::PoseNode> node, const Eigen::Isometry3f& target, float weight)
         : node_(std::move(node)), target_(target), w_(weight) {}
 
-    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float, bool) override {
         const Eigen::Matrix<float, 6, 1> r = eigen_utils::lie::se3_log(target_.inverse() * node_->pose);
         const Eigen::Matrix<float, 6, 6> J = Eigen::Matrix<float, 6, 6>::Identity();
         const Eigen::Matrix<float, 6, 6> Omega = w_ * Eigen::Matrix<float, 6, 6>::Identity();
@@ -131,7 +131,7 @@ public:
     BinaryAnchorFactor(std::shared_ptr<graph::PoseNode> src, std::shared_ptr<graph::PoseNode> tgt, float weight)
         : src_(std::move(src)), tgt_(std::move(tgt)), w_(weight) {}
 
-    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float, bool) override {
         const Eigen::Matrix<float, 6, 1> r = eigen_utils::lie::se3_log(tgt_->pose.inverse() * src_->pose);
         const Eigen::Matrix<float, 6, 6> Omega = w_ * Eigen::Matrix<float, 6, 6>::Identity();
         graph::FactorLinearization lin;
@@ -310,6 +310,49 @@ TEST_F(GraphGicpTest, UnaryRecoversKnownTransform) {
     expect_pose_near(window.get_node(id)->pose, T_gt, 0.05f, 0.05f);
 }
 
+// Marginalization must linearize factors with the RAW (unweighted) Hessian so the
+// Schur-complement prior stays well conditioned. A strongly reweighted loss (GM at
+// a tiny scale) collapses the robust Hessian; the raw path must recover the full
+// information and match an explicitly NONE-typed factor.
+TEST_F(GraphGicpTest, MarginalizationUsesRawHessian) {
+    std::mt19937 gen(11);
+    auto submap = make_cube_cloud(queue, n_points, half, gen);
+    auto submap_bundle = build_bundle(submap);
+
+    Eigen::Isometry3f T_gt = Eigen::Isometry3f::Identity();
+    T_gt.translate(Eigen::Vector3f(0.4f, 0.0f, 0.0f));
+    auto scan = build_bundle(transform_cloud(queue, *submap, T_gt.inverse()));
+
+    // Align the node to a *wrong* pose (identity): the true offset is T_gt, so the
+    // GICP residuals are far larger than a tiny robust scale and GM collapses the
+    // weights toward 0. The raw path must ignore that and keep full information.
+    graph::SlidingWindow window(5);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0, scan.cloud, scan.knn);
+    auto node = window.get_node(id);
+
+    auto gm_params = gicp_params();
+    gm_params.robust.type = robust::RobustLossType::GEMAN_MCCLURE;
+
+    graph::UnaryGicpFactor factor(queue, id, node, submap_bundle.cloud, submap_bundle.knn, gm_params);
+    const float tiny_scale = 0.05f;
+    auto robust_lin = factor.linearize(queue, tiny_scale, /*raw=*/false);
+    auto raw_lin = factor.linearize(queue, tiny_scale, /*raw=*/true);
+
+    // Small scale drives GM weights to ~0, so the robust Hessian collapses below raw.
+    EXPECT_GT(raw_lin.H00.trace(), 2.0f * robust_lin.H00.trace());
+    // Same correspondences, only the per-point weight changes.
+    EXPECT_EQ(raw_lin.inlier, robust_lin.inlier);
+    EXPECT_GT(raw_lin.inlier, 1500u);
+
+    // The raw path is exactly the unweighted (type NONE) linearization.
+    auto none_params = gicp_params();
+    none_params.robust.type = robust::RobustLossType::NONE;
+    graph::UnaryGicpFactor none_factor(queue, id, node, submap_bundle.cloud, submap_bundle.knn,
+                                       none_params);
+    auto none_lin = none_factor.linearize(queue, tiny_scale, /*raw=*/false);
+    EXPECT_NEAR(raw_lin.H00.trace(), none_lin.H00.trace(), 1e-3f * none_lin.H00.trace() + 1e-3f);
+}
+
 TEST_F(GraphGicpTest, MarginalizationConsistency) {
     std::mt19937 gen(7);
     auto submap = make_cube_cloud(queue, n_points, half, gen);
@@ -372,7 +415,7 @@ public:
     CountingGicpFactor(std::shared_ptr<graph::PoseNode> node, float rot_th, float trans_th)
         : node_(std::move(node)), rot_th_(rot_th), trans_th_(trans_th) {}
 
-    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float, bool) override {
         ++linearize_calls;
         node_->linearization_pose = node_->pose;  // mirror real factors
         graph::FactorLinearization lin;
@@ -826,7 +869,7 @@ class ScaleProbeFactor : public graph::GicpFactorBase {
 public:
     ScaleProbeFactor() { begin_annealing(); }
 
-    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float scale) override {
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float scale, bool) override {
         seen_scales.push_back(scale);
         graph::FactorLinearization lin;
         lin.H00.setIdentity();
@@ -864,7 +907,7 @@ class CachedProbeFactor : public graph::GicpFactorBase {
 public:
     CachedProbeFactor() { begin_annealing(); }
 
-    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float scale) override {
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float scale, bool) override {
         seen_scales.push_back(scale);
         graph::FactorLinearization lin;
         lin.H00.setIdentity();

@@ -81,7 +81,8 @@ public:
         return result;
     }
 
-    FactorLinearization linearize(const sycl_utils::DeviceQueue&, float /*scale*/ = 0.0f) override {
+    FactorLinearization linearize(const sycl_utils::DeviceQueue&, float /*scale*/ = 0.0f,
+                                  bool /*raw*/ = false) override {
         src_node_->linearization_pose = src_node_->pose;
         tgt_node_->linearization_pose = tgt_node_->pose;
         return linearize_at(src_node_->pose, tgt_node_->pose);

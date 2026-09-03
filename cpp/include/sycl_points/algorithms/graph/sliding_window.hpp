@@ -156,7 +156,12 @@ public:
 
         for (auto& f : factors_) {
             f->clear_cache();
-            auto lin = f->linearize(queue, f->scale_now(0.0f));
+            // Marginalization uses the RAW (unweighted) linearization: the Schur
+            // complement must carry full measurement information so the resulting
+            // prior stays well conditioned. Robust losses like Geman-McClure drive
+            // far-point weights toward 0, which would make H_mm near-singular and
+            // blow up -H_mr^T H_mm^-1 H_mr; the raw H avoids that.
+            auto lin = f->linearize(queue, 0.0f, /*raw=*/true);
             auto [sid, tid] = f->node_ids();
             int si = id_to_idx[sid];
             H_all.block<6, 6>(6 * si, 6 * si) += lin.H00;

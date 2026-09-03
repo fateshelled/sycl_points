@@ -35,8 +35,14 @@ public:
     /// @brief Linearize the factor at the current node estimates.
     ///        @param scale robust loss scale override; <=0 means "use the factor's
     ///        configured default". Scale-free factors (chain relatives) ignore it.
-    virtual FactorLinearization linearize(const sycl_utils::DeviceQueue& queue,
-                                          float scale = 0.0f) = 0;
+    ///        @param raw when true, evaluate the *unweighted* (robust loss = NONE)
+    ///        Hessian/gradient over the current correspondences. Used by
+    ///        marginalization so the Schur-complement prior carries raw measurement
+    ///        information and stays well conditioned even for strongly reweighted
+    ///        losses such as Geman-McClure (near-zero weights would otherwise make
+    ///        the marginalized block singular and corrupt the prior).
+    virtual FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f,
+                                          bool raw = false) = 0;
 
     /// @brief Evaluate the robust error at the given source/target poses
     ///        using frozen correspondences.

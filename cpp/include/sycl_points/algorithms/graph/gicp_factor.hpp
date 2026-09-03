@@ -34,9 +34,14 @@ public:
         begin_annealing();
     }
 
-    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f) override {
+    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f,
+                                  bool raw = false) override {
         source_node_->linearization_pose = source_node_->pose;
-        registration::Registration reg(queue, params_);
+        registration::RegistrationParams params = params_;
+        if (raw) {
+            params.robust.type = robust::RobustLossType::NONE;
+        }
+        registration::Registration reg(queue, params);
         registration::Registration::ExecutionOptions opts;
         if (scale > 0.0f) {
             opts.robust_scale = scale;
@@ -101,13 +106,27 @@ public:
         begin_annealing();
     }
 
-    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f) override {
+    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f,
+                                  bool raw = false) override {
         source_node_->linearization_pose = source_node_->pose;
         if (target_node_) target_node_->linearization_pose = target_node_->pose;
         const Eigen::Matrix4f T_src = source_node_->linearization_pose.matrix();
         const Eigen::Matrix4f T_tgt = target_node_->linearization_pose.matrix();
-        auto lin = linearizer_.linearize(*source_node_->cloud, *target_node_->knn, T_src,
+        FactorLinearization lin;
+        if (raw) {
+            // Unweighted (robust loss = NONE) linearization for the Schur-complement
+            // prior: keeps the marginalized block well conditioned for strongly
+            // reweighted losses (e.g. Geman-McClure). Marginalization is once per
+            // frame, so the on-demand raw linearizer buffer cost is negligible.
+            registration::RegistrationParams raw_params = params_;
+            raw_params.robust.type = robust::RobustLossType::NONE;
+            BinaryGicpLinearizer raw_linearizer(queue, raw_params);
+            lin = raw_linearizer.linearize(*source_node_->cloud, *target_node_->knn, T_src,
+                                           *target_node_->cloud, T_tgt, scale);
+        } else {
+            lin = linearizer_.linearize(*source_node_->cloud, *target_node_->knn, T_src,
                                         *target_node_->cloud, T_tgt, scale);
+        }
         lin.source_linearization_pose = source_node_->linearization_pose;
         lin.target_linearization_pose = target_node_->linearization_pose;
         return lin;
