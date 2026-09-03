@@ -397,6 +397,10 @@ private:
         // Registration parameters for the graph factors.
         this->reg_params_ = algorithms::registration::RegistrationParams(this->params_.registration.factor,
                                                                         this->params_.lo.registration.optimization);
+        // Graph factors use graph/robust/* (loss type + fixed default scale), not the
+        // shared LO registration/robust/* auto-scale schedule.
+        this->reg_params_.robust.type = this->params_.graph.robust_type;
+        this->reg_params_.robust.default_scale = this->params_.graph.robust_default_scale;
 
         // Graph optimizer (sliding window local BA). The keyframe gate shares the
         // submap's keyframe thresholds so node promotion and map updates coincide.

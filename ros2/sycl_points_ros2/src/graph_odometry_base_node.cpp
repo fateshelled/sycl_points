@@ -54,6 +54,11 @@ void GraphOdometryBaseNode::initialize_processing() {
             "graph/robust/iterations_per_level", graph.robust_iters_per_level));
         graph.robust_relinearize_per_rung = static_cast<bool>(this->declare_parameter<bool>(
             "graph/robust/relinearize_per_rung", graph.robust_relinearize_per_rung));
+        const std::string graph_robust_type =
+            this->declare_parameter<std::string>("graph/robust/type", "GEMAN_MCCLURE");
+        graph.robust_type = algorithms::robust::RobustLossType_from_string(graph_robust_type);
+        graph.robust_default_scale = static_cast<float>(
+            this->declare_parameter<double>("graph/robust/default_scale", graph.robust_default_scale));
     }
 
     this->points_topic_ = this->declare_parameter<std::string>("points_topic", this->points_topic_);

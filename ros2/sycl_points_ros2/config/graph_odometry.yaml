@@ -90,6 +90,20 @@ graph_odometry_node:
     imu/initial_alignment/estimate_gyro_bias: true    # Replace gyro bias with the stationary mean
     imu/initial_alignment/max_wait_sec: 5.0           # Force alignment after this many seconds even if not stationary (<=0 = wait forever)
 
+    # Initial-pose motion prediction (graph odometry uses it for the per-frame
+    # initial guess; IMU_SE3 mode requires imu/enable=true).
+    motion_prediction/mode: GYRO_LIDAR_CV  # LIDAR_CV, GYRO_LIDAR_CV, IMU_SE3
+    motion_prediction/verbose: false
+    motion_prediction/velocity/ema_alpha: 1.0
+    motion_prediction/adaptive/rotation/factor/min: 0.2
+    motion_prediction/adaptive/rotation/factor/max: 1.0
+    motion_prediction/adaptive/rotation/min_eigenvalue/low: 5.0
+    motion_prediction/adaptive/rotation/min_eigenvalue/high: 10.0
+    motion_prediction/adaptive/translation/factor/min: 0.2
+    motion_prediction/adaptive/translation/factor/max: 1.0
+    motion_prediction/adaptive/translation/min_eigenvalue/low: 1.0
+    motion_prediction/adaptive/translation/min_eigenvalue/high: 10.0
+
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
     input/convert_intensity: false
@@ -190,18 +204,24 @@ graph_odometry_node:
     # Robust scale ladder (GNC) applied to the per-frame tip factors only.
     # When enabled: init_scale -> min_scale over levels rungs (iters GN
     # iterations each); tip factors freeze at the floor when promoted.
-    # Disabled (default) => factors use registration/robust/default_scale.
+    # Disabled (default) => factors use graph/robust/default_scale.
     graph/robust/enable: false
     graph/robust/init_scale: 10.0
     graph/robust/min_scale: 1.25
     graph/robust/levels: 4
     graph/robust/iterations_per_level: 2
     graph/robust/relinearize_per_rung: false  # true: apply ladder per rung (align-cost, recommended with enable=true)
+    # Robust loss type + fixed default scale for graph factors. Used whenever
+    # graph/robust/enable=false; when enabled, the ladder overrides the scale but the
+    # loss type (graph/robust/type) still applies.
+    graph/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    graph/robust/default_scale: 10.0
 
     # Registration backend for graph factor linearization (unary/binary GICP).
-    # NOTE: robust/auto_scale, robust/init_scale, robust/min_scale, robust/auto_scaling_iter
-    # and rotation_constraint/robust/{init_scale,min_scale} belong to the single-frame
-    # align path (lidar_odometry robust schedule) and are unused by graph odometry.
+    # registration/robust/type and registration/robust/default_scale belong to the single-frame
+    # align path (lidar_odometry robust schedule); graph factors use graph/robust/type and
+    # graph/robust/default_scale instead (see above). The auto-scale schedule below
+    # (auto_scale, auto_scaling_iter, init_scale, min_scale) is also align-path only and unused by graph odometry.
     registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/min_num_points: 300
     registration/random_sampling/enable: true
@@ -211,19 +231,18 @@ graph_odometry_node:
     registration/random_sampling/use_intensities: false
     registration/random_sampling/weighted_ratio: 0.8  # Fraction of samples from the weighted distribution [0.0, 1.0]
     registration/max_correspondence_distance: 2.0
-
-    registration/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
-    registration/robust/default_scale: 10.0
-    registration/robust/auto_scale: true
-    registration/robust/auto_scaling_iter: 4
-    registration/robust/init_scale: 10.0
-    registration/robust/min_scale: 1.25
+    # Per-factor GICP solver iterations and convergence criteria (used by the
+    # single-frame registration inside each graph factor). Distinct from
+    # graph/solver_iterations (Gauss-Newton iterations of the graph optimizer).
+    registration/solver_iterations: 20
+    registration/criteria/translation: 1.0e-3  # [m]
+    registration/criteria/rotation: 1.0e-3     # [rad]
 
     registration/rotation_constraint/enable:
       true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
     registration/rotation_constraint/weight: 1.0
-    registration/rotation_constraint/robust/init_scale: 5.0
-    registration/rotation_constraint/robust/min_scale: 2.5
+    # rotation_constraint/robust/default_scale is used by graph factors; init_scale/min_scale
+    # belong to the single-frame align path and are unused by graph odometry.
     registration/rotation_constraint/robust/default_scale: 5.0
 
     registration/genz/planarity_threshold: 0.2
