@@ -169,7 +169,7 @@ graph_odometry_node:
     submap/max_distance_range: 50.0
     submap/point_random_sampling_num: 512
     submap/weighted_sampling_ratio: 0.8
-    submap/map_type: OCCUPANCY_GRID_MAP # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
+    submap/map_type: VOXEL_HASH_MAP # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
     submap/keyframe/inlier_ratio_threshold: 0.3
     submap/keyframe/distance_threshold: 2.0
     submap/keyframe/angle_threshold_degrees: 20.0
@@ -188,7 +188,7 @@ graph_odometry_node:
     # transient when the submap/keyframe/* gate rejects it). The keyframe gate
     # itself reuses the submap/keyframe/* thresholds above.
     graph/window_size: 5
-    graph/solver_iterations: 10              # Gauss-Newton iterations per frame
+    graph/solver_iterations: 2               # Gauss-Newton iterations per frame
     graph/convergence/translation: 1.0e-4    # [m]
     graph/convergence/rotation: 1.0e-4       # [rad]
     # Delayed relinearization thresholds: cached factor linearizations are
@@ -198,6 +198,10 @@ graph_odometry_node:
     graph/relinearize/translation_threshold: 0.05  # [m]
     graph/relinearize/rotation_threshold: 0.02     # [rad]
     graph/marginalization_lambda: 1.0e-6           # regularization fallback for LDLT
+    # NOTE: the Schur-complement marginalization prior is built from the RAW
+    # (unweighted, robust loss = NONE) factor Hessians so it stays well conditioned
+    # under strongly reweighted losses (e.g. GEMAN_MCCLURE); the solver still uses
+    # the robust-weighted linearization.
     # Keyframe-chain RelativePoseFactor information (per-axis sigma).
     graph/chain/sigma_rotation: 5.0e-3     # [rad]
     graph/chain/sigma_translation: 2.0e-2  # [m]
@@ -214,7 +218,7 @@ graph_odometry_node:
     # Robust loss type + fixed default scale for graph factors. Used whenever
     # graph/robust/enable=false; when enabled, the ladder overrides the scale but the
     # loss type (graph/robust/type) still applies.
-    graph/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    graph/robust/type: HUBER # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     graph/robust/default_scale: 10.0
 
     # Registration backend for graph factor linearization (unary/binary GICP).
@@ -234,7 +238,7 @@ graph_odometry_node:
     # Per-factor GICP solver iterations and convergence criteria (used by the
     # single-frame registration inside each graph factor). Distinct from
     # graph/solver_iterations (Gauss-Newton iterations of the graph optimizer).
-    registration/solver_iterations: 20
+    registration/solver_iterations: 8
     registration/criteria/translation: 1.0e-3  # [m]
     registration/criteria/rotation: 1.0e-3     # [rad]
 
@@ -251,7 +255,7 @@ graph_odometry_node:
     # GN: damped solve only (fastest).
     # LM / DOGLEG: step acceptance on the combined ICP+IMU cost, costing one extra
     #   error-evaluation pass per trial step.
-    registration/optimization_method: GN  # GN, LM, DOGLEG
+    registration/optimization_method: LM  # GN, LM, DOGLEG
     registration/gn/lambda: 1.0e-3
     registration/lm/max_inner_iterations: 5
     registration/lm/lambda_factor: 2.0
