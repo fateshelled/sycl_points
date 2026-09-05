@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -11,7 +12,7 @@ import os
 import yaml
 
 
-def declare_params_from_yaml(yaml_path: str, target_node="lidar_odometry_node"):
+def declare_params_from_yaml(yaml_path: str, target_node="graph_odometry_node"):
     launch_args = []
     node_args = {}
     with open(yaml_path, "r") as f:
@@ -35,9 +36,9 @@ def declare_params_from_yaml(yaml_path: str, target_node="lidar_odometry_node"):
 
 def generate_launch_description():
     package_name = "sycl_points_ros2"
-    node_name = "lidar_odometry_node"
+    node_name = "graph_odometry_node"
     package_dir = get_package_share_directory(package_name)
-    param_yaml = os.path.join(package_dir, "config", "lidar_odometry.yaml")
+    param_yaml = os.path.join(package_dir, "config", "graph_odometry.yaml")
     launch_args, node_args = declare_params_from_yaml(param_yaml, node_name)
     launch_args.extend(
         [
@@ -72,15 +73,9 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     def launch_setup(context, *args, **kwargs):
-        # Parse the comma-separated exclude list at runtime.  Omit the parameter
-        # entirely when empty: an empty array param has an ambiguous type and would
-        # otherwise error, and omitting it keeps the default "exclude nothing".
         exclude_raw = LaunchConfiguration("rosbag/exclude_topics").perform(context)
         exclude_topics = [t.strip() for t in exclude_raw.split(",") if t.strip()]
 
-        # Resolve substitutions to concrete Python types here so the rosbag2 Player
-        # (which is strict about parameter types) receives int/bool/str rather than
-        # raw substitution strings.
         try:
             start_offset_sec = int(
                 LaunchConfiguration("rosbag/start_offset/sec").perform(context)
@@ -110,8 +105,7 @@ def generate_launch_description():
                     name="sycl_points_container",
                     namespace="",
                     package="rclcpp_components",
-                    # executable='component_container',  # SingleThreadedExecutor
-                    executable="component_container_mt",  # MultiThreadedExecutor
+                    executable="component_container_mt",
                     output="screen",
                     emulate_tty=True,
                     composable_node_descriptions=[
@@ -150,7 +144,6 @@ def generate_launch_description():
                                 },
                             ],
                         ),
-                        # rosbag2_transport must load before sycl_points
                         ComposableNode(
                             package="rosbag2_transport",
                             plugin="rosbag2_transport::Player",
@@ -161,8 +154,8 @@ def generate_launch_description():
                         ),
                         ComposableNode(
                             package=package_name,
-                            plugin="sycl_points::ros2::LiDAROdometryNode",
-                            name=package_name,
+                            plugin="sycl_points::ros2::GraphOdometryNode",
+                            name=node_name,
                             parameters=[
                                 node_args,
                                 {"use_sim_time": use_sim_time},
@@ -178,7 +171,7 @@ def generate_launch_description():
     rviz = Node(
         package="rviz2",
         executable="rviz2",
-        arguments=["-d", os.path.join(package_dir, "rviz2", "rviz2_lo.rviz")],
+        arguments=["-d", os.path.join(package_dir, "rviz2", "rviz2_go.rviz")],
         condition=IfCondition(LaunchConfiguration("rviz2")),
     )
 

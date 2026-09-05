@@ -32,8 +32,34 @@ struct Parameters : public odometry::CommonParameters {
         Pipeline pipeline;
     };
 
+    /// @brief Sliding-window graph optimizer (local BA) parameters.
+    struct Graph {
+        size_t window_size = 5;                  ///< persistent keyframe nodes
+        size_t solver_iterations = 10;           ///< GN iterations per frame
+        float convergence_translation = 1e-4f;   ///< [m]
+        float convergence_rotation = 1e-4f;      ///< [rad]
+        float relinearize_translation_thresh = 0.05f;  ///< [m] delayed relinearization
+        float relinearize_rotation_thresh = 0.02f;     ///< [rad]
+        float marginalization_lambda = 1e-6f;    ///< fallback regularization
+        float chain_sigma_rotation = 5e-3f;      ///< [rad] RelativePoseFactor info
+        float chain_sigma_translation = 2e-2f;   ///< [m]
+        // Robust scale ladder (GNC) for per-frame tip factors. Disabled by
+        // default: factors then use registration/robust/default_scale as before.
+        bool robust_enable = false;
+        float robust_init_scale = 10.0f;
+        float robust_min_scale = 1.25f;
+        size_t robust_levels = 4;
+        size_t robust_iters_per_level = 2;
+        bool robust_relinearize_per_rung = false;
+        // Robust loss type + fixed default scale applied to graph factors. These are
+        // graph concerns, independent of the LO registration/robust/* auto-scale schedule.
+        algorithms::robust::RobustLossType robust_type = algorithms::robust::RobustLossType::GEMAN_MCCLURE;
+        float robust_default_scale = 10.0f;
+    };
+
     MotionPrediction motion_prediction;
     LO lo;
+    Graph graph;
 
     algorithms::registration::RegistrationPipelineParams make_registration_pipeline_params() const {
         algorithms::registration::RegistrationPipelineParams result;

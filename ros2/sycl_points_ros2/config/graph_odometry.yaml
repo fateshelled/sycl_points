@@ -1,0 +1,276 @@
+# Root key is the handle used by launch/graph_odometry_launch.py (it flattens
+# this section into per-node -p args). If you bypass launch and run
+# `ros2 run sycl_points_ros2 graph_odometry_node --params-file <this>`, rename
+# the root key below to the real node name `graph_odometry` (or use **),
+# otherwise every parameter here is silently ignored.
+graph_odometry_node:
+  ros__parameters:
+    sycl/device_type: gpu      # gpu, cpu
+    sycl/device_vendor: intel  # intel, nvidia, amd, omp(for AdaptiveCpp CPU backend)
+
+    points_topic: points
+    imu_topic: imu/data
+
+    # QoS settings for subscriptions
+    # history:      "keep_last" (queue up to depth messages) or "keep_all".
+    #               If using intraprocess communication, set to keep_last.
+    # depth:        queue depth used only when history == "keep_last" (ignored for "keep_all")
+    # reliability:  "best_effort" or "reliable"
+    points_qos/history: "keep_last"
+    points_qos/depth: 10
+    points_qos/reliability: "best_effort"
+    imu_qos/history: "keep_last"
+    imu_qos/depth: 100
+    imu_qos/reliability: "best_effort"
+
+    odom_frame_id: odom
+    base_link_id: base_link
+    # lidar_frame_id is not used by the graph node (frame ids: odom_frame_id/base_link_id)
+    rviz2: true
+    use_sim_time: false
+
+    initial_base_link_pose/x: 0.0
+    initial_base_link_pose/y: 0.0
+    initial_base_link_pose/z: 0.0
+    initial_base_link_pose/qx: 0.0
+    initial_base_link_pose/qy: 0.0
+    initial_base_link_pose/qz: 0.0
+    initial_base_link_pose/qw: 1.0
+
+    T_base_link_to_lidar/x: 0.0
+    T_base_link_to_lidar/y: 0.0
+    T_base_link_to_lidar/z: 0.0
+    T_base_link_to_lidar/qx: 0.0
+    T_base_link_to_lidar/qy: 0.0
+    T_base_link_to_lidar/qz: 0.0
+    T_base_link_to_lidar/qw: 1.0
+
+    T_imu_to_lidar/x: 0.0
+    T_imu_to_lidar/y: 0.0
+    T_imu_to_lidar/z: 0.0
+    T_imu_to_lidar/qx: 0.0
+    T_imu_to_lidar/qy: 0.0
+    T_imu_to_lidar/qz: 0.0
+    T_imu_to_lidar/qw: 1.0
+
+    # IMU is OPTIONAL for graph odometry. imu/enable defaults to false (LiDAR-only).
+    # Set imu/enable: true only when an IMU topic is provided and IMU coupling is desired.
+    imu/enable: false
+    imu/accel_unit: "m_s2"              # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
+    imu/buffer_duration_sec: 2.0        # IMU buffering duration
+    imu/deskew/enable: true             # IMU-based pre-processing deskew
+    imu/deskew/gyro_only: false         # If true, use rotation only and omit accelerometer/velocity translation
+    imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
+    imu/preintegration/gravity/y: 0.0
+    imu/preintegration/gravity/z: -9.80665
+
+    # IMU noise densities for 15x15 covariance propagation.
+    # Set non-zero to enable covariance propagation (required for IMU prior weighting).
+    imu/preintegration/gyro_noise_density: 1.0e-2    # rad/s/sqrt(Hz)
+    imu/preintegration/accel_noise_density: 1.0e-3   # m/s^2/sqrt(Hz)
+    imu/preintegration/gyro_bias_rw_density: 1.0e-5  # rad/s^2/sqrt(Hz)
+    imu/preintegration/accel_bias_rw_density: 1.0e-4 # m/s^3/sqrt(Hz)
+
+    imu/bias/gyro/x: 0.0  # Initial gyroscope bias [rad/s]
+    imu/bias/gyro/y: 0.0
+    imu/bias/gyro/z: 0.0
+    imu/bias/accel/x: 0.0  # Initial accelerometer bias [m/s^2]
+    imu/bias/accel/y: 0.0
+    imu/bias/accel/z: 0.0
+
+    # Gravity-aligned initial roll/pitch estimation.
+    # Assumes the robot is stationary for at least required_duration_sec at startup.
+    # Yaw is preserved from initial_base_link_pose; gravity does not constrain it.
+    # The first few scans before alignment converges are dropped (waiting_initial_alignment).
+    imu/initial_alignment/enable: false
+    imu/initial_alignment/required_duration_sec: 1.0  # IMU window length [s]; must be <= imu/buffer_duration_sec
+    imu/initial_alignment/max_gyro_std: 0.05          # [rad/s] per-axis stationarity threshold
+    imu/initial_alignment/max_accel_std: 0.2          # [m/s^2] per-axis stationarity threshold
+    imu/initial_alignment/max_accel_norm_error: 0.5   # [m/s^2] tolerance on |a_mean| vs |gravity|
+    imu/initial_alignment/estimate_gyro_bias: true    # Replace gyro bias with the stationary mean
+    imu/initial_alignment/max_wait_sec: 5.0           # Force alignment after this many seconds even if not stationary (<=0 = wait forever)
+
+    # Initial-pose motion prediction (graph odometry uses it for the per-frame
+    # initial guess; IMU_SE3 mode requires imu/enable=true).
+    motion_prediction/mode: GYRO_LIDAR_CV  # LIDAR_CV, GYRO_LIDAR_CV, IMU_SE3
+    motion_prediction/verbose: false
+    motion_prediction/velocity/ema_alpha: 1.0
+    motion_prediction/adaptive/rotation/factor/min: 0.2
+    motion_prediction/adaptive/rotation/factor/max: 1.0
+    motion_prediction/adaptive/rotation/min_eigenvalue/low: 5.0
+    motion_prediction/adaptive/rotation/min_eigenvalue/high: 10.0
+    motion_prediction/adaptive/translation/factor/min: 0.2
+    motion_prediction/adaptive/translation/factor/max: 1.0
+    motion_prediction/adaptive/translation/min_eigenvalue/low: 1.0
+    motion_prediction/adaptive/translation/min_eigenvalue/high: 10.0
+
+    # Select whether additional point attributes are copied from input PointCloud2.
+    input/convert_rgb: true
+    input/convert_intensity: false
+    input/use_reflectivity_as_intensity: false
+
+    # Scan PointCloud preprocessing
+    scan/preprocess/box_filter/enable: true
+    scan/preprocess/box_filter/max: 100.0
+    scan/preprocess/box_filter/min: 0.4
+    scan/preprocess/angle_incidence_filter/enable: false
+    scan/preprocess/angle_incidence_filter/min_angle: 0.0
+    scan/preprocess/angle_incidence_filter/max_angle: 1.396  # 80 degrees
+
+    # [Ouster LiDAR] Enhanced intensity correction using intensity, ambient, and ring fields.
+    # Applies range compensation, ambient light merging, and per-ring normalization to remove
+    # horizontal banding.
+    scan/enhanced_reflectivity/enable: false
+    scan/enhanced_reflectivity/clip_max: 5.0
+    scan/enhanced_reflectivity/ring_mean_ema_alpha: 0.5  # EMA factor for per-ring mean smoothing (0=frozen, 1=no smoothing)
+
+    # Generic distance/angle-based intensity correction.
+    scan/intensity_correction/enable: false
+    scan/intensity_correction/exp: 2.0
+    scan/intensity_correction/scale: 1.0e-4
+    scan/intensity_correction/min_intensity: 0.0
+    scan/intensity_correction/max_intensity: 100.0
+    scan/intensity_correction/ref_distance: 1.0
+    scan/intensity_correction/angle_exponent: 0.0  # 0: disabled, 1.0: Lambertian reflectance
+
+    scan/intensity_gaussian/enable: false
+    scan/intensity_gaussian/neighbor_num: 10
+    scan/intensity_gaussian/sigma_azimuth: 0.3    # [m] horizontal (azimuthal) scan direction
+    scan/intensity_gaussian/sigma_elevation: 0.5  # [m] vertical (elevation) direction
+    scan/intensity_gaussian/sigma_range: 0.05     # [m] radial depth direction (small = edge-preserving)
+
+    scan/intensity_local_mean_norm/enable: false
+    scan/intensity_local_mean_norm/neighbor_num: 10
+    scan/intensity_local_mean_norm/sigma_azimuth: 0.3    # [m] horizontal (azimuthal) scan direction
+    scan/intensity_local_mean_norm/sigma_elevation: 0.5  # [m] vertical (elevation) direction
+    scan/intensity_local_mean_norm/sigma_range: 0.05     # [m] radial depth direction (small = edge-preserving)
+    scan/intensity_local_mean_norm/mean_min: 0.001       # minimum local mean below which normalization is skipped
+
+    scan/downsampling/voxel/enable: false
+    scan/downsampling/voxel/voxel_size: 0.3
+    scan/downsampling/polar/enable: true
+    scan/downsampling/polar/distance_size: 0.5 # meters
+    scan/downsampling/polar/elevation_size: 0.017453292519943295 # 1 degrees
+    scan/downsampling/polar/azimuth_size: 0.017453292519943295   # 1 degrees
+    scan/downsampling/polar/coord_system: LIDAR # CAMERA or LIDAR
+    scan/downsampling/random/enable: false
+    scan/downsampling/random/num: 4096
+
+    # Covariance estimator
+    covariance_estimation/neighbor_num: 15
+    covariance_estimation/m_estimation/enable: false # EXPERIMENTAL
+    covariance_estimation/m_estimation/type: GEMAN_MCCLURE # HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    covariance_estimation/m_estimation/mad_scale: 2.0
+    covariance_estimation/m_estimation/min_robust_scale: 5.0
+    covariance_estimation/m_estimation/max_iterations: 1
+
+    # PointCloud Submapping
+    submap/voxel_size: 0.4
+    submap/max_distance_range: 50.0
+    submap/point_random_sampling_num: 512
+    submap/weighted_sampling_ratio: 0.8
+    submap/map_type: VOXEL_HASH_MAP # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
+    submap/keyframe/inlier_ratio_threshold: 0.3
+    submap/keyframe/distance_threshold: 2.0
+    submap/keyframe/angle_threshold_degrees: 20.0
+    submap/keyframe/time_threshold_seconds: 1.0
+    submap/occupancy_grid_map/log_odds_hit: 0.5
+    submap/occupancy_grid_map/log_odds_miss: -0.03
+    submap/occupancy_grid_map/log_odds_limits/min: -10.0
+    submap/occupancy_grid_map/log_odds_limits/max: 10.0
+    submap/occupancy_grid_map/occupied_threshold: 0.5
+    submap/occupancy_grid_map/enable_free_space_update: true
+    submap/occupancy_grid_map/enable_pruning: true
+    submap/occupancy_grid_map/stale_frame_threshold: 600
+
+    # Sliding-window graph optimizer (local BA).
+    # graph/window_size counts persistent KEYFRAME nodes (the per-frame tip is
+    # transient when the submap/keyframe/* gate rejects it). The keyframe gate
+    # itself reuses the submap/keyframe/* thresholds above.
+    graph/window_size: 5
+    graph/solver_iterations: 8               # Gauss-Newton iterations per frame
+    graph/convergence/translation: 1.0e-4    # [m]
+    graph/convergence/rotation: 1.0e-4       # [rad]
+    # Delayed relinearization thresholds: cached factor linearizations are
+    # reused while node poses stay within these bounds of the linearization
+    # point (gradients are refreshed at the current pose; correspondences are
+    # only re-searched when the threshold is crossed).
+    graph/relinearize/translation_threshold: 0.05  # [m]
+    graph/relinearize/rotation_threshold: 0.02     # [rad]
+    graph/marginalization_lambda: 1.0e-3           # regularization fallback for LDLT
+    # NOTE: the Schur-complement marginalization prior is built from the RAW
+    # (unweighted, robust loss = NONE) factor Hessians so it stays well conditioned
+    # under strongly reweighted losses (e.g. GEMAN_MCCLURE); the solver still uses
+    # the robust-weighted linearization.
+    # Keyframe-chain RelativePoseFactor information (per-axis sigma).
+    graph/chain/sigma_rotation: 5.0e-3     # [rad]
+    graph/chain/sigma_translation: 2.0e-2  # [m]
+    # Robust scale ladder (GNC) applied to the per-frame tip factors only.
+    # When enabled: init_scale -> min_scale over levels rungs (iters GN
+    # iterations each); tip factors freeze at the floor when promoted.
+    # Disabled (default) => factors use graph/robust/default_scale.
+    graph/robust/enable: true
+    graph/robust/init_scale: 10.0
+    graph/robust/min_scale: 1.25
+    graph/robust/levels: 3
+    graph/robust/iterations_per_level: 2
+    graph/robust/relinearize_per_rung: false  # true: apply ladder per rung (align-cost, recommended with enable=true)
+    # Robust loss type + fixed default scale for graph factors. Used whenever
+    # graph/robust/enable=false; when enabled, the ladder overrides the scale but the
+    # loss type (graph/robust/type) still applies.
+    graph/robust/type: HUBER # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    graph/robust/default_scale: 10.0
+
+    # Registration backend for graph factor linearization (unary/binary GICP).
+    # registration/robust/type and registration/robust/default_scale belong to the single-frame
+    # align path (lidar_odometry robust schedule); graph factors use graph/robust/type and
+    # graph/robust/default_scale instead (see above). The auto-scale schedule below
+    # (auto_scale, auto_scaling_iter, init_scale, min_scale) is also align-path only and unused by graph odometry.
+    registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
+    registration/min_num_points: 300
+    registration/random_sampling/enable: true
+    registration/random_sampling/num: 2048
+    # Intensity-weighted sampling. Assumes intensities are pre-normalized (e.g. by scan/intensity_local_mean_norm).
+    # Silently falls back to uniform sampling when the source has no intensity field.
+    registration/random_sampling/use_intensities: false
+    registration/random_sampling/weighted_ratio: 0.8  # Fraction of samples from the weighted distribution [0.0, 1.0]
+    registration/max_correspondence_distance: 2.0
+    # Per-factor GICP solver iterations and convergence criteria (used by the
+    # single-frame registration inside each graph factor). Distinct from
+    # graph/solver_iterations (Gauss-Newton iterations of the graph optimizer).
+    registration/solver_iterations: 8
+    registration/criteria/translation: 1.0e-3  # [m]
+    registration/criteria/rotation: 1.0e-3     # [rad]
+
+    registration/rotation_constraint/enable:
+      true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
+    registration/rotation_constraint/weight: 1.0
+    # rotation_constraint/robust/default_scale is used by graph factors; init_scale/min_scale
+    # belong to the single-frame align path and are unused by graph odometry.
+    registration/rotation_constraint/robust/default_scale: 5.0
+
+    registration/genz/planarity_threshold: 0.2
+
+    # Optimizer used inside each factor's linearization pass.
+    # GN: damped solve only (fastest).
+    # LM / DOGLEG: step acceptance on the combined ICP+IMU cost, costing one extra
+    #   error-evaluation pass per trial step.
+    registration/optimization_method: LM  # GN, LM, DOGLEG
+    registration/gn/lambda: 1.0e-3
+    registration/lm/max_inner_iterations: 5
+    registration/lm/lambda_factor: 2.0
+    registration/lm/init_lambda: 1.0
+    registration/lm/max_lambda: 1.0e+3
+    registration/lm/min_lambda: 1.0e-3
+    registration/dogleg/initial_trust_region_radius: 2.0
+    registration/dogleg/max_trust_region_radius: 10.0
+    registration/dogleg/min_trust_region_radius: 1.0e-3
+    registration/dogleg/eta1: 0.25
+    registration/dogleg/eta2: 0.75
+    registration/dogleg/gamma_decrease: 0.80
+    registration/dogleg/gamma_increase: 1.25
+
+    registration/verbose: false
+
+    # (vis/* and other lidar_inertial-only blocks were removed: they are not
+    # declared by graph_odometry_node and would be ignored with an unused-parameter warning)
