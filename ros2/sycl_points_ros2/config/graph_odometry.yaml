@@ -82,7 +82,7 @@ graph_odometry_node:
     # Assumes the robot is stationary for at least required_duration_sec at startup.
     # Yaw is preserved from initial_base_link_pose; gravity does not constrain it.
     # The first few scans before alignment converges are dropped (waiting_initial_alignment).
-    imu/initial_alignment/enable: true
+    imu/initial_alignment/enable: false
     imu/initial_alignment/required_duration_sec: 1.0  # IMU window length [s]; must be <= imu/buffer_duration_sec
     imu/initial_alignment/max_gyro_std: 0.05          # [rad/s] per-axis stationarity threshold
     imu/initial_alignment/max_accel_std: 0.2          # [m/s^2] per-axis stationarity threshold
@@ -188,7 +188,7 @@ graph_odometry_node:
     # transient when the submap/keyframe/* gate rejects it). The keyframe gate
     # itself reuses the submap/keyframe/* thresholds above.
     graph/window_size: 5
-    graph/solver_iterations: 2               # Gauss-Newton iterations per frame
+    graph/solver_iterations: 8               # Gauss-Newton iterations per frame
     graph/convergence/translation: 1.0e-4    # [m]
     graph/convergence/rotation: 1.0e-4       # [rad]
     # Delayed relinearization thresholds: cached factor linearizations are
@@ -197,7 +197,7 @@ graph_odometry_node:
     # only re-searched when the threshold is crossed).
     graph/relinearize/translation_threshold: 0.05  # [m]
     graph/relinearize/rotation_threshold: 0.02     # [rad]
-    graph/marginalization_lambda: 1.0e-6           # regularization fallback for LDLT
+    graph/marginalization_lambda: 1.0e-3           # regularization fallback for LDLT
     # NOTE: the Schur-complement marginalization prior is built from the RAW
     # (unweighted, robust loss = NONE) factor Hessians so it stays well conditioned
     # under strongly reweighted losses (e.g. GEMAN_MCCLURE); the solver still uses
@@ -209,10 +209,10 @@ graph_odometry_node:
     # When enabled: init_scale -> min_scale over levels rungs (iters GN
     # iterations each); tip factors freeze at the floor when promoted.
     # Disabled (default) => factors use graph/robust/default_scale.
-    graph/robust/enable: false
+    graph/robust/enable: true
     graph/robust/init_scale: 10.0
     graph/robust/min_scale: 1.25
-    graph/robust/levels: 4
+    graph/robust/levels: 3
     graph/robust/iterations_per_level: 2
     graph/robust/relinearize_per_rung: false  # true: apply ladder per rung (align-cost, recommended with enable=true)
     # Robust loss type + fixed default scale for graph factors. Used whenever
