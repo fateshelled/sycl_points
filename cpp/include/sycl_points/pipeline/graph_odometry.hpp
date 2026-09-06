@@ -155,7 +155,7 @@ public:
             this->add_delta_time(ProcessName::refine_filter, dt);
         }
 
-        if (this->preprocessed_pc_->size() <= this->params_.registration.min_num_points) {
+        if (this->preprocessed_pc_->size() <= this->params_.graph.registration.min_num_points) {
             this->error_message_ = "point cloud size is too small";
             return ResultType::small_number_of_points;
         }
@@ -394,9 +394,10 @@ private:
 
         this->submap_ = std::make_shared<submapping::Submap>(*this->queue_ptr_, this->params_);
 
-        // Registration parameters for the graph factors.
-        this->reg_params_ = algorithms::registration::RegistrationParams(this->params_.registration.factor,
-                                                                        this->params_.lo.registration.optimization);
+        // Registration parameters for the graph factors (decoupled from the single-frame
+        // align path: graph/factor/* instead of registration/*). The graph factors use
+        // compute_linearized_result, so the solver optimization params are unused.
+        this->reg_params_ = algorithms::registration::RegistrationParams(this->params_.graph.registration.factor);
         // Graph factors use graph/robust/* (loss type + fixed default scale), not the
         // shared LO registration/robust/* auto-scale schedule.
         this->reg_params_.robust.type = this->params_.graph.robust_type;
@@ -471,8 +472,8 @@ private:
 
     void compute_covariances() {
         const bool needs_covs =
-            (this->params_.registration.factor.reg_type == algorithms::registration::RegType::GICP ||
-             this->params_.registration.factor.rotation_constraint.enable ||
+            (this->params_.graph.registration.factor.reg_type == algorithms::registration::RegType::GICP ||
+             this->params_.graph.registration.factor.rotation_constraint.enable ||
              this->params_.scan.preprocess.angle_incidence_filter.enable);
         const bool needs_gaussian =
             this->params_.scan.intensity_gaussian.enable && this->preprocessed_pc_->has_intensity();

@@ -20,6 +20,47 @@ inline void declare_registration_robust_schedule_parameters(
         node->declare_parameter<double>("registration/rotation_constraint/robust/min_scale", params.rotation_min_scale);
 }
 
+/// @brief Declare graph factor registration / linearization parameters under `graph/factor/*`.
+/// Graph-only: the single-frame align path keeps its own `registration/*` keys, so this must
+/// NOT be called from declare_lidar_odometry_parameters (shared with lidar_odometry / lidar_inertial_odometry).
+inline void declare_graph_registration_parameters(rclcpp::Node* node,
+                                                  pipeline::lidar_odometry::Parameters& params) {
+    auto& reg = params.graph.registration;
+    auto& factor = reg.factor;
+
+    reg.min_num_points = node->declare_parameter<int64_t>("graph/factor/min_num_points", reg.min_num_points);
+
+    auto& random_sampling = reg.random_sampling;
+    random_sampling.enable =
+        node->declare_parameter<bool>("graph/factor/random_sampling/enable", random_sampling.enable);
+    random_sampling.num = node->declare_parameter<int64_t>("graph/factor/random_sampling/num", random_sampling.num);
+    random_sampling.use_intensities = node->declare_parameter<bool>(
+        "graph/factor/random_sampling/use_intensities", random_sampling.use_intensities);
+    random_sampling.weighted_ratio = static_cast<float>(node->declare_parameter<double>(
+        "graph/factor/random_sampling/weighted_ratio", random_sampling.weighted_ratio));
+    if (random_sampling.weighted_ratio < 0.0f || random_sampling.weighted_ratio > 1.0f) {
+        throw std::invalid_argument(
+            "[declare_graph_registration_parameters] `graph/factor/random_sampling/weighted_ratio` must be "
+            "within [0.0, 1.0]");
+    }
+
+    const std::string reg_type = node->declare_parameter<std::string>("graph/factor/type", "gicp");
+    factor.reg_type = algorithms::registration::RegType_from_string(reg_type);
+    factor.verbose = node->declare_parameter<bool>("graph/factor/verbose", factor.verbose);
+
+    factor.max_correspondence_distance = node->declare_parameter<double>(
+        "graph/factor/max_correspondence_distance", factor.max_correspondence_distance);
+
+    auto& rotation_constraint = factor.rotation_constraint;
+    auto& rotation_robust = rotation_constraint.robust;
+    rotation_constraint.enable =
+        node->declare_parameter<bool>("graph/factor/rotation_constraint/enable", rotation_constraint.enable);
+    rotation_constraint.weight =
+        node->declare_parameter<double>("graph/factor/rotation_constraint/weight", rotation_constraint.weight);
+    rotation_robust.default_scale = node->declare_parameter<double>(
+        "graph/factor/rotation_constraint/robust/default_scale", rotation_robust.default_scale);
+}
+
 inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::Node* node) {
     // Declare shared odometry parameters (scan, submap, registration, IMU, ...).
     pipeline::lidar_odometry::Parameters params;

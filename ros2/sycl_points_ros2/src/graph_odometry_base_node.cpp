@@ -22,6 +22,10 @@ GraphOdometryBaseNode::~GraphOdometryBaseNode() {
 void GraphOdometryBaseNode::initialize_processing() {
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
 
+    // Graph factor registration / linearization settings (graph/factor/*), decoupled from the
+    // single-frame align path's registration/* keys used by lidar_odometry / lidar_inertial_odometry.
+    declare_graph_registration_parameters(this, this->params_);
+
     // Sliding-window graph optimizer (local BA) parameters.
     {
         auto& graph = this->params_.graph;

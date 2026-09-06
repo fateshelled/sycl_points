@@ -221,56 +221,27 @@ graph_odometry_node:
     graph/robust/type: HUBER # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     graph/robust/default_scale: 10.0
 
-    # Registration backend for graph factor linearization (unary/binary GICP).
-    # registration/robust/type and registration/robust/default_scale belong to the single-frame
-    # align path (lidar_odometry robust schedule); graph factors use graph/robust/type and
-    # graph/robust/default_scale instead (see above). The auto-scale schedule below
-    # (auto_scale, auto_scaling_iter, init_scale, min_scale) is also align-path only and unused by graph odometry.
-    registration/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp, genz
-    registration/min_num_points: 300
-    registration/random_sampling/enable: true
-    registration/random_sampling/num: 2048
+    # Registration / linearization settings for graph factors (unary/binary GICP).
+    # These replace the single-frame align path's registration/* keys for graph odometry,
+    # so the graph node no longer depends on registration/* (owned by lidar_odometry / lidar_inertial_odometry).
+    # The graph factors use graph/robust/type and graph/robust/default_scale (above) for the graph loss,
+    # NOT the factor-level registration/robust/* which stays at its default for graph odometry.
+    graph/factor/type: gicp # point_to_point, point_to_plane, point_to_distribution, gicp (genz is invalid for graph factors)
+    graph/factor/min_num_points: 300
+    graph/factor/random_sampling/enable: true
+    graph/factor/random_sampling/num: 2048
     # Intensity-weighted sampling. Assumes intensities are pre-normalized (e.g. by scan/intensity_local_mean_norm).
     # Silently falls back to uniform sampling when the source has no intensity field.
-    registration/random_sampling/use_intensities: false
-    registration/random_sampling/weighted_ratio: 0.8  # Fraction of samples from the weighted distribution [0.0, 1.0]
-    registration/max_correspondence_distance: 2.0
-    # Per-factor GICP solver iterations and convergence criteria (used by the
-    # single-frame registration inside each graph factor). Distinct from
-    # graph/solver_iterations (Gauss-Newton iterations of the graph optimizer).
-    registration/solver_iterations: 8
-    registration/criteria/translation: 1.0e-3  # [m]
-    registration/criteria/rotation: 1.0e-3     # [rad]
-
-    registration/rotation_constraint/enable:
+    graph/factor/random_sampling/use_intensities: false
+    graph/factor/random_sampling/weighted_ratio: 0.8  # Fraction of samples from the weighted distribution [0.0, 1.0]
+    graph/factor/max_correspondence_distance: 2.0
+    graph/factor/rotation_constraint/enable:
       true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
-    registration/rotation_constraint/weight: 1.0
-    # rotation_constraint/robust/default_scale is used by graph factors; init_scale/min_scale
-    # belong to the single-frame align path and are unused by graph odometry.
-    registration/rotation_constraint/robust/default_scale: 5.0
+    graph/factor/rotation_constraint/weight: 1.0
+    # rotation_constraint/robust/default_scale is used by graph factors.
+    graph/factor/rotation_constraint/robust/default_scale: 5.0
 
-    registration/genz/planarity_threshold: 0.2
-
-    # Optimizer used inside each factor's linearization pass.
-    # GN: damped solve only (fastest).
-    # LM / DOGLEG: step acceptance on the combined ICP+IMU cost, costing one extra
-    #   error-evaluation pass per trial step.
-    registration/optimization_method: LM  # GN, LM, DOGLEG
-    registration/gn/lambda: 1.0e-3
-    registration/lm/max_inner_iterations: 5
-    registration/lm/lambda_factor: 2.0
-    registration/lm/init_lambda: 1.0
-    registration/lm/max_lambda: 1.0e+3
-    registration/lm/min_lambda: 1.0e-3
-    registration/dogleg/initial_trust_region_radius: 2.0
-    registration/dogleg/max_trust_region_radius: 10.0
-    registration/dogleg/min_trust_region_radius: 1.0e-3
-    registration/dogleg/eta1: 0.25
-    registration/dogleg/eta2: 0.75
-    registration/dogleg/gamma_decrease: 0.80
-    registration/dogleg/gamma_increase: 1.25
-
-    registration/verbose: false
+    graph/factor/verbose: false
 
     # (vis/* and other lidar_inertial-only blocks were removed: they are not
     # declared by graph_odometry_node and would be ignored with an unused-parameter warning)

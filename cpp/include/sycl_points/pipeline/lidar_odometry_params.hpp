@@ -55,6 +55,17 @@ struct Parameters : public odometry::CommonParameters {
         // graph concerns, independent of the LO registration/robust/* auto-scale schedule.
         algorithms::robust::RobustLossType robust_type = algorithms::robust::RobustLossType::GEMAN_MCCLURE;
         float robust_default_scale = 10.0f;
+
+        /// @brief Registration / linearization settings for the graph factors.
+        /// Decoupled from lidar_odometry::LO::Registration so the graph node can be
+        /// configured independently of the single-frame align path (which owns registration/*).
+        struct Registration {
+            size_t min_num_points = 100;
+            algorithms::registration::RegistrationFactorParams factor;
+            algorithms::registration::RegistrationRandomSamplingParams random_sampling;
+        };
+
+        Registration registration;
     };
 
     MotionPrediction motion_prediction;
