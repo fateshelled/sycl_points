@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <random>
 
 // Disable Eigen SIMD: this TU compiles SYCL device kernels (graph_factor_kernel)
@@ -13,6 +14,7 @@
 #include <Eigen/Dense>
 #include <sycl/sycl.hpp>
 
+#include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/graph/gicp_factor.hpp"
 #include "sycl_points/algorithms/graph/graph_optimization.hpp"
@@ -965,6 +967,224 @@ TEST(RobustScheduleTest, RungForceControlsRelinearizations) {
         EXPECT_FLOAT_EQ(f->seen_scales[1], 5.0f);
         EXPECT_FLOAT_EQ(f->seen_scales[2], 2.5f);
         EXPECT_FLOAT_EQ(f->seen_scales[3], 1.25f);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VelocityUpdate: tip-only constant-velocity deskew + re-solve
+// ---------------------------------------------------------------------------
+
+// Build a scan captured during constant-velocity motion: point i is the world
+// point observed by a body at pose T_start * exp(tau * delta_twist) (tau cycles
+// over [0, 1) via i % steps), with per-point timestamp offset tau*1000 ms.
+PointCloudShared::Ptr make_distorted_scan(const sycl_utils::DeviceQueue& queue, const PointCloudShared& world,
+                                          const Eigen::Isometry3f& T_start,
+                                          const Eigen::Matrix<float, 6, 1>& delta_twist, size_t steps) {
+    auto cloud = std::make_shared<PointCloudShared>(queue);
+    const size_t n = world.size();
+    cloud->points->resize(n);
+    cloud->timestamp_offsets->resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        const float tau = static_cast<float>(i % steps) / static_cast<float>(steps);
+        const Eigen::Isometry3f pose(T_start.matrix() * eigen_utils::lie::se3_exp(delta_twist * tau));
+        const Eigen::Vector4f p = pose.inverse().matrix() * world.points->at(i);
+        (*cloud->points)[i] = PointType(p.x(), p.y(), p.z(), 1.0f);
+        (*cloud->timestamp_offsets)[i] = static_cast<TimestampOffset>(tau * 1000.0f);
+    }
+    cloud->start_time_ms = 0.0;
+    cloud->end_time_ms = 1000.0;
+    return cloud;
+}
+
+class GraphVelocityUpdateTest : public ::testing::Test {
+protected:
+    sycl_utils::DeviceQueue queue = make_queue();
+
+    void estimate_covs(PointCloudShared& cloud) {
+        auto knn = knn::KDTree::build(queue, cloud);
+        covariance::estimate_async(*knn, cloud, 10).wait_and_throw();
+    }
+
+    // Pipeline analog: estimate covariances on the raw scan, then apply the
+    // iter-0 deskew (kernel rotates normals/covs). Returns the deskewed copy.
+    PointCloudShared::Ptr deskew_iter0(const PointCloudShared::Ptr& raw, const Eigen::Isometry3f& prev_pose,
+                                       const Eigen::Isometry3f& init_pose, float dt) {
+        estimate_covs(*raw);
+        auto deskewed = std::make_shared<PointCloudShared>(queue);
+        EXPECT_TRUE(
+            deskew::deskew_point_cloud_constant_velocity(*raw, *deskewed, prev_pose, init_pose, dt));
+        return deskewed;
+    }
+};
+
+// Deskewing the tip scan with the (prev, refined) basis must recover the true
+// tip pose; registering the raw distorted scan instead leaves a mid-scan bias.
+TEST_F(GraphVelocityUpdateTest, DeskewRecoversUndistortedTipPose) {
+    std::mt19937 gen(31);
+    auto submap = make_cube_cloud(queue, 3000, 1.0f, gen);
+    auto submap_knn = knn::KDTree::build(queue, *submap);
+    estimate_covariances(*submap_knn, *submap);
+
+    // Constant-velocity twist: 0.2 m + 0.05 rad per inter-frame interval.
+    Eigen::Matrix<float, 6, 1> delta = Eigen::Matrix<float, 6, 1>::Zero();
+    delta.head<3>() = Eigen::Vector3f(0.0f, 0.0f, 0.05f);
+    delta.tail<3>() = Eigen::Vector3f(0.2f, 0.0f, 0.0f);
+    const Eigen::Isometry3f T_prev = Eigen::Isometry3f::Identity();
+    const Eigen::Isometry3f T_gt(T_prev.matrix() * eigen_utils::lie::se3_exp(delta));
+
+    auto raw = make_distorted_scan(queue, *submap, T_gt, delta, 10);
+    auto raw_knn = knn::KDTree::build(queue, *raw);
+    estimate_covariances(*raw_knn, *raw);
+
+    float err_on = -1.0f, err_off = -1.0f;
+    {  // velocity update ON (2 deskew+re-solve rounds)
+        graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
+        auto deskewed = this->deskew_iter0(raw, T_prev, T_gt, 1.0f);
+        graph::GraphOptimization::VelocityUpdateContext vu;
+        vu.enable = true;
+        vu.iterations = 2;
+        vu.prev_pose = T_prev;
+        vu.dt = 1.0f;
+        vu.raw_source = raw;
+        const auto fr = opt.process_frame(deskewed, submap, submap_knn, nullptr, T_gt, 1.0, gicp_params(), vu);
+        err_on = (fr.current_pose.inverse() * T_gt).translation().norm();
+        expect_pose_near(fr.current_pose, T_gt, 0.03f, 0.03f);
+        ASSERT_NE(fr.tip_cloud, nullptr);
+        // The tip cloud must be a deskewed snapshot, not the raw scan.
+        // (Point 0 has offset tau=0: deskew is the identity there, so check a
+        // mid-scan point.)
+        EXPECT_GT(((*fr.tip_cloud->points)[5].head<3>() - (*raw->points)[5].head<3>()).norm(), 1e-3f);
+        // Retained tip (gate disabled): deferred kNN built exactly once here.
+        const auto tip = opt.window().active_nodes().back();
+        ASSERT_NE(tip->knn, nullptr);
+        EXPECT_EQ(tip->cloud.get(), fr.tip_cloud.get());
+    }
+    {  // velocity update OFF: distorted scan -> mid-scan bias
+        graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
+        const auto fr = opt.process_frame(raw, submap, submap_knn, raw_knn, T_gt, 1.0, gicp_params());
+        err_off = (fr.current_pose.inverse() * T_gt).translation().norm();
+        EXPECT_GT(err_off, 0.03f);
+    }
+    EXPECT_LT(err_on, 0.02f);
+    EXPECT_GT(err_off, 2.0f * err_on);
+}
+
+// The velocity update must swap ONLY the tip's cloud; older nodes keep their
+// cloud/knn pointers, and the tip's kNN is built once at retention (nullptr
+// from the caller, built inside process_frame).
+TEST_F(GraphVelocityUpdateTest, TipOnlyCloudSwapWithDeferredKnn) {
+    std::mt19937 gen(7);
+    auto submap = make_cube_cloud(queue, 3000, 1.0f, gen);
+    auto submap_knn = knn::KDTree::build(queue, *submap);
+    estimate_covariances(*submap_knn, *submap);
+
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
+    Eigen::Matrix<float, 6, 1> delta = Eigen::Matrix<float, 6, 1>::Zero();
+    delta.tail<3>() = Eigen::Vector3f(0.02f, 0.0f, 0.0f);
+    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+
+    std::map<graph::NodeId, std::pair<const void*, const void*>> before;
+    for (size_t f = 0; f < 3; ++f) {
+        const Eigen::Isometry3f T_prev = T;
+        T = Eigen::Isometry3f(T.matrix() * eigen_utils::lie::se3_exp(delta));
+        auto raw = make_distorted_scan(queue, *submap, T, delta, 10);
+        const size_t iters = (f == 0) ? 1 : 2;  // f=0: single deskew, no inner swap
+        auto source = this->deskew_iter0(raw, T_prev, T, 1.0f);
+
+        // Snapshot every existing node's cloud/knn pointers.
+        for (const auto& node : opt.window().active_nodes()) {
+            before[node->id] = {node->cloud.get(), node->knn.get()};
+        }
+
+        graph::GraphOptimization::VelocityUpdateContext vu;
+        vu.enable = true;
+        vu.iterations = iters;
+        vu.prev_pose = T_prev;
+        vu.dt = 1.0f;
+        vu.raw_source = raw;
+        const auto fr = opt.process_frame(source, submap, submap_knn, nullptr, T, 0.1 * static_cast<double>(f),
+                                          gicp_params(), vu);
+
+        expect_pose_near(fr.current_pose, T, 0.03f, 0.03f);
+        ASSERT_NE(fr.tip_cloud, nullptr);
+        const auto tip = opt.window().active_nodes().back();
+        EXPECT_EQ(tip->cloud.get(), fr.tip_cloud.get());
+        // Deferred kNN: caller passed nullptr, retention builds it once.
+        ASSERT_NE(tip->knn, nullptr);
+        if (iters == 1) {
+            EXPECT_EQ(tip->cloud.get(), source.get());  // no inner round -> no swap
+        } else {
+            EXPECT_NE(tip->cloud.get(), source.get());  // inner round swapped the cloud
+        }
+        // Older nodes must be untouched (same pointers).
+        for (const auto& [id, ptrs] : before) {
+            const auto node = opt.window().get_node(id);
+            ASSERT_NE(node, nullptr);
+            EXPECT_EQ(node->cloud.get(), ptrs.first) << "frame " << f << " node " << id;
+            EXPECT_EQ(node->knn.get(), ptrs.second) << "frame " << f << " node " << id;
+        }
+        before.clear();
+    }
+}
+
+// A scan without per-point timestamps disables the update inside
+// process_frame: the caller-provided cloud and kNN are used as-is.
+TEST_F(GraphVelocityUpdateTest, NoTimestampsFallsBackToPlainPath) {
+    std::mt19937 gen(41);
+    auto submap = make_cube_cloud(queue, 3000, 1.0f, gen);
+    auto submap_knn = knn::KDTree::build(queue, *submap);
+    estimate_covariances(*submap_knn, *submap);
+    auto scan = make_cube_cloud(queue, 3000, 1.0f, gen);  // no timestamps
+    auto scan_knn = knn::KDTree::build(queue, *scan);
+    estimate_covariances(*scan_knn, *scan);
+
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
+    graph::GraphOptimization::VelocityUpdateContext vu;
+    vu.enable = true;
+    vu.iterations = 2;
+    vu.dt = 1.0f;
+    vu.raw_source = scan;  // has_timestamps() == false -> inactive
+    const auto fr = opt.process_frame(scan, submap, submap_knn, scan_knn, Eigen::Isometry3f::Identity(), 1.0,
+                                      gicp_params(), vu);
+    EXPECT_EQ(fr.tip_cloud, nullptr);
+    const auto tip = opt.window().active_nodes().back();
+    EXPECT_EQ(tip->cloud.get(), scan.get());
+    EXPECT_EQ(tip->knn.get(), scan_knn.get());
+}
+
+// The fixed-scale override must reach linearize() instead of the internal
+// ladder (frame-level robust schedule driven by process_frame).
+TEST(RobustScheduleTest, FixedScaleOverrideReachesLinearize) {
+    sycl_utils::DeviceQueue queue = make_queue();
+    graph::GraphSolverParams sp;
+    sp.max_iterations = 8;
+    sp.robust.enable = true;
+    sp.robust.iters_per_level = 2;
+    sp.robust.levels = 4;
+    graph::GraphSolver solver(queue, sp);
+
+    {  // no override: internal ladder, needs_relinearization=true keeps GN
+        // running until the ladder reaches its floor (8 linearizations)
+        graph::SlidingWindow window(5);
+        window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+        auto f = std::make_shared<ScaleProbeFactor>();
+        window.add_factor(f);
+        solver.optimize(window);
+        ASSERT_EQ(f->seen_scales.size(), 8u);
+        EXPECT_FLOAT_EQ(f->seen_scales[0], 10.0f);
+        EXPECT_FLOAT_EQ(f->seen_scales[2], 5.0f);
+        EXPECT_FLOAT_EQ(f->seen_scales[4], 2.5f);
+        EXPECT_FLOAT_EQ(f->seen_scales[6], 1.25f);
+    }
+    {  // override 3.0: the ladder (and its gating) is bypassed; converged on
+        // iteration 0 at scale 3.0
+        graph::SlidingWindow window(5);
+        window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+        auto f = std::make_shared<ScaleProbeFactor>();
+        window.add_factor(f);
+        solver.optimize(window, 3.0f);
+        ASSERT_EQ(f->seen_scales.size(), 1u);
+        EXPECT_FLOAT_EQ(f->seen_scales[0], 3.0f);
     }
 }
 

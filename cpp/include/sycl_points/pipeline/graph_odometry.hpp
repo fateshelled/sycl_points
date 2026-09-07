@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/graph/graph_optimization.hpp"
 #include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
@@ -239,7 +240,31 @@ public:
                         // Deep-copy the source cloud: preprocessed_pc_ is reused next frame,
                         // so the window must own an immutable snapshot (and its kNN).
                         auto source_cloud = std::make_shared<PointCloudShared>(*this->preprocessed_pc_);
-                        auto source_knn = algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
+
+                        // VelocityUpdate iter 0: constant-velocity deskew of the tip scan
+                        // with the predicted pose (LO analog: VelocityUpdateAligner's first
+                        // deskew). Basis = (previous frame pose, predicted pose) over the
+                        // inter-scan duration.
+                        algorithms::graph::GraphOptimization::VelocityUpdateContext vu;
+                        vu.enable = this->graph_velocity_update_active_;
+                        vu.iterations = std::max<size_t>(1, this->params_.graph.velocity_update.iter);
+                        vu.prev_pose = this->prev_odom_;
+                        vu.dt = this->dt_;
+                        bool vu_active = false;
+                        if (vu.enable && source_cloud->has_timestamps() && this->dt_ > 0.0f) {
+                            vu.raw_source = source_cloud;
+                            auto deskewed = std::make_shared<PointCloudShared>(source_cloud->queue);
+                            if (algorithms::deskew::deskew_point_cloud_constant_velocity(
+                                    *source_cloud, *deskewed, this->prev_odom_, init_T, this->dt_)) {
+                                source_cloud = deskewed;
+                                vu_active = true;
+                            }
+                        }
+                        // With the velocity update the tip kNN is deferred: the tip's own
+                        // kNN is never read within its own frame, so process_frame builds
+                        // it once at keyframe promotion on the final deskewed cloud.
+                        std::shared_ptr<algorithms::knn::KNNBase> source_knn =
+                            vu_active ? nullptr : algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
 
                         // Submap generations are immutable snapshots handed to the graph.
                         // In voxel mode the submap only changes when a keyframe is merged,
@@ -253,7 +278,7 @@ public:
 
                         auto result = this->graph_opt_->process_frame(
                             source_cloud, this->submap_gen_cloud_, this->submap_gen_knn_, source_knn,
-                            init_T, timestamp, this->reg_params_);
+                            init_T, timestamp, this->reg_params_, vu);
 
                         if (this->imu_preintegration_) {
                             this->imu_R_world_at_reset_ =
@@ -307,6 +332,28 @@ public:
             }
             this->registrated_ = true;
         }
+
+        // Velocity deskew of the published full-resolution cloud with the final
+        // pose (LO analog: lidar_odometry.hpp deskews preprocessed_pc_ in place
+        // after registration). The submap uses the tip node's deskewed snapshot;
+        // this keeps get_preprocessed_point_cloud() on the same basis.
+        if (this->graph_velocity_update_active_ && this->dt_ > 0.0f) {
+            double dt = 0.0;
+            try {
+                time_utils::measure_execution(
+                    [&]() {
+                        algorithms::deskew::deskew_point_cloud_constant_velocity(
+                            *this->preprocessed_pc_, *this->preprocessed_pc_, this->prev_odom_, this->odom_,
+                            this->dt_);
+                    },
+                    dt);
+            } catch (const std::exception& e) {
+                this->error_message_ = std::string("velocity deskew: ") + e.what();
+                std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
+                return ResultType::error;
+            }
+            this->add_delta_time(ProcessName::velocity_deskew, dt);
+        }
         return ResultType::success;
     }
 
@@ -335,6 +382,9 @@ private:
     float dt_ = -1.0f;
     GraphOdometryParams params_;
     lidar_odometry::MotionPredictor::Ptr motion_predictor_ = nullptr;
+    /// @brief Effective tip-only velocity update switch (graph.velocity_update.enable
+    /// AND not imu deskew). Set in initialize(); params_ itself is not mutated.
+    bool graph_velocity_update_active_ = false;
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     imu::IMUVelocityCorrector imu_velocity_corrector_;
@@ -349,13 +399,14 @@ private:
     bool imu_window_complete_ = false;
 
     std::string error_message_;
-    enum class ProcessName { preprocessing = 0, compute_covariances, refine_filter, graph_optimization, build_submap };
+    enum class ProcessName { preprocessing = 0, compute_covariances, refine_filter, graph_optimization, build_submap, velocity_deskew };
     const std::map<ProcessName, std::string> pn_map_ = {
         {ProcessName::preprocessing, "1. preprocessing"},
         {ProcessName::compute_covariances, "2. compute covariances"},
         {ProcessName::refine_filter, "3. refine filter"},
         {ProcessName::graph_optimization, "4. graph optimization"},
         {ProcessName::build_submap, "5. build submap"},
+        {ProcessName::velocity_deskew, "6. velocity deskew"},
     };
     std::map<std::string, double> current_processing_time_;
     std::map<std::string, std::vector<double>> total_processing_times_;
@@ -447,6 +498,16 @@ private:
                 this->params_.imu.T_imu_to_lidar);
         }
         this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
+
+        // Tip-only velocity update (constant-velocity deskew + re-solve) is
+        // mutually exclusive with IMU deskew: both map the raw scan into the
+        // scan-reference body frame, so applying both would double-correct.
+        // Same guard as the LO pipeline (lidar_odometry.hpp).
+        this->graph_velocity_update_active_ = this->params_.graph.velocity_update.enable;
+        if (this->graph_velocity_update_active_ && this->is_imu_deskew_enabled()) {
+            std::cerr << "[Graph Odometry] VelocityUpdate is disabled because IMU deskew is enabled." << std::endl;
+            this->graph_velocity_update_active_ = false;
+        }
     }
 
     void apply_initial_alignment(const imu::InitialAlignmentEstimator::Output& out) {
@@ -502,8 +563,13 @@ private:
         this->reg_result_->iterations = frame_result.iterations;
         this->reg_result_->error = frame_result.error;
 
+        // With the velocity update the tip node's cloud is the final deskewed
+        // snapshot; feed that exact cloud to the submap so the map shares the
+        // tip node's reference frame.
+        const PointCloudShared& map_cloud =
+            frame_result.tip_cloud ? *frame_result.tip_cloud : *this->preprocessed_pc_;
         const bool map_changed =
-            this->submap_->add_frame(*this->preprocessed_pc_, *this->reg_result_, 1.0f, timestamp, nullptr);
+            this->submap_->add_frame(map_cloud, *this->reg_result_, 1.0f, timestamp, nullptr);
         if (map_changed) {
             this->submap_dirty_ = true;
         }

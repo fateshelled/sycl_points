@@ -26,6 +26,10 @@ void GraphOdometryBaseNode::initialize_processing() {
     // single-frame align path's registration/* keys used by lidar_odometry / lidar_inertial_odometry.
     declare_graph_registration_parameters(this, this->params_);
 
+    // Tip-only constant-velocity deskew (graph/velocity_update/*), the graph
+    // node's mirror of the align path's registration/velocity_update/*.
+    declare_graph_velocity_update_parameters(this, this->params_);
+
     // Sliding-window graph optimizer (local BA) parameters.
     {
         auto& graph = this->params_.graph;

@@ -221,6 +221,16 @@ graph_odometry_node:
     graph/robust/type: HUBER # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     graph/robust/default_scale: 10.0
 
+    # Constant-velocity deskew + re-solve for the tip node only (LO-aligned
+    # composition; mirrors the align path's registration/velocity_update/*).
+    # Requires per-point timestamps. Mutually exclusive with IMU deskew:
+    # automatically disabled when imu/deskew/enable=true.
+    # iter = deskew+re-solve rounds per frame (1 = deskew once with the
+    # predicted pose, no extra solve). The tip's KD-tree is built once at
+    # keyframe promotion on the final deskewed cloud, not per deskew iteration.
+    graph/velocity_update/enable: false
+    graph/velocity_update/iter: 1
+
     # Registration / linearization settings for graph factors (unary/binary GICP).
     # These replace the single-frame align path's registration/* keys for graph odometry,
     # so the graph node no longer depends on registration/* (owned by lidar_odometry / lidar_inertial_odometry).

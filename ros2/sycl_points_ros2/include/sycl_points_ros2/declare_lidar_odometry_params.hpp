@@ -61,6 +61,23 @@ inline void declare_graph_registration_parameters(rclcpp::Node* node,
         "graph/factor/rotation_constraint/robust/default_scale", rotation_robust.default_scale);
 }
 
+/// @brief Declare the tip-only constant-velocity deskew parameters under
+/// `graph/velocity_update/*`. Graph-only mirror of the align path's
+/// `registration/velocity_update/*`; must NOT be called from
+/// declare_lidar_odometry_parameters (shared with lidar_odometry / LIO).
+inline void declare_graph_velocity_update_parameters(rclcpp::Node* node,
+                                                     pipeline::lidar_odometry::Parameters& params) {
+    auto& velocity_update = params.graph.velocity_update;
+    velocity_update.enable =
+        node->declare_parameter<bool>("graph/velocity_update/enable", velocity_update.enable);
+    velocity_update.iter = static_cast<size_t>(node->declare_parameter<int64_t>(
+        "graph/velocity_update/iter", static_cast<int64_t>(velocity_update.iter)));
+    if (velocity_update.iter == 0) {
+        throw std::invalid_argument(
+            "[declare_graph_velocity_update_parameters] `graph/velocity_update/iter` must be >= 1");
+    }
+}
+
 inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::Node* node) {
     // Declare shared odometry parameters (scan, submap, registration, IMU, ...).
     pipeline::lidar_odometry::Parameters params;

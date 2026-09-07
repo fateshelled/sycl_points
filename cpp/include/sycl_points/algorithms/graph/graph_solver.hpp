@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -58,6 +59,22 @@ inline float robust_ladder_scale(const GraphSolverParams::RobustSchedule& r, siz
     return std::max(r.min_scale, r.init_scale * std::pow(alpha, static_cast<float>(level)));
 }
 
+/// @brief Ladder scale for rung `level` (frame-level schedule: one optimize()
+///        pass per rung). Same formula as robust_ladder_scale(); used by
+///        GraphOptimization when it drives the ladder across passes, mirroring
+///        the align path's RobustAligner (one full solve per rung).
+inline float robust_ladder_scale_at_level(const GraphSolverParams::RobustSchedule& r, size_t level) {
+    if (!r.enable || r.levels == 0 || r.min_scale <= 0.0f || r.init_scale <= 0.0f) {
+        return 0.0f;
+    }
+    const size_t lvl = std::min(level, r.levels - 1);
+    const float alpha =
+        r.levels == 1
+            ? 0.0f
+            : std::pow(r.min_scale / r.init_scale, 1.0f / static_cast<float>(r.levels - 1));
+    return std::max(r.min_scale, r.init_scale * std::pow(alpha, static_cast<float>(lvl)));
+}
+
 /// @brief Gauss-Newton solver over the sliding-window pose graph.
 class GraphSolver {
 public:
@@ -73,10 +90,17 @@ public:
 
     const GraphSolverParams& params() const { return params_; }
 
-    Result optimize(SlidingWindow& window) {
+    /// @brief Run Gauss-Newton iterations over the sliding window.
+    /// @param robust_scale_override When set, every iteration linearizes with
+    ///        this fixed scale and the internal robust ladder (and its
+    ///        ladder-done convergence gating) is bypassed: the caller drives
+    ///        the frame-level schedule, mirroring the align path's
+    ///        RobustAligner (one full solve per rung). When unset, the behavior
+    ///        is unchanged (internal ladder when params_.robust.enable).
+    Result optimize(SlidingWindow& window, std::optional<float> robust_scale_override = std::nullopt) {
         Result result;
         for (size_t iter = 0; iter < params_.max_iterations; ++iter) {
-            auto sys = assemble(window, robust_ladder_scale(params_.robust, iter));
+            auto sys = assemble(window, robust_scale_override.value_or(robust_ladder_scale(params_.robust, iter)));
 
             Eigen::LDLT<Eigen::MatrixXf> ldlt(sys.H);
             if (ldlt.info() != Eigen::Success) {
@@ -107,12 +131,14 @@ public:
             result.iterations = iter + 1;
             // With an active ladder, small steps alone must not stop the loop:
             // convergence is only granted once the schedule reached its floor
-            // (mirrors align-path RobustAligner running every level).
+            // (mirrors align-path RobustAligner running every level). When the
+            // caller drives a fixed-scale schedule, the ladder gating is the
+            // caller's concern: grant convergence normally.
             const size_t ladder_iters =
                 std::max<size_t>(1, params_.robust.levels) *
                 std::max<size_t>(1, params_.robust.iters_per_level);
-            const bool ladder_done =
-                !params_.robust.enable || (iter + 1) >= ladder_iters;
+            const bool ladder_done = robust_scale_override.has_value() || !params_.robust.enable ||
+                                     (iter + 1) >= ladder_iters;
             if (converged && ladder_done) {
                 result.converged = true;
                 break;

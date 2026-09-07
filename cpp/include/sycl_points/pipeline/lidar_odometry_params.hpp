@@ -66,6 +66,12 @@ struct Parameters : public odometry::CommonParameters {
         };
 
         Registration registration;
+
+        /// @brief Constant-velocity deskew + re-solve for the tip node only.
+        /// Same type as lo.pipeline.velocity_update on purpose (LO-aligned
+        /// composition). Mutually exclusive with imu/deskew: skipped when IMU
+        /// deskew is enabled (same guard as LO).
+        algorithms::registration::RegistrationVelocityUpdateParams velocity_update;
     };
 
     MotionPrediction motion_prediction;
