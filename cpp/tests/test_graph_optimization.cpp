@@ -393,6 +393,23 @@ TEST_F(GraphSolverTest, SolvesDenseMarginalizationPrior) {
     expect_pose_near(window.get_node(id2)->pose, Eigen::Isometry3f::Identity(), 1e-3f, 1e-3f);
 }
 
+TEST_F(GraphSolverTest, HonorsPerCallIterationLimit) {
+    graph::SlidingWindow window(5);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    Eigen::Isometry3f target = Eigen::Isometry3f::Identity();
+    target.translate(Eigen::Vector3f(1.0f, 0.0f, 0.0f));
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id), target, 1.0f));
+
+    graph::GraphSolverParams params;
+    params.max_iterations = 8;
+    params.convergence_rotation = -1.0f;
+    params.convergence_translation = -1.0f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window, 2.0f, 2U);
+
+    EXPECT_EQ(result.iterations, 2U);
+    EXPECT_FALSE(result.converged);
+}
+
 // ---------------------------------------------------------------------------
 // End-to-end GICP (real factors, SYCL)
 // ---------------------------------------------------------------------------

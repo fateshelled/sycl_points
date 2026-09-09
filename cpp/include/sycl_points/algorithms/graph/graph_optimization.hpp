@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <optional>
 
 #include <Eigen/Geometry>
 
@@ -216,9 +217,13 @@ public:
                     if (v == 0 && robust.enable && solver_.params().verbose) {
                         std::cout << "Robust scale: " << rung_scale << std::endl;
                     }
-                    const auto result = solver_.optimize(window_, rung_scale);
+                    const auto result = solver_.optimize(
+                        window_, rung_scale,
+                        robust.enable
+                            ? std::optional<size_t>(std::max<size_t>(1, robust.iters_per_level))
+                            : std::nullopt);
                     fr.converged = result.converged;
-                    fr.iterations = result.iterations;
+                    fr.iterations += result.iterations;
                     fr.error = result.final_error;
                 }
             }

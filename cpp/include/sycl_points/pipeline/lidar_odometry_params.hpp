@@ -50,7 +50,7 @@ struct Parameters : public odometry::CommonParameters {
         float robust_min_scale = 1.25f;
         size_t robust_levels = 4;
         size_t robust_iters_per_level = 2;
-        bool robust_relinearize_per_rung = false;
+        bool robust_relinearize_per_rung = true;
         // Robust loss type + fixed default scale applied to graph factors. These are
         // graph concerns, independent of the LO registration/robust/* auto-scale schedule.
         algorithms::robust::RobustLossType robust_type = algorithms::robust::RobustLossType::GEMAN_MCCLURE;

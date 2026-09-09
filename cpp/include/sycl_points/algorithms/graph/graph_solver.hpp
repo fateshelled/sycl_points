@@ -42,7 +42,7 @@ struct GraphSolverParams {
         ///        the ladder is actually applied even when the pose drift stays under
         ///        the relinearization threshold. Costs ~levels full tip linearizations
         ///        per frame (== the align-path ladder); recommended when enable=true.
-        bool relinearize_per_rung = false;
+        bool relinearize_per_rung = true;
     };
     RobustSchedule robust;
 };
@@ -117,9 +117,11 @@ public:
     ///        the frame-level schedule, mirroring the align path's
     ///        RobustAligner (one full solve per rung). When unset, the behavior
     ///        is unchanged (internal ladder when params_.robust.enable).
-    Result optimize(SlidingWindow& window, std::optional<float> robust_scale_override = std::nullopt) {
+    Result optimize(SlidingWindow& window, std::optional<float> robust_scale_override = std::nullopt,
+                    std::optional<size_t> max_iterations_override = std::nullopt) {
         Result result;
-        for (size_t iter = 0; iter < params_.max_iterations; ++iter) {
+        const size_t max_iterations = max_iterations_override.value_or(params_.max_iterations);
+        for (size_t iter = 0; iter < max_iterations; ++iter) {
             auto sys = assemble(window, robust_scale_override.value_or(robust_ladder_scale(params_.robust, iter)));
 
             result.final_error = sys.error;

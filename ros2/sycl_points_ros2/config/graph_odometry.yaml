@@ -188,7 +188,7 @@ graph_odometry_node:
     # transient when the submap/keyframe/* gate rejects it). The keyframe gate
     # itself reuses the submap/keyframe/* thresholds above.
     graph/window_size: 5
-    graph/solver_iterations: 8               # Gauss-Newton iterations per frame
+    graph/solver_iterations: 8               # GN iterations when robust ladder is disabled
     graph/convergence/translation: 1.0e-4    # [m]
     graph/convergence/rotation: 1.0e-4       # [rad]
     # Delayed relinearization thresholds: cached factor linearizations are
@@ -214,7 +214,7 @@ graph_odometry_node:
     graph/robust/min_scale: 1.25
     graph/robust/levels: 3
     graph/robust/iterations_per_level: 2
-    graph/robust/relinearize_per_rung: false  # true: apply ladder per rung (align-cost, recommended with enable=true)
+    graph/robust/relinearize_per_rung: true   # LO-compatible: apply every scale rung with fresh weights/KNN
     # Robust loss type + fixed default scale for graph factors. Used whenever
     # graph/robust/enable=false; when enabled, the ladder overrides the scale but the
     # loss type (graph/robust/type) still applies.
