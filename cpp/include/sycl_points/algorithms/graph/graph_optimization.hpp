@@ -168,6 +168,9 @@ public:
                         break;
                     }
                     first_pass = false;
+                    if (v == 0 && robust.enable && solver_.params().verbose) {
+                        std::cout << "Robust scale: " << rung_scale << std::endl;
+                    }
                     const auto result = solver_.optimize(window_, rung_scale);
                     fr.converged = result.converged;
                     fr.iterations = result.iterations;

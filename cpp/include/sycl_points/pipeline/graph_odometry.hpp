@@ -469,6 +469,8 @@ private:
         solver_params.robust.levels = this->params_.graph.robust_levels;
         solver_params.robust.iters_per_level = this->params_.graph.robust_iters_per_level;
         solver_params.robust.relinearize_per_rung = this->params_.graph.robust_relinearize_per_rung;
+        // Per-iteration solver logs on the graph path (LO analog: RegistrationFactorParams::verbose).
+        solver_params.verbose = this->params_.graph.registration.factor.verbose;
 
         algorithms::graph::GraphOptimization::Options gopts;
         gopts.gate.enabled = true;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -24,6 +25,10 @@ struct GraphSolverParams {
     float relinearize_rotation_thresh = 0.02f;
     float relinearize_translation_thresh = 0.05f;
     float marginalization_lambda = 1e-6f;
+
+    /// @brief Print per-iteration solver logs (mirrors RegistrationFactorParams::verbose
+    ///        on the LO align path; wired from graph/factor/verbose).
+    bool verbose = false;
 
     /// @brief Graduated non-convexity (robust scale ladder) for the per-frame
     ///        tip factors. Disabled by default (existing behavior preserved).
@@ -113,11 +118,23 @@ public:
             Eigen::VectorXf delta = ldlt.solve(-sys.b);
 
             bool converged = true;
+            float max_dt = 0.0f;
+            float max_dr = 0.0f;
             for (size_t i = 0; i < sys.node_ids.size(); ++i) {
                 Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
+                max_dr = std::max(max_dr, d.head<3>().norm());
+                max_dt = std::max(max_dt, d.tail<3>().norm());
                 if (d.head<3>().norm() > params_.convergence_rotation ||
                     d.tail<3>().norm() > params_.convergence_translation)
                     converged = false;
+            }
+
+            if (params_.verbose) {
+                std::cout << "iter [" << iter << "] ";
+                std::cout << "error: " << sys.error << ", ";
+                std::cout << "inlier: " << sys.inliers << ", ";
+                std::cout << "dt: " << max_dt << ", ";
+                std::cout << "dr: " << max_dr << std::endl;
             }
 
             for (size_t i = 0; i < sys.node_ids.size(); ++i) {
@@ -152,6 +169,7 @@ private:
         Eigen::MatrixXf H;
         Eigen::VectorXf b;
         float error = 0.0f;
+        size_t inliers = 0;
         std::vector<NodeId> node_ids;
     };
 
@@ -175,6 +193,7 @@ private:
             int si = idx.at(sid);
             sys.H.block<6, 6>(6 * si, 6 * si) += lin.H00;
             sys.error += lin.error;
+            sys.inliers += lin.inlier;
             bool has_target = tid != INVALID_NODE_ID && idx.count(tid);
             if (has_target) {
                 int ti = idx.at(tid);
