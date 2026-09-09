@@ -238,8 +238,7 @@ TEST_F(GraphSlidingWindowTest, MarginalizeOldestShrinksWindow) {
     const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
     const graph::NodeId id2 = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
 
-    // Couple the chain so the marginalized prior carries information about the
-    // newest node (n2) through n1.
+    // Only the factor touching id0 is absorbed; the id1-id2 factor stays live.
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id1), 5.0f));
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id1), window.get_node(id2), 5.0f));
 
@@ -248,8 +247,40 @@ TEST_F(GraphSlidingWindowTest, MarginalizeOldestShrinksWindow) {
     EXPECT_EQ(window.window_size(), 2U);
     EXPECT_TRUE(window.prior().is_valid());
     ASSERT_EQ(window.prior().node_ids.size(), 1U);
-    EXPECT_EQ(window.prior().node_ids[0], id2);  // star-shaped prior on newest node
+    EXPECT_EQ(window.prior().node_ids[0], id1);
     EXPECT_EQ(window.get_node(marginalized), nullptr);
+}
+
+TEST_F(GraphSlidingWindowTest, MarginalizationDoesNotAbsorbSurvivingFactors) {
+    graph::SlidingWindow window(2);
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    const graph::NodeId id2 = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id0), Eigen::Isometry3f::Identity(), 10.0f));
+    window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id1), 5.0f));
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id2), Eigen::Isometry3f::Identity(), 7.0f));
+
+    ASSERT_NE(window.marginalize_oldest(queue), graph::INVALID_NODE_ID);
+    ASSERT_EQ(window.prior().node_ids.size(), 1U);
+    EXPECT_EQ(window.prior().node_ids[0], id1);
+    ASSERT_EQ(window.factors().size(), 1U);
+    EXPECT_EQ(window.factors()[0]->node_ids().first, id2);
+}
+
+TEST_F(GraphSlidingWindowTest, MarginalizationPreservesMarkovBlanketCoupling) {
+    graph::SlidingWindow window(2);
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    const graph::NodeId id2 = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id0), Eigen::Isometry3f::Identity(), 10.0f));
+    window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id1), 5.0f));
+    window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id2), 3.0f));
+
+    ASSERT_NE(window.marginalize_oldest(queue), graph::INVALID_NODE_ID);
+    ASSERT_EQ(window.prior().node_ids.size(), 2U);
+    EXPECT_EQ(window.prior().node_ids[0], id1);
+    EXPECT_EQ(window.prior().node_ids[1], id2);
+    EXPECT_GT((window.prior().H_prior.block<6, 6>(0, 6).norm()), 1e-3f);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +348,28 @@ TEST_F(GraphSolverTest, RejectsNonFiniteSystemWithoutUpdatingPose) {
     EXPECT_FALSE(result.valid());
     EXPECT_EQ(result.status, graph::GraphSolver::Status::NON_FINITE_SYSTEM);
     EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
+}
+
+TEST_F(GraphSolverTest, SolvesDenseMarginalizationPrior) {
+    graph::SlidingWindow window(2);
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    Eigen::Isometry3f pose1 = Eigen::Isometry3f::Identity();
+    pose1.translate(Eigen::Vector3f(0.2f, 0.0f, 0.0f));
+    Eigen::Isometry3f pose2 = Eigen::Isometry3f::Identity();
+    pose2.translate(Eigen::Vector3f(-0.1f, 0.0f, 0.0f));
+    const graph::NodeId id1 = window.add_node(pose1, 1.0);
+    const graph::NodeId id2 = window.add_node(pose2, 2.0);
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id0), Eigen::Isometry3f::Identity(), 10.0f));
+    window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id1), 5.0f));
+    window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id2), 3.0f));
+
+    ASSERT_NE(window.marginalize_oldest(queue), graph::INVALID_NODE_ID);
+    const auto result = graph::GraphSolver(queue).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_TRUE(result.converged);
+    expect_pose_near(window.get_node(id1)->pose, Eigen::Isometry3f::Identity(), 1e-3f, 1e-3f);
+    expect_pose_near(window.get_node(id2)->pose, Eigen::Isometry3f::Identity(), 1e-3f, 1e-3f);
 }
 
 // ---------------------------------------------------------------------------
@@ -803,7 +856,10 @@ TEST_F(GraphTopologyTest, CliqueModeKeepsLegacyStructure) {
             EXPECT_EQ(c.pc_binary, K * (K - 1) / 2) << "frame " << f;
             EXPECT_EQ(c.chain, 0u) << "frame " << f;
             if (w.prior().is_valid()) {
-                EXPECT_EQ(w.prior().node_ids[0], w.active_nodes().back()->id) << "frame " << f;
+                for (const auto& node : w.active_nodes()) {
+                    EXPECT_NE(std::find(w.prior().node_ids.begin(), w.prior().node_ids.end(), node->id),
+                              w.prior().node_ids.end()) << "frame " << f;
+                }
             }
         }
     }

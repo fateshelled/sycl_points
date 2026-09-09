@@ -266,12 +266,30 @@ private:
 
         const auto& prior = window.prior();
         if (prior.is_valid()) {
-            auto it = std::find(sys.node_ids.begin(), sys.node_ids.end(), prior.node_ids[0]);
-            if (it != sys.node_ids.end()) {
-                int pi = static_cast<int>(std::distance(sys.node_ids.begin(), it));
-                auto c = prior.evaluate(nodes[pi]->pose);
-                sys.H.block<6, 6>(6 * pi, 6 * pi) += c.H;
-                sys.b.segment<6>(6 * pi) += c.b;
+            bool all_present = true;
+            std::vector<int> prior_indices;
+            std::vector<Eigen::Isometry3f> poses;
+            prior_indices.reserve(prior.node_ids.size());
+            poses.reserve(prior.node_ids.size());
+            for (const NodeId id : prior.node_ids) {
+                const auto it = idx.find(id);
+                if (it == idx.end()) {
+                    all_present = false;
+                    break;
+                }
+                prior_indices.push_back(it->second);
+                poses.push_back(window.get_node(id)->pose);
+            }
+            if (all_present) {
+                const auto c = prior.evaluate(poses);
+                for (size_t i = 0; i < prior_indices.size(); ++i) {
+                    const int pi = prior_indices[i];
+                    sys.b.segment<6>(6 * pi) += c.b.segment<6>(6 * i);
+                    for (size_t j = 0; j < prior_indices.size(); ++j) {
+                        const int pj = prior_indices[j];
+                        sys.H.block<6, 6>(6 * pi, 6 * pj) += c.H.block<6, 6>(6 * i, 6 * j);
+                    }
+                }
                 sys.error += c.error;
             }
         }

@@ -11,25 +11,27 @@ namespace sycl_points {
 namespace algorithms {
 namespace graph {
 
-/// @brief Schur-complement marginalization prior applied as a unary factor
-///        on a single node (the newest kept node after marginalizing the oldest).
+/// @brief Dense Schur-complement prior over the marginalized node's Markov blanket.
 class MarginalizationPrior {
 public:
     struct PriorContribution {
-        Eigen::Matrix<float, 6, 6> H;
-        Eigen::Matrix<float, 6, 1> b;
+        Eigen::MatrixXf H;
+        Eigen::VectorXf b;
         float error;
     };
 
-    std::vector<NodeId> node_ids;  // single element for the star-shaped prior
+    std::vector<NodeId> node_ids;
     std::vector<Eigen::Isometry3f> linearization_poses;
-    Eigen::Matrix<float, 6, 6> H_prior = Eigen::Matrix<float, 6, 6>::Zero();
-    Eigen::Matrix<float, 6, 1> b_prior = Eigen::Matrix<float, 6, 1>::Zero();
+    Eigen::MatrixXf H_prior;
+    Eigen::VectorXf b_prior;
     float error_constant = 0.0f;
 
-    PriorContribution evaluate(const Eigen::Isometry3f& current_pose) const {
-        const Eigen::Isometry3f T_rel = linearization_poses[0].inverse() * current_pose;
-        const Eigen::Matrix<float, 6, 1> e = eigen_utils::lie::se3_log(T_rel);
+    PriorContribution evaluate(const std::vector<Eigen::Isometry3f>& current_poses) const {
+        Eigen::VectorXf e = Eigen::VectorXf::Zero(6 * node_ids.size());
+        for (size_t i = 0; i < node_ids.size(); ++i) {
+            const Eigen::Isometry3f T_rel = linearization_poses[i].inverse() * current_poses[i];
+            e.segment<6>(6 * i) = eigen_utils::lie::se3_log(T_rel);
+        }
         PriorContribution ret;
         ret.H = H_prior;
         ret.b = H_prior * e + b_prior;  // updated by deviation from linearization point
@@ -37,7 +39,12 @@ public:
         return ret;
     }
 
-    bool is_valid() const { return !node_ids.empty() && H_prior.any(); }
+    bool is_valid() const {
+        const Eigen::Index expected = static_cast<Eigen::Index>(6 * node_ids.size());
+        return !node_ids.empty() && linearization_poses.size() == node_ids.size() &&
+               H_prior.rows() == expected && H_prior.cols() == expected &&
+               b_prior.size() == expected && H_prior.any();
+    }
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };

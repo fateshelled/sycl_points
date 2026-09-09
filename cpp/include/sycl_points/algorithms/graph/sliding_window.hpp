@@ -136,25 +136,39 @@ public:
     enum class MarginalizationAnchor { Newest, OldestSurviving };
 
     /// @brief Marginalize the oldest active node via Schur complement, producing a
-    ///        star-shaped unary prior on the newest node. Returns the marginalized
-    ///        node id, or INVALID_NODE_ID if the window has not exceeded its max size.
+    ///        dense prior over its Markov blanket. Only factors touching the removed
+    ///        node are absorbed; surviving factors remain represented exactly once.
     NodeId marginalize_oldest(const sycl_utils::DeviceQueue& queue,
                               MarginalizationAnchor anchor = MarginalizationAnchor::Newest) {
         if (nodes_.size() <= max_window_size_) return INVALID_NODE_ID;
 
         auto oldest = nodes_.front();
         NodeId marginalize_id = oldest->id;
-        const size_t K = nodes_.size();
-        const int m_idx = 0;
-        const int r_size = static_cast<int>(6 * (K - 1));
+        std::vector<NodeId> local_ids = {marginalize_id};
+        auto add_local_id = [&](NodeId id) {
+            if (id != INVALID_NODE_ID &&
+                std::find(local_ids.begin(), local_ids.end(), id) == local_ids.end()) {
+                local_ids.push_back(id);
+            }
+        };
+        for (const NodeId id : prior_.node_ids) add_local_id(id);
+        for (const auto& f : factors_) {
+            const auto [sid, tid] = f->node_ids();
+            if (sid == marginalize_id || tid == marginalize_id) {
+                add_local_id(sid);
+                add_local_id(tid);
+            }
+        }
 
-        // Step 1: linearize all factors at the current poses into a dense 6K x 6K system.
+        const size_t K = local_ids.size();
         Eigen::MatrixXf H_all = Eigen::MatrixXf::Zero(6 * K, 6 * K);
         Eigen::VectorXf b_all = Eigen::VectorXf::Zero(6 * K);
         std::unordered_map<NodeId, int> id_to_idx;
-        for (int i = 0; i < static_cast<int>(K); ++i) id_to_idx[nodes_[i]->id] = i;
+        for (int i = 0; i < static_cast<int>(K); ++i) id_to_idx[local_ids[i]] = i;
 
         for (auto& f : factors_) {
+            const auto [sid, tid] = f->node_ids();
+            if (sid != marginalize_id && tid != marginalize_id) continue;
             f->clear_cache();
             // Marginalization uses the RAW (unweighted) linearization: the Schur
             // complement must carry full measurement information so the resulting
@@ -162,7 +176,6 @@ public:
             // far-point weights toward 0, which would make H_mm near-singular and
             // blow up -H_mr^T H_mm^-1 H_mr; the raw H avoids that.
             auto lin = f->linearize(queue, 0.0f, /*raw=*/true);
-            auto [sid, tid] = f->node_ids();
             int si = id_to_idx[sid];
             H_all.block<6, 6>(6 * si, 6 * si) += lin.H00;
             b_all.segment<6>(6 * si) += lin.b0;
@@ -175,12 +188,20 @@ public:
             }
         }
 
-        // Step 2: add existing prior.
+        // Step 2: carry the existing prior exactly once.
         if (prior_.is_valid()) {
-            int pi = id_to_idx[prior_.node_ids[0]];
-            auto c = prior_.evaluate(nodes_[pi]->pose);
-            H_all.block<6, 6>(6 * pi, 6 * pi) += c.H;
-            b_all.segment<6>(6 * pi) += c.b;
+            std::vector<Eigen::Isometry3f> poses;
+            poses.reserve(prior_.node_ids.size());
+            for (const NodeId id : prior_.node_ids) poses.push_back(get_node(id)->pose);
+            const auto c = prior_.evaluate(poses);
+            for (size_t i = 0; i < prior_.node_ids.size(); ++i) {
+                const int pi = id_to_idx[prior_.node_ids[i]];
+                b_all.segment<6>(6 * pi) += c.b.segment<6>(6 * i);
+                for (size_t j = 0; j < prior_.node_ids.size(); ++j) {
+                    const int pj = id_to_idx[prior_.node_ids[j]];
+                    H_all.block<6, 6>(6 * pi, 6 * pj) += c.H.block<6, 6>(6 * i, 6 * j);
+                }
+            }
         }
 
         // Step 3: Schur complement to eliminate the oldest node (index 0).
@@ -189,6 +210,7 @@ public:
         Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt_mm(H_mm_reg);
         if (ldlt_mm.info() != Eigen::Success) return INVALID_NODE_ID;  // fallback
 
+        const int r_size = static_cast<int>(6 * (K - 1));
         Eigen::MatrixXf H_mr = H_all.block(0, 6, 6, r_size);
         Eigen::Matrix<float, 6, 1> b_m = b_all.head<6>();
         Eigen::MatrixXf H_rr = H_all.block(6, 6, r_size, r_size);
@@ -197,16 +219,14 @@ public:
         Eigen::MatrixXf H_prior_new = H_rr - H_mr.transpose() * ldlt_mm.solve(H_mr);
         Eigen::VectorXf b_prior_new = b_r - H_mr.transpose() * ldlt_mm.solve(b_m);
 
-        // Step 4: star-shaped prior on the chosen anchor node (diagonal 6x6 block).
-        const int anchor_pos =
-            (anchor == MarginalizationAnchor::Newest) ? static_cast<int>(K) - 1 : 1;
+        // Step 4: retain the complete reduced system over the Markov blanket.
         MarginalizationPrior new_prior;
-        new_prior.node_ids = {nodes_[anchor_pos]->id};
-        new_prior.linearization_poses = {nodes_[anchor_pos]->pose};
-        const int anchor_reduced = anchor_pos - 1;  // index after dropping nodes_[0]
-        new_prior.H_prior = eigen_utils::ensure_symmetric<6>(
-            H_prior_new.block<6, 6>(6 * anchor_reduced, 6 * anchor_reduced));
-        new_prior.b_prior = b_prior_new.segment<6>(6 * anchor_reduced);
+        new_prior.node_ids.assign(local_ids.begin() + 1, local_ids.end());
+        for (const NodeId id : new_prior.node_ids) {
+            new_prior.linearization_poses.push_back(get_node(id)->pose);
+        }
+        new_prior.H_prior = 0.5f * (H_prior_new + H_prior_new.transpose());
+        new_prior.b_prior = b_prior_new;
         new_prior.error_constant = 0.0f;
 
         // Step 5: drop factors/nodes touching the marginalized node, replace prior.
@@ -217,15 +237,10 @@ public:
                                       }),
                        factors_.end());
         nodes_.erase(nodes_.begin());
-        for (auto& kv : nodes_by_id_) {
-            if (kv.first == marginalize_id) {
-                nodes_by_id_.erase(kv.first);
-                break;
-            }
-        }
+        nodes_by_id_.erase(marginalize_id);
         prior_ = std::move(new_prior);
 
-        (void)m_idx;
+        (void)anchor;
         return marginalize_id;
     }
 
