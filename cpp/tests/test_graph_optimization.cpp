@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <random>
 
@@ -166,6 +167,38 @@ private:
     float w_;
 };
 
+class NonFiniteFactor : public graph::GicpFactorBase {
+public:
+    explicit NonFiniteFactor(std::shared_ptr<graph::PoseNode> node) : node_(std::move(node)) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float, bool) override {
+        graph::FactorLinearization lin;
+        lin.source_linearization_pose = node_->pose;
+        lin.H00.setIdentity();
+        lin.b0.setZero();
+        lin.error = std::numeric_limits<float>::quiet_NaN();
+        lin.inlier = 1;
+        return lin;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {std::numeric_limits<float>::quiet_NaN(), 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {node_->id, graph::INVALID_NODE_ID};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return false;
+    }
+
+private:
+    std::shared_ptr<graph::PoseNode> node_;
+};
+
 // ---------------------------------------------------------------------------
 // SlidingWindow management (host-only)
 // ---------------------------------------------------------------------------
@@ -259,6 +292,22 @@ TEST_F(GraphSolverTest, AnchorConstrainsNode) {
     solver.optimize(window);
 
     expect_pose_near(window.get_node(id0)->pose, prior_pose, 1e-3f, 1e-3f);
+}
+
+TEST_F(GraphSolverTest, RejectsNonFiniteSystemWithoutUpdatingPose) {
+    graph::SlidingWindow window(5);
+    Eigen::Isometry3f initial = Eigen::Isometry3f::Identity();
+    initial.translate(Eigen::Vector3f(0.3f, -0.2f, 0.1f));
+    const graph::NodeId id = window.add_node(initial, 0.0);
+    window.add_factor(std::make_shared<NonFiniteFactor>(window.get_node(id)));
+
+    graph::GraphSolver solver(queue);
+    const auto result = solver.optimize(window);
+
+    EXPECT_FALSE(result.converged);
+    EXPECT_FALSE(result.valid());
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::NON_FINITE_SYSTEM);
+    EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
 }
 
 // ---------------------------------------------------------------------------

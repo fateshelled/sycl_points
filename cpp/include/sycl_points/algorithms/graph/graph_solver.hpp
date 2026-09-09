@@ -83,10 +83,25 @@ inline float robust_ladder_scale_at_level(const GraphSolverParams::RobustSchedul
 /// @brief Gauss-Newton solver over the sliding-window pose graph.
 class GraphSolver {
 public:
+    enum class Status {
+        MAX_ITERATIONS,
+        CONVERGED,
+        NON_FINITE_SYSTEM,
+        DECOMPOSITION_FAILED,
+        NON_FINITE_STEP,
+    };
+
     struct Result {
         bool converged = false;
         size_t iterations = 0;
         float final_error = 0.0f;
+        Status status = Status::MAX_ITERATIONS;
+
+        bool valid() const {
+            return status != Status::NON_FINITE_SYSTEM &&
+                   status != Status::DECOMPOSITION_FAILED &&
+                   status != Status::NON_FINITE_STEP;
+        }
     };
 
     GraphSolver(const sycl_utils::DeviceQueue& queue,
@@ -107,15 +122,32 @@ public:
         for (size_t iter = 0; iter < params_.max_iterations; ++iter) {
             auto sys = assemble(window, robust_scale_override.value_or(robust_ladder_scale(params_.robust, iter)));
 
+            result.final_error = sys.error;
+            if (!sys.H.allFinite() || !sys.b.allFinite() || !std::isfinite(sys.error)) {
+                result.status = Status::NON_FINITE_SYSTEM;
+                break;
+            }
+
             Eigen::LDLT<Eigen::MatrixXf> ldlt(sys.H);
             if (ldlt.info() != Eigen::Success) {
                 Eigen::MatrixXf H_reg =
                     sys.H + params_.marginalization_lambda *
                                 Eigen::MatrixXf::Identity(sys.H.rows(), sys.H.cols());
                 ldlt.compute(H_reg);
-                if (ldlt.info() != Eigen::Success) break;
+                if (ldlt.info() != Eigen::Success) {
+                    result.status = Status::DECOMPOSITION_FAILED;
+                    break;
+                }
             }
             Eigen::VectorXf delta = ldlt.solve(-sys.b);
+            if (ldlt.info() != Eigen::Success) {
+                result.status = Status::DECOMPOSITION_FAILED;
+                break;
+            }
+            if (!delta.allFinite()) {
+                result.status = Status::NON_FINITE_STEP;
+                break;
+            }
 
             bool converged = true;
             float max_dt = 0.0f;
@@ -158,6 +190,7 @@ public:
                                      (iter + 1) >= ladder_iters;
             if (converged && ladder_done) {
                 result.converged = true;
+                result.status = Status::CONVERGED;
                 break;
             }
         }
