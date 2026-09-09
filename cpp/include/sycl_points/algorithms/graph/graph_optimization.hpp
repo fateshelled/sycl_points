@@ -42,9 +42,14 @@ public:
         ///        solve. Disabled => every frame persists (legacy per-frame window).
         struct KeyframeGate {
             bool enabled = false;
+            /// @brief Defer the keep/drop decision to the owning pipeline. This lets
+            ///        GraphOdometry use Submap::add_frame as the single LO-compatible
+            ///        keyframe gate instead of maintaining duplicate state.
+            bool external_decision = false;
             float min_translation = 0.3f;  // [m]
             float min_rotation = 0.0873f;  // [rad] (~5 deg)
             float min_time_seconds = 0.0f;  // <=0: disabled
+            float min_inlier_ratio = 0.0f;
         };
 
         BinaryTopology binary_topology = BinaryTopology::sparse_chain;
@@ -80,22 +85,49 @@ public:
         : queue_(queue), solver_(queue_, solver_params), window_(max_window_size), opts_(options) {}
 
     struct FrameResult {
+        NodeId current_node_id = INVALID_NODE_ID;
         Eigen::Isometry3f current_pose;
         bool converged = false;
         size_t iterations = 0;
         float error = 0.0f;
         bool keyframe = true;
-        /// @brief Final deskewed tip cloud when the velocity update ran,
-        ///        nullptr otherwise. The pipeline feeds this exact cloud to the
-        ///        submap so the map shares the tip node's reference frame.
+        /// @brief Exact sampled/final-deskewed cloud used by the tip factor.
         std::shared_ptr<PointCloudShared> tip_cloud = nullptr;
         /// @brief Inlier ratio of the tip's unary submap factor from the last
         ///        solver linearization (LO analog: RegistrationPipeline::
         ///        get_inlier_ratio, i.e. inlier count / factor input size).
-        ///        Falls back to 1.0 (neutral, never blocks the submap gate)
-        ///        when the ratio is unavailable.
+        ///        Falls back to 0.0 when the ratio is unavailable.
         float inlier_ratio = 0.0f;
+        bool finalized = false;
     };
+
+    /// @brief Apply the authoritative keyframe decision for the current tip.
+    ///
+    /// GraphOdometry calls this with Submap::add_frame's result so the graph and
+    /// map retain exactly the same frames. Standalone GraphOptimization users keep
+    /// the internal gate unless KeyframeGate::external_decision is enabled.
+    void finalize_frame(FrameResult& frame_result, bool keep) {
+        if (frame_result.finalized || frame_result.current_node_id == INVALID_NODE_ID) return;
+
+        frame_result.keyframe = keep;
+        auto current = window_.get_node(frame_result.current_node_id);
+        if (!keep) {
+            window_.remove_node(frame_result.current_node_id);
+            frame_result.finalized = true;
+            return;
+        }
+
+        if (current && current->cloud && current->knn == nullptr) {
+            current->knn = knn::KDTree::build(queue_, *current->cloud);
+        }
+        if (window_.window_size() > window_.max_window_size()) {
+            window_.marginalize_oldest(
+                queue_, opts_.binary_topology == BinaryTopology::sparse_chain
+                            ? SlidingWindow::MarginalizationAnchor::OldestSurviving
+                            : SlidingWindow::MarginalizationAnchor::Newest);
+        }
+        frame_result.finalized = true;
+    }
 
     FrameResult process_frame(std::shared_ptr<PointCloudShared> source_cloud,
                               std::shared_ptr<const PointCloudShared> submap_cloud,
@@ -161,6 +193,7 @@ public:
             f->set_robust_force_mode(robust.relinearize_per_rung);
         }
         FrameResult fr;
+        fr.current_node_id = current_id;
         {
             const TipVelocityUpdater tip_velocity_updater;
             bool first_pass = true;
@@ -207,42 +240,28 @@ public:
             }
         }
 
-        if (opts_.gate.enabled) {
+        if (opts_.gate.enabled && !opts_.gate.external_decision) {
             const Eigen::Isometry3f d = last_keyframe_pose_.inverse() * fr.current_pose;
             const bool time_hit = opts_.gate.min_time_seconds > 0.0f && last_keyframe_time_ >= 0.0 &&
                                   timestamp - last_keyframe_time_ >= opts_.gate.min_time_seconds;
-            const bool is_keyframe = !has_keyframe_ ||
-                                     d.translation().norm() >= opts_.gate.min_translation ||
-                                     Eigen::AngleAxisf(d.rotation()).angle() >= opts_.gate.min_rotation ||
-                                     time_hit;
-            fr.keyframe = is_keyframe;
+            const bool inlier_ok = opts_.gate.min_inlier_ratio <= 0.0f ||
+                                   fr.inlier_ratio > opts_.gate.min_inlier_ratio;
+            const bool is_keyframe = inlier_ok &&
+                                     (!has_keyframe_ ||
+                                      d.translation().norm() >= opts_.gate.min_translation ||
+                                      Eigen::AngleAxisf(d.rotation()).angle() >= opts_.gate.min_rotation ||
+                                      time_hit);
             if (is_keyframe) {
                 last_keyframe_pose_ = fr.current_pose;
                 last_keyframe_time_ = timestamp;
                 has_keyframe_ = true;
-            } else {
-                // Transient tip: its observation lives on only in fr.current_pose;
-                // the next frame re-observes the same region through its fresh tip.
-                window_.remove_node(current_id);
-                return fr;
             }
+            finalize_frame(fr, is_keyframe);
+            return fr;
         }
 
-        // 4b. Deferred tip kNN build: the tip's own kNN is never read within
-        //     its own frame (unary uses the submap kNN, binaries use the target
-        //     side's kNN), so build it exactly once here on the final cloud
-        //     when the node is retained. Next frame's binary factors consume it
-        //     as the target kNN.
-        if (vu_active && cur && cur->knn == nullptr) {
-            cur->knn = knn::KDTree::build(queue_, *cur->cloud);
-        }
-
-        // 5. Marginalize the oldest node once the window exceeds its max size.
-        if (window_.window_size() > window_.max_window_size()) {
-            window_.marginalize_oldest(
-                queue_, opts_.binary_topology == BinaryTopology::sparse_chain
-                            ? SlidingWindow::MarginalizationAnchor::OldestSurviving
-                            : SlidingWindow::MarginalizationAnchor::Newest);
+        if (!opts_.gate.external_decision) {
+            finalize_frame(fr, true);
         }
 
         return fr;

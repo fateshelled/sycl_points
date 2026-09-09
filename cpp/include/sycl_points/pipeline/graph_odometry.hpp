@@ -166,6 +166,9 @@ public:
         if (this->is_first_frame_) {
             try {
                 this->submap_->add_first_frame(*this->preprocessed_pc_, timestamp, this->odom_);
+                // The first frame lives in the Submap only. The next optimized
+                // frame is judged relative to this state by Submap::add_frame,
+                // which is also the authoritative graph retention decision.
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
@@ -496,10 +499,12 @@ private:
 
         algorithms::graph::GraphOptimization::Options gopts;
         gopts.gate.enabled = true;
+        gopts.gate.external_decision = true;
         gopts.gate.min_translation = this->params_.submap.keyframe.distance_threshold;
         gopts.gate.min_rotation = this->params_.submap.keyframe.angle_threshold_degrees *
                                   (std::numbers::pi_v<float> / 180.0f);
         gopts.gate.min_time_seconds = this->params_.submap.keyframe.time_threshold_seconds;
+        gopts.gate.min_inlier_ratio = this->params_.submap.keyframe.inlier_ratio_threshold;
         gopts.relative_pose.sigma_rotation = this->params_.graph.chain_sigma_rotation;
         gopts.relative_pose.sigma_translation = this->params_.graph.chain_sigma_translation;
         this->graph_opt_ = std::make_shared<algorithms::graph::GraphOptimization>(
@@ -580,7 +585,7 @@ private:
         return this->odom_ * T_lidar_rel;
     }
 
-    void submapping(const algorithms::graph::GraphOptimization::FrameResult& frame_result, double timestamp) {
+    void submapping(algorithms::graph::GraphOptimization::FrameResult& frame_result, double timestamp) {
         *this->reg_result_ = algorithms::registration::RegistrationResult();
         this->reg_result_->T = frame_result.current_pose;
         this->reg_result_->converged = frame_result.converged;
@@ -591,11 +596,16 @@ private:
         // the LO path does through get_deskewed_point_cloud().
         const PointCloudShared& map_cloud =
             frame_result.tip_cloud ? *frame_result.tip_cloud : *this->preprocessed_pc_;
-        // Inlier ratio of the tip's unary submap factor (see FrameResult::inlier_ratio;
-        // 1.0 when no linearization statistic is available, so the gate stays neutral).
-        const bool map_changed =
-            this->submap_->add_frame(map_cloud, *this->reg_result_, frame_result.inlier_ratio, timestamp,
-                                     nullptr);
+        bool map_changed = false;
+        try {
+            map_changed = this->submap_->add_frame(
+                map_cloud, *this->reg_result_, frame_result.inlier_ratio, timestamp, nullptr);
+        } catch (...) {
+            // Do not leave a provisional graph tip behind when map insertion fails.
+            this->graph_opt_->finalize_frame(frame_result, false);
+            throw;
+        }
+        this->graph_opt_->finalize_frame(frame_result, map_changed);
         if (map_changed) {
             this->submap_dirty_ = true;
         }

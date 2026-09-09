@@ -283,6 +283,27 @@ TEST_F(GraphSlidingWindowTest, MarginalizationPreservesMarkovBlanketCoupling) {
     EXPECT_GT((window.prior().H_prior.block<6, 6>(0, 6).norm()), 1e-3f);
 }
 
+TEST_F(GraphSlidingWindowTest, ExternalKeyframeDecisionKeepsOrDropsTip) {
+    graph::GraphOptimization::Options opts;
+    opts.gate.enabled = true;
+    opts.gate.external_decision = true;
+    graph::GraphOptimization optimizer(queue, graph::GraphSolverParams(), 5, opts);
+
+    graph::GraphOptimization::FrameResult dropped;
+    dropped.current_node_id = optimizer.window().add_node(Eigen::Isometry3f::Identity(), 0.0);
+    optimizer.finalize_frame(dropped, false);
+    EXPECT_TRUE(dropped.finalized);
+    EXPECT_FALSE(dropped.keyframe);
+    EXPECT_EQ(optimizer.window().window_size(), 0U);
+
+    graph::GraphOptimization::FrameResult kept;
+    kept.current_node_id = optimizer.window().add_node(Eigen::Isometry3f::Identity(), 1.0);
+    optimizer.finalize_frame(kept, true);
+    EXPECT_TRUE(kept.finalized);
+    EXPECT_TRUE(kept.keyframe);
+    EXPECT_EQ(optimizer.window().window_size(), 1U);
+}
+
 // ---------------------------------------------------------------------------
 // Solver convergence with synthetic anchors (host-only)
 // ---------------------------------------------------------------------------
