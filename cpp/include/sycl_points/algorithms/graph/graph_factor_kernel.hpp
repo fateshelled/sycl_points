@@ -9,6 +9,7 @@
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/registration/factor.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
+#include "sycl_points/algorithms/registration/rotation_constraint.hpp"
 #include "sycl_points/algorithms/robust/robust.hpp"
 #include "sycl_points/algorithms/graph/pose_node.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -184,7 +185,11 @@ struct BinaryLinearizedDevice {
 /// @brief Computes the binary registration factor linearization (both endpoints
 ///        variable) via a SYCL parallel reduction, mirroring Registration's reduction.
 ///        Honors params_.reg_type: GICP / POINT_TO_POINT / POINT_TO_PLANE /
-///        POINT_TO_DISTRIBUTION (GENZ rejected).
+///        POINT_TO_DISTRIBUTION (GENZ rejected). When
+///        params_.rotation_constraint.enable is set, each correspondence also
+///        contributes a Jensen-Bregman LogDet Divergence term on the relative
+///        rotation (same formulation as the unary registration kernel), using
+///        rotation_constraint.weight and rotation_constraint.robust.default_scale.
 class BinaryGicpLinearizer {
 public:
     BinaryGicpLinearizer(const sycl_utils::DeviceQueue& queue,
@@ -200,7 +205,7 @@ public:
     FactorLinearization linearize(const PointCloudShared& source, const knn::KNNBase& target_knn,
                                   const Eigen::Matrix4f& T_src, const PointCloudShared& target,
                                   const Eigen::Matrix4f& T_tgt, float scale = 0.0f) const {
-        validate_params(target);
+        validate_params(source, target);
         const float robust_scale = scale > 0.0f ? scale : this->params_.robust.default_scale;
         const auto T_search_mat = Eigen::Isometry3f(Eigen::Isometry3f(Eigen::Matrix4f(T_tgt).inverse()) *
                                                      Eigen::Matrix4f(T_src))
@@ -210,7 +215,8 @@ public:
         auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, T_search_mat);
 
         auto events = this->dispatch([&]<registration::RegType reg, robust::RobustLossType loss>() {
-            return this->linearize_async<reg, loss>(source, target, T_src, T_tgt, robust_scale, knn_event.evs);
+            return this->linearize_async<reg, loss>(source, target, T_src, T_tgt, T_search, robust_scale,
+                                                    knn_event.evs);
         });
         events.wait_and_throw();
         return this->device_->toCPU(0);
@@ -220,7 +226,8 @@ private:
     template <registration::RegType reg, robust::RobustLossType loss>
     sycl_utils::events linearize_async(const PointCloudShared& source, const PointCloudShared& target,
                                        const Eigen::Matrix4f& T_src, const Eigen::Matrix4f& T_tgt,
-                                       float robust_scale, const std::vector<sycl::event>& depends) const {
+                                       const std::array<sycl::float4, 4>& T_rel_v, float robust_scale,
+                                       const std::vector<sycl::event>& depends) const {
         sycl_utils::events events;
         events += this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t N = source.size();
@@ -244,6 +251,10 @@ private:
 
             const float max_corr_dist_squared =
                 this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+
+            const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
+            const float rotation_constraint_weight = this->params_.rotation_constraint.weight;
+            const float rotation_robust_scale = this->params_.rotation_constraint.robust.default_scale;
 
             this->device_->setZero();
             auto sum_H00_0 = sycl::reduction(this->device_->H00_0, sycl::plus<sycl::float16>());
@@ -311,6 +322,60 @@ private:
                     ab1_0 += weight * lb1_0;
                     ab1_1 += weight * lb1_1;
                     aerror += robust::kernel::compute_error<loss>(residual_norm, robust_scale);
+
+                    // Rotation constraint term (Jensen-Bregman LogDet Divergence) on the
+                    // relative rotation R_rel = R_tgt^T * R_src, mirroring the unary kernel
+                    // (registration.hpp). Each correspondence contributes its own divergence
+                    // term, weighted by the rotation-specific robust scale and weight (NOT
+                    // the geometric robust weight above).
+                    // Gradients under the solver's right-perturbation convention (T <- T exp(d)):
+                    //   J_s = dD/dd_s = R_rel^T * g_global        (unary-style local gradient)
+                    //   J_t = dD/dd_t = -R_rel * J_s = -g_global  (left perturbation of R_rel by exp(-d_t))
+                    // GN blocks: H00 += J_s J_s^T, H01 += J_s J_t^T, H11 += J_t J_t^T,
+                    //            b0 += J_s * D, b1 += J_t * D (solver solves H d = -b).
+                    if (rotation_constraint_enable) {
+                        const Eigen::Matrix3f R_rel = eigen_utils::from_sycl_vec(T_rel_v).block<3, 3>(0, 0);
+                        Eigen::Vector3f grad_rot;
+                        const float D = registration::kernel::calculate_logdet_divergence(src_cov, tgt_cov, T_rel_v,
+                                                                                          grad_rot);
+                        const float weight_rot = robust::kernel::compute_weight<loss>(D, rotation_robust_scale);
+                        const Eigen::Vector3f J_s = grad_rot;
+                        const Eigen::Vector3f J_t =
+                            eigen_utils::multiply<3, 1>(eigen_utils::multiply<3, 3, 1>(R_rel, grad_rot), -1.0f);
+
+                        BinaryLinearizedKernelResult rot_lin;
+                        const float scaled_weight = rotation_constraint_weight * weight_rot;
+                        for (size_t i = 0; i < 3; ++i) {
+                            rot_lin.b0[i] = scaled_weight * D * J_s[i];
+                            rot_lin.b1[i] = scaled_weight * D * J_t[i];
+                            for (size_t j = 0; j < 3; ++j) {
+                                rot_lin.H00(i, j) = scaled_weight * J_s[i] * J_s[j];
+                                rot_lin.H01(i, j) = scaled_weight * J_s[i] * J_t[j];
+                                rot_lin.H11(i, j) = scaled_weight * J_t[i] * J_t[j];
+                            }
+                        }
+                        const auto [rH00_0, rH00_1, rH00_2] = eigen_utils::to_sycl_vec(rot_lin.H00);
+                        const auto [rH01_0, rH01_1, rH01_2] = eigen_utils::to_sycl_vec(rot_lin.H01);
+                        const auto [rH11_0, rH11_1, rH11_2] = eigen_utils::to_sycl_vec(rot_lin.H11);
+                        const auto [rb0_0, rb0_1] = eigen_utils::to_sycl_vec(rot_lin.b0);
+                        const auto [rb1_0, rb1_1] = eigen_utils::to_sycl_vec(rot_lin.b1);
+                        aH00_0 += rH00_0;
+                        aH00_1 += rH00_1;
+                        aH00_2 += rH00_2;
+                        aH01_0 += rH01_0;
+                        aH01_1 += rH01_1;
+                        aH01_2 += rH01_2;
+                        aH11_0 += rH11_0;
+                        aH11_1 += rH11_1;
+                        aH11_2 += rH11_2;
+                        ab0_0 += rb0_0;
+                        ab0_1 += rb0_1;
+                        ab1_0 += rb1_0;
+                        ab1_1 += rb1_1;
+                        aerror += rotation_constraint_weight *
+                                  robust::kernel::compute_error<loss>(D, rotation_robust_scale);
+                    }
+
                     ++ainlier;
                 });
         });
@@ -320,7 +385,7 @@ private:
     /// @brief Mirror Registration::validate_params for the subset of types the
     ///        binary factor supports (GENZ needs the single-frame alpha
     ///        annealing schedule and is rejected).
-    void validate_params(const PointCloudShared& target) const {
+    void validate_params(const PointCloudShared& source, const PointCloudShared& target) const {
         using registration::RegType;
         switch (this->params_.reg_type) {
             case RegType::GENZ:
@@ -340,6 +405,14 @@ private:
             case RegType::POINT_TO_POINT:
             case RegType::POINT_TO_DISTRIBUTION:
                 break;
+        }
+        if (this->params_.rotation_constraint.enable) {
+            if (!source.has_cov() || !target.has_cov()) {
+                throw std::runtime_error(
+                    "[BinaryGicpLinearizer] "
+                    "Covariance matrices of source and target are required for performing rotation constraint "
+                    "matching.");
+            }
         }
     }
 
