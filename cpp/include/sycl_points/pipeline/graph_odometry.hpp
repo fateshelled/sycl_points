@@ -396,6 +396,8 @@ private:
     std::shared_ptr<const algorithms::knn::KNNBase> submap_gen_knn_ = nullptr;
     bool submap_dirty_ = true;
     algorithms::registration::RegistrationParams reg_params_;
+    algorithms::registration::Registration::Ptr factor_registration_ = nullptr;
+    shared_vector_ptr<float> icp_weights_ = nullptr;
 
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
@@ -458,6 +460,7 @@ private:
             const auto dev =
                 sycl_utils::device_selector::select_device(this->params_.device.vendor, this->params_.device.type);
             this->queue_ptr_ = std::make_shared<sycl_utils::DeviceQueue>(dev);
+            this->icp_weights_ = std::make_shared<shared_vector<float>>(*this->queue_ptr_->ptr);
         }
         this->preprocessed_pc_ = std::make_shared<PointCloudShared>(*this->queue_ptr_);
         this->odom_ = this->params_.pose.initial;
@@ -478,6 +481,8 @@ private:
         // shared LO registration/robust/* auto-scale schedule.
         this->reg_params_.robust.type = this->params_.graph.robust_type;
         this->reg_params_.robust.default_scale = this->params_.graph.robust_default_scale;
+        this->factor_registration_ =
+            std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, this->reg_params_);
 
         // Graph optimizer (sliding window local BA). The keyframe gate shares the
         // submap's keyframe thresholds so node promotion and map updates coincide.
@@ -595,10 +600,20 @@ private:
         // the LO path does through get_deskewed_point_cloud().
         const PointCloudShared& map_cloud =
             frame_result.tip_cloud ? *frame_result.tip_cloud : *this->preprocessed_pc_;
+        shared_vector_ptr<float> icp_weights = nullptr;
+        if (map_cloud.size() > this->params_.submap.point_random_sampling_num) {
+            const float robust_scale = frame_result.tip_robust_scale > 0.0f
+                                           ? frame_result.tip_robust_scale
+                                           : this->reg_params_.robust.default_scale;
+            this->factor_registration_->compute_icp_robust_weights(
+                map_cloud, this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(),
+                frame_result.current_pose.matrix(), robust_scale, *this->icp_weights_);
+            icp_weights = this->icp_weights_;
+        }
         bool map_changed = false;
         try {
             map_changed = this->submap_->add_frame(
-                map_cloud, *this->reg_result_, frame_result.inlier_ratio, timestamp, nullptr);
+                map_cloud, *this->reg_result_, frame_result.inlier_ratio, timestamp, icp_weights);
         } catch (...) {
             // Do not leave a provisional graph tip behind when map insertion fails.
             this->graph_opt_->finalize_frame(frame_result, false);
