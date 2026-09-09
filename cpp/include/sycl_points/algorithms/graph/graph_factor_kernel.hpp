@@ -333,7 +333,13 @@ private:
                         Eigen::Vector3f grad_rot;
                         const float D = registration::kernel::calculate_logdet_divergence(src_cov, tgt_cov, T_rel_v,
                                                                                           grad_rot);
-                        const float weight_rot = robust::kernel::compute_weight<loss>(D, rotation_robust_scale);
+                        // Match the unary LO convention: its rotation factor stores
+                        // squared_error = 0.5 * D^2, so the robust kernel receives
+                        // D/sqrt(2), while the GN residual/Jacobian remain D/J.
+                        const float residual_norm_rot =
+                            registration::kernel::residual_norm_from_squared_error(0.5f * D * D);
+                        const float weight_rot =
+                            robust::kernel::compute_weight<loss>(residual_norm_rot, rotation_robust_scale);
                         const Eigen::Vector3f J_s = grad_rot;
                         const Eigen::Vector3f J_t =
                             eigen_utils::multiply<3, 1>(eigen_utils::multiply<3, 3, 1>(R_rel, grad_rot), -1.0f);
@@ -368,7 +374,7 @@ private:
                         ab1_0 += rb1_0;
                         ab1_1 += rb1_1;
                         aerror += rotation_constraint_weight *
-                                  robust::kernel::compute_error<loss>(D, rotation_robust_scale);
+                                  robust::kernel::compute_error<loss>(residual_norm_rot, rotation_robust_scale);
                     }
 
                     ++ainlier;

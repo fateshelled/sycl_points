@@ -212,6 +212,13 @@ TEST(ResidualNormTest, ClampsFiniteNegativeButPropagatesNonFiniteValues) {
         std::numeric_limits<float>::infinity())));
 }
 
+TEST(ResidualNormTest, RotationDivergenceUsesUnaryHalfSquaredConvention) {
+    constexpr float divergence = 2.0f;
+    const float residual = registration::kernel::residual_norm_from_squared_error(
+        0.5f * divergence * divergence);
+    EXPECT_NEAR(residual, divergence / std::sqrt(2.0f), 1e-6f);
+}
+
 class GraphSlidingWindowTest : public ::testing::Test {
 protected:
     sycl_utils::DeviceQueue queue = make_queue();
