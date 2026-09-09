@@ -1185,6 +1185,55 @@ TEST_F(GraphVelocityUpdateTest, TipOnlyCloudSwapWithDeferredKnn) {
     }
 }
 
+TEST_F(GraphVelocityUpdateTest, KeepsSampledPointSetAcrossRedeskewRounds) {
+    std::mt19937 gen(71);
+    auto submap = make_cube_cloud(queue, 1000, 1.0f, gen);
+    auto submap_knn = knn::KDTree::build(queue, *submap);
+    estimate_covariances(*submap_knn, *submap);
+
+    Eigen::Matrix<float, 6, 1> delta = Eigen::Matrix<float, 6, 1>::Zero();
+    delta.tail<3>() = Eigen::Vector3f(0.05f, 0.0f, 0.0f);
+    const Eigen::Isometry3f previous_pose = Eigen::Isometry3f::Identity();
+    const Eigen::Isometry3f current_pose(eigen_utils::lie::se3_exp(delta));
+    auto raw = make_distorted_scan(queue, *submap, current_pose, delta, 10);
+    this->estimate_covs(*raw);
+
+    constexpr size_t sampled_size = 192;
+    PointCloudCPU sampled_cpu;
+    sampled_cpu.points->resize(sampled_size);
+    sampled_cpu.covs->resize(sampled_size);
+    sampled_cpu.timestamp_offsets->resize(sampled_size);
+    for (size_t i = 0; i < sampled_size; ++i) {
+        (*sampled_cpu.points)[i] = (*raw->points)[i];
+        (*sampled_cpu.covs)[i] = (*raw->covs)[i];
+        (*sampled_cpu.timestamp_offsets)[i] = (*raw->timestamp_offsets)[i];
+    }
+    sampled_cpu.start_time_ms = raw->start_time_ms;
+    sampled_cpu.end_time_ms = raw->end_time_ms;
+    auto sampled_raw = std::make_shared<PointCloudShared>(queue, sampled_cpu);
+    auto sampled_deskewed = std::make_shared<PointCloudShared>(queue);
+    ASSERT_TRUE(deskew::deskew_point_cloud_constant_velocity(
+        *sampled_raw, *sampled_deskewed, previous_pose, current_pose, 1.0f));
+
+    graph::GraphOptimization::VelocityUpdateContext vu;
+    vu.enable = true;
+    vu.iterations = 2;
+    vu.prev_pose = previous_pose;
+    vu.dt = 1.0f;
+    vu.raw_source = sampled_raw;
+
+    graph::GraphSolverParams solver_params;
+    solver_params.max_iterations = 1;
+    graph::GraphOptimization opt(queue, solver_params, 4);
+    const auto fr = opt.process_frame(sampled_deskewed, submap, submap_knn, nullptr,
+                                      current_pose, 1.0, gicp_params(), vu);
+
+    ASSERT_NE(fr.tip_cloud, nullptr);
+    EXPECT_EQ(fr.tip_cloud->size(), sampled_size);
+    EXPECT_GE(fr.inlier_ratio, 0.0f);
+    EXPECT_LE(fr.inlier_ratio, 1.0f);
+}
+
 // A scan without per-point timestamps disables the update inside
 // process_frame: the caller-provided cloud and kNN are used as-is.
 TEST_F(GraphVelocityUpdateTest, NoTimestampsFallsBackToPlainPath) {

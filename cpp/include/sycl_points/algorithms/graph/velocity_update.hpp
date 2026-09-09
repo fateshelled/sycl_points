@@ -23,7 +23,7 @@ namespace graph {
 /// tip is promoted to a persistent node (keyframe gate pass / retention).
 class TipVelocityUpdater {
 public:
-    /// @brief Deskew the raw tip scan with the refined tip pose, swap the
+    /// @brief Deskew the sampled raw tip scan with the refined tip pose, swap the
     ///        node's cloud, and clear the caches of every factor touching the
     ///        tip so the next linearization uses the new cloud.
     /// @return false when deskew is not applicable (missing timestamps,

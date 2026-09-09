@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 
 #include <Eigen/Geometry>
@@ -93,7 +94,7 @@ public:
         ///        get_inlier_ratio, i.e. inlier count / factor input size).
         ///        Falls back to 1.0 (neutral, never blocks the submap gate)
         ///        when the ratio is unavailable.
-        float inlier_ratio = 1.0f;
+        float inlier_ratio = 0.0f;
     };
 
     FrameResult process_frame(std::shared_ptr<PointCloudShared> source_cloud,
@@ -193,15 +194,16 @@ public:
         // 4. Keyframe gate: keep the solved tip pose, then decide persistence.
         auto cur = window_.get_node(current_id);
         fr.current_pose = cur ? cur->pose : initial_pose;
-        fr.tip_cloud = (vu_active && cur) ? cur->cloud : nullptr;
+        fr.tip_cloud = cur ? cur->cloud : nullptr;
 
         // Tip inlier ratio from the last linearization of the tip's unary submap
         // factor: the same "final-iteration inlier count / factor input size"
         // statistic as the align path's get_inlier_ratio.
-        if (source_cloud->size() > 0) {
+        if (cur && cur->cloud && cur->cloud->size() > 0) {
             if (const auto* lin = unary_factor->cached_linearization()) {
-                fr.inlier_ratio =
-                    static_cast<float>(lin->inlier) / static_cast<float>(source_cloud->size());
+                const float ratio =
+                    static_cast<float>(lin->inlier) / static_cast<float>(cur->cloud->size());
+                fr.inlier_ratio = std::isfinite(ratio) ? std::clamp(ratio, 0.0f, 1.0f) : 0.0f;
             }
         }
 

@@ -238,9 +238,27 @@ public:
                                 this->prev_odom_.rotation() * this->linear_velocity_);
                         }
 
-                        // Deep-copy the source cloud: preprocessed_pc_ is reused next frame,
-                        // so the window must own an immutable snapshot (and its kNN).
+                        // Deep-copy and sample the raw source once. As in the LO
+                        // RegistrationPipeline, velocity-update rounds must deskew the
+                        // same sampled point set; changing membership mid-optimization
+                        // changes both factor size and correspondences.
                         auto source_cloud = std::make_shared<PointCloudShared>(*this->preprocessed_pc_);
+                        const auto& rs = this->params_.graph.registration.random_sampling;
+                        if (rs.enable && source_cloud->size() > rs.num) {
+                            if (!this->factor_input_filter_) {
+                                this->factor_input_filter_ =
+                                    std::make_shared<algorithms::filter::PreprocessFilter>(*this->queue_ptr_);
+                            }
+                            auto sampled = std::make_shared<PointCloudShared>(source_cloud->queue);
+                            if (rs.use_intensities && source_cloud->has_intensity()) {
+                                this->factor_input_filter_->mixed_random_sampling(
+                                    *source_cloud, *sampled, *source_cloud->intensities, rs.num,
+                                    rs.weighted_ratio);
+                            } else {
+                                this->factor_input_filter_->random_sampling(*source_cloud, *sampled, rs.num);
+                            }
+                            source_cloud = sampled;
+                        }
 
                         // VelocityUpdate iter 0: constant-velocity deskew of the tip scan
                         // with the predicted pose (LO analog: VelocityUpdateAligner's first
@@ -264,27 +282,6 @@ public:
                         // With the velocity update the tip kNN is deferred: the tip's own
                         // kNN is never read within its own frame, so process_frame builds
                         // it once at keyframe promotion on the final deskewed cloud.
-                        // Graph-factor input sampling (LO analog:
-                        // RegistrationPipeline::update_registration_input with
-                        // registration/random_sampling/*): factors consume the sampled
-                        // cloud; covariances estimated at full resolution are carried
-                        // over by the copy.
-                        const auto& rs = this->params_.graph.registration.random_sampling;
-                        if (rs.enable && source_cloud->size() > rs.num) {
-                            if (!this->factor_input_filter_) {
-                                this->factor_input_filter_ =
-                                    std::make_shared<algorithms::filter::PreprocessFilter>(*this->queue_ptr_);
-                            }
-                            auto sampled = std::make_shared<PointCloudShared>(source_cloud->queue);
-                            if (rs.use_intensities && source_cloud->has_intensity()) {
-                                this->factor_input_filter_->mixed_random_sampling(
-                                    *source_cloud, *sampled, *source_cloud->intensities, rs.num,
-                                    rs.weighted_ratio);
-                            } else {
-                                this->factor_input_filter_->random_sampling(*source_cloud, *sampled, rs.num);
-                            }
-                            source_cloud = sampled;
-                        }
                         std::shared_ptr<algorithms::knn::KNNBase> source_knn =
                             vu_active ? nullptr : algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
 
@@ -590,9 +587,8 @@ private:
         this->reg_result_->iterations = frame_result.iterations;
         this->reg_result_->error = frame_result.error;
 
-        // With the velocity update the tip node's cloud is the final deskewed
-        // snapshot; feed that exact cloud to the submap so the map shares the
-        // tip node's reference frame.
+        // Feed the exact sampled/final-deskewed factor input to the submap, as
+        // the LO path does through get_deskewed_point_cloud().
         const PointCloudShared& map_cloud =
             frame_result.tip_cloud ? *frame_result.tip_cloud : *this->preprocessed_pc_;
         // Inlier ratio of the tip's unary submap factor (see FrameResult::inlier_ratio;
