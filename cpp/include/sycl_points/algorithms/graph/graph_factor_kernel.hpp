@@ -292,13 +292,8 @@ private:
                     const Normal tgt_normal = target_normal_ptr ? target_normal_ptr[tgt_idx] : Normal::Zero();
                     auto lin = linearize_binary<reg>(T_src_v, T_tgt_v, source_ptr[index], src_cov,
                                                      target_ptr[tgt_idx], tgt_cov, tgt_normal);
-                    // Clamp a numerically negative (or NaN) squared error to zero
-                    // before sqrt: a slightly negative r^T Omega r from a
-                    // near-singular Mahalanobis inverse is rounding noise, and
-                    // sqrt(negative) -> NaN would poison the robust error term
-                    // (the Hessian blocks stay finite, so only error shows -nan).
-                    const float squared_error = lin.squared_error > 0.0f ? lin.squared_error : 0.0f;
-                    const float residual_norm = sycl::sqrt(squared_error);
+                    const float residual_norm =
+                        registration::kernel::residual_norm_from_squared_error(lin.squared_error);
 
                     const float weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
 

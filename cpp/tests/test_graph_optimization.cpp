@@ -203,6 +203,15 @@ private:
 // SlidingWindow management (host-only)
 // ---------------------------------------------------------------------------
 
+TEST(ResidualNormTest, ClampsFiniteNegativeButPropagatesNonFiniteValues) {
+    EXPECT_FLOAT_EQ(registration::kernel::residual_norm_from_squared_error(-1e-5f), 0.0f);
+    EXPECT_FLOAT_EQ(registration::kernel::residual_norm_from_squared_error(4.0f), 2.0f);
+    EXPECT_TRUE(std::isnan(registration::kernel::residual_norm_from_squared_error(
+        std::numeric_limits<float>::quiet_NaN())));
+    EXPECT_TRUE(std::isinf(registration::kernel::residual_norm_from_squared_error(
+        std::numeric_limits<float>::infinity())));
+}
+
 class GraphSlidingWindowTest : public ::testing::Test {
 protected:
     sycl_utils::DeviceQueue queue = make_queue();
