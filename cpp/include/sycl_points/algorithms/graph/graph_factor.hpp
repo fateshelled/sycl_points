@@ -93,6 +93,11 @@ public:
     /// @brief Drop any cached linearization so the next get_linearization re-computes.
     virtual void clear_cache() { cached_lin_.reset(); }
 
+    /// @brief Pointer to the cached linearization, or nullptr when not cached.
+    ///        Lets callers read the last-used statistics (error / inlier) without
+    ///        triggering a re-linearization.
+    const FactorLinearization* cached_linearization() const { return cached_lin_ ? &*cached_lin_ : nullptr; }
+
     /// @brief Scale actually used by this factor for the next relinearization:
     ///        the live ladder while annealing, the locked value once frozen.
     float scale_now(float ladder_scale) const {

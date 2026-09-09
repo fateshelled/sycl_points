@@ -595,8 +595,11 @@ private:
         // tip node's reference frame.
         const PointCloudShared& map_cloud =
             frame_result.tip_cloud ? *frame_result.tip_cloud : *this->preprocessed_pc_;
+        // Inlier ratio of the tip's unary submap factor (see FrameResult::inlier_ratio;
+        // 1.0 when no linearization statistic is available, so the gate stays neutral).
         const bool map_changed =
-            this->submap_->add_frame(map_cloud, *this->reg_result_, 1.0f, timestamp, nullptr);
+            this->submap_->add_frame(map_cloud, *this->reg_result_, frame_result.inlier_ratio, timestamp,
+                                     nullptr);
         if (map_changed) {
             this->submap_dirty_ = true;
         }

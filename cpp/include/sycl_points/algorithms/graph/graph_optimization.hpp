@@ -88,6 +88,12 @@ public:
         ///        nullptr otherwise. The pipeline feeds this exact cloud to the
         ///        submap so the map shares the tip node's reference frame.
         std::shared_ptr<PointCloudShared> tip_cloud = nullptr;
+        /// @brief Inlier ratio of the tip's unary submap factor from the last
+        ///        solver linearization (LO analog: RegistrationPipeline::
+        ///        get_inlier_ratio, i.e. inlier count / factor input size).
+        ///        Falls back to 1.0 (neutral, never blocks the submap gate)
+        ///        when the ratio is unavailable.
+        float inlier_ratio = 1.0f;
     };
 
     FrameResult process_frame(std::shared_ptr<PointCloudShared> source_cloud,
@@ -127,8 +133,9 @@ public:
 
         // 2a. Unary GICP factor: current <-> fixed submap.
         auto current_node = window_.get_node(current_id);
-        window_.add_factor(std::make_shared<UnaryGicpFactor>(
-            queue_, current_id, current_node, submap_, submap_knn_, reg_params));
+        auto unary_factor = std::make_shared<UnaryGicpFactor>(
+            queue_, current_id, current_node, submap_, submap_knn_, reg_params);
+        window_.add_factor(unary_factor);
 
         // 2b. Binary GICP factors: current <-> each existing active window node.
         for (auto& node : window_.active_nodes()) {
@@ -187,6 +194,16 @@ public:
         auto cur = window_.get_node(current_id);
         fr.current_pose = cur ? cur->pose : initial_pose;
         fr.tip_cloud = (vu_active && cur) ? cur->cloud : nullptr;
+
+        // Tip inlier ratio from the last linearization of the tip's unary submap
+        // factor: the same "final-iteration inlier count / factor input size"
+        // statistic as the align path's get_inlier_ratio.
+        if (source_cloud->size() > 0) {
+            if (const auto* lin = unary_factor->cached_linearization()) {
+                fr.inlier_ratio =
+                    static_cast<float>(lin->inlier) / static_cast<float>(source_cloud->size());
+            }
+        }
 
         if (opts_.gate.enabled) {
             const Eigen::Isometry3f d = last_keyframe_pose_.inverse() * fr.current_pose;
