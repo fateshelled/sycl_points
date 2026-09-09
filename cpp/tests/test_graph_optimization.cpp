@@ -239,6 +239,13 @@ TEST_F(GraphSlidingWindowTest, AddNodesAndFactors) {
     EXPECT_FALSE(window.prior().is_valid());
 }
 
+TEST_F(GraphSlidingWindowTest, UsesConfiguredMarginalizationLambda) {
+    graph::GraphSolverParams params;
+    params.marginalization_lambda = 1e-3f;
+    graph::GraphOptimization optimizer(queue, params, 5);
+    EXPECT_FLOAT_EQ(optimizer.window().marginalization_lambda(), 1e-3f);
+}
+
 TEST_F(GraphSlidingWindowTest, MarginalizeOldestShrinksWindow) {
     graph::SlidingWindow window(2);  // max window size = 2
     const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);

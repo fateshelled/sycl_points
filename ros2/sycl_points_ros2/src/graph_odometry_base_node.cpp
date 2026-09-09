@@ -45,6 +45,8 @@ void GraphOdometryBaseNode::initialize_processing() {
             "graph/relinearize/translation_threshold", graph.relinearize_translation_thresh));
         graph.relinearize_rotation_thresh = static_cast<float>(this->declare_parameter<double>(
             "graph/relinearize/rotation_threshold", graph.relinearize_rotation_thresh));
+        graph.solver_damping_lambda = static_cast<float>(this->declare_parameter<double>(
+            "graph/solver/damping_lambda", graph.solver_damping_lambda));
         graph.marginalization_lambda = static_cast<float>(
             this->declare_parameter<double>("graph/marginalization_lambda", graph.marginalization_lambda));
         graph.chain_sigma_rotation = static_cast<float>(

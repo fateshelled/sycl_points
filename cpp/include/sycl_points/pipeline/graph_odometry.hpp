@@ -493,6 +493,7 @@ private:
         solver_params.convergence_rotation = this->params_.graph.convergence_rotation;
         solver_params.relinearize_translation_thresh = this->params_.graph.relinearize_translation_thresh;
         solver_params.relinearize_rotation_thresh = this->params_.graph.relinearize_rotation_thresh;
+        solver_params.solver_damping_lambda = this->params_.graph.solver_damping_lambda;
         solver_params.marginalization_lambda = this->params_.graph.marginalization_lambda;
         solver_params.robust.enable = this->params_.graph.robust_enable;
         solver_params.robust.init_scale = this->params_.graph.robust_init_scale;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -20,7 +22,12 @@ namespace graph {
 /// marginalization is added in Phase 2.
 class SlidingWindow {
 public:
-    explicit SlidingWindow(size_t max_window_size = 5) : max_window_size_(max_window_size) {}
+    explicit SlidingWindow(size_t max_window_size = 5, float marginalization_lambda = 1e-6f)
+        : max_window_size_(max_window_size), marginalization_lambda_(marginalization_lambda) {
+        if (!std::isfinite(marginalization_lambda_) || marginalization_lambda_ <= 0.0f) {
+            throw std::invalid_argument("[SlidingWindow] marginalization_lambda must be finite and positive");
+        }
+    }
 
     NodeId add_node(const Eigen::Isometry3f& initial_pose, double timestamp,
                     std::shared_ptr<PointCloudShared> cloud = nullptr,
@@ -81,6 +88,7 @@ public:
     const MarginalizationPrior& prior() const { return prior_; }
     size_t window_size() const { return nodes_.size(); }
     size_t max_window_size() const { return max_window_size_; }
+    float marginalization_lambda() const { return marginalization_lambda_; }
 
     /// @brief Sparse-chain topology maintenance: drop point-cloud binary factors
     ///        that do not touch `keep_tip` (their scan-to-scan information is

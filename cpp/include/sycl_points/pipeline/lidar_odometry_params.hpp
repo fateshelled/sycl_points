@@ -40,7 +40,8 @@ struct Parameters : public odometry::CommonParameters {
         float convergence_rotation = 1e-4f;      ///< [rad]
         float relinearize_translation_thresh = 0.05f;  ///< [m] delayed relinearization
         float relinearize_rotation_thresh = 0.02f;     ///< [rad]
-        float marginalization_lambda = 1e-6f;    ///< fallback regularization
+        float solver_damping_lambda = 1e-6f;     ///< solver LDLT fallback regularization
+        float marginalization_lambda = 1e-6f;    ///< Schur-complement regularization
         float chain_sigma_rotation = 5e-3f;      ///< [rad] RelativePoseFactor info
         float chain_sigma_translation = 2e-2f;   ///< [m]
         // Robust scale ladder (GNC) for per-frame tip factors. Disabled by

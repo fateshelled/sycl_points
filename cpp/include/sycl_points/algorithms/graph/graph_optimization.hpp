@@ -84,7 +84,10 @@ public:
     GraphOptimization(const sycl_utils::DeviceQueue& queue,
                       const GraphSolverParams& solver_params, size_t max_window_size,
                       const Options& options)
-        : queue_(queue), solver_(queue_, solver_params), window_(max_window_size), opts_(options) {}
+        : queue_(queue),
+          solver_(queue_, solver_params),
+          window_(max_window_size, solver_params.marginalization_lambda),
+          opts_(options) {}
 
     struct FrameResult {
         NodeId current_node_id = INVALID_NODE_ID;

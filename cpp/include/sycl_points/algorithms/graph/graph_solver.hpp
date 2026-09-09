@@ -24,6 +24,7 @@ struct GraphSolverParams {
     float convergence_translation = 1e-4f;   // [m]
     float relinearize_rotation_thresh = 0.02f;
     float relinearize_translation_thresh = 0.05f;
+    float solver_damping_lambda = 1e-6f;
     float marginalization_lambda = 1e-6f;
 
     /// @brief Print per-iteration solver logs (mirrors RegistrationFactorParams::verbose
@@ -133,7 +134,7 @@ public:
             Eigen::LDLT<Eigen::MatrixXf> ldlt(sys.H);
             if (ldlt.info() != Eigen::Success) {
                 Eigen::MatrixXf H_reg =
-                    sys.H + params_.marginalization_lambda *
+                    sys.H + params_.solver_damping_lambda *
                                 Eigen::MatrixXf::Identity(sys.H.rows(), sys.H.cols());
                 ldlt.compute(H_reg);
                 if (ldlt.info() != Eigen::Success) {
