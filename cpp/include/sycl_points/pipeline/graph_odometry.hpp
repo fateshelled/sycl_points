@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
+#include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/graph/graph_optimization.hpp"
 #include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
@@ -263,6 +264,27 @@ public:
                         // With the velocity update the tip kNN is deferred: the tip's own
                         // kNN is never read within its own frame, so process_frame builds
                         // it once at keyframe promotion on the final deskewed cloud.
+                        // Graph-factor input sampling (LO analog:
+                        // RegistrationPipeline::update_registration_input with
+                        // registration/random_sampling/*): factors consume the sampled
+                        // cloud; covariances estimated at full resolution are carried
+                        // over by the copy.
+                        const auto& rs = this->params_.graph.registration.random_sampling;
+                        if (rs.enable && source_cloud->size() > rs.num) {
+                            if (!this->factor_input_filter_) {
+                                this->factor_input_filter_ =
+                                    std::make_shared<algorithms::filter::PreprocessFilter>(*this->queue_ptr_);
+                            }
+                            auto sampled = std::make_shared<PointCloudShared>(source_cloud->queue);
+                            if (rs.use_intensities && source_cloud->has_intensity()) {
+                                this->factor_input_filter_->mixed_random_sampling(
+                                    *source_cloud, *sampled, *source_cloud->intensities, rs.num,
+                                    rs.weighted_ratio);
+                            } else {
+                                this->factor_input_filter_->random_sampling(*source_cloud, *sampled, rs.num);
+                            }
+                            source_cloud = sampled;
+                        }
                         std::shared_ptr<algorithms::knn::KNNBase> source_knn =
                             vu_active ? nullptr : algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
 
@@ -365,6 +387,9 @@ private:
     pointcloud_processing::ProcessingContext processing_ctx_;
     pointcloud_processing::PCProcessor::Ptr pc_processor_ = nullptr;
     submapping::Submap::Ptr submap_ = nullptr;
+    /// @brief Lazy PreprocessFilter for graph/factor/random_sampling (LO analog:
+    ///        RegistrationPipeline's internal filter).
+    algorithms::filter::PreprocessFilter::Ptr factor_input_filter_ = nullptr;
     std::shared_ptr<algorithms::graph::GraphOptimization> graph_opt_ = nullptr;
     // Current immutable submap generation (cloud + kNN) shared by the whole graph.
     std::shared_ptr<PointCloudShared> submap_gen_cloud_ = nullptr;

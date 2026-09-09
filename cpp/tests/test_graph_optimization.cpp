@@ -1188,4 +1188,76 @@ TEST(RobustScheduleTest, FixedScaleOverrideReachesLinearize) {
     }
 }
 
+// TEMP repro: multi-frame run with HUBER + ladder + velocity update + keyframe gate
+// Planar (noisy floor) environment: raw covariances are strongly anisotropic, so
+// binary factors (no plane normalization) operate on near-singular RCR blocks.
+PointCloudShared::Ptr make_noisy_plane_cloud(const sycl_utils::DeviceQueue& queue, size_t n, float extent,
+                                             float noise, std::mt19937& gen) {
+    std::uniform_real_distribution<float> dist(-extent, extent);
+    std::normal_distribution<float> nz(0.0f, noise);
+    PointCloudCPU cpu;
+    cpu.points->resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        (*cpu.points)[i] = PointType(dist(gen), dist(gen), nz(gen), 1.0f);
+    }
+    return std::make_shared<PointCloudShared>(queue, cpu);
+}
+
+TEST(GraphReproTest, MultiFrameErrorStaysFinite) {
+    sycl_utils::DeviceQueue queue = make_queue();
+    std::mt19937 gen(17);
+    auto submap = make_noisy_plane_cloud(queue, 20000, 5.0f, 0.005f, gen);
+    auto submap_knn = knn::KDTree::build(queue, *submap);
+    estimate_covariances(*submap_knn, *submap);
+
+    graph::GraphSolverParams sp;
+    sp.max_iterations = 8;
+    sp.robust.enable = true;
+    sp.robust.init_scale = 10.0f;
+    sp.robust.min_scale = 1.25f;
+    sp.robust.levels = 3;
+    sp.robust.iters_per_level = 2;
+
+    graph::GraphOptimization::Options opts;
+    opts.gate.enabled = true;
+    opts.gate.min_translation = 0.5f;
+
+    auto params = gicp_params();
+    params.robust.type = robust::RobustLossType::HUBER;
+
+    graph::GraphOptimization opt(queue, sp, 5, opts);
+
+    Eigen::Matrix<float, 6, 1> delta = Eigen::Matrix<float, 6, 1>::Zero();
+    delta.head<3>() = Eigen::Vector3f(0.0f, 0.0f, 0.01f);
+    delta.tail<3>() = Eigen::Vector3f(0.3f, 0.0f, 0.0f);
+    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+
+    for (size_t f = 0; f < 20; ++f) {
+        const Eigen::Isometry3f T_prev = T;
+        T = Eigen::Isometry3f(T.matrix() * eigen_utils::lie::se3_exp(delta));
+        auto raw = make_distorted_scan(queue, *submap, T, delta, 10);
+        auto deskewed = std::make_shared<PointCloudShared>(queue);
+        ASSERT_TRUE(deskew::deskew_point_cloud_constant_velocity(*raw, *deskewed, T_prev, T, 1.0f));
+        estimate_covariances(*knn::KDTree::build(queue, *deskewed), *deskewed);
+
+        graph::GraphOptimization::VelocityUpdateContext vu;
+        vu.enable = true;
+        vu.iterations = 1;
+        vu.prev_pose = T_prev;
+        vu.dt = 1.0f;
+        vu.raw_source = raw;
+        // Imperfect motion prediction: perturb the initial guess.
+        Eigen::Matrix<float, 6, 1> pred_err = Eigen::Matrix<float, 6, 1>::Zero();
+        pred_err.head<3>() = Eigen::Vector3f(0.0f, 0.0f, 0.01f);
+        pred_err.tail<3>() = Eigen::Vector3f(0.02f, 0.01f, 0.0f);
+        const Eigen::Isometry3f init_T(T.matrix() * eigen_utils::lie::se3_exp(pred_err));
+        const auto fr = opt.process_frame(deskewed, submap, submap_knn, nullptr, init_T,
+                                          0.1 * static_cast<double>(f), params, vu);
+        std::cout << "frame " << f << " error " << fr.error << " inlier? iter " << fr.iterations
+                  << " converged " << fr.converged << std::endl;
+        EXPECT_TRUE(std::isfinite(fr.error)) << "frame " << f;
+        EXPECT_TRUE(fr.current_pose.matrix().allFinite()) << "frame " << f;
+    }
+}
+
 }  // namespace

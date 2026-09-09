@@ -270,7 +270,10 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
 
     const float squared_norm =
         eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis_cov_inv, residual));
-    residual_norm = sycl::sqrt(squared_norm);
+    // Clamp a numerically negative squared error (rounding noise from the
+    // Mahalanobis inverse) to zero before sqrt; sqrt(negative) -> NaN would
+    // poison the robust error term while the Hessian blocks stay finite.
+    residual_norm = sycl::sqrt(squared_norm > 0.0f ? squared_norm : 0.0f);
 
     ret.squared_error = squared_norm;
     ret.inlier = 1;

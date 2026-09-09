@@ -68,10 +68,21 @@ SYCL_EXTERNAL inline BinaryLinearizedKernelResult linearize_binary(
         transform::kernel::transform_covs(tgt_cov, tgt_cov_w, T_tgt);
         omega = covariance::kernel::inverse(tgt_cov_w);
     } else {  // GICP
+        // Mirror linearize_gicp (registration/factor.hpp): plane-normalize both
+        // covariances before the Mahalanobis sum. Raw PCA covariances get
+        // near-singular on planar surfaces; the unnormalized inverse then
+        // amplifies rounding noise and the quadratic form r^T Omega r can go
+        // (slightly) negative, whose sqrt poisons the robust error with NaN
+        // (while the Hessian blocks stay finite).
+        Covariance normalized_src_cov = src_cov;
+        covariance::kernel::update_covariance_plane(normalized_src_cov);
+        Covariance normalized_tgt_cov = tgt_cov;
+        covariance::kernel::update_covariance_plane(normalized_tgt_cov);
+
         Covariance src_cov_w;
-        transform::kernel::transform_covs(src_cov, src_cov_w, T_src);
+        transform::kernel::transform_covs(normalized_src_cov, src_cov_w, T_src);
         Covariance tgt_cov_w;
-        transform::kernel::transform_covs(tgt_cov, tgt_cov_w, T_tgt);
+        transform::kernel::transform_covs(normalized_tgt_cov, tgt_cov_w, T_tgt);
         Covariance mahalanobis = Covariance::Zero();
         mahalanobis.block<3, 3>(0, 0) =
             eigen_utils::add<3, 3>(src_cov_w.block<3, 3>(0, 0), tgt_cov_w.block<3, 3>(0, 0));
@@ -268,10 +279,15 @@ private:
                     const auto tgt_cov = target_cov_ptr ? target_cov_ptr[tgt_idx] : Covariance::Identity();
 
                     const Normal tgt_normal = target_normal_ptr ? target_normal_ptr[tgt_idx] : Normal::Zero();
-                    float residual_norm = 0.0f;
                     auto lin = linearize_binary<reg>(T_src_v, T_tgt_v, source_ptr[index], src_cov,
                                                      target_ptr[tgt_idx], tgt_cov, tgt_normal);
-                    residual_norm = sycl::sqrt(lin.squared_error);
+                    // Clamp a numerically negative (or NaN) squared error to zero
+                    // before sqrt: a slightly negative r^T Omega r from a
+                    // near-singular Mahalanobis inverse is rounding noise, and
+                    // sqrt(negative) -> NaN would poison the robust error term
+                    // (the Hessian blocks stay finite, so only error shows -nan).
+                    const float squared_error = lin.squared_error > 0.0f ? lin.squared_error : 0.0f;
+                    const float residual_norm = sycl::sqrt(squared_error);
 
                     const float weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
 
