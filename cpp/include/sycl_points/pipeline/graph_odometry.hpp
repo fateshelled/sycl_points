@@ -471,8 +471,6 @@ private:
         this->pc_processor_ = std::make_shared<pointcloud_processing::PCProcessor>(
             *this->queue_ptr_, this->params_.scan, this->params_.covariance_estimation, this->params_.imu);
 
-        this->submap_ = std::make_shared<submapping::Submap>(*this->queue_ptr_, this->params_);
-
         // Registration parameters for the graph factors (decoupled from the single-frame
         // align path: graph/factor/* instead of registration/*). The graph factors use
         // compute_linearized_result, so the solver optimization params are unused.
@@ -481,6 +479,9 @@ private:
         // shared LO registration/robust/* auto-scale schedule.
         this->reg_params_.robust.type = this->params_.graph.robust_type;
         this->reg_params_.robust.default_scale = this->params_.graph.robust_default_scale;
+        this->submap_ = std::make_shared<submapping::Submap>(
+            *this->queue_ptr_, this->params_, this->params_.graph.registration.factor,
+            this->params_.graph.registration.min_num_points);
         this->factor_registration_ =
             std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, this->reg_params_);
 
