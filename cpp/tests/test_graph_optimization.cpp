@@ -1309,6 +1309,9 @@ TEST_F(GraphVelocityUpdateTest, KeepsSampledPointSetAcrossRedeskewRounds) {
     EXPECT_EQ(fr.tip_cloud->size(), sampled_size);
     EXPECT_GE(fr.inlier_ratio, 0.0f);
     EXPECT_LE(fr.inlier_ratio, 1.0f);
+    EXPECT_GT(fr.tip_registration.inlier, 0U);
+    EXPECT_TRUE(fr.tip_registration.H_raw.allFinite());
+    EXPECT_GT(fr.tip_registration.H_raw.trace(), 0.0f);
 }
 
 // A scan without per-point timestamps disables the update inside

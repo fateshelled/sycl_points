@@ -586,11 +586,10 @@ private:
     }
 
     void submapping(algorithms::graph::GraphOptimization::FrameResult& frame_result, double timestamp) {
-        *this->reg_result_ = algorithms::registration::RegistrationResult();
+        *this->reg_result_ = frame_result.tip_registration;
         this->reg_result_->T = frame_result.current_pose;
         this->reg_result_->converged = frame_result.converged;
         this->reg_result_->iterations = frame_result.iterations;
-        this->reg_result_->error = frame_result.error;
 
         // Feed the exact sampled/final-deskewed factor input to the submap, as
         // the LO path does through get_deskewed_point_cloud().

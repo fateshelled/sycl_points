@@ -13,6 +13,7 @@
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
+#include "sycl_points/algorithms/registration/result.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
@@ -98,6 +99,9 @@ public:
         ///        get_inlier_ratio, i.e. inlier count / factor input size).
         ///        Falls back to 0.0 when the ratio is unavailable.
         float inlier_ratio = 0.0f;
+        /// @brief LO-compatible statistics from the final tip unary factor.
+        registration::RegistrationResult tip_registration;
+        float tip_robust_scale = 0.0f;
         bool finalized = false;
     };
 
@@ -237,6 +241,17 @@ public:
                 const float ratio =
                     static_cast<float>(lin->inlier) / static_cast<float>(cur->cloud->size());
                 fr.inlier_ratio = std::isfinite(ratio) ? std::clamp(ratio, 0.0f, 1.0f) : 0.0f;
+                fr.tip_registration.T = fr.current_pose;
+                fr.tip_registration.converged = fr.converged;
+                fr.tip_registration.iterations = fr.iterations;
+                fr.tip_registration.H = lin->H00;
+                fr.tip_registration.b = lin->b0;
+                fr.tip_registration.error = lin->error;
+                fr.tip_registration.H_raw = lin->H00;
+                fr.tip_registration.b_raw = lin->b0;
+                fr.tip_registration.error_raw = lin->error;
+                fr.tip_registration.inlier = lin->inlier;
+                fr.tip_robust_scale = unary_factor->last_linearization_scale();
             }
         }
 

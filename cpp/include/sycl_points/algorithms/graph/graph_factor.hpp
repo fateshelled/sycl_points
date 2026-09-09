@@ -106,6 +106,10 @@ public:
 
     bool is_annealing() const { return annealing_; }
 
+    /// @brief Robust scale used by the most recent actual linearization.
+    ///        A non-positive value means the factor's configured default scale.
+    float last_linearization_scale() const { return last_scale_; }
+
     /// @brief When true, an annealing factor relinearizes on every ladder rung
     ///        change (align-style full KNN per level) instead of letting the
     ///        cached weights sleep until the pose threshold trips. Only affects
