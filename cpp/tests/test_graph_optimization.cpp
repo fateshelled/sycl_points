@@ -199,6 +199,83 @@ private:
     std::shared_ptr<graph::PoseNode> node_;
 };
 
+// Rank-deficient Hessian mock: H_mm ends up with one zero eigenvalue, which
+// Eigen LDLT happily "succeeds" on. Marginalization must catch the poor
+// conditioning and escalate lambda instead.
+class WeakRankFactor : public graph::GicpFactorBase {
+public:
+    WeakRankFactor(std::shared_ptr<graph::PoseNode> src, std::shared_ptr<graph::PoseNode> tgt)
+        : src_(std::move(src)), tgt_(std::move(tgt)) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        graph::FactorLinearization lin;
+        lin.source_linearization_pose = src_->pose;
+        lin.target_linearization_pose = tgt_->pose;
+        lin.H00 = Eigen::Matrix<float, 6, 6>::Identity();
+        lin.H00(5, 5) = 0.0f;  // singular in rotation-z
+        lin.b0.setZero();
+        lin.H11 = Eigen::Matrix<float, 6, 6>::Identity();
+        // H01 remains zero: the conditioning problem is confined to H_mm.
+        lin.error = 0.0f;
+        lin.inlier = 1;
+        return lin;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {src_->id, tgt_->id};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return false;
+    }
+
+private:
+    std::shared_ptr<graph::PoseNode> src_;
+    std::shared_ptr<graph::PoseNode> tgt_;
+};
+
+// Non-finite Hessian mock: a finite b but a NaN information block. Marginalization
+// must report NonFiniteSystem instead of silently building a corrupted prior.
+class NonFiniteHessianFactor : public graph::GicpFactorBase {
+public:
+    explicit NonFiniteHessianFactor(std::shared_ptr<graph::PoseNode> node)
+        : node_(std::move(node)) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        graph::FactorLinearization lin;
+        lin.source_linearization_pose = node_->pose;
+        lin.H00.setIdentity();
+        lin.H00(0, 0) = std::numeric_limits<float>::quiet_NaN();
+        lin.b0.setZero();
+        lin.error = 0.0f;
+        lin.inlier = 1;
+        return lin;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {node_->id, graph::INVALID_NODE_ID};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return false;
+    }
+
+private:
+    std::shared_ptr<graph::PoseNode> node_;
+};
+
 // ---------------------------------------------------------------------------
 // SlidingWindow management (host-only)
 // ---------------------------------------------------------------------------
@@ -256,13 +333,13 @@ TEST_F(GraphSlidingWindowTest, MarginalizeOldestShrinksWindow) {
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id1), 5.0f));
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id1), window.get_node(id2), 5.0f));
 
-    const graph::NodeId marginalized = window.marginalize_oldest(queue);
-    EXPECT_NE(marginalized, graph::INVALID_NODE_ID);
+    const auto marginalized = window.marginalize_oldest(queue);
+    ASSERT_EQ(marginalized.status, graph::SlidingWindow::MarginalizationStatus::Success);
     EXPECT_EQ(window.window_size(), 2U);
     EXPECT_TRUE(window.prior().is_valid());
     ASSERT_EQ(window.prior().node_ids.size(), 1U);
     EXPECT_EQ(window.prior().node_ids[0], id1);
-    EXPECT_EQ(window.get_node(marginalized), nullptr);
+    EXPECT_EQ(window.get_node(marginalized.marginalized_node), nullptr);
 }
 
 TEST_F(GraphSlidingWindowTest, MarginalizationDoesNotAbsorbSurvivingFactors) {
@@ -274,7 +351,7 @@ TEST_F(GraphSlidingWindowTest, MarginalizationDoesNotAbsorbSurvivingFactors) {
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id1), 5.0f));
     window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id2), Eigen::Isometry3f::Identity(), 7.0f));
 
-    ASSERT_NE(window.marginalize_oldest(queue), graph::INVALID_NODE_ID);
+    ASSERT_EQ(window.marginalize_oldest(queue).status, graph::SlidingWindow::MarginalizationStatus::Success);
     ASSERT_EQ(window.prior().node_ids.size(), 1U);
     EXPECT_EQ(window.prior().node_ids[0], id1);
     ASSERT_EQ(window.factors().size(), 1U);
@@ -290,11 +367,89 @@ TEST_F(GraphSlidingWindowTest, MarginalizationPreservesMarkovBlanketCoupling) {
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id1), 5.0f));
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id2), 3.0f));
 
-    ASSERT_NE(window.marginalize_oldest(queue), graph::INVALID_NODE_ID);
+    ASSERT_EQ(window.marginalize_oldest(queue).status, graph::SlidingWindow::MarginalizationStatus::Success);
     ASSERT_EQ(window.prior().node_ids.size(), 2U);
     EXPECT_EQ(window.prior().node_ids[0], id1);
     EXPECT_EQ(window.prior().node_ids[1], id2);
     EXPECT_GT((window.prior().H_prior.block<6, 6>(0, 6).norm()), 1e-3f);
+}
+
+TEST_F(GraphSlidingWindowTest, MarginalizationEscalatesLambdaOnPoorConditioning) {
+    // Eigen LDLT reports Success even for the rank-deficient H_ss this factor
+    // produces, so the eigenvalue conditioning check must fire and the per-frame
+    // lambda escalation (base 1e-9 -> x10 each retry) must recover a usable Schur.
+    graph::SlidingWindow window(2, 1e-7f);
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    const graph::NodeId id2 = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    window.add_factor(std::make_shared<WeakRankFactor>(window.get_node(id0), window.get_node(id1)));
+
+    const auto m = window.marginalize_oldest(queue);
+    ASSERT_EQ(m.status, graph::SlidingWindow::MarginalizationStatus::Success);
+    EXPECT_NEAR(m.lambda_used, 1e-5f, 1e-6f);
+    EXPECT_EQ(window.window_size(), 2U);
+    EXPECT_TRUE(window.prior().is_valid());
+    EXPECT_EQ(window.prior().node_ids[0], id1);
+}
+
+TEST_F(GraphSlidingWindowTest, MarginalizationRejectsNonFiniteSystem) {
+    graph::SlidingWindow window(2);
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    const graph::NodeId id2 = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    window.add_factor(std::make_shared<NonFiniteHessianFactor>(window.get_node(id0)));
+
+    const auto m = window.marginalize_oldest(queue);
+    EXPECT_EQ(m.status, graph::SlidingWindow::MarginalizationStatus::NonFiniteSystem);
+    // Nothing was dropped: the node stays for a next-frame retry.
+    EXPECT_EQ(window.window_size(), 3U);
+    EXPECT_FALSE(window.prior().is_valid());
+}
+
+TEST_F(GraphSlidingWindowTest, FinalizeFrameDefersThenForceDropsOnPersistentFailure) {
+    graph::GraphSolverParams params;
+    graph::GraphOptimization optimizer(queue, params, 1);
+    auto& window = optimizer.window();
+
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    window.add_factor(std::make_shared<NonFiniteHessianFactor>(window.get_node(id0)));
+
+    auto finalize_with_new_frame = [&](graph::NodeId tip) {
+        graph::GraphOptimization::FrameResult fr;
+        fr.current_node_id = tip;
+        optimizer.finalize_frame(fr, /*keep=*/true);
+        return fr;
+    };
+
+    // Frames 1-2: failure is deferred (window stays at max+2).
+    graph::NodeId tip = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    auto fr1 = finalize_with_new_frame(tip);
+    EXPECT_EQ(fr1.marginalization_status, graph::SlidingWindow::MarginalizationStatus::Deferred);
+    EXPECT_FALSE(fr1.marginalization_force_dropped);
+
+    tip = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    auto fr2 = finalize_with_new_frame(tip);
+    EXPECT_EQ(fr2.marginalization_status, graph::SlidingWindow::MarginalizationStatus::Deferred);
+
+    // Frame 3: the cap (max + 2) is exceeded -> the oldest node is force-dropped
+    // (no prior), which bounds the window and removes the offending factor.
+    tip = window.add_node(Eigen::Isometry3f::Identity(), 3.0);
+    auto fr3 = finalize_with_new_frame(tip);
+    EXPECT_TRUE(fr3.marginalization_force_dropped);
+    EXPECT_EQ(fr3.marginalization_status,
+              graph::SlidingWindow::MarginalizationStatus::NonFiniteSystem);
+    EXPECT_EQ(window.window_size(), 3U);
+    EXPECT_EQ(window.get_node(id0), nullptr);
+    // The stale-prior guard: no prior may reference the dropped node.
+    EXPECT_FALSE(window.prior().is_valid());
+
+    // Recovery: with the NaN factor gone the next finalize marginalizes normally
+    // (one node per frame; the window stays bounded at max + 2).
+    tip = window.add_node(Eigen::Isometry3f::Identity(), 4.0);
+    auto fr4 = finalize_with_new_frame(tip);
+    EXPECT_EQ(fr4.marginalization_status, graph::SlidingWindow::MarginalizationStatus::Success);
+    EXPECT_FALSE(fr4.marginalization_force_dropped);
+    EXPECT_LE(window.window_size(), window.max_window_size() + 2);
 }
 
 TEST_F(GraphSlidingWindowTest, ExternalKeyframeDecisionKeepsOrDropsTip) {
@@ -398,7 +553,7 @@ TEST_F(GraphSolverTest, SolvesDenseMarginalizationPrior) {
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id1), 5.0f));
     window.add_factor(std::make_shared<BinaryAnchorFactor>(window.get_node(id0), window.get_node(id2), 3.0f));
 
-    ASSERT_NE(window.marginalize_oldest(queue), graph::INVALID_NODE_ID);
+    ASSERT_EQ(window.marginalize_oldest(queue).status, graph::SlidingWindow::MarginalizationStatus::Success);
     const auto result = graph::GraphSolver(queue).optimize(window);
 
     EXPECT_TRUE(result.valid());
@@ -475,10 +630,10 @@ TEST_F(GraphGicpTest, UnaryRecoversKnownTransform) {
     expect_pose_near(window.get_node(id)->pose, T_gt, 0.05f, 0.05f);
 }
 
-// Marginalization must linearize factors with the RAW (unweighted) Hessian so the
-// Schur-complement prior stays well conditioned. A strongly reweighted loss (GM at
-// a tiny scale) collapses the robust Hessian; the raw path must recover the full
-// information and match an explicitly NONE-typed factor.
+// Marginalization must keep the robust weights the optimizer actually adopted:
+// a measurement rejected by the (frozen) robust loss must not be restored to
+// full weight when its node leaves the window. Conditioning is handled by
+// lambda escalation on H_mm, never by un-weighting the objective.
 TEST_F(GraphGicpTest, MarginalizationKeepsFrozenRobustWeights) {
     std::mt19937 gen(11);
     auto submap = make_cube_cloud(queue, n_points, half, gen);
@@ -554,9 +709,9 @@ TEST_F(GraphGicpTest, MarginalizationConsistency) {
     auto win_marg = build_problem();
     graph::GraphSolver solver(queue);
     solver.optimize(win_marg);
-    const graph::NodeId marginalized = win_marg.marginalize_oldest(queue);
-    ASSERT_NE(marginalized, graph::INVALID_NODE_ID);
-    EXPECT_EQ(win_marg.get_node(marginalized), nullptr);
+    const auto marginalized = win_marg.marginalize_oldest(queue);
+    ASSERT_EQ(marginalized.status, graph::SlidingWindow::MarginalizationStatus::Success);
+    EXPECT_EQ(win_marg.get_node(marginalized.marginalized_node), nullptr);
     solver.optimize(win_marg);
     Eigen::Isometry3f marg_n1 = win_marg.get_node(1)->pose;
 

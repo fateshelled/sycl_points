@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -22,6 +24,22 @@ namespace graph {
 /// marginalization is added in Phase 2.
 class SlidingWindow {
 public:
+    /// @brief Outcome of a single marginalize_oldest() attempt.
+    enum class MarginalizationStatus {
+        NotRequired,          ///< window within max size; nothing done
+        Success,              ///< oldest node absorbed into the Markov-blanket prior
+        Deferred,             ///< marginalization failed this frame; node kept for a next-frame retry
+        NonFiniteSystem,      ///< factor linearization / Schur output contained NaN or Inf
+        DecompositionFailed,  ///< H_mm not usable even with escalated lambda
+    };
+
+    struct MarginalizationResult {
+        MarginalizationStatus status = MarginalizationStatus::NotRequired;
+        NodeId marginalized_node = INVALID_NODE_ID;
+        /// @brief Lambda actually used for the Schur regularization (after escalation).
+        float lambda_used = 0.0f;
+    };
+
     /// @brief Frozen robust scale marginalization linearizes with. Should be the
     ///        final robust ladder rung's scale (GraphSolverParams::RobustSchedule
     ///        ::min_scale when the frame-level ladder is enabled, else 0 for the
@@ -147,18 +165,26 @@ public:
         factors_ = std::move(kept);
     }
 
-    /// @brief Where the Schur-complement prior produced by marginalize_oldest is
-    ///        anchored. Newest preserves the original clique-era behavior;
-    ///        OldestSurviving follows the dominant chain coupling of the
-    ///        marginalized node (sparse-chain topology).
+    /// @brief Anchor selector retained until marginalization drops the dead API (P2).
     enum class MarginalizationAnchor { Newest, OldestSurviving };
 
     /// @brief Marginalize the oldest active node via Schur complement, producing a
     ///        dense prior over its Markov blanket. Only factors touching the removed
     ///        node are absorbed; surviving factors remain represented exactly once.
-    NodeId marginalize_oldest(const sycl_utils::DeviceQueue& queue,
-                              MarginalizationAnchor anchor = MarginalizationAnchor::Newest) {
-        if (nodes_.size() <= max_window_size_) return INVALID_NODE_ID;
+    ///
+    /// Marginalization linearizes with the frozen robust scale of the final ladder
+    /// rung, so the robust measurement model (whose weights the optimizer actually
+    /// adopted) is what gets baked into the prior. Numerical stability is provided
+    /// by lambda escalation on H_mm, never by dropping robust weights:
+    /// - non-finite H/b -> NonFiniteSystem immediately (regularization cannot fix NaN)
+    /// - LDLT info failure or poor eigenvalue conditioning
+    ///   (lambda_min < kMinConditionRatio * lambda_max) -> retry with lambda *= 10
+    MarginalizationResult marginalize_oldest(const sycl_utils::DeviceQueue& queue) {
+        MarginalizationResult result;
+        if (nodes_.size() <= max_window_size_) {
+            result.status = MarginalizationStatus::NotRequired;
+            return result;
+        }
 
         auto oldest = nodes_.front();
         NodeId marginalize_id = oldest->id;
@@ -221,10 +247,63 @@ public:
         }
 
         // Step 3: Schur complement to eliminate the oldest node (index 0).
-        Eigen::Matrix<float, 6, 6> H_mm = H_all.block<6, 6>(0, 0);
-        Eigen::Matrix<float, 6, 6> H_mm_reg = H_mm + marginalization_lambda_ * Eigen::Matrix<float, 6, 6>::Identity();
-        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt_mm(H_mm_reg);
-        if (ldlt_mm.info() != Eigen::Success) return INVALID_NODE_ID;  // fallback
+        // NaN/Inf cannot be fixed by regularization -> single deferred-retry status.
+        if (!H_all.allFinite() || !b_all.allFinite()) {
+            if (verbose()) {
+                std::cerr << "[SlidingWindow] marginalization linearization is non-finite"
+                          << " (node " << marginalize_id << ")" << std::endl;
+            }
+            result.status = MarginalizationStatus::NonFiniteSystem;
+            return result;
+        }
+        const Eigen::Matrix<float, 6, 6> H_mm = H_all.block<6, 6>(0, 0);
+
+        // Eigen LDLT reports Success even on numerically singular input, so gate
+        // on the eigenvalue conditioning as well and escalate lambda until the
+        // Schur complement reads a stable H_mm (per-frame retry, never robust
+        // weight removal).
+        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt_mm;
+        float lambda_used = marginalization_lambda_;
+        bool usable = false;
+        for (int escalation = 0; escalation <= kMaxLambdaEscalations; ++escalation) {
+            const Eigen::Matrix<float, 6, 6> H_mm_reg =
+                H_mm + lambda_used * Eigen::Matrix<float, 6, 6>::Identity();
+            if (!H_mm_reg.allFinite()) {
+                result.status = MarginalizationStatus::NonFiniteSystem;
+                return result;
+            }
+            bool conditioned = false;
+            if (const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(H_mm_reg); eig.info() == Eigen::Success) {
+                const auto ev = eig.eigenvalues();
+                // H is PSD up to noise; a non-positive or badly conditioned span is
+                // treated the same as a decomposition failure.
+                const float ev_max = ev.maxCoeff();
+                const float ev_min = ev.minCoeff();
+                conditioned = ev_max > 0.0f && ev_min >= kMinConditionRatio * ev_max;
+            }
+            ldlt_mm.compute(H_mm_reg);
+            if (ldlt_mm.info() == Eigen::Success && conditioned) {
+                usable = true;
+                break;
+            }
+            if (verbose()) {
+                std::cerr << "[SlidingWindow] marginalization lambda escalation"
+                          << " (escalation=" << (escalation + 1) << "/" << kMaxLambdaEscalations
+                          << ", lambda=" << lambda_used
+                          << (ldlt_mm.info() == Eigen::Success ? ", poor conditioning" : ", LDLT failed")
+                          << ")" << std::endl;
+            }
+            lambda_used *= 10.0f;
+        }
+        if (!usable) {
+            if (verbose()) {
+                std::cerr << "[SlidingWindow] marginalization decomposition failed"
+                          << " (node " << marginalize_id << ", lambda up to " << lambda_used << ")"
+                          << std::endl;
+            }
+            result.status = MarginalizationStatus::DecompositionFailed;
+            return result;
+        }
 
         const int r_size = static_cast<int>(6 * (K - 1));
         Eigen::MatrixXf H_mr = H_all.block(0, 6, 6, r_size);
@@ -234,6 +313,16 @@ public:
 
         Eigen::MatrixXf H_prior_new = H_rr - H_mr.transpose() * ldlt_mm.solve(H_mr);
         Eigen::VectorXf b_prior_new = b_r - H_mr.transpose() * ldlt_mm.solve(b_m);
+        // Finite H_mm/H_mr do not guarantee a finite Schur complement on every
+        // build; mirror GraphSolver's allFinite gate (NON_FINITE_SYSTEM).
+        if (!H_prior_new.allFinite() || !b_prior_new.allFinite()) {
+            if (verbose()) {
+                std::cerr << "[SlidingWindow] marginalization produced a non-finite"
+                          << " prior (node " << marginalize_id << ")" << std::endl;
+            }
+            result.status = MarginalizationStatus::NonFiniteSystem;
+            return result;
+        }
 
         // Step 4: retain the complete reduced system over the Markov blanket.
         MarginalizationPrior new_prior;
@@ -256,11 +345,36 @@ public:
         nodes_by_id_.erase(marginalize_id);
         prior_ = std::move(new_prior);
 
-        (void)anchor;
-        return marginalize_id;
+        result.status = MarginalizationStatus::Success;
+        result.marginalized_node = marginalize_id;
+        result.lambda_used = lambda_used;
+        return result;
+    }
+
+    /// @brief Degraded fallback for persistent marginalization failure: drop the
+    ///        oldest node and every factor touching it. No prior is built (that
+    ///        information is lost), but the window stays bounded and the pipeline
+    ///        keeps running. Also purges the node from the prior when it is
+    ///        referenced there.
+    /// @return the dropped NodeId, or INVALID_NODE_ID when the window is empty.
+    NodeId force_drop_oldest() {
+        if (nodes_.empty()) return INVALID_NODE_ID;
+        const NodeId id = nodes_.front()->id;
+        const bool in_prior =
+            std::find(prior_.node_ids.begin(), prior_.node_ids.end(), id) != prior_.node_ids.end();
+        remove_node(id);
+        if (in_prior) prior_ = MarginalizationPrior{};
+        return id;
     }
 
 private:
+    static constexpr int kMaxLambdaEscalations = 3;     ///< lambda *= 10 retries per frame
+    static constexpr float kMinConditionRatio = 1e-6f;  ///< required lambda_min/lambda_max of H_mm_reg
+
+    /// @brief Verbose diagnostics gate (escalation / failure logs). Enabled with
+    ///        the SYCL_POINTS_VERBOSE environment variable.
+    static bool verbose() { return std::getenv("SYCL_POINTS_VERBOSE") != nullptr; }
+
     size_t max_window_size_ = 5;
     float marginalization_lambda_ = 1e-6f;
     float marginalization_scale_ = 0.0f;

@@ -107,6 +107,15 @@ public:
         registration::RegistrationResult tip_registration;
         float tip_robust_scale = 0.0f;
         bool finalized = false;
+        /// @brief Marginalization outcome at finalize time. Success carries the
+        ///        escalated lambda actually used; failure statuses were observed
+        ///        by the pipeline (window kept / capped as reported below).
+        SlidingWindow::MarginalizationStatus marginalization_status =
+            SlidingWindow::MarginalizationStatus::NotRequired;
+        float marginalization_lambda = 0.0f;
+        /// @brief True when the growth cap kicked in after persistent marginal
+        ///        failure and the oldest node was dropped without a prior.
+        bool marginalization_force_dropped = false;
     };
 
     /// @brief Apply the authoritative keyframe decision for the current tip.
@@ -129,10 +138,22 @@ public:
             current->knn = knn::KDTree::build(queue_, *current->cloud);
         }
         if (window_.window_size() > window_.max_window_size()) {
-            window_.marginalize_oldest(
-                queue_, opts_.binary_topology == BinaryTopology::sparse_chain
-                            ? SlidingWindow::MarginalizationAnchor::OldestSurviving
-                            : SlidingWindow::MarginalizationAnchor::Newest);
+            const auto m = window_.marginalize_oldest(queue_);
+            frame_result.marginalization_status = m.status;
+            frame_result.marginalization_lambda = m.lambda_used;
+            if (m.status != SlidingWindow::MarginalizationStatus::Success) {
+                // Persistent failure must not grow the window without bound:
+                // defer for a next-frame retry first, then force-drop the oldest
+                // node (no prior) once the cap is exceeded.
+                frame_result.marginalization_status = SlidingWindow::MarginalizationStatus::Deferred;
+                if (window_.window_size() > window_.max_window_size() + 2) {
+                    const NodeId dropped = window_.force_drop_oldest();
+                    if (dropped != INVALID_NODE_ID) {
+                        frame_result.marginalization_status = m.status;
+                        frame_result.marginalization_force_dropped = true;
+                    }
+                }
+            }
         }
         frame_result.finalized = true;
     }
@@ -296,18 +317,16 @@ public:
 private:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+    /// @brief Frozen robust scale for marginalization: the frame-level ladder's
+    ///        floor (final rung) when enabled, else 0% letting factors use fixed default scale
+    static float frozen_marg_scale(const GraphSolverParams& solver_params) {
+        return solver_params.robust.enable ? solver_params.robust.min_scale : 0.0f;
+    }
+
     sycl_utils::DeviceQueue queue_;
     GraphSolver solver_;
     SlidingWindow window_;
     Options opts_;
-
-    /// @brief Frozen robust scale for marginalization: the frame-level ladder's
-    ///        floor (final rung) when enabled, else 0 letting factors use their fixed
-    ///        default scale. Keeps the robust measurement model the optimizer adopted
-    ///        when a node leaves the window.
-    static float frozen_marg_scale(const GraphSolverParams& solver_params) {
-        return solver_params.robust.enable ? solver_params.robust.min_scale : 0.0f;
-    }
 
     std::shared_ptr<const PointCloudShared> submap_;
     std::shared_ptr<const knn::KNNBase> submap_knn_;
