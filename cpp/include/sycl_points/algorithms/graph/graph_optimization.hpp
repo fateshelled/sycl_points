@@ -86,7 +86,7 @@ public:
                       const Options& options)
         : queue_(queue),
           solver_(queue_, solver_params),
-          window_(max_window_size, solver_params.marginalization_lambda),
+          window_(max_window_size, solver_params.marginalization_lambda, frozen_marg_scale(solver_params)),
           opts_(options) {}
 
     struct FrameResult {
@@ -300,6 +300,14 @@ private:
     GraphSolver solver_;
     SlidingWindow window_;
     Options opts_;
+
+    /// @brief Frozen robust scale for marginalization: the frame-level ladder's
+    ///        floor (final rung) when enabled, else 0 letting factors use their fixed
+    ///        default scale. Keeps the robust measurement model the optimizer adopted
+    ///        when a node leaves the window.
+    static float frozen_marg_scale(const GraphSolverParams& solver_params) {
+        return solver_params.robust.enable ? solver_params.robust.min_scale : 0.0f;
+    }
 
     std::shared_ptr<const PointCloudShared> submap_;
     std::shared_ptr<const knn::KNNBase> submap_knn_;

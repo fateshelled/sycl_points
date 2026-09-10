@@ -22,10 +22,20 @@ namespace graph {
 /// marginalization is added in Phase 2.
 class SlidingWindow {
 public:
-    explicit SlidingWindow(size_t max_window_size = 5, float marginalization_lambda = 1e-6f)
-        : max_window_size_(max_window_size), marginalization_lambda_(marginalization_lambda) {
+    /// @brief Frozen robust scale marginalization linearizes with. Should be the
+    ///        final robust ladder rung's scale (GraphSolverParams::RobustSchedule
+    ///        ::min_scale when the frame-level ladder is enabled, else 0 for the
+    ///        factor's own fixed default scale), so weights do not change in
+    ///        meaning the moment a node leaves the window.
+    explicit SlidingWindow(size_t max_window_size = 5, float marginalization_lambda = 1e-6f,
+                           float marginalization_scale = 0.0f)
+        : max_window_size_(max_window_size), marginalization_lambda_(marginalization_lambda),
+          marginalization_scale_(marginalization_scale) {
         if (!std::isfinite(marginalization_lambda_) || marginalization_lambda_ <= 0.0f) {
             throw std::invalid_argument("[SlidingWindow] marginalization_lambda must be finite and positive");
+        }
+        if (!std::isfinite(marginalization_scale_) || marginalization_scale_ < 0.0f) {
+            throw std::invalid_argument("[SlidingWindow] marginalization_scale must be finite and >= 0");
         }
     }
 
@@ -178,12 +188,10 @@ public:
             const auto [sid, tid] = f->node_ids();
             if (sid != marginalize_id && tid != marginalize_id) continue;
             f->clear_cache();
-            // Marginalization uses the RAW (unweighted) linearization: the Schur
-            // complement must carry full measurement information so the resulting
-            // prior stays well conditioned. Robust losses like Geman-McClure drive
-            // far-point weights toward 0, which would make H_mm near-singular and
-            // blow up -H_mr^T H_mm^-1 H_mr; the raw H avoids that.
-            auto lin = f->linearize(queue, 0.0f, /*raw=*/true);
+            // Keep the robust weights the optimizer actually adopted (frozen at the
+            // final ladder rung scale). Rejecting outliers must stay meaningful for
+            // the prior that outlives the window, so raw/unweighted Hessian is not an option.
+            auto lin = f->linearize(queue, marginalization_scale_);
             int si = id_to_idx[sid];
             H_all.block<6, 6>(6 * si, 6 * si) += lin.H00;
             b_all.segment<6>(6 * si) += lin.b0;
@@ -255,6 +263,7 @@ public:
 private:
     size_t max_window_size_ = 5;
     float marginalization_lambda_ = 1e-6f;
+    float marginalization_scale_ = 0.0f;
     NodeId next_id_ = 0;
     std::vector<std::shared_ptr<PoseNode>> nodes_;
     std::vector<std::shared_ptr<GicpFactorBase>> factors_;
