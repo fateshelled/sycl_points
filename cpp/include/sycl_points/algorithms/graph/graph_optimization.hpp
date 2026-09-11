@@ -297,9 +297,13 @@ public:
                 // End-of-frame robust bookkeeping still applies to the surviving
                 // factors (they lock their last used scale either way).
                 window_.finalize_robust();
-                // Roll the window back to its pre-frame state: restore the
-                // partially updated poses, then drop the failed tip and every
-                // factor touching it so the next frame starts clean.
+                // Frame-local rollback contract on solver failure:
+                // - restored: poses of the surviving nodes (the failed solve may
+                //   have applied partial Gauss-Newton updates to them)
+                // - discarded: the failed tip node and every factor incident to it
+                // - retained: sparse-chain bookkeeping already committed for older
+                //   nodes (prune_point_cloud_binaries ran before the solve; the
+                //   chain conversion reflects the committed pre-solve estimates)
                 const auto& nodes = window_.active_nodes();
                 for (size_t i = 0; i < nodes.size() && i < pre_solve_poses.size(); ++i) {
                     nodes[i]->pose = pre_solve_poses[i];

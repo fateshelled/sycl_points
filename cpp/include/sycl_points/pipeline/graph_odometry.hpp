@@ -340,7 +340,9 @@ public:
 
         // A solver failure (non-finite system / decomposition / unstable step)
         // must not reach the map or odometry: the frame is discarded here, and
-        // the graph window has already been rolled back to its pre-frame state.
+        // the graph window has already restored its surviving poses and dropped
+        // the failed tip (frame-local rollback; committed sparse-chain
+        // bookkeeping is intentionally retained).
         if (!frame_result.solver_valid()) {
             this->error_message_ =
                 "graph_optimize: solver returned an invalid state; frame discarded";

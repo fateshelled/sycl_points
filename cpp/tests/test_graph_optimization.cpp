@@ -1195,55 +1195,61 @@ TEST_F(GraphTopologyTest, CliqueModeKeepsLegacyStructure) {
 }
 
 // A solver failure (non-finite system) must abort the frame: remaining
-// ladder/velocity rounds stop, the failed tip is rolled back to the pre-frame
-// window state, and the FrameResult reports the invalid status so the pipeline
-// can discard the frame instead of updating the map / odometry.
-TEST_F(GraphTopologyTest, ProcessFrameRollsBackTipOnSolverFailure) {
+// ladder/velocity rounds stop, the failed tip is discarded and the surviving
+// poses are restored (frame-local rollback), and the FrameResult reports the
+// invalid status so the pipeline can discard the frame instead of updating the
+// map / odometry. Sparse-chain bookkeeping committed before the solve is
+// intentionally retained.
+TEST_F(GraphTopologyTest, ProcessFrameDiscardsFailedTipAndRestoresPoses) {
     std::mt19937 gen(7);
     std::shared_ptr<knn::KNNBase> submap_knn;
     auto submap = make_submap(gen, submap_knn);
 
     graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
 
-    // Frame 0: a healthy solve primes the window.
+    // Frames 0-1: healthy solves prime the window (2 nodes, no chain yet).
     auto fr0 = feed_frame(opt, submap, submap_knn, Eigen::Isometry3f::Identity(), 0.0);
     EXPECT_TRUE(fr0.converged);
-    EXPECT_EQ(fr0.solver_status, graph::GraphSolver::Status::CONVERGED);
     const graph::NodeId node0 = fr0.current_node_id;
+    Eigen::Isometry3f step = Eigen::Isometry3f::Identity();
+    step.translate(Eigen::Vector3f(0.02f, 0.0f, 0.0f));
+    auto fr1 = feed_frame(opt, submap, submap_knn, step, 0.1);
+    EXPECT_TRUE(fr1.converged);
     const size_t nodes_before = opt.window().window_size();
-    const size_t factors_before = opt.window().factors().size();
-    const Eigen::Isometry3f pose_before = opt.window().get_node(node0)->pose;
+    const Eigen::Isometry3f pose0_before = opt.window().get_node(node0)->pose;
 
     // Inject a non-finite factor on the surviving node, then feed the next scan:
     // the assembled system contains NaN and the solver must abort the frame.
+    // This frame's prune (n=3) first converts the (node0, node1) adjacent pair
+    // into a chain RelativePoseFactor; that bookkeeping predates the solve.
     opt.window().add_factor(std::make_shared<NonFiniteHessianFactor>(opt.window().get_node(node0)));
-
-    Eigen::Isometry3f step = Eigen::Isometry3f::Identity();
-    step.translate(Eigen::Vector3f(0.02f, 0.0f, 0.0f));
-    auto fr = feed_frame(opt, submap, submap_knn, step, 0.1);
+    auto fr = feed_frame(opt, submap, submap_knn, step, 0.2);
 
     EXPECT_FALSE(fr.solver_valid());
     EXPECT_EQ(fr.solver_status, graph::GraphSolver::Status::NON_FINITE_SYSTEM);
     EXPECT_EQ(fr.current_node_id, graph::INVALID_NODE_ID);
     EXPECT_EQ(fr.tip_cloud, nullptr);
 
-    // Window rolled back: the failed tip is gone, the surviving node keeps its
-    // pre-frame pose, and only the injected factor remains on top of frame 0.
+    // Frame-local rollback: the failed tip is gone, the surviving nodes keep
+    // their pre-frame poses, and the injected factor remains. The sparse-chain
+    // conversion committed before the solve (the (node0, node1) chain
+    // RelativePoseFactor) is retained on purpose.
     auto& w = opt.window();
     EXPECT_EQ(w.window_size(), nodes_before);
     EXPECT_EQ(w.get_node(node0)->id, node0);
-    EXPECT_TRUE(w.get_node(node0)->pose.matrix().isApprox(pose_before.matrix(), 1e-6f));
-    EXPECT_EQ(w.factors().size(), factors_before + 1);
+    EXPECT_TRUE(w.get_node(node0)->pose.matrix().isApprox(pose0_before.matrix(), 1e-6f));
+    size_t chain_factors = 0;
+    for (const auto& f : w.factors()) {
+        if (std::dynamic_pointer_cast<const graph::RelativePoseFactor>(f)) ++chain_factors;
+    }
+    EXPECT_EQ(chain_factors, 1u);
 
     // Recovery: dropping the offending node (and the injected factor with it)
     // makes the next frame solve normally again.
     opt.window().force_drop_oldest();
-    EXPECT_EQ(w.window_size(), 0u);
-    EXPECT_EQ(w.factors().size(), 0u);
-    auto fr1 = feed_frame(opt, submap, submap_knn, step, 0.2);
-    EXPECT_TRUE(fr1.converged);
-    EXPECT_EQ(fr1.solver_status, graph::GraphSolver::Status::CONVERGED);
-    EXPECT_EQ(w.window_size(), 1u);
+    auto fr2 = feed_frame(opt, submap, submap_knn, step, 0.3);
+    EXPECT_TRUE(fr2.converged);
+    EXPECT_EQ(fr2.solver_status, graph::GraphSolver::Status::CONVERGED);
 }
 
 // Keyframe gate: with small steps and a gate that fires only on accumulated
