@@ -366,6 +366,35 @@ TEST_F(GraphSlidingWindowTest, RejectsInvalidWindowSize) {
     EXPECT_THROW(graph::SlidingWindow(0), std::invalid_argument);
 }
 
+TEST_F(GraphSlidingWindowTest, MarginalizationDiagnosticsTrackOutcomes) {
+    graph::SlidingWindow window(1);
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+
+    // NotRequired is not an attempt.
+    EXPECT_EQ(window.marginalize_oldest(queue).status,
+              graph::SlidingWindow::MarginalizationStatus::NotRequired);
+    EXPECT_EQ(window.marginalization_diagnostics().attempts, 0u);
+
+    const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    window.add_factor(std::make_shared<NonFiniteHessianFactor>(window.get_node(id0)));
+    EXPECT_EQ(window.marginalize_oldest(queue).status,
+              graph::SlidingWindow::MarginalizationStatus::NonFiniteSystem);
+    EXPECT_EQ(window.marginalization_diagnostics().attempts, 1u);
+    EXPECT_EQ(window.marginalization_diagnostics().non_finite_system, 1u);
+    EXPECT_EQ(window.marginalization_diagnostics().success, 0u);
+
+    // The degraded fallback drop is counted, and the window recovers: with a
+    // healthy factor the next marginalization succeeds and tracks the lambda.
+    EXPECT_EQ(window.force_drop_oldest(), id0);
+    EXPECT_EQ(window.marginalization_diagnostics().force_dropped, 1u);
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id1), Eigen::Isometry3f::Identity(), 10.0f));
+    window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    EXPECT_EQ(window.marginalize_oldest(queue).status, graph::SlidingWindow::MarginalizationStatus::Success);
+    EXPECT_EQ(window.marginalization_diagnostics().attempts, 2u);
+    EXPECT_EQ(window.marginalization_diagnostics().success, 1u);
+    EXPECT_FLOAT_EQ(window.marginalization_diagnostics().max_lambda_used, 1e-6f);
+}
+
 TEST_F(GraphSlidingWindowTest, MarginalizeOldestShrinksWindow) {
     graph::SlidingWindow window(2);  // max window size = 2
     const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);

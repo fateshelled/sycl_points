@@ -48,6 +48,23 @@ public:
         float lambda_used = 0.0f;
     };
 
+    /// @brief Cumulative marginalization outcome counters for the window's
+    ///        lifetime. `attempts` counts every marginalize_oldest() call that
+    ///        actually worked on a node (NotRequired is not an attempt);
+    ///        `force_dropped` counts degraded fallback drops. Published so
+    ///        operations can observe persistent failure instead of relying on
+    ///        verbose-only logs.
+    struct MarginalizationDiagnostics {
+        size_t attempts = 0;
+        size_t success = 0;
+        size_t non_finite_system = 0;
+        size_t decomposition_failed = 0;
+        size_t force_dropped = 0;
+        float max_lambda_used = 0.0f;  ///< largest lambda actually attempted
+    };
+
+    const MarginalizationDiagnostics& marginalization_diagnostics() const { return marg_diag_; }
+
     /// @brief Frozen robust scale marginalization linearizes with. Should be the
     ///        final robust ladder rung's scale (GraphSolverParams::RobustSchedule
     ///        ::min_scale when the frame-level ladder is enabled, else 0 for the
@@ -192,6 +209,7 @@ public:
             result.status = MarginalizationStatus::NotRequired;
             return result;
         }
+        ++marg_diag_.attempts;
 
         auto oldest = nodes_.front();
         NodeId marginalize_id = oldest->id;
@@ -262,6 +280,7 @@ public:
                 std::cerr << "[SlidingWindow] marginalization linearization is non-finite"
                           << " (node " << marginalize_id << ")" << std::endl;
             }
+            ++marg_diag_.non_finite_system;
             result.status = MarginalizationStatus::NonFiniteSystem;
             return result;
         }
@@ -279,6 +298,7 @@ public:
             const Eigen::Matrix<float, 6, 6> H_mm_reg =
                 H_mm + attempted * Eigen::Matrix<float, 6, 6>::Identity();
             if (!H_mm_reg.allFinite()) {
+                ++marg_diag_.non_finite_system;
                 result.status = MarginalizationStatus::NonFiniteSystem;
                 return result;
             }
@@ -316,6 +336,7 @@ public:
                           << " (node " << marginalize_id << ", lambda up to " << lambda_used << ")"
                           << std::endl;
             }
+            ++marg_diag_.decomposition_failed;
             result.status = MarginalizationStatus::DecompositionFailed;
             return result;
         }
@@ -335,6 +356,7 @@ public:
                 std::cerr << "[SlidingWindow] marginalization produced a non-finite"
                           << " prior (node " << marginalize_id << ")" << std::endl;
             }
+            ++marg_diag_.non_finite_system;
             result.status = MarginalizationStatus::NonFiniteSystem;
             return result;
         }
@@ -363,6 +385,8 @@ public:
         result.status = MarginalizationStatus::Success;
         result.marginalized_node = marginalize_id;
         result.lambda_used = lambda_used;
+        ++marg_diag_.success;
+        marg_diag_.max_lambda_used = std::max(marg_diag_.max_lambda_used, lambda_used);
         return result;
     }
 
@@ -379,6 +403,7 @@ public:
             std::find(prior_.node_ids.begin(), prior_.node_ids.end(), id) != prior_.node_ids.end();
         remove_node(id);
         if (in_prior) prior_ = MarginalizationPrior{};
+        ++marg_diag_.force_dropped;
         return id;
     }
 
@@ -398,6 +423,7 @@ private:
     std::vector<std::shared_ptr<GicpFactorBase>> factors_;
     MarginalizationPrior prior_;
     std::unordered_map<NodeId, std::shared_ptr<PoseNode>> nodes_by_id_;
+    MarginalizationDiagnostics marg_diag_;
 };
 
 }  // namespace graph

@@ -160,11 +160,19 @@ public:
                 // prior) once the cap is exceeded. The failure reason (m.status) is
                 // preserved separately from this action.
                 frame_result.marginalization_action = SlidingWindow::MarginalizationAction::Deferred;
+                // Always log the failure (not gated on SYCL_POINTS_VERBOSE): a
+                // persistently failing marginalization is operationally relevant.
+                std::cerr << "[GraphOptimization] marginalization failed (status="
+                          << static_cast<int>(frame_result.marginalization_status)
+                          << ", lambda=" << frame_result.marginalization_lambda
+                          << "); deferred to next frame" << std::endl;
                 if (window_.window_size() > window_.max_window_size() + 2) {
                     const NodeId dropped = window_.force_drop_oldest();
                     if (dropped != INVALID_NODE_ID) {
                         frame_result.marginalization_action =
                             SlidingWindow::MarginalizationAction::ForceDropped;
+                        std::cerr << "[GraphOptimization] marginalization force-dropped node "
+                                  << dropped << " (window growth cap exceeded)" << std::endl;
                     }
                 }
             }
