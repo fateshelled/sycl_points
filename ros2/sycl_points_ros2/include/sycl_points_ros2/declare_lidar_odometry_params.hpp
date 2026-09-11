@@ -28,12 +28,24 @@ inline void declare_graph_registration_parameters(rclcpp::Node* node,
     auto& reg = params.graph.registration;
     auto& factor = reg.factor;
 
-    reg.min_num_points = node->declare_parameter<int64_t>("graph/factor/min_num_points", reg.min_num_points);
+    const int64_t min_num_points =
+        node->declare_parameter<int64_t>("graph/factor/min_num_points", reg.min_num_points);
+    if (min_num_points <= 0) {
+        throw std::invalid_argument(
+            "[declare_graph_registration_parameters] `graph/factor/min_num_points` must be >= 1");
+    }
+    reg.min_num_points = static_cast<size_t>(min_num_points);
 
     auto& random_sampling = reg.random_sampling;
     random_sampling.enable =
         node->declare_parameter<bool>("graph/factor/random_sampling/enable", random_sampling.enable);
-    random_sampling.num = node->declare_parameter<int64_t>("graph/factor/random_sampling/num", random_sampling.num);
+    const int64_t random_sampling_num = node->declare_parameter<int64_t>(
+        "graph/factor/random_sampling/num", random_sampling.num);
+    if (random_sampling_num <= 0) {
+        throw std::invalid_argument(
+            "[declare_graph_registration_parameters] `graph/factor/random_sampling/num` must be >= 1");
+    }
+    random_sampling.num = static_cast<size_t>(random_sampling_num);
     random_sampling.use_intensities = node->declare_parameter<bool>(
         "graph/factor/random_sampling/use_intensities", random_sampling.use_intensities);
     random_sampling.weighted_ratio = static_cast<float>(node->declare_parameter<double>(
@@ -70,12 +82,13 @@ inline void declare_graph_velocity_update_parameters(rclcpp::Node* node,
     auto& velocity_update = params.graph.velocity_update;
     velocity_update.enable =
         node->declare_parameter<bool>("graph/velocity_update/enable", velocity_update.enable);
-    velocity_update.iter = static_cast<size_t>(node->declare_parameter<int64_t>(
-        "graph/velocity_update/iter", static_cast<int64_t>(velocity_update.iter)));
-    if (velocity_update.iter == 0) {
+    const int64_t velocity_update_iter = node->declare_parameter<int64_t>(
+        "graph/velocity_update/iter", static_cast<int64_t>(velocity_update.iter));
+    if (velocity_update_iter <= 0) {
         throw std::invalid_argument(
             "[declare_graph_velocity_update_parameters] `graph/velocity_update/iter` must be >= 1");
     }
+    velocity_update.iter = static_cast<size_t>(velocity_update_iter);
 }
 
 inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rclcpp::Node* node) {

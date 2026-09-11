@@ -362,6 +362,10 @@ TEST_F(GraphSlidingWindowTest, UsesConfiguredMarginalizationLambda) {
     EXPECT_FLOAT_EQ(optimizer.window().marginalization_lambda(), 1e-3f);
 }
 
+TEST_F(GraphSlidingWindowTest, RejectsInvalidWindowSize) {
+    EXPECT_THROW(graph::SlidingWindow(0), std::invalid_argument);
+}
+
 TEST_F(GraphSlidingWindowTest, MarginalizeOldestShrinksWindow) {
     graph::SlidingWindow window(2);  // max window size = 2
     const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
@@ -657,6 +661,17 @@ TEST_F(GraphSolverTest, HonorsPerCallIterationLimit) {
 
     EXPECT_EQ(result.iterations, 2U);
     EXPECT_FALSE(result.converged);
+}
+
+TEST_F(GraphSolverTest, RejectsInvalidIterationAndRobustSettings) {
+    graph::GraphSolverParams params;
+    params.max_iterations = 0;
+    EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
+
+    params.max_iterations = 1;
+    params.robust.enable = true;
+    params.robust.levels = 0;
+    EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
 }
 
 // ---------------------------------------------------------------------------

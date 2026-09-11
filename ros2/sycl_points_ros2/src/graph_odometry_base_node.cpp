@@ -33,10 +33,15 @@ void GraphOdometryBaseNode::initialize_processing() {
     // Sliding-window graph optimizer (local BA) parameters.
     {
         auto& graph = this->params_.graph;
-        graph.window_size =
-            static_cast<size_t>(this->declare_parameter<int64_t>("graph/window_size", graph.window_size));
-        graph.solver_iterations = static_cast<size_t>(
-            this->declare_parameter<int64_t>("graph/solver_iterations", graph.solver_iterations));
+        // Count-type parameters must reject non-positive values: a negative
+        // int64_t cast to size_t would become a huge loop bound (virtual hang).
+        auto positive_size = [this](const char* name, size_t default_value) {
+            const int64_t value = this->declare_parameter<int64_t>(name, static_cast<int64_t>(default_value));
+            if (value <= 0) throw std::invalid_argument(std::string(name) + " must be >= 1");
+            return static_cast<size_t>(value);
+        };
+        graph.window_size = positive_size("graph/window_size", graph.window_size);
+        graph.solver_iterations = positive_size("graph/solver_iterations", graph.solver_iterations);
         graph.convergence_translation = static_cast<float>(this->declare_parameter<double>(
             "graph/convergence/translation", graph.convergence_translation));
         graph.convergence_rotation = static_cast<float>(
@@ -58,10 +63,9 @@ void GraphOdometryBaseNode::initialize_processing() {
             this->declare_parameter<double>("graph/robust/init_scale", graph.robust_init_scale));
         graph.robust_min_scale = static_cast<float>(
             this->declare_parameter<double>("graph/robust/min_scale", graph.robust_min_scale));
-        graph.robust_levels = static_cast<size_t>(
-            this->declare_parameter<int64_t>("graph/robust/levels", graph.robust_levels));
-        graph.robust_iters_per_level = static_cast<size_t>(this->declare_parameter<int64_t>(
-            "graph/robust/iterations_per_level", graph.robust_iters_per_level));
+        graph.robust_levels = positive_size("graph/robust/levels", graph.robust_levels);
+        graph.robust_iters_per_level =
+            positive_size("graph/robust/iterations_per_level", graph.robust_iters_per_level);
         graph.robust_relinearize_per_rung = static_cast<bool>(this->declare_parameter<bool>(
             "graph/robust/relinearize_per_rung", graph.robust_relinearize_per_rung));
         const std::string graph_robust_type =

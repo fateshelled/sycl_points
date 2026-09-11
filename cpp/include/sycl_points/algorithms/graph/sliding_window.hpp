@@ -57,8 +57,10 @@ public:
                            float marginalization_scale = 0.0f)
         : max_window_size_(max_window_size), marginalization_lambda_(marginalization_lambda),
           marginalization_scale_(marginalization_scale) {
-        if (!std::isfinite(marginalization_lambda_) || marginalization_lambda_ <= 0.0f) {
-            throw std::invalid_argument("[SlidingWindow] marginalization_lambda must be finite and positive");
+        if (max_window_size_ == 0 || !std::isfinite(marginalization_lambda_) ||
+            marginalization_lambda_ <= 0.0f) {
+            throw std::invalid_argument(
+                "[SlidingWindow] window size and marginalization lambda must be positive");
         }
         if (!std::isfinite(marginalization_scale_) || marginalization_scale_ < 0.0f) {
             throw std::invalid_argument("[SlidingWindow] marginalization_scale must be finite and >= 0");

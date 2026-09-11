@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -122,7 +123,26 @@ public:
 
     GraphSolver(const sycl_utils::DeviceQueue& queue,
                 const GraphSolverParams& params = GraphSolverParams())
-        : queue_(queue), params_(params) {}
+        : queue_(queue), params_(params) {
+        // Reject invalid configuration up front: a zero iteration count never
+        // solves, and non-finite thresholds or non-positive lambdas would
+        // silently corrupt the optimization. Negative convergence thresholds
+        // are allowed on purpose: they disable the convergence check (never-
+        // converge mode, used by the per-call iteration-limit test).
+        if (params_.max_iterations == 0 || !std::isfinite(params_.convergence_rotation) ||
+            !std::isfinite(params_.convergence_translation) ||
+            !std::isfinite(params_.solver_damping_lambda) || params_.solver_damping_lambda <= 0.0f ||
+            !std::isfinite(params_.marginalization_lambda) || params_.marginalization_lambda <= 0.0f) {
+            throw std::invalid_argument("[GraphSolver] invalid solver parameters");
+        }
+        if (params_.robust.enable &&
+            (params_.robust.levels == 0 || params_.robust.iters_per_level == 0 ||
+             !std::isfinite(params_.robust.init_scale) || params_.robust.init_scale <= 0.0f ||
+             !std::isfinite(params_.robust.min_scale) || params_.robust.min_scale <= 0.0f ||
+             params_.robust.init_scale < params_.robust.min_scale)) {
+            throw std::invalid_argument("[GraphSolver] invalid robust schedule");
+        }
+    }
 
     const GraphSolverParams& params() const { return params_; }
 
