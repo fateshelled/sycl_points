@@ -7,6 +7,7 @@
 #include "sycl_points/algorithms/graph/graph_factor.hpp"
 #include "sycl_points/algorithms/graph/graph_factor_kernel.hpp"
 #include "sycl_points/algorithms/graph/pose_node.hpp"
+#include "sycl_points/algorithms/graph/relative_pose_factor.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
 
@@ -136,6 +137,15 @@ public:
     }
 
     bool is_point_cloud_binary() const override { return true; }
+
+    std::optional<RelativePoseMeasurement> make_relative_pose_measurement() const override {
+        // Use the latest cached linearization as-is: the conversion must not
+        // trigger extra GPU work. A missing cache yields nullopt and the caller
+        // falls back to the sigma-based chain factor.
+        const FactorLinearization* lin = cached_linearization();
+        if (lin == nullptr) return std::nullopt;
+        return relative_pose_measurement_from_linearization(*lin);
+    }
 
 private:
     NodeId source_id_ = INVALID_NODE_ID;

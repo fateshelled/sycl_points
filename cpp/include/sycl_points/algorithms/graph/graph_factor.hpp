@@ -20,6 +20,16 @@ inline bool relinearization_needed(const Eigen::Isometry3f& current, const Eigen
     return e.head<3>().norm() > rot_th || e.tail<3>().norm() > trans_th;
 }
 
+/// @brief Relative-pose measurement handed over when a point-cloud binary
+///        factor is converted into a chain RelativePoseFactor: the frozen
+///        relative pose G plus the 6x6 information matrix projected from the
+///        binary's joint Hessian (anisotropic, with the robust weights the
+///        optimizer actually adopted).
+struct RelativePoseMeasurement {
+    Eigen::Isometry3f G = Eigen::Isometry3f::Identity();
+    Eigen::Matrix<float, 6, 6> information = Eigen::Matrix<float, 6, 6>::Zero();
+};
+
 /// @brief Abstract base for all sliding-window graph factors (point-cloud GICP
 ///        factors, host-only chain relatives, and test mocks alike).
 ///
@@ -55,6 +65,16 @@ public:
     ///        sparse-chain topology prunes/converts exactly these; host-only
     ///        factors (chain relatives) are always kept.
     virtual bool is_point_cloud_binary() const { return false; }
+
+    /// @brief Relative-pose measurement (G, information) captured from this
+    ///        factor's latest cached linearization, used when the factor is
+    ///        converted into a chain RelativePoseFactor. nullopt by default;
+    ///        point-cloud binary factors override this. Callers fall back to
+    ///        the sigma-based chain factor on nullopt — no extra linearization
+    ///        is ever run just for the conversion.
+    virtual std::optional<RelativePoseMeasurement> make_relative_pose_measurement() const {
+        return std::nullopt;
+    }
 
     /// @brief Return the linearization, reusing a cached result when the connected
     ///        node poses have not moved beyond the relinearization thresholds.

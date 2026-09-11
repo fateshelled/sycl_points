@@ -315,6 +315,40 @@ private:
     float b_scale_;
 };
 
+// Synthetic factor with a fixed joint linearization: exercises the
+// relative-pose measurement projection without GPU point clouds.
+class SyntheticJointFactor : public graph::GraphFactorBase {
+public:
+    SyntheticJointFactor(std::shared_ptr<graph::PoseNode> src, std::shared_ptr<graph::PoseNode> tgt,
+                         graph::FactorLinearization lin)
+        : src_(std::move(src)), tgt_(std::move(tgt)), lin_(std::move(lin)) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override { return lin_; }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override { return {src_->id, tgt_->id}; }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return true;
+    }
+
+    std::optional<graph::RelativePoseMeasurement> make_relative_pose_measurement() const override {
+        const graph::FactorLinearization* lin = cached_linearization();
+        if (lin == nullptr) return std::nullopt;
+        return graph::relative_pose_measurement_from_linearization(*lin);
+    }
+
+private:
+    std::shared_ptr<graph::PoseNode> src_;
+    std::shared_ptr<graph::PoseNode> tgt_;
+    graph::FactorLinearization lin_;
+};
+
 // ---------------------------------------------------------------------------
 // SlidingWindow management (host-only)
 // ---------------------------------------------------------------------------
@@ -1063,8 +1097,187 @@ TEST_F(RelativePoseTest, ChainRecoversWithAnchor) {
 }
 
 // ---------------------------------------------------------------------------
-// Topology invariants: sparse_chain vs clique (real GICP factors, SYCL)
+// Relative-pose measurement projection: 12-DoF joint Hessian -> 6-DoF
+// relative-pose information for sparse-chain conversion (host-only math)
 // ---------------------------------------------------------------------------
+
+namespace {
+
+Eigen::Matrix<float, 6, 12> relative_jacobian(const Eigen::Isometry3f& T_src,
+                                              const Eigen::Isometry3f& T_tgt) {
+    Eigen::Matrix<float, 6, 12> J = Eigen::Matrix<float, 6, 12>::Zero();
+    J.block<6, 6>(0, 0) = -graph::RelativePoseFactor::adjoint(T_tgt.inverse() * T_src);
+    J.block<6, 6>(0, 6).setIdentity();
+    return J;
+}
+
+graph::FactorLinearization make_joint_linearization(const Eigen::Isometry3f& T_src,
+                                                    const Eigen::Isometry3f& T_tgt,
+                                                    const Eigen::Matrix<float, 6, 6>& omega) {
+    const Eigen::Matrix<float, 6, 12> J = relative_jacobian(T_src, T_tgt);
+    const Eigen::Matrix<float, 12, 12> H = J.transpose() * omega * J;
+    graph::FactorLinearization lin;
+    lin.H00 = H.block<6, 6>(0, 0);
+    lin.H01 = H.block<6, 6>(0, 6);
+    lin.H11 = H.block<6, 6>(6, 6);
+    lin.source_linearization_pose = T_src;
+    lin.target_linearization_pose = T_tgt;
+    lin.inlier = 1;
+    return lin;
+}
+
+Eigen::Isometry3f test_pose(float tx, float ty, float tz, float yaw) {
+    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+    T.translate(Eigen::Vector3f(tx, ty, tz));
+    T.rotate(Eigen::AngleAxisf(yaw, Eigen::Vector3f::UnitZ()));
+    return T;
+}
+
+}  // namespace
+
+// The projection must recover the information exactly when the joint Hessian
+// is genuinely of the form J^T Omega J (the gauge null space aligns).
+TEST(GraphRelativePoseInfoTest, RecoversIsotropicInformation) {
+    const Eigen::Isometry3f T_src = test_pose(0.3f, -0.2f, 0.1f, 0.2f);
+    const Eigen::Isometry3f T_tgt = test_pose(0.8f, -0.1f, -0.2f, -0.15f);
+
+    Eigen::Matrix<float, 6, 6> omega_iso = Eigen::Matrix<float, 6, 6>::Zero();
+    omega_iso.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity() / (5e-3f * 5e-3f);
+    omega_iso.block<3, 3>(3, 3) = Eigen::Matrix3f::Identity() / (2e-2f * 2e-2f);
+
+    const auto lin = make_joint_linearization(T_src, T_tgt, omega_iso);
+    const auto m = graph::relative_pose_measurement_from_linearization(lin);
+    ASSERT_TRUE(m.has_value());
+
+    EXPECT_TRUE(m->G.matrix().isApprox((T_src.inverse() * T_tgt).matrix(), 1e-6f));
+    EXPECT_LT((m->information - omega_iso).norm(), 1e-4f * omega_iso.norm());
+}
+
+// The projected information keeps the anisotropy of the source Hessian: weak
+// directions (e.g. yaw in a corridor) stay weak in the chain factor.
+TEST(GraphRelativePoseInfoTest, PreservesAnisotropicWeakDirections) {
+    const Eigen::Isometry3f T_src = test_pose(0.1f, 0.2f, -0.1f, 0.3f);
+    const Eigen::Isometry3f T_tgt = test_pose(0.6f, -0.3f, 0.2f, 0.1f);
+
+    Eigen::Matrix<float, 6, 6> omega = Eigen::Matrix<float, 6, 6>::Zero();
+    // strong roll/pitch and y/z translation, weak yaw and x translation
+    omega.diagonal() << 1e6f, 1e6f, 1e2f, 1e2f, 1e6f, 1e6f;
+
+    const auto lin = make_joint_linearization(T_src, T_tgt, omega);
+    const auto m = graph::relative_pose_measurement_from_linearization(lin);
+    ASSERT_TRUE(m.has_value());
+
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(m->information);
+    ASSERT_EQ(eig.info(), Eigen::Success);
+    std::vector<float> got(eig.eigenvalues().data(), eig.eigenvalues().data() + 6);
+    std::sort(got.begin(), got.end());
+    const std::vector<float> expected{1e2f, 1e2f, 1e6f, 1e6f, 1e6f, 1e6f};
+    for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_NEAR(got[i], expected[i], 1e-2f * expected[i]) << "eigenvalue " << i;
+    }
+}
+
+// Degenerate directions keep their near-zero information (no artificial
+// stiffening); the PSD clip removes rounding-induced negative eigenvalues.
+TEST(GraphRelativePoseInfoTest, KeepsDegenerateDirectionsNearZero) {
+    const Eigen::Isometry3f T_src = test_pose(-0.4f, 0.1f, 0.2f, -0.2f);
+    const Eigen::Isometry3f T_tgt = test_pose(0.2f, 0.4f, 0.1f, 0.25f);
+
+    Eigen::Matrix<float, 6, 6> omega = Eigen::Matrix<float, 6, 6>::Zero();
+    omega.diagonal() << 1e4f, 1e4f, 1e4f, 1e4f, 1e4f, 0.0f;  // yaw unobservable
+
+    const auto lin = make_joint_linearization(T_src, T_tgt, omega);
+    const auto m = graph::relative_pose_measurement_from_linearization(lin);
+    ASSERT_TRUE(m.has_value());
+
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(m->information);
+    ASSERT_EQ(eig.info(), Eigen::Success);
+    EXPECT_GE(eig.eigenvalues().minCoeff(), -1e-6f * eig.eigenvalues().maxCoeff());
+    EXPECT_LT(eig.eigenvalues().minCoeff(), 1e-2f * eig.eigenvalues().maxCoeff());
+}
+
+// Unusable inputs must fall back (nullopt): NaN Hessian, all-zero Hessian
+// (never linearized), and a Hessian carrying off-subspace information (e.g. an
+// absolute-pose prior mixed in) which the reconstruction guard rejects.
+TEST(GraphRelativePoseInfoTest, RejectsUnusableLinearizations) {
+    const Eigen::Isometry3f T_src = test_pose(0.2f, 0.0f, 0.1f, 0.1f);
+    const Eigen::Isometry3f T_tgt = test_pose(0.5f, 0.2f, 0.0f, -0.1f);
+
+    auto lin_nan = make_joint_linearization(T_src, T_tgt, Eigen::Matrix<float, 6, 6>::Identity());
+    lin_nan.H00(0, 0) = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(graph::relative_pose_measurement_from_linearization(lin_nan).has_value());
+
+    graph::FactorLinearization lin_zero;  // all-zero Hessian, identity poses
+    EXPECT_FALSE(graph::relative_pose_measurement_from_linearization(lin_zero).has_value());
+
+    graph::FactorLinearization lin_full;
+    lin_full.H00 = Eigen::Matrix<float, 6, 6>::Identity();
+    lin_full.H11 = Eigen::Matrix<float, 6, 6>::Identity();
+    lin_full.source_linearization_pose = T_src;
+    lin_full.target_linearization_pose = T_tgt;
+    // Joint Hessian = I_12: full rank over the 12-DoF space, i.e. information
+    // outside the relative-pose subspace (rank 6). Reconstruction must fail.
+    EXPECT_FALSE(graph::relative_pose_measurement_from_linearization(lin_full).has_value());
+}
+
+// G and Omega must come from the same linearization snapshot (the cached
+// poses), not from the nodes' current poses.
+TEST(GraphRelativePoseInfoTest, MeasurementUsesLinearizationSnapshot) {
+    const Eigen::Isometry3f T_lin_src = test_pose(0.3f, 0.0f, 0.0f, 0.1f);
+    const Eigen::Isometry3f T_lin_tgt = test_pose(0.7f, 0.1f, 0.0f, 0.2f);
+    // Nodes have since moved beyond the lin snapshot.
+    const Eigen::Isometry3f T_node_src = test_pose(0.31f, 0.0f, 0.0f, 0.1f);
+    const Eigen::Isometry3f T_node_tgt = test_pose(0.72f, 0.1f, 0.0f, 0.2f);
+
+    auto queue = make_queue();
+    graph::SlidingWindow window(4);
+    const graph::NodeId id0 = window.add_node(T_node_src, 0.0);
+    const graph::NodeId id1 = window.add_node(T_node_tgt, 1.0);
+    window.add_factor(std::make_shared<SyntheticJointFactor>(
+        window.get_node(id0), window.get_node(id1),
+        make_joint_linearization(T_lin_src, T_lin_tgt, Eigen::Matrix<float, 6, 6>::Identity())));
+
+    auto& factor = *std::dynamic_pointer_cast<SyntheticJointFactor>(window.factors().front());
+    factor.get_linearization(queue, 0.0f, 0.0f);  // populate the cache
+    const auto m = factor.make_relative_pose_measurement();
+    ASSERT_TRUE(m.has_value());
+    EXPECT_TRUE(m->G.matrix().isApprox((T_lin_src.inverse() * T_lin_tgt).matrix(), 1e-6f));
+    EXPECT_FALSE(m->G.matrix().isApprox((T_node_src.inverse() * T_node_tgt).matrix(), 1e-3f));
+}
+
+// A real BinaryGicpFactor yields a finite PSD measurement once linearized, and
+// reports nullopt before its first linearization (fallback contract).
+TEST(GraphRelativePoseInfoTest, BinaryFactorMeasurementAndFallback) {
+    auto queue = make_queue();
+    std::mt19937 gen(11);
+    const Eigen::Isometry3f T_a = test_pose(0.2f, 0.0f, 0.0f, 0.0f);
+    const Eigen::Isometry3f T_b = test_pose(0.6f, 0.1f, 0.0f, 0.05f);
+
+    auto cloud_a = make_cube_cloud(queue, 800, 1.0f, gen);
+    auto cloud_b = transform_cloud(queue, *cloud_a, (T_b.inverse() * T_a));
+    auto knn_a = knn::KDTree::build(queue, *cloud_a);
+    auto knn_b = knn::KDTree::build(queue, *cloud_b);
+    estimate_covariances(*knn_a, *cloud_a);
+    estimate_covariances(*knn_b, *cloud_b);
+
+    graph::SlidingWindow window(4);
+    const graph::NodeId id_a = window.add_node(T_a, 0.0, cloud_a, knn_a);
+    const graph::NodeId id_b = window.add_node(T_b, 1.0, cloud_b, knn_b);
+    auto factor = std::make_shared<graph::BinaryGicpFactor>(queue, id_a, window.get_node(id_a),
+                                                            id_b, window.get_node(id_b), gicp_params());
+
+    EXPECT_FALSE(factor->make_relative_pose_measurement().has_value());
+
+    factor->get_linearization(queue, 1.0f, 1.0f);  // populates the cache
+    const auto m = factor->make_relative_pose_measurement();
+    ASSERT_TRUE(m.has_value());
+    EXPECT_TRUE(m->G.matrix().isApprox((T_a.inverse() * T_b).matrix(), 1e-4f));
+    EXPECT_TRUE(m->information.allFinite());
+    EXPECT_GT(m->information.trace(), 0.0f);
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(m->information);
+    ASSERT_EQ(eig.info(), Eigen::Success);
+    EXPECT_GE(eig.eigenvalues().minCoeff(), -1e-3f * eig.eigenvalues().maxCoeff());
+}
 
 // ---------------------------------------------------------------------------
 // Topology invariants: sparse_chain vs clique (real GICP factors, SYCL)
@@ -1240,7 +1453,16 @@ TEST_F(GraphTopologyTest, ProcessFrameDiscardsFailedTipAndRestoresPoses) {
     EXPECT_TRUE(w.get_node(node0)->pose.matrix().isApprox(pose0_before.matrix(), 1e-6f));
     size_t chain_factors = 0;
     for (const auto& f : w.factors()) {
-        if (std::dynamic_pointer_cast<const graph::RelativePoseFactor>(f)) ++chain_factors;
+        if (auto chain = std::dynamic_pointer_cast<const graph::RelativePoseFactor>(f)) {
+            ++chain_factors;
+            // The conversion inherits the GICP-derived anisotropic information
+            // from the binary's cached linearization (cache existed here), not
+            // the isotropic sigma model.
+            EXPECT_TRUE(chain->information().allFinite());
+            EXPECT_GT(chain->information().trace(), 0.0f);
+            EXPECT_FALSE(chain->information().isApprox(
+                graph::RelativePoseFactor::make_information(graph::RelativePoseParams()), 1e-3f));
+        }
     }
     EXPECT_EQ(chain_factors, 1u);
 

@@ -149,9 +149,12 @@ public:
     ///        that do not touch `keep_tip` (their scan-to-scan information is
     ///        re-expressed by the new tip's fresh star), and make sure the
     ///        adjacent pair (convert_a, convert_b) keeps a chain constraint by
-    ///        converting the matching binary into a RelativePoseFactor frozen at
-    ///        the current estimates (a relative factor already present is kept
-    ///        as-is). Idempotent w.r.t. repeated calls with the same pair.
+    ///        converting the matching binary into a RelativePoseFactor. The
+    ///        conversion prefers the anisotropic information projected from the
+    ///        binary's last cached linearization (G and Omega from the same
+    ///        snapshot); without a cache it falls back to the isotropic
+    ///        sigma-based factor. A relative factor already present is kept
+    ///        as-is. Idempotent w.r.t. repeated calls with the same pair.
     void prune_point_cloud_binaries(NodeId keep_tip, NodeId convert_a, NodeId convert_b,
                                     const RelativePoseParams& rel_params = RelativePoseParams()) {
         bool chain_present = false;
@@ -172,9 +175,17 @@ public:
                 (t == convert_a || t == convert_b)) {
                 auto na = get_node(convert_a);
                 auto nb = get_node(convert_b);
-                const Eigen::Isometry3f G = na->pose.inverse() * nb->pose;
-                kept.push_back(std::make_shared<RelativePoseFactor>(convert_a, na, convert_b, nb,
-                                                                    G, rel_params));
+                auto measurement = f->make_relative_pose_measurement();
+                if (measurement) {
+                    // G and Omega come from the same linearization snapshot, so
+                    // the measurement and its information stay consistent.
+                    kept.push_back(std::make_shared<RelativePoseFactor>(
+                        convert_a, na, convert_b, nb, measurement->G, measurement->information));
+                } else {
+                    const Eigen::Isometry3f G = na->pose.inverse() * nb->pose;
+                    kept.push_back(std::make_shared<RelativePoseFactor>(convert_a, na, convert_b, nb,
+                                                                        G, rel_params));
+                }
                 chain_present = true;
                 continue;
             }
