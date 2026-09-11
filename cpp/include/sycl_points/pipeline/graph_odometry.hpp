@@ -71,7 +71,13 @@ public:
     const auto& get_keyframe_poses() const { return this->submap_->get_keyframe_poses(); }
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
-    const PointCloudShared* get_registration_input_point_cloud() const { return this->preprocessed_pc_.get(); }
+    /// @brief The exact point cloud the latest frame's tip factor consumed
+    ///        (sampled / final-deskewed, i.e. FrameResult::tip_cloud). Null
+    ///        before the first frame and after a discarded (solver-failed)
+    ///        frame. Callers must handle the null return.
+    const PointCloudShared* get_registration_input_point_cloud() const {
+        return this->last_factor_input_.get();
+    }
     const auto& get_graph_window() const { return this->graph_opt_->window(); }
     /// @brief Cumulative marginalization outcome counters (success / failure /
     ///        force-drop / max lambda) for observability on long runs.
@@ -328,6 +334,9 @@ public:
             }
             this->add_delta_time(ProcessName::graph_optimization, dt);
         }
+        // Publish the exact factor input of this frame (null when the solver
+        // failed and the frame is being discarded below).
+        this->last_factor_input_ = frame_result.tip_cloud;
 
         // A solver failure (non-finite system / decomposition / unstable step)
         // must not reach the map or odometry: the frame is discarded here, and
@@ -404,6 +413,10 @@ public:
 private:
     sycl_utils::DeviceQueue::Ptr queue_ptr_ = nullptr;
     PointCloudShared::Ptr preprocessed_pc_ = nullptr;
+    /// @brief The exact factor input of the latest processed frame (the tip
+    ///        node's sampled / final-deskewed cloud), published through
+    ///        get_registration_input_point_cloud().
+    PointCloudShared::Ptr last_factor_input_ = nullptr;
     bool is_first_frame_ = true;
     pointcloud_processing::ProcessingContext processing_ctx_;
     pointcloud_processing::PCProcessor::Ptr pc_processor_ = nullptr;
