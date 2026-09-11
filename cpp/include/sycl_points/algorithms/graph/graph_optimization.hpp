@@ -344,15 +344,16 @@ public:
                 fr.tip_registration.H = lin->H00;
                 fr.tip_registration.b = lin->b0;
                 fr.tip_registration.error = lin->error;
-                // Graph mode does not compute a separate raw linearization:
-                // *_raw mirrors the final robust-weighted linearization for
-                // RegistrationResult API compatibility. This is NOT the LO
-                // path's "pre-regularization" semantics (and not an unweighted
-                // Hessian either), so downstream must not treat it as raw.
-                // When a consumer needs the true unweighted Hessian (e.g.
-                // robust-independent degeneracy analysis), compute it on demand
-                // from the tip's unary factor with the robust loss disabled
-                // instead of relying on these fields.
+                // Graph mode does not compute a separate linearization pass for
+                // *_raw: these fields mirror the final robust-weighted
+                // linearization, which is exactly the LO path's H_raw semantics
+                // (robust-weighted, before degenerate regularization / MAP
+                // prior; the graph factors run with degenerate regularization
+                // disabled). Consumers such as AdaptiveMotionPredictor can
+                // therefore treat them like the LO H_raw. A truly unweighted
+                // Hessian (robust loss fully disabled) is NOT provided here;
+                // compute it on demand from the tip's unary factor with the
+                // robust loss disabled if ever needed.
                 fr.tip_registration.H_raw = lin->H00;
                 fr.tip_registration.b_raw = lin->b0;
                 fr.tip_registration.error_raw = lin->error;
