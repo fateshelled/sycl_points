@@ -302,7 +302,10 @@ public:
                             source_cloud, this->submap_gen_cloud_, this->submap_gen_knn_, source_knn,
                             init_T, timestamp, this->reg_params_, vu);
 
-                        if (this->imu_preintegration_) {
+                        // The IMU preintegration basis must only advance on a
+                        // usable pose; a failed solve keeps the previous basis
+                        // so the next frame can retry from the last good state.
+                        if (result.solver_valid() && this->imu_preintegration_) {
                             this->imu_R_world_at_reset_ =
                                 result.current_pose.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                             this->imu_v_world_at_reset_ = v_reset;
@@ -319,6 +322,19 @@ public:
                 return ResultType::error;
             }
             this->add_delta_time(ProcessName::graph_optimization, dt);
+        }
+
+        // A solver failure (non-finite system / decomposition / unstable step)
+        // must not reach the map or odometry: the frame is discarded here, and
+        // the graph window has already been rolled back to its pre-frame state.
+        if (!frame_result.solver_valid()) {
+            this->error_message_ =
+                "graph_optimize: solver returned an invalid state; frame discarded";
+            std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
+            // Consume the scan's timestamp so the next frame's dt stays honest,
+            // while the last good odometry / map / registration state is kept.
+            this->last_frame_time_ = timestamp;
+            return ResultType::error;
         }
         this->last_imu_reset_timestamp_ = timestamp;
 

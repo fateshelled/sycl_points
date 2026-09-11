@@ -98,12 +98,17 @@ public:
         float final_error = 0.0f;
         Status status = Status::MAX_ITERATIONS;
 
-        bool valid() const {
-            return status != Status::NON_FINITE_SYSTEM &&
-                   status != Status::DECOMPOSITION_FAILED &&
-                   status != Status::NON_FINITE_STEP;
-        }
+        bool valid() const { return valid_status(status); }
     };
+
+    /// @brief A non-finite system, decomposition failure, or non-finite/unstable
+    ///        step leaves the current estimate unusable; MAX_ITERATIONS is still
+    ///        a best-effort valid result. Callers (pipeline) must discard the
+    ///        frame when this returns false.
+    static bool valid_status(Status status) {
+        return status != Status::NON_FINITE_SYSTEM && status != Status::DECOMPOSITION_FAILED &&
+               status != Status::NON_FINITE_STEP;
+    }
 
     GraphSolver(const sycl_utils::DeviceQueue& queue,
                 const GraphSolverParams& params = GraphSolverParams())

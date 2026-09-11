@@ -96,6 +96,15 @@ public:
         size_t iterations = 0;
         float error = 0.0f;
         bool keyframe = true;
+        /// @brief Solver outcome of the last optimize() pass for this frame.
+        ///        MAX_ITERATIONS (default) means the loop simply ran out of
+        ///        iterations; an invalid status means the estimate is unusable.
+        GraphSolver::Status solver_status = GraphSolver::Status::MAX_ITERATIONS;
+        /// @brief True unless the solver ended in an unrecoverable failure
+        ///        state (non-finite system / decomposition failure / bad step).
+        ///        The pipeline must discard the frame instead of updating the
+        ///        map or odometry when this is false.
+        bool solver_valid() const { return GraphSolver::valid_status(solver_status); }
         /// @brief Exact sampled/final-deskewed cloud used by the tip factor.
         std::shared_ptr<PointCloudShared> tip_cloud = nullptr;
         /// @brief Inlier ratio of the tip's unary submap factor from the last
@@ -232,6 +241,16 @@ public:
             const TipVelocityUpdater tip_velocity_updater;
             bool first_pass = true;
             bool deskew_stopped = false;
+            bool frame_valid = true;
+            // Snapshots for failure recovery: a failed system may have already
+            // applied partial Gauss-Newton updates to every node pose.
+            const std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>>
+                pre_solve_poses = [&] {
+                    std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> poses;
+                    poses.reserve(window_.active_nodes().size());
+                    for (const auto& n : window_.active_nodes()) poses.push_back(n->pose);
+                    return poses;
+                }();
             for (size_t rung = 0; rung < rungs && !deskew_stopped; ++rung) {
                 const float rung_scale = robust.enable ? robust_ladder_scale_at_level(robust, rung) : 0.0f;
                 for (size_t v = 0; v < vu_rounds; ++v) {
@@ -251,10 +270,42 @@ public:
                         robust.enable
                             ? std::optional<size_t>(std::max<size_t>(1, robust.iters_per_level))
                             : std::nullopt);
+                    fr.solver_status = result.status;
                     fr.converged = result.converged;
                     fr.iterations += result.iterations;
                     fr.error = result.final_error;
+                    if (!result.valid()) {
+                        // A failed system leaves the estimate unreliable: stop the
+                        // remaining ladder / velocity rounds. The pipeline must
+                        // discard this frame (see FrameResult::solver_valid).
+                        frame_valid = false;
+                        break;
+                    }
                 }
+                if (!frame_valid) break;
+            }
+
+            if (!frame_valid) {
+                // End-of-frame robust bookkeeping still applies to the surviving
+                // factors (they lock their last used scale either way).
+                window_.finalize_robust();
+                // Roll the window back to its pre-frame state: restore the
+                // partially updated poses, then drop the failed tip and every
+                // factor touching it so the next frame starts clean.
+                const auto& nodes = window_.active_nodes();
+                for (size_t i = 0; i < nodes.size() && i < pre_solve_poses.size(); ++i) {
+                    nodes[i]->pose = pre_solve_poses[i];
+                }
+                window_.remove_node(current_id);
+                fr.current_node_id = INVALID_NODE_ID;
+                fr.current_pose = initial_pose;
+                fr.tip_cloud = nullptr;
+                fr.converged = false;
+                fr.error = 0.0f;
+                fr.tip_registration = registration::RegistrationResult{};
+                fr.tip_robust_scale = 0.0f;
+                fr.inlier_ratio = 0.0f;
+                return fr;
             }
         }
 
