@@ -427,7 +427,7 @@ TEST_F(GraphSlidingWindowTest, FinalizeFrameDefersThenForceDropsOnPersistentFail
     auto fr1 = finalize_with_new_frame(tip);
     EXPECT_EQ(fr1.marginalization_action, graph::SlidingWindow::MarginalizationAction::Deferred);
     EXPECT_EQ(fr1.marginalization_status, graph::SlidingWindow::MarginalizationStatus::NonFiniteSystem);
-    EXPECT_FALSE(fr1.marginalization_force_dropped);
+    EXPECT_NE(fr1.marginalization_action, graph::SlidingWindow::MarginalizationAction::ForceDropped);
 
     tip = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
     auto fr2 = finalize_with_new_frame(tip);
@@ -438,7 +438,6 @@ TEST_F(GraphSlidingWindowTest, FinalizeFrameDefersThenForceDropsOnPersistentFail
     // (no prior), which bounds the window and removes the offending factor.
     tip = window.add_node(Eigen::Isometry3f::Identity(), 3.0);
     auto fr3 = finalize_with_new_frame(tip);
-    EXPECT_TRUE(fr3.marginalization_force_dropped);
     EXPECT_EQ(fr3.marginalization_action, graph::SlidingWindow::MarginalizationAction::ForceDropped);
     EXPECT_EQ(fr3.marginalization_status,
               graph::SlidingWindow::MarginalizationStatus::NonFiniteSystem);
@@ -452,7 +451,7 @@ TEST_F(GraphSlidingWindowTest, FinalizeFrameDefersThenForceDropsOnPersistentFail
     tip = window.add_node(Eigen::Isometry3f::Identity(), 4.0);
     auto fr4 = finalize_with_new_frame(tip);
     EXPECT_EQ(fr4.marginalization_status, graph::SlidingWindow::MarginalizationStatus::Success);
-    EXPECT_FALSE(fr4.marginalization_force_dropped);
+    EXPECT_EQ(fr4.marginalization_action, graph::SlidingWindow::MarginalizationAction::None);
     EXPECT_LE(window.window_size(), window.max_window_size() + 2);
 }
 

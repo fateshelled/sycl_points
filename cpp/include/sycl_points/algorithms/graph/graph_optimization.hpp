@@ -117,10 +117,6 @@ public:
         SlidingWindow::MarginalizationAction marginalization_action =
             SlidingWindow::MarginalizationAction::None;
         float marginalization_lambda = 0.0f;
-        /// @brief True when the growth cap kicked in after persistent marginal
-        ///        failure and the oldest node was force-dropped without a prior.
-        ///        (prefer marginalization_action == ForceDropped for new code)
-        bool marginalization_force_dropped = false;
     };
 
     /// @brief Apply the authoritative keyframe decision for the current tip.
@@ -160,7 +156,6 @@ public:
                     if (dropped != INVALID_NODE_ID) {
                         frame_result.marginalization_action =
                             SlidingWindow::MarginalizationAction::ForceDropped;
-                        frame_result.marginalization_force_dropped = true;
                     }
                 }
             }

@@ -43,7 +43,6 @@ public:
 
     struct MarginalizationResult {
         MarginalizationStatus status = MarginalizationStatus::NotRequired;
-        MarginalizationAction action = MarginalizationAction::None;
         NodeId marginalized_node = INVALID_NODE_ID;
         /// @brief Last lambda actually attempted for the Schur regularization.
         float lambda_used = 0.0f;
