@@ -421,21 +421,25 @@ TEST_F(GraphSlidingWindowTest, FinalizeFrameDefersThenForceDropsOnPersistentFail
         return fr;
     };
 
-    // Frames 1-2: failure is deferred (window stays at max+2).
+    // Frames 1-2: failure is deferred (window stays at max+2). The failure reason
+    // (NonFiniteSystem) is preserved independently of the Deferred action.
     graph::NodeId tip = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
     auto fr1 = finalize_with_new_frame(tip);
-    EXPECT_EQ(fr1.marginalization_status, graph::SlidingWindow::MarginalizationStatus::Deferred);
+    EXPECT_EQ(fr1.marginalization_action, graph::SlidingWindow::MarginalizationAction::Deferred);
+    EXPECT_EQ(fr1.marginalization_status, graph::SlidingWindow::MarginalizationStatus::NonFiniteSystem);
     EXPECT_FALSE(fr1.marginalization_force_dropped);
 
     tip = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
     auto fr2 = finalize_with_new_frame(tip);
-    EXPECT_EQ(fr2.marginalization_status, graph::SlidingWindow::MarginalizationStatus::Deferred);
+    EXPECT_EQ(fr2.marginalization_action, graph::SlidingWindow::MarginalizationAction::Deferred);
+    EXPECT_EQ(fr2.marginalization_status, graph::SlidingWindow::MarginalizationStatus::NonFiniteSystem);
 
     // Frame 3: the cap (max + 2) is exceeded -> the oldest node is force-dropped
     // (no prior), which bounds the window and removes the offending factor.
     tip = window.add_node(Eigen::Isometry3f::Identity(), 3.0);
     auto fr3 = finalize_with_new_frame(tip);
     EXPECT_TRUE(fr3.marginalization_force_dropped);
+    EXPECT_EQ(fr3.marginalization_action, graph::SlidingWindow::MarginalizationAction::ForceDropped);
     EXPECT_EQ(fr3.marginalization_status,
               graph::SlidingWindow::MarginalizationStatus::NonFiniteSystem);
     EXPECT_EQ(window.window_size(), 3U);
@@ -1209,6 +1213,38 @@ public:
     }
     std::vector<float> seen_scales;
 };
+
+// P1 regression: marginalization must re-linearize each factor with its own frozen
+// robust scale (the scale it last actually used), not the window's nominal
+// marginalization_scale_ fallback. This catches a ladder that ended early
+// (e.g. redeskew failure) leaving last_scale_ != min_scale.
+TEST_F(GraphSlidingWindowTest, MarginalizationUsesFrozenRobustScale) {
+    // Window fallback scale (3.0) differs from the factor's frozen scale (7.0).
+    graph::SlidingWindow window(/*max_window_size=*/1, /*marginalization_lambda=*/1e-6f,
+                               /*marginalization_scale=*/3.0f);
+    auto probe = std::make_shared<ScaleProbeFactor>();
+    // Simulate a robust ladder that stopped at scale 7.0 (not the floor): drive one
+    // linearization at 7.0, then freeze so the adopted scale is locked.
+    probe->get_linearization(queue, 0.02f, 0.05f, 7.0f);
+    probe->freeze();
+    ASSERT_FALSE(probe->is_annealing());
+
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    window.add_factor(probe);
+    window.add_node(Eigen::Isometry3f::Identity(), 1.0);  // push the window over max
+
+    const auto m = window.marginalize_oldest(queue);
+    ASSERT_EQ(m.status, graph::SlidingWindow::MarginalizationStatus::Success);
+    // Every linearization invoked by marginalization used the frozen 7.0 scale;
+    // the 3.0 fallback must never have been passed to the factor.
+    ASSERT_GE(probe->seen_scales.size(), 1u);
+    bool saw_fallback = false;
+    for (float s : probe->seen_scales) {
+        EXPECT_FLOAT_EQ(s, 7.0f);
+        if (s == 3.0f) saw_fallback = true;
+    }
+    EXPECT_FALSE(saw_fallback);
+}
 
 TEST(RobustScheduleTest, FreezeLocksLastUsedScale) {
     sycl_utils::DeviceQueue queue = make_queue();

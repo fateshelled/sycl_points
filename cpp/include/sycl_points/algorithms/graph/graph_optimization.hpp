@@ -107,14 +107,19 @@ public:
         registration::RegistrationResult tip_registration;
         float tip_robust_scale = 0.0f;
         bool finalized = false;
-        /// @brief Marginalization outcome at finalize time. Success carries the
-        ///        escalated lambda actually used; failure statuses were observed
-        ///        by the pipeline (window kept / capped as reported below).
+        /// @brief Marginalization failure reason at finalize time. Never overwritten
+        ///        by the pipeline action (see marginalization_action).
         SlidingWindow::MarginalizationStatus marginalization_status =
             SlidingWindow::MarginalizationStatus::NotRequired;
+        /// @brief Pipeline action taken after the marginalization attempt: a deferred
+        ///        next-frame retry, or a force-drop of the oldest node on persistent
+        ///        failure. Independent of the failure reason held in marginalization_status.
+        SlidingWindow::MarginalizationAction marginalization_action =
+            SlidingWindow::MarginalizationAction::None;
         float marginalization_lambda = 0.0f;
         /// @brief True when the growth cap kicked in after persistent marginal
-        ///        failure and the oldest node was dropped without a prior.
+        ///        failure and the oldest node was force-dropped without a prior.
+        ///        (prefer marginalization_action == ForceDropped for new code)
         bool marginalization_force_dropped = false;
     };
 
@@ -141,15 +146,20 @@ public:
             const auto m = window_.marginalize_oldest(queue_);
             frame_result.marginalization_status = m.status;
             frame_result.marginalization_lambda = m.lambda_used;
-            if (m.status != SlidingWindow::MarginalizationStatus::Success) {
-                // Persistent failure must not grow the window without bound:
-                // defer for a next-frame retry first, then force-drop the oldest
-                // node (no prior) once the cap is exceeded.
-                frame_result.marginalization_status = SlidingWindow::MarginalizationStatus::Deferred;
+            if (m.status == SlidingWindow::MarginalizationStatus::Success ||
+                m.status == SlidingWindow::MarginalizationStatus::NotRequired) {
+                frame_result.marginalization_action = SlidingWindow::MarginalizationAction::None;
+            } else {
+                // Persistent failure must not grow the window without bound: defer
+                // for a next-frame retry first, then force-drop the oldest node (no
+                // prior) once the cap is exceeded. The failure reason (m.status) is
+                // preserved separately from this action.
+                frame_result.marginalization_action = SlidingWindow::MarginalizationAction::Deferred;
                 if (window_.window_size() > window_.max_window_size() + 2) {
                     const NodeId dropped = window_.force_drop_oldest();
                     if (dropped != INVALID_NODE_ID) {
-                        frame_result.marginalization_status = m.status;
+                        frame_result.marginalization_action =
+                            SlidingWindow::MarginalizationAction::ForceDropped;
                         frame_result.marginalization_force_dropped = true;
                     }
                 }

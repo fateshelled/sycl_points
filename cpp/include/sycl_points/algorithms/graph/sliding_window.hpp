@@ -24,19 +24,28 @@ namespace graph {
 /// marginalization is added in Phase 2.
 class SlidingWindow {
 public:
-    /// @brief Outcome of a single marginalize_oldest() attempt.
+    /// @brief Outcome (failure reason) of a single marginalize_oldest() attempt.
+    ///        The pipeline action taken afterwards is reported separately via
+    ///        MarginalizationAction, so the reason is never lost.
     enum class MarginalizationStatus {
         NotRequired,          ///< window within max size; nothing done
         Success,              ///< oldest node absorbed into the Markov-blanket prior
-        Deferred,             ///< marginalization failed this frame; node kept for a next-frame retry
         NonFiniteSystem,      ///< factor linearization / Schur output contained NaN or Inf
         DecompositionFailed,  ///< H_mm not usable even with escalated lambda
     };
 
+    /// @brief Pipeline action taken after a marginalization attempt.
+    enum class MarginalizationAction {
+        None,         ///< no action (NotRequired / Success)
+        Deferred,     ///< failure: oldest node kept for a next-frame retry
+        ForceDropped, ///< persistent failure: oldest node dropped without a prior
+    };
+
     struct MarginalizationResult {
         MarginalizationStatus status = MarginalizationStatus::NotRequired;
+        MarginalizationAction action = MarginalizationAction::None;
         NodeId marginalized_node = INVALID_NODE_ID;
-        /// @brief Lambda actually used for the Schur regularization (after escalation).
+        /// @brief Last lambda actually attempted for the Schur regularization.
         float lambda_used = 0.0f;
     };
 
@@ -165,9 +174,6 @@ public:
         factors_ = std::move(kept);
     }
 
-    /// @brief Anchor selector retained until marginalization drops the dead API (P2).
-    enum class MarginalizationAnchor { Newest, OldestSurviving };
-
     /// @brief Marginalize the oldest active node via Schur complement, producing a
     ///        dense prior over its Markov blanket. Only factors touching the removed
     ///        node are absorbed; surviving factors remain represented exactly once.
@@ -214,10 +220,12 @@ public:
             const auto [sid, tid] = f->node_ids();
             if (sid != marginalize_id && tid != marginalize_id) continue;
             f->clear_cache();
-            // Keep the robust weights the optimizer actually adopted (frozen at the
-            // final ladder rung scale). Rejecting outliers must stay meaningful for
-            // the prior that outlives the window, so raw/unweighted Hessian is not an option.
-            auto lin = f->linearize(queue, marginalization_scale_);
+            // Keep the robust weights the optimizer actually adopted. Each factor is
+            // re-linearized with its own frozen scale (scale_now falls back to the
+            // window's marginalization_scale_ only for factors still annealing), so a
+            // ladder that ended early (e.g. redeskew failure) bakes in the scale the
+            // factor last actually used, not the nominal floor.
+            auto lin = f->linearize(queue, f->scale_now(marginalization_scale_));
             int si = id_to_idx[sid];
             H_all.block<6, 6>(6 * si, 6 * si) += lin.H00;
             b_all.segment<6>(6 * si) += lin.b0;
@@ -266,8 +274,9 @@ public:
         float lambda_used = marginalization_lambda_;
         bool usable = false;
         for (int escalation = 0; escalation <= kMaxLambdaEscalations; ++escalation) {
+            const float attempted = lambda_used;
             const Eigen::Matrix<float, 6, 6> H_mm_reg =
-                H_mm + lambda_used * Eigen::Matrix<float, 6, 6>::Identity();
+                H_mm + attempted * Eigen::Matrix<float, 6, 6>::Identity();
             if (!H_mm_reg.allFinite()) {
                 result.status = MarginalizationStatus::NonFiniteSystem;
                 return result;
@@ -289,11 +298,16 @@ public:
             if (verbose()) {
                 std::cerr << "[SlidingWindow] marginalization lambda escalation"
                           << " (escalation=" << (escalation + 1) << "/" << kMaxLambdaEscalations
-                          << ", lambda=" << lambda_used
+                          << ", lambda=" << attempted
                           << (ldlt_mm.info() == Eigen::Success ? ", poor conditioning" : ", LDLT failed")
                           << ")" << std::endl;
             }
-            lambda_used *= 10.0f;
+            // Do not escalate past the final attempt: lambda_used must stay equal to
+            // the value actually tried so the failure log / MarginalizationResult::
+            // lambda_used report the last attempted lambda, not the next (unused) one.
+            if (escalation < kMaxLambdaEscalations) {
+                lambda_used *= 10.0f;
+            }
         }
         if (!usable) {
             if (verbose()) {
