@@ -99,7 +99,7 @@ public:
         return node->id;
     }
 
-    void add_factor(std::shared_ptr<GicpFactorBase> factor) { factors_.push_back(std::move(factor)); }
+    void add_factor(std::shared_ptr<GraphFactorBase> factor) { factors_.push_back(std::move(factor)); }
 
     /// @brief End the robust ladder for all annealing factors (frame end, after
     ///        the ladder has reached its floor): locks each factor's scale at the
@@ -139,7 +139,7 @@ public:
     }
 
     std::vector<std::shared_ptr<PoseNode>>& active_nodes() { return nodes_; }
-    const std::vector<std::shared_ptr<GicpFactorBase>>& factors() const { return factors_; }
+    const std::vector<std::shared_ptr<GraphFactorBase>>& factors() const { return factors_; }
     const MarginalizationPrior& prior() const { return prior_; }
     size_t window_size() const { return nodes_.size(); }
     size_t max_window_size() const { return max_window_size_; }
@@ -155,7 +155,7 @@ public:
     void prune_point_cloud_binaries(NodeId keep_tip, NodeId convert_a, NodeId convert_b,
                                     const RelativePoseParams& rel_params = RelativePoseParams()) {
         bool chain_present = false;
-        std::vector<std::shared_ptr<GicpFactorBase>> kept;
+        std::vector<std::shared_ptr<GraphFactorBase>> kept;
         kept.reserve(factors_.size());
         for (auto& f : factors_) {
             const auto [s, t] = f->node_ids();
@@ -420,7 +420,7 @@ private:
     float marginalization_scale_ = 0.0f;
     NodeId next_id_ = 0;
     std::vector<std::shared_ptr<PoseNode>> nodes_;
-    std::vector<std::shared_ptr<GicpFactorBase>> factors_;
+    std::vector<std::shared_ptr<GraphFactorBase>> factors_;
     MarginalizationPrior prior_;
     std::unordered_map<NodeId, std::shared_ptr<PoseNode>> nodes_by_id_;
     MarginalizationDiagnostics marg_diag_;

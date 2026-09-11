@@ -20,17 +20,18 @@ inline bool relinearization_needed(const Eigen::Isometry3f& current, const Eigen
     return e.head<3>().norm() > rot_th || e.tail<3>().norm() > trans_th;
 }
 
-/// @brief Abstract base for all GICP factors.
+/// @brief Abstract base for all sliding-window graph factors (point-cloud GICP
+///        factors, host-only chain relatives, and test mocks alike).
 ///
 /// A factor connects either one node (unary, against a fixed target such as a
 /// submap) or two nodes (binary, between two pose estimates). The linearization
 /// point is captured at linearize() call time so the solver controls when
 /// relinearization happens.
-class GicpFactorBase {
+class GraphFactorBase {
 public:
-    using Ptr = std::shared_ptr<GicpFactorBase>;
+    using Ptr = std::shared_ptr<GraphFactorBase>;
 
-    virtual ~GicpFactorBase() = default;
+    virtual ~GraphFactorBase() = default;
 
     /// @brief Linearize the factor at the current node estimates.
     ///        @param scale robust loss scale override; <=0 means "use the factor's

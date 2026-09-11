@@ -89,7 +89,7 @@ void expect_pose_near(const Eigen::Isometry3f& a, const Eigen::Isometry3f& b, fl
 
 // Synthetic factor: anchors a node to a known target pose.
 // Residual follows the same convention as GICP: r = log( T_target^{-1} * T ).
-class AnchorFactor : public graph::GicpFactorBase {
+class AnchorFactor : public graph::GraphFactorBase {
 public:
     AnchorFactor(std::shared_ptr<graph::PoseNode> node, const Eigen::Isometry3f& target, float weight)
         : node_(std::move(node)), target_(target), w_(weight) {}
@@ -129,7 +129,7 @@ private:
 // Synthetic binary factor: anchors the relative pose between two nodes to
 // identity (i.e. target and source should coincide). Jacobian convention:
 // J0 = I (source), J1 = -I (target), matching the right-update solver.
-class BinaryAnchorFactor : public graph::GicpFactorBase {
+class BinaryAnchorFactor : public graph::GraphFactorBase {
 public:
     BinaryAnchorFactor(std::shared_ptr<graph::PoseNode> src, std::shared_ptr<graph::PoseNode> tgt, float weight)
         : src_(std::move(src)), tgt_(std::move(tgt)), w_(weight) {}
@@ -167,7 +167,7 @@ private:
     float w_;
 };
 
-class NonFiniteFactor : public graph::GicpFactorBase {
+class NonFiniteFactor : public graph::GraphFactorBase {
 public:
     explicit NonFiniteFactor(std::shared_ptr<graph::PoseNode> node) : node_(std::move(node)) {}
 
@@ -202,7 +202,7 @@ private:
 // Rank-deficient Hessian mock: H_mm ends up with one zero eigenvalue, which
 // Eigen LDLT happily "succeeds" on. Marginalization must catch the poor
 // conditioning and escalate lambda instead.
-class WeakRankFactor : public graph::GicpFactorBase {
+class WeakRankFactor : public graph::GraphFactorBase {
 public:
     WeakRankFactor(std::shared_ptr<graph::PoseNode> src, std::shared_ptr<graph::PoseNode> tgt)
         : src_(std::move(src)), tgt_(std::move(tgt)) {}
@@ -242,7 +242,7 @@ private:
 
 // Non-finite Hessian mock: a finite b but a NaN information block. Marginalization
 // must report NonFiniteSystem instead of silently building a corrupted prior.
-class NonFiniteHessianFactor : public graph::GicpFactorBase {
+class NonFiniteHessianFactor : public graph::GraphFactorBase {
 public:
     explicit NonFiniteHessianFactor(std::shared_ptr<graph::PoseNode> node)
         : node_(std::move(node)) {}
@@ -279,7 +279,7 @@ private:
 // Rank-one Hessian mock with configurable scale/gradient along translation-z:
 // Eigen LDLT reports Success on the singular system, so a naive solve would
 // apply a huge finite step. The solver must gate the step and escalate damping.
-class RankOneSingularFactor : public graph::GicpFactorBase {
+class RankOneSingularFactor : public graph::GraphFactorBase {
 public:
     RankOneSingularFactor(std::shared_ptr<graph::PoseNode> node, float h_scale, float b_scale)
         : node_(std::move(node)), h_scale_(h_scale), b_scale_(b_scale) {}
@@ -852,7 +852,7 @@ TEST_F(GraphGicpTest, MarginalizationConsistency) {
 // Synthetic factor that runs a trivial CPU "linearization" and counts how many
 // times linearize() is invoked. Reuse is decided by the real threshold check
 // (relinearization_needed) so we can assert the base-class cache semantics.
-class CountingGicpFactor : public graph::GicpFactorBase {
+class CountingGicpFactor : public graph::GraphFactorBase {
 public:
     CountingGicpFactor(std::shared_ptr<graph::PoseNode> node, float rot_th, float trans_th)
         : node_(std::move(node)), rot_th_(rot_th), trans_th_(trans_th) {}
@@ -1368,7 +1368,7 @@ TEST(RobustScheduleTest, LadderDescendsToFloor) {
 }
 
 // Synthetic factor that records the scale it is asked to linearize with.
-class ScaleProbeFactor : public graph::GicpFactorBase {
+class ScaleProbeFactor : public graph::GraphFactorBase {
 public:
     ScaleProbeFactor() { begin_annealing(); }
 
@@ -1438,7 +1438,7 @@ TEST(RobustScheduleTest, FreezeLocksLastUsedScale) {
 
 // Deterministic wiring proof: the solver's ladder reaches linearize() only at
 // rung changes when relinearize_per_rung is set, and never when caches hold.
-class CachedProbeFactor : public graph::GicpFactorBase {
+class CachedProbeFactor : public graph::GraphFactorBase {
 public:
     CachedProbeFactor() { begin_annealing(); }
 

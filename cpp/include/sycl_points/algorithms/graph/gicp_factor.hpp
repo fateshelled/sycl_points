@@ -19,7 +19,7 @@ namespace graph {
 /// The connected source node is referenced so the factor linearizes at the
 /// node's current linearization_pose. For Phase 1 the linearization point is
 /// fixed (set once by the caller); later phases trigger relinearization.
-class UnaryGicpFactor : public GicpFactorBase {
+class UnaryGicpFactor : public GraphFactorBase {
 public:
     UnaryGicpFactor(const sycl_utils::DeviceQueue& queue, NodeId source_id,
                     std::shared_ptr<PoseNode> source_node, std::shared_ptr<const PointCloudShared> target,
@@ -85,7 +85,7 @@ private:
 /// Both endpoints are variables. The linearization is computed by the SYCL
 /// two-sided Jacobian reduction in BinaryGicpLinearizer. For Phase 2 the
 /// linearization point is fixed at the node's current linearization_pose.
-class BinaryGicpFactor : public GicpFactorBase {
+class BinaryGicpFactor : public GraphFactorBase {
 public:
     BinaryGicpFactor(const sycl_utils::DeviceQueue& queue, NodeId source_id,
                      std::shared_ptr<PoseNode> source_node, NodeId target_id,

@@ -32,7 +32,7 @@ struct RelativePoseParams {
 ///
 /// No point-cloud work happens in linearize(), so needs_relinearization()
 /// always returns true and the factor stays gradient-exact at negligible cost.
-class RelativePoseFactor : public GicpFactorBase {
+class RelativePoseFactor : public GraphFactorBase {
 public:
     RelativePoseFactor(NodeId src_id, std::shared_ptr<PoseNode> src_node, NodeId tgt_id,
                        std::shared_ptr<PoseNode> tgt_node, const Eigen::Isometry3f& G,
