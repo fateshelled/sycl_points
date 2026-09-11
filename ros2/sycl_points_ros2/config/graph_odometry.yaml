@@ -199,10 +199,14 @@ graph_odometry_node:
     graph/relinearize/rotation_threshold: 0.02     # [rad]
     graph/solver/damping_lambda: 1.0e-6            # solver LDLT fallback regularization
     graph/marginalization_lambda: 1.0e-3           # Schur-complement H_mm regularization
-    # NOTE: the Schur-complement marginalization prior is built from the RAW
-    # (unweighted, robust loss = NONE) factor Hessians so it stays well conditioned
-    # under strongly reweighted losses (e.g. GEMAN_MCCLURE); the solver still uses
-    # the robust-weighted linearization.
+    # NOTE: the Schur-complement marginalization prior is built from the
+    # ROBUST-WEIGHTED factor Hessians: each factor is re-linearized with the
+    # frozen robust scale the optimizer actually adopted (the final ladder
+    # rung's scale, or the factor's fixed default scale when the ladder is
+    # disabled), so the weights baked into the prior keep their meaning after
+    # the node leaves the window. Numerical stability comes from lambda
+    # escalation on H_mm (with an eigenvalue conditioning gate), never from
+    # dropping the robust weights.
     # Keyframe-chain RelativePoseFactor information (per-axis sigma).
     graph/chain/sigma_rotation: 5.0e-3     # [rad]
     graph/chain/sigma_translation: 2.0e-2  # [m]
