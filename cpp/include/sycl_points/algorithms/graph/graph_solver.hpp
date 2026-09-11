@@ -27,6 +27,15 @@ struct GraphSolverParams {
     float solver_damping_lambda = 1e-6f;
     float marginalization_lambda = 1e-6f;
 
+    /// @brief Step stability bounds for one Gauss-Newton direction. LDLT reports
+    ///        Success even on singular / ill-conditioned systems, so a finite but
+    ///        huge step would silently move every pose; the solver rejects such a
+    ///        step and retries with escalated damping. Bounds are deliberately
+    ///        generous (normal odometry steps are well below them) and are not
+    ///        exposed as ROS parameters.
+    float max_step_translation = 10.0f;  ///< [m] per-iteration translation bound
+    float max_step_rotation = 1.0f;      ///< [rad] per-iteration rotation bound
+
     /// @brief Print per-iteration solver logs (mirrors RegistrationFactorParams::verbose
     ///        on the LO align path; wired from graph/factor/verbose).
     bool verbose = false;
@@ -90,6 +99,7 @@ public:
         NON_FINITE_SYSTEM,
         DECOMPOSITION_FAILED,
         NON_FINITE_STEP,
+        UNSTABLE_STEP,
     };
 
     struct Result {
@@ -107,7 +117,7 @@ public:
     ///        frame when this returns false.
     static bool valid_status(Status status) {
         return status != Status::NON_FINITE_SYSTEM && status != Status::DECOMPOSITION_FAILED &&
-               status != Status::NON_FINITE_STEP;
+               status != Status::NON_FINITE_STEP && status != Status::UNSTABLE_STEP;
     }
 
     GraphSolver(const sycl_utils::DeviceQueue& queue,
@@ -136,24 +146,50 @@ public:
                 break;
             }
 
-            Eigen::LDLT<Eigen::MatrixXf> ldlt(sys.H);
-            if (ldlt.info() != Eigen::Success) {
-                Eigen::MatrixXf H_reg =
-                    sys.H + params_.solver_damping_lambda *
-                                Eigen::MatrixXf::Identity(sys.H.rows(), sys.H.cols());
-                ldlt.compute(H_reg);
-                if (ldlt.info() != Eigen::Success) {
-                    result.status = Status::DECOMPOSITION_FAILED;
-                    break;
+            // Eigen LDLT reports Success even on numerically singular input, so a
+            // naive solve can emit a huge but finite step that silently moves
+            // every pose. Gate the direction on step magnitude and eigenvalue
+            // conditioning, escalating damping until it is usable (mirrors the
+            // marginalization ladder); give up when the system stays unusable.
+            float lambda = params_.solver_damping_lambda;
+            Status failure = Status::DECOMPOSITION_FAILED;
+            Eigen::VectorXf delta;
+            bool accepted = false;
+            for (int escalation = 0; escalation <= kMaxDampingEscalations && !accepted; ++escalation) {
+                if (escalation > 0 && params_.verbose) {
+                    std::cout << "solver damping escalation " << escalation << "/" << kMaxDampingEscalations
+                              << ", lambda=" << lambda << std::endl;
                 }
+                const Eigen::MatrixXf H_reg =
+                    sys.H + lambda * Eigen::MatrixXf::Identity(sys.H.rows(), sys.H.cols());
+                Eigen::LDLT<Eigen::MatrixXf> ldlt(H_reg);
+                if (ldlt.info() != Eigen::Success) {
+                    failure = Status::DECOMPOSITION_FAILED;
+                } else {
+                    delta = ldlt.solve(-sys.b);
+                    if (!delta.allFinite()) {
+                        failure = Status::NON_FINITE_STEP;
+                    } else {
+                        float max_dt = 0.0f;
+                        float max_dr = 0.0f;
+                        for (size_t i = 0; i < sys.node_ids.size(); ++i) {
+                            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
+                            max_dr = std::max(max_dr, d.head<3>().norm());
+                            max_dt = std::max(max_dt, d.tail<3>().norm());
+                        }
+                        if (max_dt > params_.max_step_translation || max_dr > params_.max_step_rotation) {
+                            failure = Status::UNSTABLE_STEP;
+                        } else if (!is_well_conditioned(H_reg)) {
+                            failure = Status::DECOMPOSITION_FAILED;
+                        } else {
+                            accepted = true;
+                        }
+                    }
+                }
+                if (!accepted && escalation < kMaxDampingEscalations) lambda *= 10.0f;
             }
-            Eigen::VectorXf delta = ldlt.solve(-sys.b);
-            if (ldlt.info() != Eigen::Success) {
-                result.status = Status::DECOMPOSITION_FAILED;
-                break;
-            }
-            if (!delta.allFinite()) {
-                result.status = Status::NON_FINITE_STEP;
+            if (!accepted) {
+                result.status = failure;
                 break;
             }
 
@@ -206,6 +242,20 @@ public:
     }
 
 private:
+    static constexpr int kMaxDampingEscalations = 3;    ///< solver lambda *= 10 retries per iteration
+    static constexpr float kMinConditionRatio = 1e-6f;  ///< required lambda_min/lambda_max of the damped H
+
+    /// @brief A PSD (up to noise) Hessian whose eigenvalue span is too small is
+    ///        treated the same as a decomposition failure even when LDLT itself
+    ///        reports Success.
+    static bool is_well_conditioned(const Eigen::MatrixXf& H) {
+        const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> eig(H);
+        if (eig.info() != Eigen::Success) return false;
+        const float ev_max = eig.eigenvalues().maxCoeff();
+        const float ev_min = eig.eigenvalues().minCoeff();
+        return ev_max > 0.0f && ev_min >= kMinConditionRatio * ev_max;
+    }
+
     struct LinearizedSystem {
         Eigen::MatrixXf H;
         Eigen::VectorXf b;

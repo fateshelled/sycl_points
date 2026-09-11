@@ -276,6 +276,45 @@ private:
     std::shared_ptr<graph::PoseNode> node_;
 };
 
+// Rank-one Hessian mock with configurable scale/gradient along translation-z:
+// Eigen LDLT reports Success on the singular system, so a naive solve would
+// apply a huge finite step. The solver must gate the step and escalate damping.
+class RankOneSingularFactor : public graph::GicpFactorBase {
+public:
+    RankOneSingularFactor(std::shared_ptr<graph::PoseNode> node, float h_scale, float b_scale)
+        : node_(std::move(node)), h_scale_(h_scale), b_scale_(b_scale) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        graph::FactorLinearization lin;
+        lin.source_linearization_pose = node_->pose;
+        const Eigen::Matrix<float, 6, 1> axis = Eigen::Matrix<float, 6, 1>::Unit(5);
+        lin.H00 = h_scale_ * axis * axis.transpose();
+        lin.b0 = b_scale_ * axis;
+        lin.error = 0.0f;
+        lin.inlier = 1;
+        return lin;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {node_->id, graph::INVALID_NODE_ID};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return false;
+    }
+
+private:
+    std::shared_ptr<graph::PoseNode> node_;
+    float h_scale_;
+    float b_scale_;
+};
+
 // ---------------------------------------------------------------------------
 // SlidingWindow management (host-only)
 // ---------------------------------------------------------------------------
@@ -540,6 +579,44 @@ TEST_F(GraphSolverTest, RejectsNonFiniteSystemWithoutUpdatingPose) {
     EXPECT_FALSE(result.converged);
     EXPECT_FALSE(result.valid());
     EXPECT_EQ(result.status, graph::GraphSolver::Status::NON_FINITE_SYSTEM);
+    EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
+}
+
+// A singular system with a huge gradient: LDLT "succeeds" and would emit a
+// ~1000 m finite step. The step gate must reject it and the damping ladder
+// must fail the solve instead of moving the pose.
+TEST_F(GraphSolverTest, RejectsUnstableStepOnSingularSystemWithoutUpdatingPose) {
+    graph::SlidingWindow window(5);
+    Eigen::Isometry3f initial = Eigen::Isometry3f::Identity();
+    initial.translate(Eigen::Vector3f(0.3f, -0.2f, 0.1f));
+    const graph::NodeId id = window.add_node(initial, 0.0);
+    window.add_factor(std::make_shared<RankOneSingularFactor>(window.get_node(id), 1e6f, 1e9f));
+
+    graph::GraphSolver solver(queue);
+    const auto result = solver.optimize(window);
+
+    EXPECT_FALSE(result.converged);
+    EXPECT_FALSE(result.valid());
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::UNSTABLE_STEP);
+    EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
+}
+
+// An ill-conditioned (rank-one, near-null-space) system with a zero gradient
+// produces a stable but meaningless direction; the conditioning gate must fail
+// the solve instead of trusting the LDLT success.
+TEST_F(GraphSolverTest, RejectsIllConditionedSystemWithoutUpdatingPose) {
+    graph::SlidingWindow window(5);
+    Eigen::Isometry3f initial = Eigen::Isometry3f::Identity();
+    initial.translate(Eigen::Vector3f(0.1f, 0.2f, -0.3f));
+    const graph::NodeId id = window.add_node(initial, 0.0);
+    window.add_factor(std::make_shared<RankOneSingularFactor>(window.get_node(id), 1e12f, 0.0f));
+
+    graph::GraphSolver solver(queue);
+    const auto result = solver.optimize(window);
+
+    EXPECT_FALSE(result.converged);
+    EXPECT_FALSE(result.valid());
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::DECOMPOSITION_FAILED);
     EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
 }
 
