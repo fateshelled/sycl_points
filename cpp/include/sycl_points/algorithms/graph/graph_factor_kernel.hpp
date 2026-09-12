@@ -402,9 +402,20 @@ private:
                     covariance::extract_normals(target);
                 }
                 break;
+            case RegType::POINT_TO_DISTRIBUTION:
+                // The kernel builds per-point Omega = (C_tgt,w)^-1. Missing
+                // covariances fallback to Covariance::Identity() inside the
+                // kernel, which silently flattens the distribution model into
+                // point-to-point; fail fast instead.
+                if (!target.has_cov()) {
+                    throw std::runtime_error(
+                        "[BinaryGicpLinearizer] POINT_TO_DISTRIBUTION requires target covariances "
+                        "(enable scan covariance estimation for the graph odometry pipeline, "
+                        "graph path computes them for POINT_TO_DISTRIBUTION/POINT_TO_PLANE too).");
+                }
+                break;
             case RegType::GICP:
             case RegType::POINT_TO_POINT:
-            case RegType::POINT_TO_DISTRIBUTION:
                 break;
         }
         if (this->params_.rotation_constraint.enable) {

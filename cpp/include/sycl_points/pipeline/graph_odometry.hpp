@@ -603,8 +603,20 @@ private:
     }
 
     void compute_covariances() {
+        // Feature preparation must follow the factor type's ACTUAL data needs:
+        // GICP needs both covariances, POINT_TO_DISTRIBUTION needs target
+        // covariances (binary kernel Omega = C_tgt,w^-1) and POINT_TO_PLANE
+        // needs target normals, which are extracted from covariances when a
+        // node cloud becomes a binary factor target. Without this, a P2D /
+        // P2Plane run would silently degrade its binary edges to
+        // point-to-point information (the kernel's missing-covariance
+        // fallback), so the pipeline computes scan covariances for those
+        // types too. The LO single-frame align path has its own condition.
+        using RT = algorithms::registration::RegType;
+        const RT graph_reg_type = this->params_.graph.registration.factor.reg_type;
         const bool needs_covs =
-            (this->params_.graph.registration.factor.reg_type == algorithms::registration::RegType::GICP ||
+            (graph_reg_type == RT::GICP || graph_reg_type == RT::POINT_TO_DISTRIBUTION ||
+             graph_reg_type == RT::POINT_TO_PLANE ||
              this->params_.graph.registration.factor.rotation_constraint.enable ||
              this->params_.scan.preprocess.angle_incidence_filter.enable);
         const bool needs_gaussian =

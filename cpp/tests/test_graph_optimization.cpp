@@ -2136,6 +2136,34 @@ TEST_F(GraphBinaryRegTypesTest, SupportedTypesProduceSaneFactors) {
     }
 }
 
+// POINT_TO_DISTRIBUTION's Omega is (C_tgt,w)^-1: missing target covariances
+// used to silently fall back to Covariance::Identity() inside the kernel
+// (point-to-point information). It must fail fast instead.
+TEST_F(GraphBinaryRegTypesTest, PointToDistributionRequiresTargetCovariances) {
+    std::mt19937 gen(5);
+    auto src = make_cube_cloud(queue, 800, 0.8f, gen);
+    auto tgt = transform_cloud(queue, *src, Eigen::Isometry3f::Identity());
+    auto knn_src = knn::KDTree::build(queue, *src);
+    auto knn_tgt = knn::KDTree::build(queue, *tgt);
+
+    registration::RegistrationParams params = gicp_params();
+    params.reg_type = registration::RegType::POINT_TO_DISTRIBUTION;
+    graph::BinaryGicpLinearizer linearizer(queue, params);
+
+    EXPECT_FALSE(tgt->has_cov());
+    EXPECT_THROW(linearizer.linearize(*src, *knn_tgt, Eigen::Matrix4f::Identity(), *tgt,
+                                      Eigen::Matrix4f::Identity()),
+                 std::runtime_error);
+
+    // With covariances prepared (the graph pipeline does since the
+    // needs-covariances condition covers POINT_TO_DISTRIBUTION), no throw.
+    estimate_covariances(*knn_tgt, *tgt);
+    EXPECT_TRUE(tgt->has_cov());
+    const auto lin = linearizer.linearize(*src, *knn_tgt, Eigen::Matrix4f::Identity(), *tgt,
+                                          Eigen::Matrix4f::Identity());
+    EXPECT_TRUE(lin.H00.allFinite() && lin.H11.allFinite());
+}
+
 TEST_F(GraphBinaryRegTypesTest, GenzIsRejectedForBinaryFactors) {
     std::mt19937 gen(5);
     auto cloud = make_cube_cloud(queue, 1000, 0.8f, gen);
