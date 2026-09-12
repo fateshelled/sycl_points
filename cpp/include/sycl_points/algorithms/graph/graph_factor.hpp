@@ -54,8 +54,11 @@ public:
     ///        configured default". Scale-free factors (chain relatives) ignore it.
     virtual FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f) = 0;
 
-    /// @brief Evaluate the robust error at the given source/target poses
-    ///        using frozen correspondences.
+    /// @brief Evaluate the robust error at the given source/target poses using
+    ///        the correspondences and effective robust scale cached by the most
+    ///        recent linearization. The evaluation must not mutate node poses,
+    ///        factor caches, or correspondence state. Calling this before the
+    ///        first linearization is a programming error.
     virtual std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f& src_pose,
                                                       const Eigen::Isometry3f& tgt_pose) const = 0;
 

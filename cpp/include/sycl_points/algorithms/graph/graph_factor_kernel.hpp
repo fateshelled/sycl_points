@@ -219,7 +219,37 @@ public:
                                                     knn_event.evs);
         });
         events.wait_and_throw();
+        has_cached_correspondences_ = true;
         return this->device_->toCPU(0);
+    }
+
+    /// @brief Evaluate a trial relative pose with the correspondences cached by
+    ///        the most recent linearize() call. This deliberately skips KNN so
+    ///        LM compares current and trial costs on the same objective.
+    /// @note The existing binary reduction is reused for now. It also computes
+    ///       H/b, but performs no neighbour search or correspondence mutation.
+    std::pair<float, uint32_t> compute_error_frozen(const PointCloudShared& source,
+                                                    const Eigen::Matrix4f& T_src,
+                                                    const PointCloudShared& target,
+                                                    const Eigen::Matrix4f& T_tgt,
+                                                    float scale = 0.0f) const {
+        if (!has_cached_correspondences_) {
+            throw std::logic_error(
+                "[BinaryGicpLinearizer::compute_error_frozen] linearize must be called first");
+        }
+        validate_params(source, target);
+        const float robust_scale = scale > 0.0f ? scale : this->params_.robust.default_scale;
+        const auto T_rel = eigen_utils::to_sycl_vec(
+            Eigen::Isometry3f(Eigen::Isometry3f(Eigen::Matrix4f(T_tgt).inverse()) *
+                              Eigen::Matrix4f(T_src))
+                .matrix());
+        auto events = this->dispatch([&]<registration::RegType reg, robust::RobustLossType loss>() {
+            return this->linearize_async<reg, loss>(source, target, T_src, T_tgt, T_rel,
+                                                    robust_scale, {});
+        });
+        events.wait_and_throw();
+        const auto result = this->device_->toCPU(0);
+        return {result.error, result.inlier};
     }
 
 private:
@@ -462,6 +492,7 @@ private:
     registration::RegistrationParams params_;
     shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<BinaryLinearizedDevice> device_ = nullptr;
+    mutable bool has_cached_correspondences_ = false;
 };
 
 }  // namespace graph

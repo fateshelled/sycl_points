@@ -26,23 +26,21 @@ public:
                     std::shared_ptr<PoseNode> source_node, std::shared_ptr<const PointCloudShared> target,
                     std::shared_ptr<const knn::KNNBase> target_knn,
                     const registration::RegistrationParams& params)
-        : queue_(queue),
-          source_id_(source_id),
+        : source_id_(source_id),
           source_node_(std::move(source_node)),
           target_(std::move(target)),
           target_knn_(std::move(target_knn)),
-          params_(params) {
+          registration_(queue, params) {
         begin_annealing();
     }
 
-    FactorLinearization linearize(const sycl_utils::DeviceQueue& queue, float scale = 0.0f) override {
+    FactorLinearization linearize(const sycl_utils::DeviceQueue&, float scale = 0.0f) override {
         source_node_->linearization_pose = source_node_->pose;
-        registration::Registration reg(queue, params_);
         registration::Registration::ExecutionOptions opts;
         if (scale > 0.0f) {
             opts.robust_scale = scale;
         }
-        const auto result = reg.compute_linearized_result(
+        const auto result = registration_.compute_linearized_result(
             *source_node_->cloud, *target_, *target_knn_,
             source_node_->linearization_pose.matrix(), source_node_->linearization_pose.matrix(), opts);
         FactorLinearization ret;
@@ -57,8 +55,15 @@ public:
 
     std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f& src_pose,
                                              const Eigen::Isometry3f&) const override {
-        registration::Registration reg(queue_, params_);
-        const auto [err, inlier] = reg.compute_error_frozen(*source_node_->cloud, *target_, src_pose.matrix());
+        if (cached_linearization() == nullptr) {
+            throw std::logic_error("[UnaryGicpFactor::compute_error] linearize must be called first");
+        }
+        registration::Registration::ExecutionOptions opts;
+        if (last_linearization_scale() > 0.0f) {
+            opts.robust_scale = last_linearization_scale();
+        }
+        const auto [err, inlier] =
+            registration_.compute_error_frozen(*source_node_->cloud, *target_, src_pose.matrix(), opts);
         return {err, inlier};
     }
 
@@ -80,12 +85,11 @@ public:
     }
 
 private:
-    sycl_utils::DeviceQueue queue_;
     NodeId source_id_ = INVALID_NODE_ID;
     std::shared_ptr<PoseNode> source_node_;
     std::shared_ptr<const PointCloudShared> target_;
     std::shared_ptr<const knn::KNNBase> target_knn_;
-    registration::RegistrationParams params_;
+    registration::Registration registration_;
 };
 
 /// @brief Binary GICP factor: two pose nodes against each other (current <-> window_i).
@@ -124,9 +128,9 @@ public:
                                              const Eigen::Isometry3f& tgt_pose) const override {
         const Eigen::Matrix4f T_src = src_pose.matrix();
         const Eigen::Matrix4f T_tgt = tgt_pose.matrix();
-        auto lin = linearizer_.linearize(*source_node_->cloud, *target_node_->knn, T_src,
-                                         *target_node_->cloud, T_tgt);
-        return {lin.error, lin.inlier};
+        return linearizer_.compute_error_frozen(*source_node_->cloud, T_src,
+                                                *target_node_->cloud, T_tgt,
+                                                last_linearization_scale());
     }
 
     std::pair<NodeId, NodeId> node_ids() const override { return {source_id_, target_id_}; }
