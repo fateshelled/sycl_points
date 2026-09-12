@@ -302,48 +302,47 @@ private:
                 ladder_scale);
             auto [sid, tid] = factor->node_ids();
             int si = idx.at(sid);
-            sys.H.block<6, 6>(6 * si, 6 * si) += lin.H00;
             sys.error += lin.error;
             sys.inliers += lin.inlier;
             bool has_target = tid != INVALID_NODE_ID && idx.count(tid);
-            if (has_target) {
-                int ti = idx.at(tid);
-                sys.H.block<6, 6>(6 * ti, 6 * ti) += lin.H11;
-                sys.H.block<6, 6>(6 * si, 6 * ti) += lin.H01;
-                sys.H.block<6, 6>(6 * ti, 6 * si) += lin.H01.transpose();
-            }
 
-            // When a factor reuses a cached (delayed) linearization, b0/b1 are stale
-            // at the current poses. Keep the Jacobians frozen but refresh the gradient
-            // with the linear-model correction. The cached quadratic lives in
-            // offset-from-linearization coordinates o = Log(T_lin^-1 T); with a
-            // right perturbation the offset moves as o(delta) = o + Jr(o) delta
-            // (BCH; Jr = Jl(-o)^-1), so the gradient in the update's tangent is
-            // g = Jr(o)^T (H o + b), not the plain H o + b. Without both the offset
-            // correction and the tangent transport, stale gradients make
-            // Gauss-Newton stall instead of converging.
-            Eigen::Matrix<float, 6, 1> q0 = lin.b0;
-            Eigen::Matrix<float, 6, 1> q1 = lin.b1;
+            // Stale cached linearizations live in offset-from-linearization
+            // coordinates o = Log(T_lin^-1 T). With right perturbations the
+            // offset moves as o(delta) = o + Jr(o) delta (BCH; Jr = Jl(-o)^-1),
+            // so BOTH the quadratic term and the gradient must be transported
+            // into the update's current tangent:
+            //     H = U^T H_lin U (block-wise),  g = U^T (H_lin o + b).
+            // Leaving H un-transported would keep the stale factor's curvature
+            // expressed in the old coordinates and bend the GN step; without
+            // the whole transport stale models make Gauss-Newton stall.
             const Eigen::Isometry3f& src_lin = lin.source_linearization_pose;
             const Eigen::Matrix<float, 6, 1> ds =
                 eigen_utils::lie::se3_log(src_lin.inverse() * window.get_node(sid)->pose);
+            const Eigen::Matrix<float, 6, 6> U_s = eigen_utils::lie::se3_right_jacobian(ds);
+            Eigen::Matrix<float, 6, 1> q0 = lin.b0;
+            Eigen::Matrix<float, 6, 1> q1 = lin.b1;
+            const Eigen::Matrix<float, 6, 6> U_sT_H00 = U_s.transpose() * lin.H00 * U_s;
+            const Eigen::Matrix<float, 6, 6> U_sT_H01 = U_s.transpose() * lin.H01;
             if (ds.norm() > 0.0f) {
                 q0 += lin.H00 * ds;
                 if (has_target) {
                     q1 += lin.H01.transpose() * ds;
                 }
             }
-            const Eigen::Matrix<float, 6, 6> U_s = eigen_utils::lie::se3_right_jacobian(ds);
+            sys.H.block<6, 6>(6 * si, 6 * si) += U_sT_H00;
             if (has_target) {
                 int ti = idx.at(tid);
                 const Eigen::Matrix<float, 6, 1> dt =
                     eigen_utils::lie::se3_log(lin.target_linearization_pose.inverse() *
                                               window.get_node(tid)->pose);
+                const Eigen::Matrix<float, 6, 6> U_t = eigen_utils::lie::se3_right_jacobian(dt);
                 if (dt.norm() > 0.0f) {
                     q0 += lin.H01 * dt;
                     q1 += lin.H11 * dt;
                 }
-                const Eigen::Matrix<float, 6, 6> U_t = eigen_utils::lie::se3_right_jacobian(dt);
+                sys.H.block<6, 6>(6 * ti, 6 * ti) += U_t.transpose() * lin.H11 * U_t;
+                sys.H.block<6, 6>(6 * si, 6 * ti) += U_sT_H01 * U_t;
+                sys.H.block<6, 6>(6 * ti, 6 * si) += U_sT_H01.transpose() * U_t;
                 sys.b.segment<6>(6 * ti) += U_t.transpose() * q1;
             }
             sys.b.segment<6>(6 * si) += U_s.transpose() * q0;

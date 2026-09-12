@@ -116,7 +116,9 @@ public:
     std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f& src,
                                              const Eigen::Isometry3f& tgt) const override {
         const Eigen::Matrix<float, 6, 1> r = residual(src, tgt);
-        return {0.5f * (r.transpose() * Omega_ * r)(0, 0), 1};
+        // Same energy model that linearize_at() optimizes, including the
+        // projected linear term g_lin (zero for the sigma-built factor).
+        return {0.5f * (r.transpose() * Omega_ * r)(0, 0) + g_lin_.dot(r), 1};
     }
 
     bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,

@@ -1381,6 +1381,17 @@ TEST(GraphRelativePoseInfoTest, ProjectsGradientAndConvertedFactorMatches) {
     EXPECT_LT((lin_chain.b1 - J.block<6, 6>(0, 6).transpose() * g).norm() /
                   std::max(1.0f, lin_chain.b1.norm()),
               1e-4f);
+
+    // compute_error must use the same energy model incl. the linear term: at a
+    // displaced pose it must equal linearize_at's error there.
+    const Eigen::Isometry3f S = test_pose(0.9f, 0.2f, -0.1f, 0.35f);
+    const Eigen::Isometry3f T = test_pose(0.4f, -0.3f, 0.3f, -0.05f);
+    window.get_node(id0)->pose = S;
+    window.get_node(id1)->pose = T;
+    const auto lin_disp = factor.linearize(queue);
+    const auto err_pair = factor.compute_error(S, T);
+    EXPECT_LT(err_pair.first - lin_disp.error, 1e-3f * std::max(1.0f, lin_disp.error));
+    EXPECT_EQ(err_pair.second, lin_disp.inlier);
 }
 
 // A gradient with content outside the relative-pose subspace (e.g. an
