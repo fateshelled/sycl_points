@@ -662,7 +662,6 @@ private:
                                                      frame_result.frozen_pose);
             this->submap_dirty_ = true;
         }
-        }
         // Deferred / force-dropped marginalization keeps the scan OUT of the
         // fixed submap this frame (retry next frame on Success; after a
         // force-drop the map simply misses that scan).
