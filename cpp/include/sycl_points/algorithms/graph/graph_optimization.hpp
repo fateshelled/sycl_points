@@ -126,13 +126,27 @@ public:
         SlidingWindow::MarginalizationAction marginalization_action =
             SlidingWindow::MarginalizationAction::None;
         float marginalization_lambda = 0.0f;
+        /// @brief Keyframe/submap lifecycle freeze payload (freeze_ready only on a
+        ///        Successful eviction): the oldest node left the active window this
+        ///        frame, and the pipeline must insert its scan into the fixed
+        ///        submap at its final optimized pose. A scan is thereby never
+        ///        both an active PoseNode and fixed map geometry
+        ///        (ActiveKeyframeScans ∩ FixedSubmapScans = empty). Force-dropped
+        ///        nodes are NOT frozen: emergency eviction drops the node without
+        ///        a prior and the map simply misses that scan.
+        bool freeze_ready = false;
+        Eigen::Isometry3f frozen_pose = Eigen::Isometry3f::Identity();
+        std::shared_ptr<PointCloudShared> frozen_cloud = nullptr;
+        double frozen_timestamp = 0.0;
     };
 
     /// @brief Apply the authoritative keyframe decision for the current tip.
     ///
-    /// GraphOdometry calls this with Submap::add_frame's result so the graph and
-    /// map retain exactly the same frames. Standalone GraphOptimization users keep
-    /// the internal gate unless KeyframeGate::external_decision is enabled.
+    /// `keep` decides only graph retention: whether the tip stays an active
+    /// PoseNode. Submap insertion is a SEPARATE event: on eviction the oldest
+    /// node is marginalized and its final optimized pose + cloud are reported
+    /// in the FrameResult freeze payload for the pipeline to insert into the
+    /// fixed submap.
     void finalize_frame(FrameResult& frame_result, bool keep) {
         if (frame_result.finalized || frame_result.current_node_id == INVALID_NODE_ID) return;
 
@@ -151,8 +165,16 @@ public:
             const auto m = window_.marginalize_oldest(queue_);
             frame_result.marginalization_status = m.status;
             frame_result.marginalization_lambda = m.lambda_used;
-            if (m.status == SlidingWindow::MarginalizationStatus::Success ||
-                m.status == SlidingWindow::MarginalizationStatus::NotRequired) {
+            if (m.status == SlidingWindow::MarginalizationStatus::Success) {
+                frame_result.marginalization_action = SlidingWindow::MarginalizationAction::None;
+                // Graph/map lifecycle transition: the state is gone from the
+                // graph, its geometry becomes fixed map data. Inserted at the
+                // optimized pose the node had exactly at eviction time.
+                frame_result.freeze_ready = true;
+                frame_result.frozen_pose = m.evicted_pose;
+                frame_result.frozen_cloud = m.evicted_cloud;
+                frame_result.frozen_timestamp = m.evicted_timestamp;
+            } else if (m.status == SlidingWindow::MarginalizationStatus::NotRequired) {
                 frame_result.marginalization_action = SlidingWindow::MarginalizationAction::None;
             } else {
                 // Persistent failure must not grow the window without bound: defer

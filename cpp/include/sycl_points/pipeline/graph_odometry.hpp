@@ -432,8 +432,6 @@ private:
     std::shared_ptr<const algorithms::knn::KNNBase> submap_gen_knn_ = nullptr;
     bool submap_dirty_ = true;
     algorithms::registration::RegistrationParams reg_params_;
-    algorithms::registration::Registration::Ptr factor_registration_ = nullptr;
-    shared_vector_ptr<float> icp_weights_ = nullptr;
 
     bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
@@ -496,7 +494,6 @@ private:
             const auto dev =
                 sycl_utils::device_selector::select_device(this->params_.device.vendor, this->params_.device.type);
             this->queue_ptr_ = std::make_shared<sycl_utils::DeviceQueue>(dev);
-            this->icp_weights_ = std::make_shared<shared_vector<float>>(*this->queue_ptr_->ptr);
         }
         this->preprocessed_pc_ = std::make_shared<PointCloudShared>(*this->queue_ptr_);
         this->odom_ = this->params_.pose.initial;
@@ -518,11 +515,9 @@ private:
         this->submap_ = std::make_shared<submapping::Submap>(
             *this->queue_ptr_, this->params_, this->params_.graph.registration.factor,
             this->params_.graph.registration.min_num_points);
-        this->factor_registration_ =
-            std::make_shared<algorithms::registration::Registration>(*this->queue_ptr_, this->reg_params_);
-
-        // Graph optimizer (sliding window local BA). The keyframe gate shares the
-        // submap's keyframe thresholds so node promotion and map updates coincide.
+        // Graph optimizer (sliding window local BA). The internal keyframe gate
+        // reuses the Submap keyframe thresholds for retention; map insertion is a
+        // separate lifecycle event done on eviction (see submapping()).
         algorithms::graph::GraphSolverParams solver_params;
         solver_params.max_iterations = this->params_.graph.solver_iterations;
         solver_params.convergence_translation = this->params_.graph.convergence_translation;
@@ -542,7 +537,11 @@ private:
 
         algorithms::graph::GraphOptimization::Options gopts;
         gopts.gate.enabled = true;
-        gopts.gate.external_decision = true;
+        // Retention (graph keyframe promotion) is now internal to
+        // GraphOptimization's gate: submap insertion no longer doubles as the
+        // retention decision (map insertion happens on eviction, see
+        // submapping()).
+        gopts.gate.external_decision = false;
         gopts.gate.min_translation = this->params_.submap.keyframe.distance_threshold;
         gopts.gate.min_rotation = this->params_.submap.keyframe.angle_threshold_degrees *
                                   (std::numbers::pi_v<float> / 180.0f);
@@ -629,38 +628,32 @@ private:
     }
 
     void submapping(algorithms::graph::GraphOptimization::FrameResult& frame_result, double timestamp) {
+        // graph/reg statistics for the adaptive motion predictor (unchanged).
         *this->reg_result_ = frame_result.tip_registration;
         this->reg_result_->T = frame_result.current_pose;
         this->reg_result_->converged = frame_result.converged;
         this->reg_result_->iterations = frame_result.iterations;
 
-        // Feed the exact sampled/final-deskewed factor input to the submap, as
-        // the LO path does through get_deskewed_point_cloud().
-        const PointCloudShared& map_cloud =
-            frame_result.tip_cloud ? *frame_result.tip_cloud : *this->preprocessed_pc_;
-        shared_vector_ptr<float> icp_weights = nullptr;
-        if (map_cloud.size() > this->params_.submap.point_random_sampling_num) {
-            const float robust_scale = frame_result.tip_robust_scale > 0.0f
-                                           ? frame_result.tip_robust_scale
-                                           : this->reg_params_.robust.default_scale;
-            this->factor_registration_->compute_icp_robust_weights(
-                map_cloud, this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(),
-                frame_result.current_pose.matrix(), robust_scale, *this->icp_weights_);
-            icp_weights = this->icp_weights_;
-        }
-        bool map_changed = false;
-        try {
-            map_changed = this->submap_->add_frame(
-                map_cloud, *this->reg_result_, frame_result.inlier_ratio, timestamp, icp_weights);
-        } catch (...) {
-            // Do not leave a provisional graph tip behind when map insertion fails.
-            this->graph_opt_->finalize_frame(frame_result, false);
-            throw;
-        }
-        this->graph_opt_->finalize_frame(frame_result, map_changed);
-        if (map_changed) {
+        // Keyframe/submap lifecycle: retention is decided by the graph keyframe
+        // gate (process_frame); map insertion is a SEPARATE transition done on
+        // eviction. The scan is inserted at its FINAL optimized pose exactly
+        // when its graph state is removed, so a scan is never both a variable
+        // graph state and fixed submap geometry (the initial seed frame from
+        // add_first_frame is the only map-only scan).
+        if (frame_result.freeze_ready && frame_result.frozen_cloud &&
+            frame_result.frozen_cloud->size() > 0) {
+            // Weighted sampling is intentionally NOT re-computed: that scan's
+            // ICP robust weights were meaningful for its own registration run,
+            // not for its move into the (current) fixed submap. The frozen
+            // scan uses the uniform random sampling budget instead.
+            this->submap_->freeze_keyframe_to_submap(*frame_result.frozen_cloud,
+                                                     frame_result.frozen_pose);
             this->submap_dirty_ = true;
         }
+        }
+        // Deferred / force-dropped marginalization keeps the scan OUT of the
+        // fixed submap this frame (retry next frame on Success; after a
+        // force-drop the map simply misses that scan).
     }
 };
 

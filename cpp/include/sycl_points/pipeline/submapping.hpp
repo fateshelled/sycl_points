@@ -133,6 +133,18 @@ public:
         return false;
     }
 
+    /// @brief Insert an already-evicted graph keyframe's geometry at its FINAL
+    ///        optimized pose, without keyframe gating and without consulting
+    ///        the Submap's own keyframe thresholds: the graph pipeline owns the
+    ///        promotion/retention lifecycle and calls this exactly when the
+    ///        node left the active sliding window (its graph state is gone).
+    ///        This keeps ActiveKeyframeScans and FixedSubmapScans disjoint.
+    void freeze_keyframe_to_submap(const PointCloudShared& cloud,
+                                   const Eigen::Isometry3f& optimized_pose,
+                                   shared_vector_ptr<float> random_sampling_weights = nullptr) {
+        this->build_submap(cloud, optimized_pose, false, random_sampling_weights);
+    }
+
 private:
     sycl_points::sycl_utils::DeviceQueue queue_;
 
@@ -154,8 +166,7 @@ private:
     PointCloudShared::Ptr submap_pc_ptr_ = nullptr;     // Odom/World coordinate
     PointCloudShared::Ptr submap_pc_tmp_ = nullptr;     // Odom/World coordinate
 
-    bool is_keyframe(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
-        // calculate delta pose
+    bool is_keyframe(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {        // calculate delta pose
         const auto delta_pose = this->last_keyframe_pose_.inverse() * reg_result.T;
 
         // calculate moving distance and angle

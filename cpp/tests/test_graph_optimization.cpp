@@ -1484,6 +1484,94 @@ TEST(MarginalizationPriorTangentTest, GradientMatchesNumericalAtDisplacedPoses) 
 // Stale-cache tangent transport in the solver + sparse-chain ordering (host)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Keyframe/submap lifecycle: freeze-on-eviction first-class invariants
+// ---------------------------------------------------------------------------
+
+// Invariant D/C: on window eviction the marginalized node's final optimized
+// pose and cloud are handed to the pipeline as freeze payload (inserted into
+// the fixed submap), and the graph state disappears. A scan is therefore never
+// both an active PoseNode and fixed map geometry.
+TEST(GraphLifecycleFreezeTest, EvictedNodeFreezesAtOptimizedPose) {
+    auto queue = make_queue();
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
+    auto& w = opt.window();
+
+    Eigen::Isometry3f poses[5];
+    std::vector<graph::NodeId> ids(5);
+    std::vector<std::shared_ptr<PointCloudShared>> clouds(5);
+    std::mt19937 gen(3);
+    for (int i = 0; i < 5; ++i) {
+        poses[i] = test_pose(0.1f * i + 0.1f, 0.02f * i, 0.0f, 0.05f * i);
+        clouds[i] = make_cube_cloud(queue, 50, 0.5f, gen);
+        ids[i] = w.add_node(poses[i], static_cast<double>(i) + 1.0e6, clouds[i],
+                            algorithms::knn::KDTree::build(queue, *clouds[i]));
+    }
+    // A two-node blanket (binary anchor) leaves a compressed prior over node 1.
+    w.add_factor(std::make_shared<AnchorFactor>(w.get_node(ids[0]), poses[0], 50.0f));
+    w.add_factor(std::make_shared<BinaryAnchorFactor>(w.get_node(ids[0]), w.get_node(ids[1]), 50.0f));
+
+    graph::GraphOptimization::FrameResult fr;
+    fr.current_node_id = ids[4];
+    opt.finalize_frame(fr, /*keep*/ true);
+
+    EXPECT_TRUE(fr.freeze_ready);
+    EXPECT_EQ(fr.marginalization_action, graph::SlidingWindow::MarginalizationAction::None);
+    EXPECT_EQ(fr.frozen_cloud.get(), clouds[0].get());
+    expect_pose_near(fr.frozen_pose, poses[0], 1e-5f, 1e-5f);
+    EXPECT_NEAR(fr.frozen_timestamp, 1.0e6, 1e-3);
+    EXPECT_EQ(w.get_node(ids[0]), nullptr);
+    EXPECT_EQ(w.window_size(), 4U);
+    EXPECT_TRUE(w.prior().is_valid());  // the state left behind a compressed prior
+}
+
+// Invariant (failure path): a deferred marginalization keeps the node in the
+// window WITHOUT freezing its geometry into the submap.
+TEST(GraphLifecycleFreezeTest, DeferredMarginalizationDoesNotFreeze) {
+    auto queue = make_queue();
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
+    auto& w = opt.window();
+
+    std::mt19937 gen(5);
+    std::vector<graph::NodeId> ids(5);
+    for (int i = 0; i < 5; ++i) {
+        auto cloud = make_cube_cloud(queue, 50, 0.5f, gen);
+        ids[i] = w.add_node(test_pose(0.1f * i, 0.0f, 0.0f, 0.0f), static_cast<double>(i) + 1.0e6,
+                            cloud, algorithms::knn::KDTree::build(queue, *cloud));
+    }
+    w.add_factor(std::make_shared<NonFiniteHessianFactor>(w.get_node(ids[0])));
+
+    graph::GraphOptimization::FrameResult fr;
+    fr.current_node_id = ids[4];
+    opt.finalize_frame(fr, /*keep*/ true);
+
+    EXPECT_EQ(fr.marginalization_action, graph::SlidingWindow::MarginalizationAction::Deferred);
+    EXPECT_FALSE(fr.freeze_ready);
+    EXPECT_NE(w.get_node(ids[0]), nullptr);  // kept for the next-frame retry
+}
+
+// Invariant E: the gate decision only changes graph retention; without an
+// eviction there is no freeze activity.
+TEST(GraphLifecycleFreezeTest, RejectedTipNeverFreezes) {
+    auto queue = make_queue();
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
+    auto& w = opt.window();
+
+    std::mt19937 gen(7);
+    std::vector<graph::NodeId> ids(4);
+    for (int i = 0; i < 4; ++i) {
+        ids[i] = w.add_node(test_pose(0.1f * i, 0.0f, 0.0f, 0.0f), static_cast<double>(i) + 1.0e6);
+    }
+
+    graph::GraphOptimization::FrameResult fr;
+    fr.current_node_id = ids[3];
+    opt.finalize_frame(fr, /*keep*/ false);
+
+    EXPECT_FALSE(fr.freeze_ready);
+    EXPECT_EQ(w.get_node(ids[3]), nullptr);  // deviation: provisional tip discarded
+    EXPECT_TRUE(w.prior().is_valid() == false);
+}
+
 // Binary-factor mock whose linearization NEVER changes: get_linearization()
 // caches this fixed model on the first call and every later call reuses it
 // regardless of the node poses, so the solver always assembles from a stale
