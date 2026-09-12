@@ -188,7 +188,7 @@ graph_odometry_node:
     # transient when the submap/keyframe/* gate rejects it). The keyframe gate
     # itself reuses the submap/keyframe/* thresholds above.
     graph/window_size: 5
-    graph/solver_iterations: 8               # GN iterations when robust ladder is disabled
+    graph/solver_iterations: 8               # outer iterations when robust ladder is disabled
     graph/convergence/translation: 1.0e-4    # [m]
     graph/convergence/rotation: 1.0e-4       # [rad]
     # Delayed relinearization thresholds: cached factor linearizations are
@@ -197,7 +197,13 @@ graph_odometry_node:
     # only re-searched when the threshold is crossed).
     graph/relinearize/translation_threshold: 0.05  # [m]
     graph/relinearize/rotation_threshold: 0.02     # [rad]
-    graph/solver/damping_lambda: 1.0e-6            # solver LDLT fallback regularization
+    graph/solver/optimization_method: LM           # GN, LM
+    graph/solver/damping_lambda: 1.0e-6            # GN-only LDLT fallback regularization
+    graph/solver/lm/max_inner_iterations: 5
+    graph/solver/lm/lambda_factor: 2.0
+    graph/solver/lm/init_lambda: 1.0
+    graph/solver/lm/max_lambda: 1.0e+3
+    graph/solver/lm/min_lambda: 1.0e-3
     graph/marginalization_lambda: 1.0e-3           # Schur-complement H_mm regularization
     # NOTE: the Schur-complement marginalization prior is built from the
     # ROBUST-WEIGHTED factor Hessians: each factor is re-linearized with the

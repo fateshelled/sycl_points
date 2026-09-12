@@ -519,6 +519,8 @@ private:
         // reuses the Submap keyframe thresholds for retention; map insertion is a
         // separate lifecycle event done on eviction (see submapping()).
         algorithms::graph::GraphSolverParams solver_params;
+        solver_params.optimization_method = this->params_.graph.optimization_method;
+        solver_params.lm = this->params_.graph.lm;
         solver_params.max_iterations = this->params_.graph.solver_iterations;
         solver_params.convergence_translation = this->params_.graph.convergence_translation;
         solver_params.convergence_rotation = this->params_.graph.convergence_rotation;

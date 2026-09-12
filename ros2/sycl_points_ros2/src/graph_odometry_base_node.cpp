@@ -42,6 +42,20 @@ void GraphOdometryBaseNode::initialize_processing() {
         };
         graph.window_size = positive_size("graph/window_size", graph.window_size);
         graph.solver_iterations = positive_size("graph/solver_iterations", graph.solver_iterations);
+        const std::string optimization_method = this->declare_parameter<std::string>(
+            "graph/solver/optimization_method", "GN");
+        graph.optimization_method =
+            algorithms::registration::OptimizationMethod_from_string(optimization_method);
+        graph.lm.max_inner_iterations = positive_size(
+            "graph/solver/lm/max_inner_iterations", graph.lm.max_inner_iterations);
+        graph.lm.lambda_factor = static_cast<float>(this->declare_parameter<double>(
+            "graph/solver/lm/lambda_factor", graph.lm.lambda_factor));
+        graph.lm.init_lambda = static_cast<float>(this->declare_parameter<double>(
+            "graph/solver/lm/init_lambda", graph.lm.init_lambda));
+        graph.lm.max_lambda = static_cast<float>(this->declare_parameter<double>(
+            "graph/solver/lm/max_lambda", graph.lm.max_lambda));
+        graph.lm.min_lambda = static_cast<float>(this->declare_parameter<double>(
+            "graph/solver/lm/min_lambda", graph.lm.min_lambda));
         graph.convergence_translation = static_cast<float>(this->declare_parameter<double>(
             "graph/convergence/translation", graph.convergence_translation));
         graph.convergence_rotation = static_cast<float>(

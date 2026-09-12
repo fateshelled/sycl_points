@@ -34,13 +34,16 @@ struct Parameters : public odometry::CommonParameters {
 
     /// @brief Sliding-window graph optimizer (local BA) parameters.
     struct Graph {
+        algorithms::registration::OptimizationMethod optimization_method =
+            algorithms::registration::OptimizationMethod::GAUSS_NEWTON;
+        algorithms::registration::RegistrationOptimizationParams::LevenbergMarquardt lm;
         size_t window_size = 5;                  ///< persistent keyframe nodes
-        size_t solver_iterations = 10;           ///< GN iterations per frame
+        size_t solver_iterations = 10;           ///< nonlinear outer iterations per frame
         float convergence_translation = 1e-4f;   ///< [m]
         float convergence_rotation = 1e-4f;      ///< [rad]
         float relinearize_translation_thresh = 0.05f;  ///< [m] delayed relinearization
         float relinearize_rotation_thresh = 0.02f;     ///< [rad]
-        float solver_damping_lambda = 1e-6f;     ///< solver LDLT fallback regularization
+        float solver_damping_lambda = 1e-6f;     ///< GN solver LDLT fallback regularization
         float marginalization_lambda = 1e-6f;    ///< Schur-complement regularization
         float chain_sigma_rotation = 5e-3f;      ///< [rad] RelativePoseFactor info
         float chain_sigma_translation = 2e-2f;   ///< [m]
