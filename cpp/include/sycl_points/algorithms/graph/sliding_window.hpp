@@ -177,10 +177,12 @@ public:
                 auto nb = get_node(convert_b);
                 auto measurement = f->make_relative_pose_measurement();
                 if (measurement) {
-                    // G and Omega come from the same linearization snapshot, so
-                    // the measurement and its information stay consistent.
+                    // G, Omega and the linear gradient all come from the same
+                    // linearization snapshot, so the converted factor keeps
+                    // the binary's quadratic model in right-increment terms.
                     kept.push_back(std::make_shared<RelativePoseFactor>(
-                        convert_a, na, convert_b, nb, measurement->G, measurement->information));
+                        convert_a, na, convert_b, nb, measurement->G, measurement->information,
+                        measurement->gradient));
                 } else {
                     const Eigen::Isometry3f G = na->pose.inverse() * nb->pose;
                     kept.push_back(std::make_shared<RelativePoseFactor>(convert_a, na, convert_b, nb,

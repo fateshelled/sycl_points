@@ -66,9 +66,16 @@ public:
 
     bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float rot_th,
                                float trans_th) const override {
-        // Reuse is allowed only when the connected node pose is still close to the
-        // pose at which this factor was last linearized.
-        return relinearization_needed(source_node_->pose, source_node_->linearization_pose, rot_th,
+        // Judge against this factor's own cached linearization pose, NOT the
+        // shared PoseNode::linearization_pose: an earlier factor that
+        // relinearizes also refreshes the node field, and judging on it would
+        // suppress relinearization for this factor even though its own cache
+        // (frozen KNN / weights / Hessian) is stale. nullopt never reaches
+        // here with a stale intent: the base get_linearization() relinearizes
+        // whenever the cache is empty.
+        const graph::FactorLinearization* lin = cached_linearization();
+        if (lin == nullptr) return true;
+        return relinearization_needed(source_node_->pose, lin->source_linearization_pose, rot_th,
                                       trans_th);
     }
 
@@ -126,12 +133,16 @@ public:
 
     bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float rot_th,
                                float trans_th) const override {
-        if (relinearization_needed(source_node_->pose, source_node_->linearization_pose, rot_th,
-                                  trans_th))
+        // Factor-local judgement (see UnaryGicpFactor): compare the current
+        // node poses against the poses this factor itself linearized at.
+        const graph::FactorLinearization* lin = cached_linearization();
+        if (lin == nullptr) return true;
+        if (relinearization_needed(source_node_->pose, lin->source_linearization_pose, rot_th,
+                                   trans_th))
             return true;
         if (target_node_ &&
-            relinearization_needed(target_node_->pose, target_node_->linearization_pose, rot_th,
-                                  trans_th))
+            relinearization_needed(target_node_->pose, lin->target_linearization_pose, rot_th,
+                                   trans_th))
             return true;
         return false;
     }

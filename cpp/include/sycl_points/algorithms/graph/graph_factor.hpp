@@ -28,6 +28,12 @@ inline bool relinearization_needed(const Eigen::Isometry3f& current, const Eigen
 struct RelativePoseMeasurement {
     Eigen::Isometry3f G = Eigen::Isometry3f::Identity();
     Eigen::Matrix<float, 6, 6> information = Eigen::Matrix<float, 6, 6>::Zero();
+    /// @brief Linear gradient term (per-twist) captured on the same snapshot:
+    ///        the source binary factor's energy model is E(r) = 1/2 r^T Omega r
+    ///        + gradient^T r about G, not a pure quadratic (its residual at the
+    ///        linearization snapshot is generally non-zero). Zero for a pure
+    ///        quadratic measurement.
+    Eigen::Matrix<float, 6, 1> gradient = Eigen::Matrix<float, 6, 1>::Zero();
 };
 
 /// @brief Abstract base for all sliding-window graph factors (point-cloud GICP

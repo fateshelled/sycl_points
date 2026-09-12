@@ -26,11 +26,17 @@ struct RelativePoseParams {
 ///
 /// Residual convention (right update, same as the rest of the solver):
 ///     r = se3_log( G^-1 * T_src^-1 * T_tgt ),  twist packed [rot; trans].
-/// Jacobians: J_tgt = Jl(r) and J_src = -Jl(r) * Ad(T_tgt^-1 T_src), where Ad is
-/// the SE(3) adjoint in [rot; trans] packing ([[R,0],[[t]x R, R]]) and Jl is
-/// the SE(3) left Jacobian (truncated exponential series). With the residual
-/// kept small by the linearization thresholds this reduces to the familiar
-/// -Ad(T_tgt^-1 T_src) approximation. The information matrix is diagonal
+/// With a right increment T <- T Exp(delta):
+///     J_tgt = Jl(-r)^-1 = Jr(r)  (right Jacobian of r)
+///     J_src = -J_tgt * Ad(T_tgt^-1 T_src)
+/// where Ad is the SE(3) adjoint in [rot; trans] packing ([[R,0],[[t]x R, R]]).
+/// The target Jacobian follows from r(delta) = Log(Exp(r) Exp(delta)) and the
+/// BCH identity d/d delta Log(Exp(r) Exp(delta)) = Jr(r); the source term adds
+/// the gauge-map chain, giving the familiar -Ad(T_tgt^-1 T_src) pre-factor.
+/// Jr(r) is implemented as the SE(3) left Jacobian inverse of -r
+/// (eigen_utils::lie::se3_left_jacobian_inverse) — the plain Jl(r) is only the
+/// first-order approximation and drifts quadratically with ||r||. The
+/// information matrix is diagonal
 /// diag(1/sigma_rotation^2 * I3, 1/sigma_translation^2 * I3) when built from
 /// RelativePoseParams, or an arbitrary symmetric PSD matrix when constructed
 /// from a projected measurement (see
@@ -47,14 +53,21 @@ public:
           tgt_node_(std::move(tgt_node)), G_(G), Omega_(make_information(params)) {}
 
     /// @brief Construct with an explicit information matrix (e.g. projected from
-    ///        a BinaryGicpFactor's joint Hessian). The matrix is symmetrized;
-    ///        PSD projection and scaling are the caller's responsibility.
+    ///        a BinaryGicpFactor's joint Hessian) plus an optional linear
+    ///        gradient term g captured on the same snapshot. g≠0 happens when
+    ///        the source binary factor was linearized at poses where its own
+    ///        residual was non-zero (frozen correspondences): the energy model
+    ///        is then E(r) = 1/2 r^T Omega r + g^T r, not a pure quadratic
+    ///        about G. The matrix is symmetrized; PSD projection and scaling
+    ///        are the caller's responsibility.
     RelativePoseFactor(NodeId src_id, std::shared_ptr<PoseNode> src_node, NodeId tgt_id,
                        std::shared_ptr<PoseNode> tgt_node, const Eigen::Isometry3f& G,
-                       const Eigen::Matrix<float, 6, 6>& information)
+                       const Eigen::Matrix<float, 6, 6>& information,
+                       const Eigen::Matrix<float, 6, 1>& gradient = Eigen::Matrix<float, 6, 1>::Zero())
         : src_id_(src_id), src_node_(std::move(src_node)), tgt_id_(tgt_id),
           tgt_node_(std::move(tgt_node)), G_(G),
-          Omega_(0.5f * (information + information.transpose()).eval()) {
+          Omega_(0.5f * (information + information.transpose()).eval()),
+          g_lin_(gradient) {
         if (!Omega_.allFinite()) {
             throw std::invalid_argument("[RelativePoseFactor] information matrix must be finite");
         }
@@ -85,20 +98,11 @@ public:
         return ad;
     }
 
-    /// @brief SE(3) left Jacobian Jl(xi) = sum_k ad(xi)^k / (k+1)!.
-    ///        Truncated exponential series; 12 terms stay well below float
-    ///        precision for |xi| in the radian/meter range used here.
+    /// @brief SE(3) left Jacobian Jl(xi) = sum_k ad(xi)^k / (k+1!)
+    ///        (delegates to eigen_utils::lie; shared with the marginalization
+    ///        prior). Host-only.
     static Eigen::Matrix<float, 6, 6> left_jacobian(const Eigen::Matrix<float, 6, 1>& xi) {
-        const Eigen::Matrix<float, 6, 6> a = adjoint_of_twist(xi);
-        Eigen::Matrix<float, 6, 6> result = Eigen::Matrix<float, 6, 6>::Identity();
-        Eigen::Matrix<float, 6, 6> power = Eigen::Matrix<float, 6, 6>::Identity();
-        float factorial = 1.0f;
-        for (int k = 1; k <= 12; ++k) {
-            power = power * a;
-            factorial *= static_cast<float>(k + 1);
-            result += power / factorial;
-        }
-        return result;
+        return eigen_utils::lie::se3_left_jacobian(xi);
     }
 
     FactorLinearization linearize(const sycl_utils::DeviceQueue&, float /*scale*/ = 0.0f) override {
@@ -135,9 +139,10 @@ private:
     FactorLinearization linearize_at(const Eigen::Isometry3f& src,
                                      const Eigen::Isometry3f& tgt) const {
         const Eigen::Matrix<float, 6, 1> r = residual(src, tgt);
-        const Eigen::Matrix<float, 6, 6> jl = left_jacobian(r);
-        const Eigen::Matrix<float, 6, 6> J0 = -jl * adjoint(tgt.inverse() * src);  // d r / d right(src)
-        const Eigen::Matrix<float, 6, 6> J1 = jl;                                   // d r / d right(tgt)
+        // d r / d right(delta) at T: Jr(r) = Jl(-r)^-1 (BCH, see class comment).
+        const Eigen::Matrix<float, 6, 6> jr = eigen_utils::lie::se3_left_jacobian_inverse(-r);
+        const Eigen::Matrix<float, 6, 6> J0 = -jr * adjoint(tgt.inverse() * src);  // d r / d right(src)
+        const Eigen::Matrix<float, 6, 6> J1 = jr;                                  // d r / d right(tgt)
         const Eigen::Matrix<float, 6, 6> J0t_omega = J0.transpose() * Omega_;
         const Eigen::Matrix<float, 6, 6> J1t_omega = J1.transpose() * Omega_;
 
@@ -145,9 +150,10 @@ private:
         lin.H00 = J0t_omega * J0;
         lin.H11 = J1t_omega * J1;
         lin.H01 = J0t_omega * J1;
-        lin.b0 = J0t_omega * r;
-        lin.b1 = J1t_omega * r;
-        lin.error = 0.5f * (r.transpose() * Omega_ * r)(0, 0);
+        // E(r) = 1/2 r^T Omega r + g_lin^T r
+        lin.b0 = J0t_omega * r + J0.transpose() * g_lin_;
+        lin.b1 = J1t_omega * r + J1.transpose() * g_lin_;
+        lin.error = 0.5f * (r.transpose() * Omega_ * r)(0, 0) + g_lin_.dot(r);
         lin.inlier = 1;
         lin.source_linearization_pose = src;
         lin.target_linearization_pose = tgt;
@@ -160,10 +166,12 @@ private:
     std::shared_ptr<PoseNode> tgt_node_;
     Eigen::Isometry3f G_ = Eigen::Isometry3f::Identity();
     Eigen::Matrix<float, 6, 6> Omega_ = Eigen::Matrix<float, 6, 6>::Zero();
+    Eigen::Matrix<float, 6, 1> g_lin_ = Eigen::Matrix<float, 6, 1>::Zero();
 };
 
 /// @brief Project a cached binary factor linearization onto a relative-pose
-///        measurement (G, 6x6 information) for sparse-chain conversion.
+///        measurement (G, 6x6 information, 6-vector linear gradient) for
+///        sparse-chain conversion.
 ///
 /// A point-cloud binary factor constrains only the relative pose of its two
 /// nodes: a common rigid motion of both frames (the gauge) leaves every point
@@ -171,21 +179,30 @@ private:
 /// information and factors exactly through the relative-pose Jacobian
 ///     J = [-Ad(T_tgt^-1 T_src) | I]
 /// (right increments; r = 0 at the linearization snapshot because G is captured
-/// from the same poses, so Jl = I; same convention as linearize_at) as
+/// from the same poses, so Jr = I; same convention as linearize_at) as
 ///     H_joint = J^T Omega J.
 /// Omega is recovered with the right pseudo-inverse J+ = J^T (J J^T)^-1 —
 /// J is always full row rank since J J^T = Ad Ad^T + I:
 ///     Omega = J+^T H_joint J+
-/// The result keeps the anisotropy and the robust weights the optimizer
-/// adopted. Degenerate directions stay weak: rounding-induced negative
-/// eigenvalues are clipped to zero and no eigenvalue floor is added — the
-/// solver's damping ladder provides the numerical safety.
+/// The joint gradient is preserved the same way. The binary factor's energy
+/// model around the snapshot is E = 1/2 d^T H_joint d + b_joint^T d (d = joint
+/// right-increment offsets); on the relative-pose subspace this is the chain
+/// factor's E = 1/2 r^T Omega r + g^T r with
+///     b_joint = J^T g  =>  g = J+^T b_joint
+/// so the converted factor keeps the same gradient field: dropping b_joint
+/// (the previous behaviour) zeroed the factor gradient and pulled the next
+/// optimum. The result keeps the anisotropy and the robust weights the
+/// optimizer adopted. Degenerate directions stay weak: rounding-induced
+/// negative eigenvalues are clipped to zero and no eigenvalue floor is added —
+/// the solver's damping ladder provides the numerical safety.
 ///
 /// @return nullopt when the linearization is unusable: missing/zero/non-finite
-///         Hessian, decomposition trouble, or a reconstruction residual
-///         indicating the Hessian does not live on the relative-pose subspace
-///         (e.g. an absolute-pose prior mixed into the factor). Callers fall
-///         back to the sigma-based chain factor. Host-only math; no GPU work.
+///         Hessian, decomposition trouble, a reconstruction residual
+///         indicating the Hessian or the gradient does not live on the
+///         relative-pose subspace (e.g. an absolute-pose prior mixed into the
+///         factor), or a gradient with no consistent quadratic term. Callers
+///         fall back to the sigma-based chain factor. Host-only math; no GPU
+///         work.
 inline std::optional<RelativePoseMeasurement> relative_pose_measurement_from_linearization(
     const FactorLinearization& lin) {
     constexpr float kMinInformationTrace = 1e-12f;   // reject an all-zero Hessian
@@ -237,9 +254,24 @@ inline std::optional<RelativePoseMeasurement> relative_pose_measurement_from_lin
         return std::nullopt;
     }
 
+    // Same projection for the linear gradient: b_joint = J^T g on the
+    // relative-pose subspace; a large residual means the gradient carries
+    // off-subspace content and the whole measurement is untrustworthy.
+    Eigen::Matrix<float, 12, 1> b_joint;
+    b_joint << lin.b0, lin.b1;
+    if (!b_joint.allFinite()) return std::nullopt;
+    const Eigen::Matrix<float, 6, 1> g_rel = J_pinv.transpose() * b_joint;
+    const float b_norm = b_joint.norm();
+    const float b_recon_error = (b_joint - J.transpose() * g_rel).norm();
+    if (!std::isfinite(b_norm) || !std::isfinite(b_recon_error) ||
+        (b_norm > 0.0f && b_recon_error > kReconstructionTolerance * b_norm)) {
+        return std::nullopt;
+    }
+
     RelativePoseMeasurement measurement;
     measurement.G = G;
     measurement.information = omega;
+    measurement.gradient = g_rel;
     return measurement;
 }
 

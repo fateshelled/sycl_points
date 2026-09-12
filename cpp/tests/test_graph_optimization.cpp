@@ -910,7 +910,12 @@ public:
     }
 
     bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float, float) const override {
-        return graph::relinearization_needed(node_->pose, node_->linearization_pose, rot_th_, trans_th_);
+        // Mirror the real GICP factors: judge against this factor's own cached
+        // linearization, not the shared PoseNode::linearization_pose.
+        const graph::FactorLinearization* lin = cached_linearization();
+        if (lin == nullptr) return true;
+        return graph::relinearization_needed(node_->pose, lin->source_linearization_pose, rot_th_,
+                                             trans_th_);
     }
 
     int linearize_calls = 0;
@@ -978,6 +983,43 @@ TEST_F(GraphCacheTest, ReusesLinearizationUntilPoseMovesBeyondThreshold) {
     f.clear_cache();
     auto lin5 = f.get_linearization(queue, 0.02f, 0.05f);
     EXPECT_EQ(f.linearize_calls, 3);
+}
+
+// Two counting factors hang on the SAME node. The first factor relinearizes and
+// refreshes the shared PoseNode::linearization_pose; the second must still
+// judge against its own cached linearization and relinearize too. Judging by
+// the node pose would wrongly report "no movement" for the second factor.
+TEST_F(GraphCacheTest, SiblingFactorsRelinearizeIndependently) {
+    graph::SlidingWindow window(5);
+    const auto id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    auto node = window.get_node(id);
+    CountingGicpFactor f1(node, 0.02f, 0.05f);
+    CountingGicpFactor f2(node, 0.02f, 0.05f);
+
+    // Initial linearizations populate both caches.
+    f1.get_linearization(queue, 0.02f, 0.05f);
+    f2.get_linearization(queue, 0.02f, 0.05f);
+    ASSERT_EQ(f1.linearize_calls, 1);
+    ASSERT_EQ(f2.linearize_calls, 1);
+
+    // Move the node beyond the threshold, then relinearize only f1.
+    Eigen::Isometry3f moved = Eigen::Isometry3f::Identity();
+    moved.translate(Eigen::Vector3f(0.2f, 0.0f, 0.0f));
+    node->pose = moved;
+    f1.get_linearization(queue, 0.02f, 0.05f);
+    EXPECT_EQ(f1.linearize_calls, 2);
+    // f1's linearize() refreshed node->linearization_pose (now node->pose);
+    // f2 must judge against ITS OWN stale cache and relinearize as well.
+    f2.get_linearization(queue, 0.02f, 0.05f);
+    EXPECT_EQ(f2.linearize_calls, 2);
+
+    // Small move within the threshold: both factors keep their fresh caches.
+    node->pose = Eigen::Isometry3f(moved.matrix());
+    node->pose.translate(Eigen::Vector3f(0.01f, 0.0f, 0.0f));
+    f1.get_linearization(queue, 0.02f, 0.05f);
+    f2.get_linearization(queue, 0.02f, 0.05f);
+    EXPECT_EQ(f1.linearize_calls, 2);
+    EXPECT_EQ(f2.linearize_calls, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,10 +1098,78 @@ TEST_F(RelativePoseTest, JacobianAndInformationAreConsistent) {
     EXPECT_LT(rel_err_m(lin.H01, H01_num), 2e-2f);
     EXPECT_LT(rel_err_m(lin.H11, H11_num), 2e-2f);
 
-    // Sanity: a plain -I source Jacobian (ignoring the adjoint) must NOT match,
-    // otherwise the adjoint term is doing nothing and the test is vacuous.
+// Sanity: a plain -I source Jacobian (ignoring the adjoint) must NOT match,
+// otherwise the adjoint term is doing nothing and the test is vacuous.
     const Eigen::Matrix<float, 6, 6> H00_naive = Eigen::Matrix<float, 6, 6>::Identity() * Omega;
     EXPECT_GT(rel_err_m(lin.H00, H00_naive), 1e-2f);
+}
+
+static Eigen::Isometry3f random_pose(std::mt19937& gen, float trans_scale, float rot_scale) {
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+    T.translate(Eigen::Vector3f(dist(gen), dist(gen), dist(gen)) * trans_scale);
+    Eigen::Vector3f axis(dist(gen), dist(gen), dist(gen));
+    axis.normalize();
+    T.rotate(Eigen::AngleAxisf(dist(gen) * rot_scale, axis));
+    return T;
+}
+
+// The t/Jacobian for large residuals: the plain-Jl(r) approximation drifts
+// quadratically with ||r||, so the numeric-vs-analytic agreement must hold far
+// beyond the (tiny) linearization thresholds.
+TEST_F(RelativePoseTest, JacobianMatchesNumericalAtLargeResiduals) {
+    auto win_src = std::make_shared<graph::PoseNode>();
+    auto win_tgt = std::make_shared<graph::PoseNode>();
+    win_src->id = 0;
+    win_tgt->id = 1;
+
+    for (int trial = 0; trial < 6; ++trial) {
+        std::mt19937 gen(static_cast<unsigned int>(trial + 1) * 17);
+        const Eigen::Isometry3f Ts = random_pose(gen, 2.0f, 0.6f);
+        const Eigen::Isometry3f Tt = random_pose(gen, 2.0f, 0.6f);
+        const Eigen::Isometry3f G = random_pose(gen, 2.0f, 0.6f);
+
+        win_src->pose = Ts;
+        win_tgt->pose = Tt;
+
+        graph::RelativePoseParams rp;
+        graph::RelativePoseFactor f(0, win_src, 1, win_tgt, G, rp);
+        const Eigen::Matrix<float, 6, 6> Omega = graph::RelativePoseFactor::make_information(rp);
+
+        auto residual = [&](const Eigen::Isometry3f& s, const Eigen::Isometry3f& t) {
+            return eigen_utils::lie::se3_log(G.inverse() * (s.inverse() * t));
+        };
+        const Eigen::Matrix<float, 6, 1> r0 = residual(Ts, Tt);
+        ASSERT_GT(r0.norm(), 0.5f);  // ensure the trial really stresses ||r||
+
+        const float eps = 1e-3f;
+        Eigen::Matrix<float, 6, 6> Js = Eigen::Matrix<float, 6, 6>::Zero();
+        Eigen::Matrix<float, 6, 6> Jt = Eigen::Matrix<float, 6, 6>::Zero();
+        for (int k = 0; k < 6; ++k) {
+            Eigen::Matrix<float, 6, 1> e = Eigen::Matrix<float, 6, 1>::Zero();
+            e[k] = eps;
+            Js.col(k) = (residual(rright(Ts, e), Tt) - residual(rright(Ts, -e), Tt)) / (2 * eps);
+            Jt.col(k) = (residual(Ts, rright(Tt, e)) - residual(Ts, rright(Tt, -e))) / (2 * eps);
+        }
+
+        auto lin = f.linearize(queue);
+        auto rel_err_m = [](const Eigen::Matrix<float, 6, 6>& a, const Eigen::Matrix<float, 6, 6>& b) {
+            return (a - b).norm() / std::max(1.0f, a.norm());
+        };
+        // b^T Omega b / H: b_num = J^T Omega r
+        const Eigen::Matrix<float, 6, 1> b0_num = Js.transpose() * Omega * r0;
+        const Eigen::Matrix<float, 6, 1> b1_num = Jt.transpose() * Omega * r0;
+        const Eigen::Matrix<float, 6, 6> H00_num = Js.transpose() * Omega * Js;
+        const Eigen::Matrix<float, 6, 6> H01_num = Js.transpose() * Omega * Jt;
+        const Eigen::Matrix<float, 6, 6> H11_num = Jt.transpose() * Omega * Jt;
+        // float32 FD noise grows with ||r||; 3% relative keeps the check
+        // meaningful (the buggy plain-Jl implementation fails by ~30% here).
+        EXPECT_LT(rel_err_m(lin.H00, H00_num), 3e-2f) << "trial " << trial;
+        EXPECT_LT(rel_err_m(lin.H01, H01_num), 3e-2f) << "trial " << trial;
+        EXPECT_LT(rel_err_m(lin.H11, H11_num), 3e-2f) << "trial " << trial;
+        EXPECT_LT((lin.b0 - b0_num).norm() / std::max(1.0f, b0_num.norm()), 6e-2f) << "trial " << trial;
+        EXPECT_LT((lin.b1 - b1_num).norm() / std::max(1.0f, b1_num.norm()), 6e-2f) << "trial " << trial;
+    }
 }
 
 // A 3-node chain (anchor T0, relative T0->T1, relative T1->T2) with exact
@@ -1113,13 +1223,18 @@ Eigen::Matrix<float, 6, 12> relative_jacobian(const Eigen::Isometry3f& T_src,
 
 graph::FactorLinearization make_joint_linearization(const Eigen::Isometry3f& T_src,
                                                     const Eigen::Isometry3f& T_tgt,
-                                                    const Eigen::Matrix<float, 6, 6>& omega) {
+                                                    const Eigen::Matrix<float, 6, 6>& omega,
+                                                    const Eigen::Matrix<float, 6, 1>& gradient =
+                                                        Eigen::Matrix<float, 6, 1>::Zero()) {
     const Eigen::Matrix<float, 6, 12> J = relative_jacobian(T_src, T_tgt);
     const Eigen::Matrix<float, 12, 12> H = J.transpose() * omega * J;
+    const Eigen::Matrix<float, 12, 1> b = J.transpose() * gradient;
     graph::FactorLinearization lin;
     lin.H00 = H.block<6, 6>(0, 0);
     lin.H01 = H.block<6, 6>(0, 6);
     lin.H11 = H.block<6, 6>(6, 6);
+    lin.b0 = b.segment<6>(0);
+    lin.b1 = b.segment<6>(6);
     lin.source_linearization_pose = T_src;
     lin.target_linearization_pose = T_tgt;
     lin.inlier = 1;
@@ -1218,6 +1333,140 @@ TEST(GraphRelativePoseInfoTest, RejectsUnusableLinearizations) {
     // Joint Hessian = I_12: full rank over the 12-DoF space, i.e. information
     // outside the relative-pose subspace (rank 6). Reconstruction must fail.
     EXPECT_FALSE(graph::relative_pose_measurement_from_linearization(lin_full).has_value());
+}
+
+// The joint gradient must survive the projection: a binary factor linearized
+// with non-zero b0/b1 (frozen correspondences at a shifted pose) converts into
+// a chain factor with the same energy model 1/2 r^T Omega r + g^T r, so the
+// Hessian AND the gradient both match before/after the conversion.
+TEST(GraphRelativePoseInfoTest, ProjectsGradientAndConvertedFactorMatches) {
+    const Eigen::Isometry3f T_src = test_pose(0.3f, -0.2f, 0.1f, 0.2f);
+    const Eigen::Isometry3f T_tgt = test_pose(0.8f, -0.1f, -0.2f, -0.15f);
+
+    Eigen::Matrix<float, 6, 6> omega = Eigen::Matrix<float, 6, 6>::Zero();
+    omega.diagonal() << 1e4f, 2e3f, 5e3f, 7e2f, 4e4f, 9e2f;
+
+    Eigen::Matrix<float, 6, 1> g;
+    g << 0.4f, -1.5f, 2.0f, 0.1f, -0.3f, 0.8f;
+
+    const auto lin = make_joint_linearization(T_src, T_tgt, omega, g);
+    const auto m = graph::relative_pose_measurement_from_linearization(lin);
+    ASSERT_TRUE(m.has_value());
+
+    EXPECT_LT((m->information - omega).norm(), 1e-4f * omega.norm());
+    EXPECT_LT((m->gradient - g).norm() / std::max(1.0f, g.norm()), 1e-4f);
+    EXPECT_TRUE(m->G.matrix().isApprox((T_src.inverse() * T_tgt).matrix(), 1e-6f));
+
+    // The converted chain factor must reproduce the binary's joint model:
+    // with nodes at the snapshot, r = 0, so b = J^T g and H = J^T Omega J.
+    auto queue = make_queue();
+    graph::SlidingWindow window(4);
+    const graph::NodeId id0 = window.add_node(T_src, 0.0);
+    const graph::NodeId id1 = window.add_node(T_tgt, 1.0);
+    window.add_factor(std::make_shared<graph::RelativePoseFactor>(
+        id0, window.get_node(id0), id1, window.get_node(id1), m->G, m->information, m->gradient));
+
+    auto& factor = *std::dynamic_pointer_cast<graph::RelativePoseFactor>(window.factors().front());
+    const auto lin_chain = factor.linearize(queue);
+    const Eigen::Matrix<float, 6, 12> J = relative_jacobian(T_src, T_tgt);
+    // The chain factor uses the corrected Jr(r) Jacobian, but at the snapshot
+    // r = 0 so Jr = I and both Jacobians coincide.
+    EXPECT_LT((lin_chain.H00 - J.block<6, 6>(0, 0).transpose() * omega * J.block<6, 6>(0, 0)).norm(),
+              1e-4f * lin_chain.H00.norm());
+    EXPECT_LT((lin_chain.H11 - J.block<6, 6>(0, 6).transpose() * omega * J.block<6, 6>(0, 6)).norm(),
+              1e-4f * lin_chain.H11.norm());
+    EXPECT_LT((lin_chain.b0 - J.block<6, 6>(0, 0).transpose() * g).norm() /
+                  std::max(1.0f, lin_chain.b0.norm()),
+              1e-4f);
+    EXPECT_LT((lin_chain.b1 - J.block<6, 6>(0, 6).transpose() * g).norm() /
+                  std::max(1.0f, lin_chain.b1.norm()),
+              1e-4f);
+}
+
+// A gradient with content outside the relative-pose subspace (e.g. an
+// absolute-pose prior mixed into the binary factor) must be rejected, exactly
+// like the Hessian case, instead of silently corrupting the chain.
+TEST(GraphRelativePoseInfoTest, RejectsOffSubspaceGradient) {
+    const Eigen::Isometry3f T_src = test_pose(0.2f, 0.0f, 0.1f, 0.1f);
+    const Eigen::Isometry3f T_tgt = test_pose(0.5f, 0.2f, 0.0f, -0.1f);
+
+    auto lin = make_joint_linearization(T_src, T_tgt, Eigen::Matrix<float, 6, 6>::Identity(),
+                                        Eigen::Matrix<float, 6, 1>::Ones());
+    lin.b0(0, 0) += 5.0f;  // break the b_joint = J^T g relation
+    EXPECT_FALSE(graph::relative_pose_measurement_from_linearization(lin).has_value());
+}
+
+// The marginalization prior must transport its cached Schur model into the
+// current right-tangent: with e = Log(T_lin^-1 T) and right perturbations,
+// dE/ddelta = Jr(e)^T (H_prior e + b_prior). The gradient must match numerical
+// differentiation at displaced poses — the Euclidean rule (Jr = I) fails here
+// — and the transported Hessian must stay symmetric and reduce to H_prior /
+// b_prior exactly at the linearization poses.
+TEST(MarginalizationPriorTangentTest, GradientMatchesNumericalAtDisplacedPoses) {
+    std::mt19937 gen(42);
+    std::normal_distribution<float> ndist(0.0f, 1.0f);
+
+    for (int trial = 0; trial < 4; ++trial) {
+        graph::MarginalizationPrior prior;
+        const size_t n = 2;
+        prior.node_ids = {10, 20};
+
+        // Random SPD prior Hessian.
+        Eigen::MatrixXf M = Eigen::MatrixXf::Zero(6 * n, 6 * n);
+        for (Eigen::Index i = 0; i < M.rows(); ++i) {
+            for (Eigen::Index j = 0; j <= i; ++j) {
+                M(i, j) = ndist(gen);
+            }
+        }
+        prior.H_prior = M.transpose() * M + 1e-2f * Eigen::MatrixXf::Identity(6 * n, 6 * n);
+        prior.b_prior = Eigen::VectorXf::Zero(6 * n);
+        for (Eigen::Index i = 0; i < prior.b_prior.size(); ++i) prior.b_prior(i) = ndist(gen);
+
+        for (size_t i = 0; i < n; ++i) {
+            prior.linearization_poses.push_back(random_pose(gen, 1.0f, 0.3f));
+        }
+        std::vector<Eigen::Isometry3f> poses;
+        for (size_t i = 0; i < n; ++i) {
+            poses.push_back(prior.linearization_poses[i] * random_pose(gen, 0.8f, 0.4f));
+        }
+        ASSERT_TRUE(prior.is_valid());
+
+        const graph::MarginalizationPrior::PriorContribution exact = prior.evaluate(poses);
+
+        // Numerical gradient wrt right perturbations of each current pose.
+        const float eps = 1e-3f;
+        for (size_t i = 0; i < n; ++i) {
+            Eigen::Matrix<float, 6, 1> grad_num = Eigen::Matrix<float, 6, 1>::Zero();
+            for (int k = 0; k < 6; ++k) {
+                Eigen::Matrix<float, 6, 1> d = Eigen::Matrix<float, 6, 1>::Zero();
+                d(k) = eps;
+                auto perturbed = poses;
+                perturbed[i] = rright(poses[i], d);
+                const float e_plus = prior.evaluate(perturbed).error;
+                d(k) = -eps;
+                perturbed[i] = rright(poses[i], d);
+                const float e_minus = prior.evaluate(perturbed).error;
+                grad_num(k) = (e_plus - e_minus) / (2 * eps);
+            }
+            const Eigen::Matrix<float, 6, 1> grad_exact = exact.b.segment<6>(6 * i);
+            EXPECT_LT((grad_num - grad_exact).norm() / std::max(1.0f, grad_num.norm()), 1e-2f)
+                << "trial " << trial << " node " << i;
+        }
+
+        // Symmetry check on the transported Hessian (random SPD in, so the
+        // transport must keep a symmetric PSD-like shape, symmetric in
+        // particular).
+        const Eigen::MatrixXf asym = exact.H - exact.H.transpose();
+        EXPECT_LT(asym.norm(), 1e-5f * exact.H.norm()) << "trial " << trial;
+
+        // Degenerate case: at the linearization poses the transport is the
+        // identity (A = Jr(0) = I), so the model must equal H_prior / b_prior
+        // exactly.
+        std::vector<Eigen::Isometry3f> at_lin = prior.linearization_poses;
+        const graph::MarginalizationPrior::PriorContribution start = prior.evaluate(at_lin);
+        EXPECT_LT((start.H - prior.H_prior).norm(), 1e-5f * prior.H_prior.norm());
+        EXPECT_LT((start.b - prior.b_prior).norm(), 1e-5f * std::max(1.0f, prior.b_prior.norm()));
+    }
 }
 
 // G and Omega must come from the same linearization snapshot (the cached

@@ -315,31 +315,38 @@ private:
 
             // When a factor reuses a cached (delayed) linearization, b0/b1 are stale
             // at the current poses. Keep the Jacobians frozen but refresh the gradient
-            // with the linear-model correction g = b + H * [ds; dt], where ds/dt is the
-            // pose change since the linearization point. Without this, stale gradients
-            // make Gauss-Newton stall instead of converging.
-            Eigen::Matrix<float, 6, 1> g0 = lin.b0;
-            Eigen::Matrix<float, 6, 1> g1 = lin.b1;
+            // with the linear-model correction. The cached quadratic lives in
+            // offset-from-linearization coordinates o = Log(T_lin^-1 T); with a
+            // right perturbation the offset moves as o(delta) = o + Jr(o) delta
+            // (BCH; Jr = Jl(-o)^-1), so the gradient in the update's tangent is
+            // g = Jr(o)^T (H o + b), not the plain H o + b. Without both the offset
+            // correction and the tangent transport, stale gradients make
+            // Gauss-Newton stall instead of converging.
+            Eigen::Matrix<float, 6, 1> q0 = lin.b0;
+            Eigen::Matrix<float, 6, 1> q1 = lin.b1;
             const Eigen::Isometry3f& src_lin = lin.source_linearization_pose;
-            const Eigen::Matrix<float, 6, 1> ds = eigen_utils::lie::se3_log(
-                src_lin.inverse() * window.get_node(sid)->pose);
+            const Eigen::Matrix<float, 6, 1> ds =
+                eigen_utils::lie::se3_log(src_lin.inverse() * window.get_node(sid)->pose);
             if (ds.norm() > 0.0f) {
-                g0 += lin.H00 * ds;
+                q0 += lin.H00 * ds;
                 if (has_target) {
-                    g1 += lin.H01.transpose() * ds;
+                    q1 += lin.H01.transpose() * ds;
                 }
             }
+            const Eigen::Matrix<float, 6, 6> U_s = eigen_utils::lie::se3_right_jacobian(ds);
             if (has_target) {
                 int ti = idx.at(tid);
-                const Eigen::Matrix<float, 6, 1> dt = eigen_utils::lie::se3_log(
-                    lin.target_linearization_pose.inverse() * window.get_node(tid)->pose);
+                const Eigen::Matrix<float, 6, 1> dt =
+                    eigen_utils::lie::se3_log(lin.target_linearization_pose.inverse() *
+                                              window.get_node(tid)->pose);
                 if (dt.norm() > 0.0f) {
-                    g0 += lin.H01 * dt;
-                    g1 += lin.H11 * dt;
+                    q0 += lin.H01 * dt;
+                    q1 += lin.H11 * dt;
                 }
-                sys.b.segment<6>(6 * ti) += g1;
+                const Eigen::Matrix<float, 6, 6> U_t = eigen_utils::lie::se3_right_jacobian(dt);
+                sys.b.segment<6>(6 * ti) += U_t.transpose() * q1;
             }
-            sys.b.segment<6>(6 * si) += g0;
+            sys.b.segment<6>(6 * si) += U_s.transpose() * q0;
         }
 
         const auto& prior = window.prior();
