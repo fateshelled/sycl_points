@@ -226,13 +226,26 @@ public:
     /// @brief Evaluate a trial relative pose with the correspondences cached by
     ///        the most recent linearize() call. This deliberately skips KNN so
     ///        LM compares current and trial costs on the same objective.
-    /// @note The existing binary reduction is reused for now. It also computes
-    ///       H/b, but performs no neighbour search or correspondence mutation.
     std::pair<float, uint32_t> compute_error_frozen(const PointCloudShared& source,
                                                     const Eigen::Matrix4f& T_src,
                                                     const PointCloudShared& target,
                                                     const Eigen::Matrix4f& T_tgt,
                                                     float scale = 0.0f) const {
+        shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
+        shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
+        auto events = compute_error_frozen_async(source, T_src, target, T_tgt, error, inlier, scale);
+        events.wait_and_throw();
+        return {error[0], inlier[0]};
+    }
+
+    /// @brief Submit the frozen-correspondence objective-only reduction. Unlike
+    ///        linearize_async(), this computes no Jacobians, Hessian blocks, or
+    ///        gradients. The caller keeps the result buffers alive and waits.
+    sycl_utils::events compute_error_frozen_async(
+        const PointCloudShared& source, const Eigen::Matrix4f& T_src,
+        const PointCloudShared& target, const Eigen::Matrix4f& T_tgt,
+        shared_vector<float>& error, shared_vector<uint32_t>& inlier,
+        float scale = 0.0f) const {
         if (!has_cached_correspondences_) {
             throw std::logic_error(
                 "[BinaryGicpLinearizer::compute_error_frozen] linearize must be called first");
@@ -243,16 +256,121 @@ public:
             Eigen::Isometry3f(Eigen::Isometry3f(Eigen::Matrix4f(T_tgt).inverse()) *
                               Eigen::Matrix4f(T_src))
                 .matrix());
-        auto events = this->dispatch([&]<registration::RegType reg, robust::RobustLossType loss>() {
-            return this->linearize_async<reg, loss>(source, target, T_src, T_tgt, T_rel,
-                                                    robust_scale, {});
-        });
-        events.wait_and_throw();
-        const auto result = this->device_->toCPU(0);
-        return {result.error, result.inlier};
+        error[0] = 0.0f;
+        inlier[0] = 0;
+        return this->compute_error_async(source, target, T_rel, robust_scale, error, inlier);
     }
 
 private:
+    sycl_utils::events compute_error_async(
+        const PointCloudShared& source, const PointCloudShared& target,
+        const std::array<sycl::float4, 4>& T_rel_v, float robust_scale,
+        shared_vector<float>& error, shared_vector<uint32_t>& inlier) const {
+        sycl_utils::events events;
+        events += this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = source.size();
+            const size_t work_group_size =
+                std::min(this->queue_.get_work_group_size_for_parallel_reduction(), size_t{64});
+            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+
+            const auto source_ptr = source.points_ptr();
+            const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
+            const auto target_ptr = target.points_ptr();
+            const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
+            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+            const float max_corr_dist_squared =
+                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
+            const float rotation_constraint_weight = this->params_.rotation_constraint.weight;
+            const float rotation_robust_scale =
+                this->params_.rotation_constraint.robust.default_scale;
+            const auto reg_type = this->params_.reg_type;
+            const auto loss_type = this->params_.robust.type;
+
+            auto sum_error = sycl::reduction(error.data(), sycl::plus<float>());
+            auto sum_inlier = sycl::reduction(inlier.data(), sycl::plus<uint32_t>());
+            h.parallel_for(
+                sycl::nd_range<1>(global_size, work_group_size), sum_error, sum_inlier,
+                [=](sycl::nd_item<1> item, auto& aerror, auto& ainlier) {
+                    const size_t index = item.get_global_id(0);
+                    if (index >= N || neighbors_distances_ptr[index] > max_corr_dist_squared) return;
+
+                    const auto target_idx = neighbors_index_ptr[index];
+                    const auto source_cov =
+                        source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
+                    const auto target_cov =
+                        target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
+                    const auto target_normal =
+                        target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    float unused_genz_weight = 1.0f;
+                    float squared_error = 0.0f;
+                    switch (reg_type) {
+                        case registration::RegType::GICP:
+                            squared_error = registration::kernel::calculate_geometry_error<
+                                registration::RegType::GICP>(
+                                T_rel_v, source_ptr[index], source_cov, target_ptr[target_idx],
+                                target_cov, target_normal, 1.0f, unused_genz_weight);
+                            break;
+                        case registration::RegType::POINT_TO_POINT:
+                            squared_error = registration::kernel::calculate_geometry_error<
+                                registration::RegType::POINT_TO_POINT>(
+                                T_rel_v, source_ptr[index], source_cov, target_ptr[target_idx],
+                                target_cov, target_normal, 1.0f, unused_genz_weight);
+                            break;
+                        case registration::RegType::POINT_TO_PLANE:
+                            squared_error = registration::kernel::calculate_geometry_error<
+                                registration::RegType::POINT_TO_PLANE>(
+                                T_rel_v, source_ptr[index], source_cov, target_ptr[target_idx],
+                                target_cov, target_normal, 1.0f, unused_genz_weight);
+                            break;
+                        case registration::RegType::POINT_TO_DISTRIBUTION:
+                            squared_error = registration::kernel::calculate_geometry_error<
+                                registration::RegType::POINT_TO_DISTRIBUTION>(
+                                T_rel_v, source_ptr[index], source_cov, target_ptr[target_idx],
+                                target_cov, target_normal, 1.0f, unused_genz_weight);
+                            break;
+                        case registration::RegType::GENZ:
+                            break;  // rejected by validate_params() before submission
+                    }
+                    const float residual_norm =
+                        registration::kernel::residual_norm_from_squared_error(squared_error);
+                    auto robust_error = [](robust::RobustLossType type, float residual, float scale) {
+                        switch (type) {
+                            case robust::RobustLossType::NONE:
+                                return robust::kernel::compute_error<robust::RobustLossType::NONE>(residual, scale);
+                            case robust::RobustLossType::HUBER:
+                                return robust::kernel::compute_error<robust::RobustLossType::HUBER>(residual, scale);
+                            case robust::RobustLossType::TUKEY:
+                                return robust::kernel::compute_error<robust::RobustLossType::TUKEY>(residual, scale);
+                            case robust::RobustLossType::CAUCHY:
+                                return robust::kernel::compute_error<robust::RobustLossType::CAUCHY>(residual, scale);
+                            case robust::RobustLossType::GEMAN_MCCLURE:
+                                return robust::kernel::compute_error<robust::RobustLossType::GEMAN_MCCLURE>(residual,
+                                                                                                           scale);
+                        }
+                        return robust::kernel::compute_error<robust::RobustLossType::NONE>(residual, scale);
+                    };
+                    float total_error = robust_error(loss_type, residual_norm, robust_scale);
+
+                    if (rotation_constraint_enable) {
+                        const float squared_error_rot =
+                            registration::kernel::calculate_rotation_constraint_error(
+                                source_cov, target_cov, T_rel_v);
+                        const float residual_norm_rot =
+                            registration::kernel::residual_norm_from_squared_error(squared_error_rot);
+                        total_error += rotation_constraint_weight *
+                                       robust_error(loss_type, residual_norm_rot,
+                                                    rotation_robust_scale);
+                    }
+                    aerror += total_error;
+                    ++ainlier;
+                });
+        });
+        return events;
+    }
+
     template <registration::RegType reg, robust::RobustLossType loss>
     sycl_utils::events linearize_async(const PointCloudShared& source, const PointCloudShared& target,
                                        const Eigen::Matrix4f& T_src, const Eigen::Matrix4f& T_tgt,

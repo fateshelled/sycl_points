@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <functional>
 #include <optional>
 
 #include "sycl_points/algorithms/graph/pose_node.hpp"
@@ -36,6 +37,15 @@ struct RelativePoseMeasurement {
     Eigen::Matrix<float, 6, 1> gradient = Eigen::Matrix<float, 6, 1>::Zero();
 };
 
+/// @brief A submitted factor objective evaluation. GPU factors return pending
+///        events and a non-blocking collector; host factors use the default
+///        immediate implementation. This lets GraphSolver submit every factor
+///        before performing one aggregate wait.
+struct FactorErrorEvaluation {
+    sycl_utils::events events;
+    std::function<std::pair<float, uint32_t>()> collect;
+};
+
 /// @brief Abstract base for all sliding-window graph factors (point-cloud GICP
 ///        factors, host-only chain relatives, and test mocks alike).
 ///
@@ -61,6 +71,12 @@ public:
     ///        first linearization is a programming error.
     virtual std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f& src_pose,
                                                       const Eigen::Isometry3f& tgt_pose) const = 0;
+
+    virtual FactorErrorEvaluation compute_error_async(const Eigen::Isometry3f& src_pose,
+                                                       const Eigen::Isometry3f& tgt_pose) const {
+        const auto result = compute_error(src_pose, tgt_pose);
+        return {sycl_utils::events{}, [result]() { return result; }};
+    }
 
     /// @brief IDs of the two connected nodes. For a unary factor the target
     ///        id is INVALID_NODE_ID (fixed target).
@@ -106,12 +122,18 @@ public:
                                    Eigen::Isometry3f::Identity(),
                                    relinearize_rotation_thresh,
                                    relinearize_translation_thresh)) {
+            last_get_relinearized_ = false;
             return *cached_lin_;
         }
         cached_lin_ = this->linearize(queue, scale_now(ladder_scale));
         last_scale_ = scale_now(ladder_scale);
+        last_get_relinearized_ = true;
         return *cached_lin_;
     }
+
+    /// @brief Whether the most recent get_linearization() call refreshed this
+    ///        factor rather than returning its cached model.
+    bool last_get_relinearized() const { return last_get_relinearized_; }
 
     /// @brief Drop any cached linearization so the next get_linearization re-computes.
     virtual void clear_cache() { cached_lin_.reset(); }
@@ -159,6 +181,7 @@ private:
     mutable std::optional<FactorLinearization> cached_lin_;
     bool annealing_ = false;        ///< factors opt in via begin_annealing()
     bool force_relin_on_scale_ = false;  ///< relinearize per ladder rung (robust force mode)
+    bool last_get_relinearized_ = false; ///< result of the most recent cache lookup
     float last_scale_ = 0.0f;       ///< scale used by the most recent linearize()
     float frozen_scale_ = 0.0f;     ///< locked scale after freeze(); 0 = default_scale
 };

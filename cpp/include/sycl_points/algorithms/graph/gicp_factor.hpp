@@ -30,7 +30,9 @@ public:
           source_node_(std::move(source_node)),
           target_(std::move(target)),
           target_knn_(std::move(target_knn)),
-          registration_(queue, params) {
+          registration_(queue, params),
+          error_(std::make_shared<shared_vector<float>>(1, 0.0f, *queue.ptr)),
+          inlier_(std::make_shared<shared_vector<uint32_t>>(1, 0, *queue.ptr)) {
         begin_annealing();
     }
 
@@ -55,6 +57,13 @@ public:
 
     std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f& src_pose,
                                              const Eigen::Isometry3f&) const override {
+        auto evaluation = compute_error_async(src_pose, Eigen::Isometry3f::Identity());
+        evaluation.events.wait_and_throw();
+        return evaluation.collect();
+    }
+
+    FactorErrorEvaluation compute_error_async(const Eigen::Isometry3f& src_pose,
+                                               const Eigen::Isometry3f&) const override {
         if (cached_linearization() == nullptr) {
             throw std::logic_error("[UnaryGicpFactor::compute_error] linearize must be called first");
         }
@@ -62,9 +71,15 @@ public:
         if (last_linearization_scale() > 0.0f) {
             opts.robust_scale = last_linearization_scale();
         }
-        const auto [err, inlier] =
-            registration_.compute_error_frozen(*source_node_->cloud, *target_, src_pose.matrix(), opts);
-        return {err, inlier};
+        auto events = registration_.compute_error_frozen_async(
+            *source_node_->cloud, *target_, src_pose.matrix(), *error_, *inlier_, opts);
+        events.keep_alive.push_back(error_);
+        events.keep_alive.push_back(inlier_);
+        const auto error = error_;
+        const auto inlier = inlier_;
+        return {std::move(events), [error, inlier]() {
+                    return std::pair<float, uint32_t>{(*error)[0], (*inlier)[0]};
+                }};
     }
 
     std::pair<NodeId, NodeId> node_ids() const override { return {source_id_, INVALID_NODE_ID}; }
@@ -90,6 +105,8 @@ private:
     std::shared_ptr<const PointCloudShared> target_;
     std::shared_ptr<const knn::KNNBase> target_knn_;
     registration::Registration registration_;
+    mutable std::shared_ptr<shared_vector<float>> error_;
+    mutable std::shared_ptr<shared_vector<uint32_t>> inlier_;
 };
 
 /// @brief Binary GICP factor: two pose nodes against each other (current <-> window_i).
@@ -107,7 +124,9 @@ public:
           source_node_(std::move(source_node)),
           target_id_(target_id),
           target_node_(std::move(target_node)),
-          linearizer_(queue, params) {
+          linearizer_(queue, params),
+          error_(std::make_shared<shared_vector<float>>(1, 0.0f, *queue.ptr)),
+          inlier_(std::make_shared<shared_vector<uint32_t>>(1, 0, *queue.ptr)) {
         begin_annealing();
     }
 
@@ -126,11 +145,25 @@ public:
 
     std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f& src_pose,
                                              const Eigen::Isometry3f& tgt_pose) const override {
+        auto evaluation = compute_error_async(src_pose, tgt_pose);
+        evaluation.events.wait_and_throw();
+        return evaluation.collect();
+    }
+
+    FactorErrorEvaluation compute_error_async(const Eigen::Isometry3f& src_pose,
+                                               const Eigen::Isometry3f& tgt_pose) const override {
         const Eigen::Matrix4f T_src = src_pose.matrix();
         const Eigen::Matrix4f T_tgt = tgt_pose.matrix();
-        return linearizer_.compute_error_frozen(*source_node_->cloud, T_src,
-                                                *target_node_->cloud, T_tgt,
-                                                last_linearization_scale());
+        auto events = linearizer_.compute_error_frozen_async(
+            *source_node_->cloud, T_src, *target_node_->cloud, T_tgt,
+            *error_, *inlier_, last_linearization_scale());
+        events.keep_alive.push_back(error_);
+        events.keep_alive.push_back(inlier_);
+        const auto error = error_;
+        const auto inlier = inlier_;
+        return {std::move(events), [error, inlier]() {
+                    return std::pair<float, uint32_t>{(*error)[0], (*inlier)[0]};
+                }};
     }
 
     std::pair<NodeId, NodeId> node_ids() const override { return {source_id_, target_id_}; }
@@ -168,6 +201,8 @@ private:
     NodeId target_id_ = INVALID_NODE_ID;
     std::shared_ptr<PoseNode> target_node_;
     BinaryGicpLinearizer linearizer_;
+    mutable std::shared_ptr<shared_vector<float>> error_;
+    mutable std::shared_ptr<shared_vector<uint32_t>> inlier_;
 };
 
 }  // namespace graph

@@ -194,7 +194,9 @@ public:
 
             if (params_.optimization_method == registration::OptimizationMethod::LEVENBERG_MARQUARDT) {
                 const auto current_poses = collect_poses(window, sys.node_ids);
-                const auto current_eval = evaluate_objective(window, sys.node_ids, current_poses);
+                const auto current_eval = evaluate_objective(
+                    window, sys.node_ids, current_poses, &sys.stale_factors,
+                    sys.current_error_base, sys.current_inliers_base, false);
                 result.final_error = current_eval.error;
                 if (!current_eval.finite) {
                     result.status = Status::NON_FINITE_OBJECTIVE;
@@ -403,6 +405,9 @@ private:
         float error = 0.0f;
         size_t inliers = 0;
         std::vector<NodeId> node_ids;
+        float current_error_base = 0.0f;
+        size_t current_inliers_base = 0;
+        std::vector<GraphFactorBase::Ptr> stale_factors;
     };
 
     struct ObjectiveEvaluation {
@@ -434,7 +439,11 @@ private:
 
     ObjectiveEvaluation evaluate_objective(const SlidingWindow& window,
                                             const std::vector<NodeId>& node_ids,
-                                            const std::vector<Eigen::Isometry3f>& poses) const {
+                                            const std::vector<Eigen::Isometry3f>& poses,
+                                            const std::vector<GraphFactorBase::Ptr>* factors = nullptr,
+                                            float base_error = 0.0f,
+                                            size_t base_inliers = 0,
+                                            bool include_prior = true) const {
         auto pose_of = [&](NodeId id) -> const Eigen::Isometry3f& {
             const auto it = std::find(node_ids.begin(), node_ids.end(), id);
             if (it == node_ids.end()) throw std::logic_error("[GraphSolver] factor node not active");
@@ -442,11 +451,27 @@ private:
         };
 
         ObjectiveEvaluation eval;
+        eval.error = base_error;
+        eval.inliers = base_inliers;
+        eval.finite = std::isfinite(base_error);
+        if (!eval.finite) return eval;
         const Eigen::Isometry3f fixed_target = Eigen::Isometry3f::Identity();
-        for (const auto& factor : window.factors()) {
+        const auto& selected_factors = factors ? *factors : window.factors();
+        std::vector<FactorErrorEvaluation> pending;
+        pending.reserve(selected_factors.size());
+        sycl_utils::events all_events;
+        for (const auto& factor : selected_factors) {
             const auto [sid, tid] = factor->node_ids();
-            const auto [error, inlier] =
-                factor->compute_error(pose_of(sid), tid == INVALID_NODE_ID ? fixed_target : pose_of(tid));
+            pending.push_back(factor->compute_error_async(
+                pose_of(sid), tid == INVALID_NODE_ID ? fixed_target : pose_of(tid)));
+            all_events += pending.back().events;
+        }
+        // Every GPU factor is now in flight. Waiting here, once per objective,
+        // allows independent queues/factors to overlap instead of serializing
+        // submit -> wait -> submit -> wait in the factor loop.
+        all_events.wait_and_throw();
+        for (const auto& evaluation : pending) {
+            const auto [error, inlier] = evaluation.collect();
             eval.error += error;
             eval.inliers += inlier;
             if (!std::isfinite(error) || !std::isfinite(eval.error)) {
@@ -456,7 +481,7 @@ private:
         }
 
         const auto& prior = window.prior();
-        if (prior.is_valid()) {
+        if (include_prior && prior.is_valid()) {
             std::vector<Eigen::Isometry3f> prior_poses;
             prior_poses.reserve(prior.node_ids.size());
             for (const NodeId id : prior.node_ids) prior_poses.push_back(pose_of(id));
@@ -530,6 +555,12 @@ private:
             int si = idx.at(sid);
             sys.error += lin.error;
             sys.inliers += lin.inlier;
+            if (factor->last_get_relinearized()) {
+                sys.current_error_base += lin.error;
+                sys.current_inliers_base += lin.inlier;
+            } else {
+                sys.stale_factors.push_back(factor);
+            }
             bool has_target = tid != INVALID_NODE_ID && idx.count(tid);
 
             // Stale cached linearizations live in offset-from-linearization
@@ -602,6 +633,7 @@ private:
                     }
                 }
                 sys.error += c.error;
+                sys.current_error_base += c.error;
             }
         }
         return sys;

@@ -357,6 +357,70 @@ private:
     float target_x_;
 };
 
+struct ObjectiveProbeState {
+    size_t expected_batch_size = 1;
+    size_t submitted = 0;
+    size_t collected = 0;
+    bool collected_before_batch_complete = false;
+};
+
+// Host-only async probe. Its collector records whether the solver collected a
+// result before every factor in the objective had been submitted.
+class ObjectiveProbeFactor : public graph::GraphFactorBase {
+public:
+    ObjectiveProbeFactor(std::shared_ptr<graph::PoseNode> node,
+                         std::shared_ptr<ObjectiveProbeState> state,
+                         float target_x, float weight = 1.0f)
+        : node_(std::move(node)), state_(std::move(state)), target_x_(target_x), weight_(weight) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        const float r = node_->pose.translation().x() - target_x_;
+        graph::FactorLinearization lin;
+        lin.source_linearization_pose = node_->pose;
+        lin.H00 = weight_ * Eigen::Matrix<float, 6, 6>::Identity();
+        lin.b0.setZero();
+        lin.b0(3) = weight_ * r;
+        lin.error = 0.5f * weight_ * r * r;
+        lin.inlier = 1;
+        return lin;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f& pose,
+                                             const Eigen::Isometry3f&) const override {
+        const float r = pose.translation().x() - target_x_;
+        return {0.5f * weight_ * r * r, 1};
+    }
+
+    graph::FactorErrorEvaluation compute_error_async(
+        const Eigen::Isometry3f& pose, const Eigen::Isometry3f& target) const override {
+        ++state_->submitted;
+        const auto result = compute_error(pose, target);
+        const auto state = state_;
+        return {sycl_utils::events{}, [state, result]() {
+                    if (state->submitted < state->expected_batch_size) {
+                        state->collected_before_batch_complete = true;
+                    }
+                    ++state->collected;
+                    return result;
+                }};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {node_->id, graph::INVALID_NODE_ID};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&,
+                               float, float) const override {
+        return false;
+    }
+
+private:
+    std::shared_ptr<graph::PoseNode> node_;
+    std::shared_ptr<ObjectiveProbeState> state_;
+    float target_x_;
+    float weight_;
+};
+
 // Synthetic factor with a fixed joint linearization: exercises the
 // relative-pose measurement projection without GPU point clouds.
 class SyntheticJointFactor : public graph::GraphFactorBase {
@@ -731,6 +795,48 @@ TEST_F(GraphSolverTest, LMIncreasesLambdaUntilStepIsAccepted) {
     EXPECT_LT(result.final_error, 0.5f);
 }
 
+TEST_F(GraphSolverTest, LMBatchesFactorObjectivesAndReusesFreshCurrentError) {
+    graph::SlidingWindow window(5);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    auto state = std::make_shared<ObjectiveProbeState>();
+    state->expected_batch_size = 2;
+    window.add_factor(std::make_shared<ObjectiveProbeFactor>(window.get_node(id), state, 0.2f));
+    window.add_factor(std::make_shared<ObjectiveProbeFactor>(window.get_node(id), state, 0.2f));
+
+    graph::GraphSolverParams params;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.max_iterations = 1;
+    params.lm.max_inner_iterations = 1;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    // The freshly linearized current cost comes from FactorLinearization, so
+    // only the two trial costs are submitted (not current + trial = four).
+    EXPECT_EQ(state->submitted, 2u);
+    EXPECT_EQ(state->collected, 2u);
+    EXPECT_FALSE(state->collected_before_batch_complete);
+}
+
+TEST_F(GraphSolverTest, LMEvaluatesOnlyStaleFactorsForCurrentObjective) {
+    graph::SlidingWindow window(5);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    auto state = std::make_shared<ObjectiveProbeState>();
+    auto factor = std::make_shared<ObjectiveProbeFactor>(window.get_node(id), state, 0.2f);
+    window.add_factor(factor);
+    factor->get_linearization(queue, 1.0f, 1.0f);  // make assemble() take the cache-hit path
+
+    graph::GraphSolverParams params;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.max_iterations = 1;
+    params.lm.max_inner_iterations = 1;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    // One exact evaluation for the stale current pose, one for the trial.
+    EXPECT_EQ(state->submitted, 2u);
+    EXPECT_EQ(state->collected, 2u);
+}
+
 TEST_F(GraphSolverTest, AnchorConstrainsNode) {
     graph::SlidingWindow window(5);
     const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
@@ -1008,6 +1114,31 @@ TEST_F(GraphGicpTest, LMBinaryRecoversKnownRelativeTransformWithFrozenCorrespond
     EXPECT_GT(result.accepted_steps, 0u);
     expect_pose_near(window.get_node(source_id)->pose, T_gt, 0.05f, 0.05f);
     expect_pose_near(window.get_node(target_id)->pose, Eigen::Isometry3f::Identity(), 0.01f, 0.01f);
+}
+
+TEST_F(GraphGicpTest, BinaryErrorOnlyKernelMatchesCachedLinearizationObjective) {
+    std::mt19937 gen(45);
+    auto target = build_bundle(make_cube_cloud(queue, 1200, half, gen));
+    Eigen::Isometry3f source_pose = Eigen::Isometry3f::Identity();
+    source_pose.translate(Eigen::Vector3f(0.08f, -0.02f, 0.01f));
+    source_pose.rotate(Eigen::AngleAxisf(0.025f, Eigen::Vector3f::UnitZ()));
+    auto source = build_bundle(transform_cloud(queue, *target.cloud, source_pose.inverse()));
+
+    graph::SlidingWindow window(5);
+    const graph::NodeId target_id = window.add_node(
+        Eigen::Isometry3f::Identity(), 0.0, target.cloud, target.knn);
+    const graph::NodeId source_id = window.add_node(
+        source_pose, 1.0, source.cloud, source.knn);
+    auto factor = std::make_shared<graph::BinaryGicpFactor>(
+        queue, source_id, window.get_node(source_id), target_id,
+        window.get_node(target_id), gicp_params());
+
+    const auto linearized = factor->get_linearization(queue, 1.0f, 1.0f);
+    const auto [error, inlier] = factor->compute_error(
+        window.get_node(source_id)->pose, window.get_node(target_id)->pose);
+
+    EXPECT_NEAR(error, linearized.error, 1e-4f * std::max(1.0f, linearized.error));
+    EXPECT_EQ(inlier, linearized.inlier);
 }
 
 // Marginalization must keep the robust weights the optimizer actually adopted:
