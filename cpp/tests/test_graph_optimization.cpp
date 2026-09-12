@@ -315,6 +315,48 @@ private:
     float b_scale_;
 };
 
+// Deliberately mismatched quadratic model used to exercise LM acceptance.
+// The linear system proposes a fixed +x step whose size shrinks with lambda,
+// while compute_error() exposes the actual scalar objective around target_x.
+class LMTrialFactor : public graph::GraphFactorBase {
+public:
+    LMTrialFactor(std::shared_ptr<graph::PoseNode> node, float model_gradient,
+                  float target_x)
+        : node_(std::move(node)), model_gradient_(model_gradient), target_x_(target_x) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        graph::FactorLinearization lin;
+        lin.source_linearization_pose = node_->pose;
+        lin.H00.setIdentity();
+        lin.b0.setZero();
+        lin.b0(3) = model_gradient_;
+        const float r = node_->pose.translation().x() - target_x_;
+        lin.error = 0.5f * r * r;
+        lin.inlier = 1;
+        return lin;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f& pose,
+                                             const Eigen::Isometry3f&) const override {
+        const float r = pose.translation().x() - target_x_;
+        return {0.5f * r * r, 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {node_->id, graph::INVALID_NODE_ID};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&,
+                               float, float) const override {
+        return true;
+    }
+
+private:
+    std::shared_ptr<graph::PoseNode> node_;
+    float model_gradient_;
+    float target_x_;
+};
+
 // Synthetic factor with a fixed joint linearization: exercises the
 // relative-pose measurement projection without GPU point clouds.
 class SyntheticJointFactor : public graph::GraphFactorBase {
@@ -616,6 +658,79 @@ TEST_F(GraphSolverTest, ConvergesToAnchorTargets) {
     expect_pose_near(window.get_node(id2)->pose, t2, 1e-3f, 1e-3f);
 }
 
+TEST_F(GraphSolverTest, LMConvergesToAnchorTargets) {
+    graph::SlidingWindow window(5);
+    Eigen::Isometry3f target = Eigen::Isometry3f::Identity();
+    target.translate(Eigen::Vector3f(0.3f, -0.2f, 0.1f));
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id), target, 10.0f));
+
+    graph::GraphSolverParams params;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.lm.init_lambda = 1.0f;
+    params.lm.min_lambda = 1e-3f;
+    params.lm.max_lambda = 1e3f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_TRUE(result.converged);
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::CONVERGED);
+    EXPECT_GT(result.accepted_steps, 0u);
+    EXPECT_LT(result.final_error, 1e-7f);
+    expect_pose_near(window.get_node(id)->pose, target, 1e-3f, 1e-3f);
+}
+
+TEST_F(GraphSolverTest, LMRejectsWorseTrialsWithoutMutatingPose) {
+    graph::SlidingWindow window(5);
+    const Eigen::Isometry3f initial = Eigen::Isometry3f::Identity();
+    const graph::NodeId id = window.add_node(initial, 0.0);
+    // delta_x is positive, but the true objective is already minimized at x=0.
+    window.add_factor(std::make_shared<LMTrialFactor>(window.get_node(id), -1.0f, 0.0f));
+
+    graph::GraphSolverParams params;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.lm.max_inner_iterations = 3;
+    params.lm.init_lambda = 1.0f;
+    params.lm.lambda_factor = 2.0f;
+    params.lm.min_lambda = 0.1f;
+    params.lm.max_lambda = 8.0f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_FALSE(result.converged);
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::NO_PROGRESS);
+    EXPECT_EQ(result.accepted_steps, 0u);
+    EXPECT_EQ(result.rejected_steps, 3u);
+    EXPECT_FLOAT_EQ(result.final_lambda, 8.0f);
+    EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
+}
+
+TEST_F(GraphSolverTest, LMIncreasesLambdaUntilStepIsAccepted) {
+    graph::SlidingWindow window(5);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    // delta_x = 4 / (1 + lambda). It overshoots target x=1 until lambda=1.6.
+    window.add_factor(std::make_shared<LMTrialFactor>(window.get_node(id), -4.0f, 1.0f));
+
+    graph::GraphSolverParams params;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.max_iterations = 1;
+    params.lm.max_inner_iterations = 6;
+    params.lm.init_lambda = 0.1f;
+    params.lm.lambda_factor = 2.0f;
+    params.lm.min_lambda = 0.01f;
+    params.lm.max_lambda = 100.0f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::MAX_ITERATIONS);
+    EXPECT_EQ(result.accepted_steps, 1u);
+    EXPECT_EQ(result.rejected_steps, 4u);
+    EXPECT_EQ(result.inner_iterations, 5u);
+    EXPECT_NEAR(result.final_lambda, 0.8f, 1e-6f);
+    EXPECT_NEAR(window.get_node(id)->pose.translation().x(), 4.0f / 2.6f, 1e-5f);
+    EXPECT_LT(result.final_error, 0.5f);
+}
+
 TEST_F(GraphSolverTest, AnchorConstrainsNode) {
     graph::SlidingWindow window(5);
     const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
@@ -709,6 +824,37 @@ TEST_F(GraphSolverTest, SolvesDenseMarginalizationPrior) {
     expect_pose_near(window.get_node(id2)->pose, Eigen::Isometry3f::Identity(), 1e-3f, 1e-3f);
 }
 
+TEST_F(GraphSolverTest, LMIncludesMarginalizationPriorInAcceptance) {
+    graph::SlidingWindow window(1);
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    window.add_factor(std::make_shared<AnchorFactor>(
+        window.get_node(id0), Eigen::Isometry3f::Identity(), 100.0f));
+    window.add_factor(std::make_shared<BinaryAnchorFactor>(
+        window.get_node(id0), window.get_node(id1), 100.0f));
+    ASSERT_EQ(window.marginalize_oldest(queue).status,
+              graph::SlidingWindow::MarginalizationStatus::Success);
+    ASSERT_TRUE(window.prior().is_valid());
+
+    // Without the prior, lambda=2 proposes x=4/3 and reduces this factor's
+    // error. The marginalized anchor makes the total graph objective worse,
+    // so LM must reject every trial and leave the pose unchanged.
+    window.add_factor(std::make_shared<LMTrialFactor>(window.get_node(id1), -4.0f, 1.0f));
+    graph::GraphSolverParams params;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.lm.max_inner_iterations = 3;
+    params.lm.init_lambda = 1.0f;
+    params.lm.lambda_factor = 2.0f;
+    params.lm.min_lambda = 0.1f;
+    params.lm.max_lambda = 8.0f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::NO_PROGRESS);
+    EXPECT_EQ(result.accepted_steps, 0u);
+    EXPECT_NEAR(window.get_node(id1)->pose.translation().x(), 0.0f, 1e-7f);
+}
+
 TEST_F(GraphSolverTest, HonorsPerCallIterationLimit) {
     graph::SlidingWindow window(5);
     const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
@@ -734,6 +880,19 @@ TEST_F(GraphSolverTest, RejectsInvalidIterationAndRobustSettings) {
     params.max_iterations = 1;
     params.robust.enable = true;
     params.robust.levels = 0;
+    EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
+
+    params.robust.levels = 1;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.lm.max_inner_iterations = 0;
+    EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
+
+    params.lm.max_inner_iterations = 1;
+    params.lm.lambda_factor = 1.0f;
+    EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
+
+    params.lm.lambda_factor = 2.0f;
+    params.optimization_method = registration::OptimizationMethod::POWELL_DOGLEG;
     EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
 }
 
@@ -786,6 +945,69 @@ TEST_F(GraphGicpTest, UnaryRecoversKnownTransform) {
     EXPECT_TRUE(result.converged);
 
     expect_pose_near(window.get_node(id)->pose, T_gt, 0.05f, 0.05f);
+}
+
+TEST_F(GraphGicpTest, LMUnaryRecoversKnownTransformWithFrozenCorrespondences) {
+    std::mt19937 gen(43);
+    auto submap = make_cube_cloud(queue, n_points, half, gen);
+    auto submap_bundle = build_bundle(submap);
+
+    Eigen::Isometry3f T_gt = Eigen::Isometry3f::Identity();
+    T_gt.translate(Eigen::Vector3f(0.12f, -0.03f, 0.02f));
+    T_gt.rotate(Eigen::AngleAxisf(0.04f, Eigen::Vector3f::UnitZ()));
+    auto scan = build_bundle(transform_cloud(queue, *submap, T_gt.inverse()));
+
+    graph::SlidingWindow window(5);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0, scan.cloud, scan.knn);
+    auto params = gicp_params();
+    window.add_factor(std::make_shared<graph::UnaryGicpFactor>(
+        queue, id, window.get_node(id), submap_bundle.cloud, submap_bundle.knn, params));
+
+    graph::GraphSolverParams solver_params;
+    solver_params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    solver_params.lm.max_inner_iterations = 5;
+    solver_params.lm.init_lambda = 1.0f;
+    solver_params.lm.min_lambda = 1e-3f;
+    const auto result = graph::GraphSolver(queue, solver_params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_TRUE(result.converged);
+    EXPECT_GT(result.accepted_steps, 0u);
+    expect_pose_near(window.get_node(id)->pose, T_gt, 0.05f, 0.05f);
+}
+
+TEST_F(GraphGicpTest, LMBinaryRecoversKnownRelativeTransformWithFrozenCorrespondences) {
+    std::mt19937 gen(44);
+    auto target = build_bundle(make_cube_cloud(queue, n_points, half, gen));
+
+    Eigen::Isometry3f T_gt = Eigen::Isometry3f::Identity();
+    T_gt.translate(Eigen::Vector3f(0.1f, 0.02f, -0.01f));
+    T_gt.rotate(Eigen::AngleAxisf(0.03f, Eigen::Vector3f::UnitZ()));
+    auto source = build_bundle(transform_cloud(queue, *target.cloud, T_gt.inverse()));
+
+    graph::SlidingWindow window(5);
+    const graph::NodeId target_id = window.add_node(
+        Eigen::Isometry3f::Identity(), 0.0, target.cloud, target.knn);
+    const graph::NodeId source_id = window.add_node(
+        Eigen::Isometry3f::Identity(), 1.0, source.cloud, source.knn);
+    window.add_factor(std::make_shared<AnchorFactor>(
+        window.get_node(target_id), Eigen::Isometry3f::Identity(), 1e4f));
+    window.add_factor(std::make_shared<graph::BinaryGicpFactor>(
+        queue, source_id, window.get_node(source_id), target_id,
+        window.get_node(target_id), gicp_params()));
+
+    graph::GraphSolverParams solver_params;
+    solver_params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    solver_params.lm.max_inner_iterations = 5;
+    solver_params.lm.init_lambda = 1.0f;
+    solver_params.lm.min_lambda = 1e-3f;
+    const auto result = graph::GraphSolver(queue, solver_params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_TRUE(result.converged);
+    EXPECT_GT(result.accepted_steps, 0u);
+    expect_pose_near(window.get_node(source_id)->pose, T_gt, 0.05f, 0.05f);
+    expect_pose_near(window.get_node(target_id)->pose, Eigen::Isometry3f::Identity(), 0.01f, 0.01f);
 }
 
 // Marginalization must keep the robust weights the optimizer actually adopted:

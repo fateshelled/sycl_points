@@ -12,14 +12,18 @@
 
 #include "sycl_points/algorithms/graph/pose_node.hpp"
 #include "sycl_points/algorithms/graph/sliding_window.hpp"
+#include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
 namespace algorithms {
 namespace graph {
 
-/// @brief Gauss-Newton solver parameters for the local pose graph.
+/// @brief Nonlinear solver parameters for the local pose graph.
 struct GraphSolverParams {
+    registration::OptimizationMethod optimization_method =
+        registration::OptimizationMethod::GAUSS_NEWTON;
+    registration::RegistrationOptimizationParams::LevenbergMarquardt lm;
     size_t max_iterations = 10;
     float convergence_rotation = 1e-4f;      // [rad]
     float convergence_translation = 1e-4f;   // [m]
@@ -100,13 +104,19 @@ public:
         NON_FINITE_SYSTEM,
         DECOMPOSITION_FAILED,
         NON_FINITE_STEP,
+        NON_FINITE_OBJECTIVE,
         UNSTABLE_STEP,
+        NO_PROGRESS,
     };
 
     struct Result {
         bool converged = false;
         size_t iterations = 0;
+        size_t inner_iterations = 0;
+        size_t accepted_steps = 0;
+        size_t rejected_steps = 0;
         float final_error = 0.0f;
+        float final_lambda = 0.0f;
         Status status = Status::MAX_ITERATIONS;
 
         bool valid() const { return valid_status(status); }
@@ -118,7 +128,8 @@ public:
     ///        frame when this returns false.
     static bool valid_status(Status status) {
         return status != Status::NON_FINITE_SYSTEM && status != Status::DECOMPOSITION_FAILED &&
-               status != Status::NON_FINITE_STEP && status != Status::UNSTABLE_STEP;
+               status != Status::NON_FINITE_STEP && status != Status::NON_FINITE_OBJECTIVE &&
+               status != Status::UNSTABLE_STEP;
     }
 
     GraphSolver(const sycl_utils::DeviceQueue& queue,
@@ -135,6 +146,17 @@ public:
             !std::isfinite(params_.marginalization_lambda) || params_.marginalization_lambda <= 0.0f) {
             throw std::invalid_argument("[GraphSolver] invalid solver parameters");
         }
+        if (params_.optimization_method != registration::OptimizationMethod::GAUSS_NEWTON &&
+            params_.optimization_method != registration::OptimizationMethod::LEVENBERG_MARQUARDT) {
+            throw std::invalid_argument("[GraphSolver] unsupported optimization method");
+        }
+        if (params_.lm.max_inner_iterations == 0 || !std::isfinite(params_.lm.lambda_factor) ||
+            params_.lm.lambda_factor <= 1.0f || !std::isfinite(params_.lm.init_lambda) ||
+            !std::isfinite(params_.lm.min_lambda) || !std::isfinite(params_.lm.max_lambda) ||
+            params_.lm.min_lambda <= 0.0f || params_.lm.init_lambda < params_.lm.min_lambda ||
+            params_.lm.init_lambda > params_.lm.max_lambda) {
+            throw std::invalid_argument("[GraphSolver] invalid LM parameters");
+        }
         if (params_.robust.enable &&
             (params_.robust.levels == 0 || params_.robust.iters_per_level == 0 ||
              !std::isfinite(params_.robust.init_scale) || params_.robust.init_scale <= 0.0f ||
@@ -146,7 +168,7 @@ public:
 
     const GraphSolverParams& params() const { return params_; }
 
-    /// @brief Run Gauss-Newton iterations over the sliding window.
+    /// @brief Run the configured nonlinear optimizer over the sliding window.
     /// @param robust_scale_override When set, every iteration linearizes with
     ///        this fixed scale and the internal robust ladder (and its
     ///        ladder-done convergence gating) is bypassed: the caller drives
@@ -157,6 +179,10 @@ public:
                     std::optional<size_t> max_iterations_override = std::nullopt) {
         Result result;
         const size_t max_iterations = max_iterations_override.value_or(params_.max_iterations);
+        float lm_lambda = params_.lm.init_lambda;
+        result.final_lambda = params_.optimization_method == registration::OptimizationMethod::LEVENBERG_MARQUARDT
+                                  ? lm_lambda
+                                  : params_.solver_damping_lambda;
         for (size_t iter = 0; iter < max_iterations; ++iter) {
             auto sys = assemble(window, robust_scale_override.value_or(robust_ladder_scale(params_.robust, iter)));
 
@@ -164,6 +190,100 @@ public:
             if (!sys.H.allFinite() || !sys.b.allFinite() || !std::isfinite(sys.error)) {
                 result.status = Status::NON_FINITE_SYSTEM;
                 break;
+            }
+
+            if (params_.optimization_method == registration::OptimizationMethod::LEVENBERG_MARQUARDT) {
+                const auto current_poses = collect_poses(window, sys.node_ids);
+                const auto current_eval = evaluate_objective(window, sys.node_ids, current_poses);
+                result.final_error = current_eval.error;
+                if (!current_eval.finite) {
+                    result.status = Status::NON_FINITE_OBJECTIVE;
+                    break;
+                }
+
+                bool accepted = false;
+                bool saw_finite_trial = false;
+                bool saw_converged_rejected_trial = false;
+                bool converged = false;
+                float accepted_max_dt = 0.0f;
+                float accepted_max_dr = 0.0f;
+                Status failure = Status::DECOMPOSITION_FAILED;
+                for (size_t inner = 0; inner < params_.lm.max_inner_iterations; ++inner) {
+                    ++result.inner_iterations;
+                    Eigen::VectorXf delta;
+                    float max_dt = 0.0f;
+                    float max_dr = 0.0f;
+                    if (!solve_damped(sys, lm_lambda, delta, max_dt, max_dr, failure)) {
+                        ++result.rejected_steps;
+                    } else {
+                        auto trial_poses = current_poses;
+                        for (size_t i = 0; i < trial_poses.size(); ++i) {
+                            trial_poses[i] = Eigen::Isometry3f(
+                                trial_poses[i].matrix() *
+                                eigen_utils::lie::se3_exp(delta.segment<6>(6 * i)));
+                        }
+                        const auto trial_eval = evaluate_objective(window, sys.node_ids, trial_poses);
+                        if (trial_eval.finite) {
+                            saw_finite_trial = true;
+                            if (trial_eval.error <= current_eval.error) {
+                                apply_poses(window, sys.node_ids, trial_poses);
+                                result.final_error = trial_eval.error;
+                                result.accepted_steps++;
+                                accepted = true;
+                                accepted_max_dt = max_dt;
+                                accepted_max_dr = max_dr;
+                                converged = step_converged(delta, sys.node_ids.size());
+                                lm_lambda = std::clamp(lm_lambda / params_.lm.lambda_factor,
+                                                       params_.lm.min_lambda, params_.lm.max_lambda);
+                                break;
+                            }
+                            // At a local minimum, float noise can make every
+                            // non-zero trial microscopically worse. A rejected
+                            // step below the convergence thresholds proves no
+                            // meaningful update remains; keep the current pose
+                            // and report convergence without committing it.
+                            saw_converged_rejected_trial =
+                                saw_converged_rejected_trial ||
+                                step_converged(delta, sys.node_ids.size());
+                        } else {
+                            failure = Status::NON_FINITE_OBJECTIVE;
+                        }
+                        ++result.rejected_steps;
+                    }
+                    lm_lambda = std::clamp(lm_lambda * params_.lm.lambda_factor,
+                                           params_.lm.min_lambda, params_.lm.max_lambda);
+                }
+                result.final_lambda = lm_lambda;
+                result.iterations = iter + 1;
+                if (params_.verbose) {
+                    std::cout << "iter [" << iter << "] "
+                              << "error: " << result.final_error << ", "
+                              << "lambda: " << lm_lambda << ", "
+                              << "accepted: " << accepted << ", "
+                              << "dt: " << accepted_max_dt << ", "
+                              << "dr: " << accepted_max_dr << std::endl;
+                }
+                if (!accepted) {
+                    if (saw_converged_rejected_trial) {
+                        result.converged = true;
+                        result.status = Status::CONVERGED;
+                    } else {
+                        result.status = saw_finite_trial ? Status::NO_PROGRESS : failure;
+                    }
+                    break;
+                }
+
+                const size_t ladder_iters =
+                    std::max<size_t>(1, params_.robust.levels) *
+                    std::max<size_t>(1, params_.robust.iters_per_level);
+                const bool ladder_done = robust_scale_override.has_value() || !params_.robust.enable ||
+                                         (iter + 1) >= ladder_iters;
+                if (converged && ladder_done) {
+                    result.converged = true;
+                    result.status = Status::CONVERGED;
+                    break;
+                }
+                continue;
             }
 
             // Eigen LDLT reports Success even on numerically singular input, so a
@@ -241,6 +361,7 @@ public:
             }
 
             result.final_error = sys.error;
+            result.final_lambda = lambda;
             result.iterations = iter + 1;
             // With an active ladder, small steps alone must not stop the loop:
             // convergence is only granted once the schedule reached its floor
@@ -283,6 +404,111 @@ private:
         size_t inliers = 0;
         std::vector<NodeId> node_ids;
     };
+
+    struct ObjectiveEvaluation {
+        float error = 0.0f;
+        size_t inliers = 0;
+        bool finite = true;
+    };
+
+    static std::vector<Eigen::Isometry3f> collect_poses(
+        SlidingWindow& window, const std::vector<NodeId>& node_ids) {
+        std::vector<Eigen::Isometry3f> poses;
+        poses.reserve(node_ids.size());
+        for (const NodeId id : node_ids) {
+            const auto node = window.get_node(id);
+            if (!node) throw std::logic_error("[GraphSolver] active node not found");
+            poses.push_back(node->pose);
+        }
+        return poses;
+    }
+
+    static void apply_poses(SlidingWindow& window, const std::vector<NodeId>& node_ids,
+                            const std::vector<Eigen::Isometry3f>& poses) {
+        for (size_t i = 0; i < node_ids.size(); ++i) {
+            const auto node = window.get_node(node_ids[i]);
+            if (!node) throw std::logic_error("[GraphSolver] active node not found");
+            node->pose = poses[i];
+        }
+    }
+
+    ObjectiveEvaluation evaluate_objective(const SlidingWindow& window,
+                                            const std::vector<NodeId>& node_ids,
+                                            const std::vector<Eigen::Isometry3f>& poses) const {
+        auto pose_of = [&](NodeId id) -> const Eigen::Isometry3f& {
+            const auto it = std::find(node_ids.begin(), node_ids.end(), id);
+            if (it == node_ids.end()) throw std::logic_error("[GraphSolver] factor node not active");
+            return poses[static_cast<size_t>(std::distance(node_ids.begin(), it))];
+        };
+
+        ObjectiveEvaluation eval;
+        const Eigen::Isometry3f fixed_target = Eigen::Isometry3f::Identity();
+        for (const auto& factor : window.factors()) {
+            const auto [sid, tid] = factor->node_ids();
+            const auto [error, inlier] =
+                factor->compute_error(pose_of(sid), tid == INVALID_NODE_ID ? fixed_target : pose_of(tid));
+            eval.error += error;
+            eval.inliers += inlier;
+            if (!std::isfinite(error) || !std::isfinite(eval.error)) {
+                eval.finite = false;
+                return eval;
+            }
+        }
+
+        const auto& prior = window.prior();
+        if (prior.is_valid()) {
+            std::vector<Eigen::Isometry3f> prior_poses;
+            prior_poses.reserve(prior.node_ids.size());
+            for (const NodeId id : prior.node_ids) prior_poses.push_back(pose_of(id));
+            const auto contribution = prior.evaluate(prior_poses);
+            eval.error += contribution.error;
+            if (!std::isfinite(contribution.error) || !std::isfinite(eval.error)) eval.finite = false;
+        }
+        return eval;
+    }
+
+    bool solve_damped(const LinearizedSystem& sys, float lambda, Eigen::VectorXf& delta,
+                      float& max_dt, float& max_dr, Status& failure) const {
+        const Eigen::MatrixXf H_reg =
+            sys.H + lambda * Eigen::MatrixXf::Identity(sys.H.rows(), sys.H.cols());
+        Eigen::LDLT<Eigen::MatrixXf> ldlt(H_reg);
+        if (ldlt.info() != Eigen::Success) {
+            failure = Status::DECOMPOSITION_FAILED;
+            return false;
+        }
+        delta = ldlt.solve(-sys.b);
+        if (!delta.allFinite()) {
+            failure = Status::NON_FINITE_STEP;
+            return false;
+        }
+        max_dt = 0.0f;
+        max_dr = 0.0f;
+        for (size_t i = 0; i < sys.node_ids.size(); ++i) {
+            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
+            max_dr = std::max(max_dr, d.head<3>().norm());
+            max_dt = std::max(max_dt, d.tail<3>().norm());
+        }
+        if (max_dt > params_.max_step_translation || max_dr > params_.max_step_rotation) {
+            failure = Status::UNSTABLE_STEP;
+            return false;
+        }
+        if (!is_well_conditioned(H_reg)) {
+            failure = Status::DECOMPOSITION_FAILED;
+            return false;
+        }
+        return true;
+    }
+
+    bool step_converged(const Eigen::VectorXf& delta, size_t node_count) const {
+        for (size_t i = 0; i < node_count; ++i) {
+            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
+            if (d.head<3>().norm() > params_.convergence_rotation ||
+                d.tail<3>().norm() > params_.convergence_translation) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     LinearizedSystem assemble(SlidingWindow& window, float ladder_scale) {
         auto& nodes = window.active_nodes();
