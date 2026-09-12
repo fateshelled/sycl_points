@@ -321,15 +321,13 @@ private:
             const Eigen::Matrix<float, 6, 6> U_s = eigen_utils::lie::se3_right_jacobian(ds);
             Eigen::Matrix<float, 6, 1> q0 = lin.b0;
             Eigen::Matrix<float, 6, 1> q1 = lin.b1;
-            const Eigen::Matrix<float, 6, 6> U_sT_H00 = U_s.transpose() * lin.H00 * U_s;
-            const Eigen::Matrix<float, 6, 6> U_sT_H01 = U_s.transpose() * lin.H01;
             if (ds.norm() > 0.0f) {
                 q0 += lin.H00 * ds;
                 if (has_target) {
                     q1 += lin.H01.transpose() * ds;
                 }
             }
-            sys.H.block<6, 6>(6 * si, 6 * si) += U_sT_H00;
+            sys.H.block<6, 6>(6 * si, 6 * si) += U_s.transpose() * lin.H00 * U_s;
             if (has_target) {
                 int ti = idx.at(tid);
                 const Eigen::Matrix<float, 6, 1> dt =
@@ -340,9 +338,12 @@ private:
                     q0 += lin.H01 * dt;
                     q1 += lin.H11 * dt;
                 }
+                // Transported cross block must stay symmetric: complete H_st
+                // first and add its transpose, NOT H01^T U_s U_t.
+                const Eigen::Matrix<float, 6, 6> H_st = U_s.transpose() * lin.H01 * U_t;
                 sys.H.block<6, 6>(6 * ti, 6 * ti) += U_t.transpose() * lin.H11 * U_t;
-                sys.H.block<6, 6>(6 * si, 6 * ti) += U_sT_H01 * U_t;
-                sys.H.block<6, 6>(6 * ti, 6 * si) += U_sT_H01.transpose() * U_t;
+                sys.H.block<6, 6>(6 * si, 6 * ti) += H_st;
+                sys.H.block<6, 6>(6 * ti, 6 * si) += H_st.transpose();
                 sys.b.segment<6>(6 * ti) += U_t.transpose() * q1;
             }
             sys.b.segment<6>(6 * si) += U_s.transpose() * q0;

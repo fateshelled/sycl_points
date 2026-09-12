@@ -1480,6 +1480,239 @@ TEST(MarginalizationPriorTangentTest, GradientMatchesNumericalAtDisplacedPoses) 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Stale-cache tangent transport in the solver + sparse-chain ordering (host)
+// ---------------------------------------------------------------------------
+
+// Binary-factor mock whose linearization NEVER changes: get_linearization()
+// caches this fixed model on the first call and every later call reuses it
+// regardless of the node poses, so the solver always assembles from a stale
+// model transported into the current tangent.
+class FixedLinearizationBinaryFactor : public graph::GraphFactorBase {
+public:
+    FixedLinearizationBinaryFactor(graph::NodeId s_id, graph::NodeId t_id,
+                                   graph::FactorLinearization lin)
+        : s_id_(s_id), t_id_(t_id), lin_(std::move(lin)) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        return lin_;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override { return {s_id_, t_id_}; }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return false;
+    }
+
+private:
+    graph::NodeId s_id_, t_id_;
+    graph::FactorLinearization lin_;
+};
+
+// The solver must assemble a stale cached binary factor EXACTLY as the
+// transported model U^T H_lin U / U^T (H_lin o + b) predicts: the one Gauss-Newton
+// step it takes must equal the analytic step of that transported quadratic.
+// The buggy variant (cross block not finished before transpose) both breaks
+// symmetry and changes the lower triangle the LDLT reads, shifting the step.
+TEST(GraphSolverTransportTest, StaleCachedBinaryMatchesTangentTransportModel) {
+    auto queue = make_queue();
+    graph::SlidingWindow window(4);
+
+    const Eigen::Isometry3f T_lin_s = test_pose(0.2f, 0.1f, 0.0f, 0.05f);
+    const Eigen::Isometry3f T_lin_t = test_pose(0.9f, 0.3f, -0.2f, -0.3f);
+
+    graph::FactorLinearization lin;
+    lin.H00 = Eigen::Matrix<float, 6, 6>::Identity();
+    // Keep the model well conditioned (D = 0.1 * ones -> block eigenvalues 1.6/0.4).
+    lin.H01 = 0.1f * Eigen::Matrix<float, 6, 6>::Ones();
+    lin.H11 = Eigen::Matrix<float, 6, 6>::Identity();
+    lin.b0 << 0.03f, -0.05f, 0.07f, 0.01f, 0.02f, -0.04f;
+    lin.b1 << -0.02f, 0.04f, 0.03f, -0.03f, 0.01f, 0.03f;
+    lin.error = 0.0f;
+    lin.inlier = 1;
+    lin.source_linearization_pose = T_lin_s;
+    lin.target_linearization_pose = T_lin_t;
+
+    const graph::NodeId s_id = window.add_node(T_lin_s, 0.0);
+    const graph::NodeId t_id = window.add_node(T_lin_t, 1.0);
+    window.add_factor(std::make_shared<FixedLinearizationBinaryFactor>(s_id, t_id, lin));
+
+    graph::GraphSolver solver(queue);
+    graph::GraphSolverParams params;
+    params.max_iterations = 1;
+
+    // First call: poses on the snapshot, cache the linearization.
+    solver.optimize(window, std::nullopt, std::optional<size_t>(1));
+    const Eigen::Isometry3f s_start = T_lin_s;
+    const Eigen::Isometry3f t_start = T_lin_t;
+
+    // Second call: nodes far from the snapshot (cache reuse is guaranteed by
+    // needs_relinearization()==false), so the transport U = Jr(o) is active.
+    const Eigen::Matrix<float, 6, 1> ds_vec(0.3f, -0.2f, 0.1f, 0.2f, 0.1f, -0.05f);
+    const Eigen::Matrix<float, 6, 1> dt_vec(-0.1f, 0.25f, 0.15f, -0.05f, 0.3f, 0.1f);
+    const Eigen::Isometry3f s_disp = Eigen::Isometry3f(s_start.matrix() *
+                                                       eigen_utils::lie::se3_exp(ds_vec));
+    const Eigen::Isometry3f t_disp = Eigen::Isometry3f(t_start.matrix() *
+                                                       eigen_utils::lie::se3_exp(dt_vec));
+    window.get_node(s_id)->pose = s_disp;
+    window.get_node(t_id)->pose = t_disp;
+
+    ASSERT_EQ(solver.optimize(window, std::nullopt, std::optional<size_t>(1)).iterations, 1U);
+
+    // Expected: exact transported model, one Gauss-Newton step.
+    const Eigen::Matrix<float, 6, 1> ds =
+        eigen_utils::lie::se3_log(T_lin_s.inverse() * s_disp);
+    const Eigen::Matrix<float, 6, 1> dt =
+        eigen_utils::lie::se3_log(T_lin_t.inverse() * t_disp);
+    const Eigen::Matrix<float, 6, 6> U_s = eigen_utils::lie::se3_right_jacobian(ds);
+    const Eigen::Matrix<float, 6, 6> U_t = eigen_utils::lie::se3_right_jacobian(dt);
+    Eigen::Matrix<float, 12, 12> H_exp = Eigen::Matrix<float, 12, 12>::Zero();
+    H_exp.block<6, 6>(0, 0) = U_s.transpose() * lin.H00 * U_s;
+    H_exp.block<6, 6>(6, 6) = U_t.transpose() * lin.H11 * U_t;
+    const Eigen::Matrix<float, 6, 6> H_st = U_s.transpose() * lin.H01 * U_t;
+    H_exp.block<6, 6>(0, 6) = H_st;
+    H_exp.block<6, 6>(6, 0) = H_st.transpose();
+    Eigen::MatrixXf H_reg = H_exp + params.solver_damping_lambda *
+                                          Eigen::MatrixXf::Identity(12, 12);
+    Eigen::Matrix<float, 12, 1> q;
+    const Eigen::Matrix<float, 6, 1> q0 = lin.b0 + lin.H00 * ds + lin.H01 * dt;
+    const Eigen::Matrix<float, 6, 1> q1 = lin.b1 + lin.H01.transpose() * ds + lin.H11 * dt;
+    q << U_s.transpose() * q0, U_t.transpose() * q1;
+    const Eigen::LDLT<Eigen::MatrixXf> ldlt(H_reg);
+    ASSERT_EQ(ldlt.info(), Eigen::Success);
+    const Eigen::VectorXf delta_expect = ldlt.solve(-q);
+    ASSERT_TRUE(delta_expect.allFinite());
+
+    const auto near = [&](const Eigen::Isometry3f& start, const Eigen::Matrix<float, 6, 1>& d_exp,
+                          const graph::NodeId id) {
+        const Eigen::Isometry3f got = window.get_node(id)->pose;
+        const Eigen::Matrix<float, 6, 1> d_got = eigen_utils::lie::se3_log(start.inverse() * got);
+        EXPECT_LT((d_got - d_exp).norm(), 1e-3f * std::max(1.0f, d_exp.norm()));
+    };
+    near(s_disp, delta_expect.segment<6>(0), s_id);
+    near(t_disp, delta_expect.segment<6>(6), t_id);
+}
+
+// The chain conversion must keep the binary factor's FULL endpoint ordering:
+// its measurement (G, Omega, gradient) lives in the source->target tangent of
+// the binary (source = the older tip at capture time). Reordering the endpoints
+// (the previous behaviour) fed G_AB into a factor wired B<-A and left a huge
+// non-zero residual at the snapshot.
+class PruneBinaryMock : public graph::GraphFactorBase {
+public:
+    PruneBinaryMock(graph::NodeId s_id, graph::NodeId t_id, graph::FactorLinearization lin,
+                    bool has_measurement)
+        : s_id_(s_id), t_id_(t_id), lin_(std::move(lin)), has_measurement_(has_measurement) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        return lin_;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override { return {s_id_, t_id_}; }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return false;
+    }
+
+    bool is_point_cloud_binary() const override { return true; }
+
+    std::optional<graph::RelativePoseMeasurement> make_relative_pose_measurement() const override {
+        if (!has_measurement_) return std::nullopt;
+        return graph::relative_pose_measurement_from_linearization(lin_);
+    }
+
+private:
+    graph::NodeId s_id_, t_id_;
+    graph::FactorLinearization lin_;
+    bool has_measurement_;
+};
+
+TEST(SparseChainPruneOrderTest, ConversionKeepsBinaryEndpointOrdering) {
+    auto queue = make_queue();
+
+    const Eigen::Isometry3f T_A = test_pose(0.3f, -0.2f, 0.1f, 0.4f);
+    const Eigen::Isometry3f T_B = test_pose(1.0f, 0.4f, 0.0f, -0.2f);
+
+    Eigen::Matrix<float, 6, 6> omega = Eigen::Matrix<float, 6, 6>::Zero();
+    omega.diagonal() << 1e4f, 2e3f, 5e3f, 7e2f, 4e4f, 9e2f;
+    Eigen::Matrix<float, 6, 1> g;
+    g << 0.4f, -1.5f, 2.0f, 0.1f, -0.3f, 0.8f;
+    // Snapshot in the binary's own ordering: source = B (was tip), target = A.
+    const auto lin = make_joint_linearization(T_B, T_A, omega, g);
+
+    graph::SlidingWindow window(6);
+    const graph::NodeId idA = window.add_node(T_A, 0.0);
+    const graph::NodeId idB = window.add_node(T_B, 1.0);
+    const graph::NodeId idC = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    window.add_factor(std::make_shared<PruneBinaryMock>(idB, idA, lin, /*has_measurement*/ true));
+
+    window.prune_point_cloud_binaries(idC, idA, idB);
+
+    const auto chain = std::dynamic_pointer_cast<graph::RelativePoseFactor>(
+        window.factors().front());
+    ASSERT_TRUE(chain);
+    // Endpoint order preserved (B -> A, reversed w.r.t. convert_a/convert_b).
+    EXPECT_EQ(chain->node_ids().first, idB);
+    EXPECT_EQ(chain->node_ids().second, idA);
+    // The projected model matches the projection inputs.
+    EXPECT_LT((chain->information() - omega).norm(), 1e-4f * omega.norm());
+
+    // Linearizing the chain factor at the snapshot must reproduce the binary
+    // model exactly (residual 0, same H/b): proves G/Omega/gradient ordering.
+    const auto lin_chain = chain->linearize(queue);
+    const Eigen::Matrix<float, 6, 12> J = relative_jacobian(T_B, T_A);
+    EXPECT_LT((lin_chain.H00 - J.block<6, 6>(0, 0).transpose() * omega * J.block<6, 6>(0, 0)).norm(),
+              1e-4f * omega.norm() * omega.norm());
+    EXPECT_LT((lin_chain.b0 - J.block<6, 6>(0, 0).transpose() * g).norm(),
+              1e-5f * std::max(1.0f, g.norm()));
+    EXPECT_LT(std::fabs(lin_chain.error), 1e-4f);
+}
+
+// Without a cached linearization the fallback keeps the binary ordering and
+// builds G from the current poses in that same ordering (zero residual).
+TEST(SparseChainPruneOrderTest, FallbackKeepsGeometryConsistent) {
+    auto queue = make_queue();
+    graph::SlidingWindow window(6);
+
+    const Eigen::Isometry3f T_A = test_pose(0.4f, 0.1f, -0.1f, 0.3f);
+    const Eigen::Isometry3f T_B = test_pose(1.2f, -0.2f, 0.05f, -0.1f);
+    graph::FactorLinearization lin;  // zero Hessian: no usable measurement
+    lin.source_linearization_pose = T_B;
+    lin.target_linearization_pose = T_A;
+    lin.inlier = 1;
+
+    const graph::NodeId idA = window.add_node(T_A, 0.0);
+    const graph::NodeId idB = window.add_node(T_B, 1.0);
+    const graph::NodeId idC = window.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    window.add_factor(std::make_shared<PruneBinaryMock>(idB, idA, lin, /*has_measurement*/ false));
+
+    window.prune_point_cloud_binaries(idC, idA, idB);
+
+    const auto chain = std::dynamic_pointer_cast<graph::RelativePoseFactor>(
+        window.factors().front());
+    ASSERT_TRUE(chain);
+    EXPECT_EQ(chain->node_ids().first, idB);
+    EXPECT_EQ(chain->node_ids().second, idA);
+    const auto lin_chain = chain->linearize(queue);
+    // snapshot poses -> zero residual => zero energy.
+    EXPECT_LT(std::fabs(lin_chain.error), 1e-6f);
+}
+
+// ---------------------------------------------------------------------------
+
+
 // G and Omega must come from the same linearization snapshot (the cached
 // poses), not from the nodes' current poses.
 TEST(GraphRelativePoseInfoTest, MeasurementUsesLinearizationSnapshot) {
