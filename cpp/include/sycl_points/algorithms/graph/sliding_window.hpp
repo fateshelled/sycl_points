@@ -100,6 +100,7 @@ public:
         auto node = std::make_shared<PoseNode>();
         node->id = next_id_++;
         node->timestamp = timestamp;
+        node->initial_pose = initial_pose;
         node->pose = initial_pose;
         node->linearization_pose = initial_pose;
         node->cloud = std::move(cloud);

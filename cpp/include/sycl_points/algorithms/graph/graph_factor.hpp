@@ -91,6 +91,12 @@ public:
     ///        factors (chain relatives) are always kept.
     virtual bool is_point_cloud_binary() const { return false; }
 
+    /// @brief True only for LiDAR measurement factors whose transported
+    ///        Hessian contributes to geometric observability. Motion-chain
+    ///        factors, marginalization priors, and test/host constraints are
+    ///        deliberately excluded from degeneracy detection.
+    virtual bool contributes_lidar_observability() const { return false; }
+
     /// @brief Relative-pose measurement (G, information) captured from this
     ///        factor's latest cached linearization, used when the factor is
     ///        converted into a chain RelativePoseFactor. nullopt by default;

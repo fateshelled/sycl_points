@@ -60,6 +60,16 @@ struct Parameters : public odometry::CommonParameters {
         algorithms::robust::RobustLossType robust_type = algorithms::robust::RobustLossType::GEMAN_MCCLURE;
         float robust_default_scale = 10.0f;
 
+        struct DegenerateRegularization {
+            bool enable = false;
+            float eigenvalue_threshold = 1.0f;
+            float strength = 1.0f;
+            float representative_length = 1.0f;
+            float pseudo_inverse_relative_cutoff = 1e-6f;
+            float pseudo_inverse_absolute_cutoff = 1e-9f;
+        };
+        DegenerateRegularization degenerate_regularization;
+
         /// @brief Registration / linearization settings for the graph factors.
         /// Decoupled from lidar_odometry::LO::Registration so the graph node can be
         /// configured independently of the single-frame align path (which owns registration/*).

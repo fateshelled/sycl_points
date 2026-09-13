@@ -84,6 +84,8 @@ public:
 
     std::pair<NodeId, NodeId> node_ids() const override { return {source_id_, INVALID_NODE_ID}; }
 
+    bool contributes_lidar_observability() const override { return true; }
+
     bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float rot_th,
                                float trans_th) const override {
         // Judge against this factor's own cached linearization pose, NOT the
@@ -185,6 +187,8 @@ public:
     }
 
     bool is_point_cloud_binary() const override { return true; }
+
+    bool contributes_lidar_observability() const override { return true; }
 
     std::optional<RelativePoseMeasurement> make_relative_pose_measurement() const override {
         // Use the latest cached linearization as-is: the conversion must not

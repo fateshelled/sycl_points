@@ -25,6 +25,7 @@ struct PoseNode {
 
     NodeId id = INVALID_NODE_ID;
     double timestamp = 0.0;
+    Eigen::Isometry3f initial_pose = Eigen::Isometry3f::Identity();        // frame prediction anchor
     Eigen::Isometry3f pose = Eigen::Isometry3f::Identity();               // current estimate
     Eigen::Isometry3f linearization_pose = Eigen::Isometry3f::Identity();  // linearization point
     std::shared_ptr<PointCloudShared> cloud = nullptr;                     // kept for relinearization

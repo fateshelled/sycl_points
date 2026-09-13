@@ -32,6 +32,20 @@ struct GraphSolverParams {
     float solver_damping_lambda = 1e-6f;
     float marginalization_lambda = 1e-6f;
 
+    /// @brief LiDAR-only observability regularization of the newest (tip)
+    ///        node. The penalty anchors only weak Schur-complement modes to the
+    ///        frame's initial prediction and is never included in the physical
+    ///        objective or the marginalization prior.
+    struct DegenerateRegularization {
+        bool enable = false;
+        float eigenvalue_threshold = 1.0f;
+        float strength = 1.0f;
+        float representative_length = 1.0f;          ///< [m], balances rotation and translation
+        float pseudo_inverse_relative_cutoff = 1e-6f;
+        float pseudo_inverse_absolute_cutoff = 1e-9f;
+    };
+    DegenerateRegularization degenerate_regularization;
+
     /// @brief Step stability bounds for one Gauss-Newton direction. LDLT reports
     ///        Success even on singular / ill-conditioned systems, so a finite but
     ///        huge step would silently move every pose; the solver rejects such a
@@ -109,6 +123,34 @@ public:
         NO_PROGRESS,
     };
 
+    enum class ObservabilityStatus {
+        DISABLED,
+        VALID,
+        NO_LIDAR_INLIERS,
+        NON_FINITE,
+        DECOMPOSITION_FAILED,
+        INDEFINITE_EFFECTIVE_HESSIAN,
+    };
+
+    struct ObservabilityDiagnostics {
+        ObservabilityStatus status = ObservabilityStatus::DISABLED;
+        size_t lidar_inliers = 0;
+        size_t old_block_rank = 0;
+        size_t weak_directions = 0;
+        Eigen::Matrix<float, 6, 1> effective_eigenvalues =
+            Eigen::Matrix<float, 6, 1>::Zero();
+        Eigen::Matrix<float, 6, 1> inlier_normalized_eigenvalues =
+            Eigen::Matrix<float, 6, 1>::Zero();
+        Eigen::Matrix<float, 6, 1> normalized_eigenvalues =
+            Eigen::Matrix<float, 6, 1>::Zero();
+        Eigen::Matrix<float, 6, 1> penalty_eigenvalues =
+            Eigen::Matrix<float, 6, 1>::Zero();
+        Eigen::Matrix<float, 6, 6> normalized_eigenvectors =
+            Eigen::Matrix<float, 6, 6>::Identity();
+        float representative_length = 1.0f;
+        float initial_residual_norm = 0.0f;
+    };
+
     struct Result {
         bool converged = false;
         size_t iterations = 0;
@@ -117,7 +159,10 @@ public:
         size_t rejected_steps = 0;
         float final_error = 0.0f;
         float final_lambda = 0.0f;
+        float final_tip_translation_step = 0.0f;
+        float final_tip_rotation_step = 0.0f;
         Status status = Status::MAX_ITERATIONS;
+        ObservabilityDiagnostics observability;
 
         bool valid() const { return valid_status(status); }
     };
@@ -164,6 +209,18 @@ public:
              params_.robust.init_scale < params_.robust.min_scale)) {
             throw std::invalid_argument("[GraphSolver] invalid robust schedule");
         }
+        const auto& deg = params_.degenerate_regularization;
+        if (!std::isfinite(deg.eigenvalue_threshold) || deg.eigenvalue_threshold <= 0.0f ||
+            !std::isfinite(deg.strength) || deg.strength < 0.0f ||
+            !std::isfinite(deg.representative_length) || deg.representative_length <= 0.0f ||
+            !std::isfinite(deg.pseudo_inverse_relative_cutoff) ||
+            deg.pseudo_inverse_relative_cutoff < 0.0f ||
+            !std::isfinite(deg.pseudo_inverse_absolute_cutoff) ||
+            deg.pseudo_inverse_absolute_cutoff < 0.0f ||
+            (deg.pseudo_inverse_relative_cutoff == 0.0f &&
+             deg.pseudo_inverse_absolute_cutoff == 0.0f)) {
+            throw std::invalid_argument("[GraphSolver] invalid degenerate regularization parameters");
+        }
     }
 
     const GraphSolverParams& params() const { return params_; }
@@ -188,6 +245,12 @@ public:
 
             result.final_error = sys.error;
             if (!sys.H.allFinite() || !sys.b.allFinite() || !std::isfinite(sys.error)) {
+                result.status = Status::NON_FINITE_SYSTEM;
+                break;
+            }
+
+            result.observability = apply_degenerate_regularization(window, sys);
+            if (!sys.H.allFinite() || !sys.b.allFinite()) {
                 result.status = Status::NON_FINITE_SYSTEM;
                 break;
             }
@@ -234,6 +297,8 @@ public:
                                 accepted = true;
                                 accepted_max_dt = max_dt;
                                 accepted_max_dr = max_dr;
+                                result.final_tip_rotation_step = delta.tail<6>().head<3>().norm();
+                                result.final_tip_translation_step = delta.tail<3>().norm();
                                 converged = step_converged(delta, sys.node_ids.size());
                                 lm_lambda = std::clamp(lm_lambda / params_.lm.lambda_factor,
                                                        params_.lm.min_lambda, params_.lm.max_lambda);
@@ -263,7 +328,9 @@ public:
                               << "lambda: " << lm_lambda << ", "
                               << "accepted: " << accepted << ", "
                               << "dt: " << accepted_max_dt << ", "
-                              << "dr: " << accepted_max_dr << std::endl;
+                              << "dr: " << accepted_max_dr << ", "
+                              << "tip_dt: " << result.final_tip_translation_step << ", "
+                              << "tip_dr: " << result.final_tip_rotation_step << std::endl;
                 }
                 if (!accepted) {
                     if (saw_converged_rejected_trial) {
@@ -351,8 +418,11 @@ public:
                 std::cout << "iter [" << iter << "] ";
                 std::cout << "error: " << sys.error << ", ";
                 std::cout << "inlier: " << sys.inliers << ", ";
+                std::cout << "lambda: " << lambda << ", ";
                 std::cout << "dt: " << max_dt << ", ";
-                std::cout << "dr: " << max_dr << std::endl;
+                std::cout << "dr: " << max_dr << ", ";
+                std::cout << "tip_dt: " << delta.tail<3>().norm() << ", ";
+                std::cout << "tip_dr: " << delta.tail<6>().head<3>().norm() << std::endl;
             }
 
             for (size_t i = 0; i < sys.node_ids.size(); ++i) {
@@ -364,6 +434,8 @@ public:
 
             result.final_error = sys.error;
             result.final_lambda = lambda;
+            result.final_tip_rotation_step = delta.tail<6>().head<3>().norm();
+            result.final_tip_translation_step = delta.tail<3>().norm();
             result.iterations = iter + 1;
             // With an active ladder, small steps alone must not stop the loop:
             // convergence is only granted once the schedule reached its floor
@@ -402,8 +474,10 @@ private:
     struct LinearizedSystem {
         Eigen::MatrixXf H;
         Eigen::VectorXf b;
+        Eigen::MatrixXf H_lidar;
         float error = 0.0f;
         size_t inliers = 0;
+        size_t lidar_inliers = 0;
         std::vector<NodeId> node_ids;
         float current_error_base = 0.0f;
         size_t current_inliers_base = 0;
@@ -535,12 +609,148 @@ private:
         return true;
     }
 
+    ObservabilityDiagnostics apply_degenerate_regularization(
+        SlidingWindow& window, LinearizedSystem& sys) const {
+        ObservabilityDiagnostics diag;
+        const auto& params = params_.degenerate_regularization;
+        diag.representative_length = params.representative_length;
+        if (!params.enable) return diag;
+
+        diag.lidar_inliers = sys.lidar_inliers;
+        if (sys.node_ids.empty() || sys.lidar_inliers == 0) {
+            diag.status = ObservabilityStatus::NO_LIDAR_INLIERS;
+            return diag;
+        }
+        if (!sys.H_lidar.allFinite()) {
+            diag.status = ObservabilityStatus::NON_FINITE;
+            return diag;
+        }
+
+        constexpr int kTipDim = 6;
+        const Eigen::Index old_dim = sys.H_lidar.rows() - kTipDim;
+        Eigen::Matrix<float, 6, 6> H_effective =
+            sys.H_lidar.bottomRightCorner<6, 6>();
+        if (old_dim > 0) {
+            const Eigen::MatrixXf H_oo =
+                0.5f * (sys.H_lidar.topLeftCorner(old_dim, old_dim) +
+                        sys.H_lidar.topLeftCorner(old_dim, old_dim).transpose());
+            const Eigen::MatrixXf H_ot = sys.H_lidar.topRightCorner(old_dim, kTipDim);
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> old_eig(H_oo);
+            if (old_eig.info() != Eigen::Success || !old_eig.eigenvalues().allFinite() ||
+                !old_eig.eigenvectors().allFinite()) {
+                diag.status = ObservabilityStatus::DECOMPOSITION_FAILED;
+                return diag;
+            }
+            const float largest = std::max(0.0f, old_eig.eigenvalues().maxCoeff());
+            const float cutoff = std::max(params.pseudo_inverse_absolute_cutoff,
+                                          params.pseudo_inverse_relative_cutoff * largest);
+            Eigen::VectorXf inverse = Eigen::VectorXf::Zero(old_dim);
+            for (Eigen::Index i = 0; i < old_dim; ++i) {
+                if (old_eig.eigenvalues()[i] > cutoff) {
+                    inverse[i] = 1.0f / old_eig.eigenvalues()[i];
+                    ++diag.old_block_rank;
+                }
+            }
+            const Eigen::MatrixXf H_oo_pinv =
+                old_eig.eigenvectors() * inverse.asDiagonal() * old_eig.eigenvectors().transpose();
+            H_effective -= H_ot.transpose() * H_oo_pinv * H_ot;
+        }
+
+        H_effective = 0.5f * (H_effective + H_effective.transpose());
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> effective_eig(H_effective);
+        if (effective_eig.info() != Eigen::Success || !effective_eig.eigenvalues().allFinite() ||
+            !effective_eig.eigenvectors().allFinite()) {
+            diag.status = ObservabilityStatus::DECOMPOSITION_FAILED;
+            return diag;
+        }
+        diag.effective_eigenvalues = effective_eig.eigenvalues();
+        const float effective_scale =
+            std::max(0.0f, effective_eig.eigenvalues().cwiseAbs().maxCoeff());
+        const float negative_tolerance =
+            std::max(params.pseudo_inverse_absolute_cutoff,
+                     params.pseudo_inverse_relative_cutoff * effective_scale);
+        if (effective_eig.eigenvalues().minCoeff() < -negative_tolerance) {
+            diag.status = ObservabilityStatus::INDEFINITE_EFFECTIVE_HESSIAN;
+            return diag;
+        }
+        const Eigen::Matrix<float, 6, 1> clamped_effective =
+            effective_eig.eigenvalues().cwiseMax(0.0f);
+        H_effective = effective_eig.eigenvectors() * clamped_effective.asDiagonal() *
+                      effective_eig.eigenvectors().transpose();
+
+        const float inlier_scale = static_cast<float>(sys.lidar_inliers);
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> inlier_normalized_eig(
+            H_effective / inlier_scale);
+        if (inlier_normalized_eig.info() != Eigen::Success ||
+            !inlier_normalized_eig.eigenvalues().allFinite()) {
+            diag.status = ObservabilityStatus::DECOMPOSITION_FAILED;
+            return diag;
+        }
+        diag.inlier_normalized_eigenvalues =
+            inlier_normalized_eig.eigenvalues().cwiseMax(0.0f);
+        Eigen::Matrix<float, 6, 6> S = Eigen::Matrix<float, 6, 6>::Identity();
+        S.diagonal().head<3>().setConstant(params.representative_length);
+        Eigen::Matrix<float, 6, 6> S_inverse = Eigen::Matrix<float, 6, 6>::Identity();
+        S_inverse.diagonal().head<3>().setConstant(1.0f / params.representative_length);
+        Eigen::Matrix<float, 6, 6> H_normalized =
+            S_inverse * (H_effective / inlier_scale) * S_inverse;
+        H_normalized = 0.5f * (H_normalized + H_normalized.transpose());
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> normalized_eig(H_normalized);
+        if (normalized_eig.info() != Eigen::Success || !normalized_eig.eigenvalues().allFinite() ||
+            !normalized_eig.eigenvectors().allFinite()) {
+            diag.status = ObservabilityStatus::DECOMPOSITION_FAILED;
+            return diag;
+        }
+        diag.normalized_eigenvalues = normalized_eig.eigenvalues().cwiseMax(0.0f);
+        diag.normalized_eigenvectors = normalized_eig.eigenvectors();
+        for (int i = 0; i < kTipDim; ++i) {
+            if (diag.normalized_eigenvalues[i] < params.eigenvalue_threshold) {
+                diag.penalty_eigenvalues[i] =
+                    params.strength * (params.eigenvalue_threshold -
+                                       diag.normalized_eigenvalues[i]);
+                ++diag.weak_directions;
+            }
+        }
+
+        Eigen::Matrix<float, 6, 6> H_penalty =
+            inlier_scale * S * normalized_eig.eigenvectors() *
+            diag.penalty_eigenvalues.asDiagonal() * normalized_eig.eigenvectors().transpose() * S;
+        H_penalty = 0.5f * (H_penalty + H_penalty.transpose());
+        const auto tip = window.get_node(sys.node_ids.back());
+        if (!tip) throw std::logic_error("[GraphSolver] tip node not found");
+        const Eigen::Matrix<float, 6, 1> initial_residual =
+            eigen_utils::lie::se3_log(tip->initial_pose.inverse() * tip->pose);
+        diag.initial_residual_norm = initial_residual.norm();
+        if (!H_penalty.allFinite() || !initial_residual.allFinite()) {
+            diag.status = ObservabilityStatus::NON_FINITE;
+            return diag;
+        }
+        sys.H.bottomRightCorner<6, 6>() += H_penalty;
+        sys.b.tail<6>() += H_penalty * initial_residual;
+        diag.status = ObservabilityStatus::VALID;
+
+        if (params_.verbose) {
+            std::cout << "LiDAR observability: inliers=" << diag.lidar_inliers
+                      << ", old_rank=" << diag.old_block_rank
+                      << ", weak=" << diag.weak_directions
+                      << ", L=" << diag.representative_length
+                      << ", r_init=" << diag.initial_residual_norm
+                      << "\n  eig(H_eff)=" << diag.effective_eigenvalues.transpose()
+                      << "\n  eig(H_obs)=" << diag.inlier_normalized_eigenvalues.transpose()
+                      << "\n  eig(H_obs_scaled)=" << diag.normalized_eigenvalues.transpose()
+                      << "\n  penalty=" << diag.penalty_eigenvalues.transpose()
+                      << "\n  eigenvectors=\n" << diag.normalized_eigenvectors << std::endl;
+        }
+        return diag;
+    }
+
     LinearizedSystem assemble(SlidingWindow& window, float ladder_scale) {
         auto& nodes = window.active_nodes();
         const size_t K = nodes.size();
         LinearizedSystem sys;
         sys.H = Eigen::MatrixXf::Zero(6 * K, 6 * K);
         sys.b = Eigen::VectorXf::Zero(6 * K);
+        sys.H_lidar = Eigen::MatrixXf::Zero(6 * K, 6 * K);
         std::unordered_map<NodeId, int> idx;
         for (int i = 0; i < static_cast<int>(K); ++i) {
             sys.node_ids.push_back(nodes[i]->id);
@@ -562,6 +772,8 @@ private:
                 sys.stale_factors.push_back(factor);
             }
             bool has_target = tid != INVALID_NODE_ID && idx.count(tid);
+            const bool lidar_observation = factor->contributes_lidar_observability();
+            if (lidar_observation) sys.lidar_inliers += lin.inlier;
 
             // Stale cached linearizations live in offset-from-linearization
             // coordinates o = Log(T_lin^-1 T). With right perturbations the
@@ -584,7 +796,9 @@ private:
                     q1 += lin.H01.transpose() * ds;
                 }
             }
-            sys.H.block<6, 6>(6 * si, 6 * si) += U_s.transpose() * lin.H00 * U_s;
+            const Eigen::Matrix<float, 6, 6> H_ss = U_s.transpose() * lin.H00 * U_s;
+            sys.H.block<6, 6>(6 * si, 6 * si) += H_ss;
+            if (lidar_observation) sys.H_lidar.block<6, 6>(6 * si, 6 * si) += H_ss;
             if (has_target) {
                 int ti = idx.at(tid);
                 const Eigen::Matrix<float, 6, 1> dt =
@@ -598,9 +812,15 @@ private:
                 // Transported cross block must stay symmetric: complete H_st
                 // first and add its transpose, NOT H01^T U_s U_t.
                 const Eigen::Matrix<float, 6, 6> H_st = U_s.transpose() * lin.H01 * U_t;
-                sys.H.block<6, 6>(6 * ti, 6 * ti) += U_t.transpose() * lin.H11 * U_t;
+                const Eigen::Matrix<float, 6, 6> H_tt = U_t.transpose() * lin.H11 * U_t;
+                sys.H.block<6, 6>(6 * ti, 6 * ti) += H_tt;
                 sys.H.block<6, 6>(6 * si, 6 * ti) += H_st;
                 sys.H.block<6, 6>(6 * ti, 6 * si) += H_st.transpose();
+                if (lidar_observation) {
+                    sys.H_lidar.block<6, 6>(6 * ti, 6 * ti) += H_tt;
+                    sys.H_lidar.block<6, 6>(6 * si, 6 * ti) += H_st;
+                    sys.H_lidar.block<6, 6>(6 * ti, 6 * si) += H_st.transpose();
+                }
                 sys.b.segment<6>(6 * ti) += U_t.transpose() * q1;
             }
             sys.b.segment<6>(6 * si) += U_s.transpose() * q0;

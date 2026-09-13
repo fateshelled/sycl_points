@@ -455,6 +455,45 @@ private:
     graph::FactorLinearization lin_;
 };
 
+// Host-only LiDAR-observability probe. It supplies a chosen unary or binary
+// Hessian while keeping the physical objective constant, so solver tests can
+// isolate Schur elimination, normalization, and penalty behavior without GPU
+// correspondence work.
+class SyntheticLidarObservabilityFactor : public graph::GraphFactorBase {
+public:
+    SyntheticLidarObservabilityFactor(std::shared_ptr<graph::PoseNode> src,
+                                      std::shared_ptr<graph::PoseNode> tgt,
+                                      graph::FactorLinearization lin)
+        : src_(std::move(src)), tgt_(std::move(tgt)), lin_(std::move(lin)) {}
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        lin_.source_linearization_pose = src_->pose;
+        if (tgt_) lin_.target_linearization_pose = tgt_->pose;
+        return lin_;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {lin_.error, lin_.inlier};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {src_->id, tgt_ ? tgt_->id : graph::INVALID_NODE_ID};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return true;
+    }
+
+    bool contributes_lidar_observability() const override { return true; }
+
+private:
+    std::shared_ptr<graph::PoseNode> src_;
+    std::shared_ptr<graph::PoseNode> tgt_;
+    graph::FactorLinearization lin_;
+};
+
 // ---------------------------------------------------------------------------
 // SlidingWindow management (host-only)
 // ---------------------------------------------------------------------------
@@ -837,6 +876,142 @@ TEST_F(GraphSolverTest, LMEvaluatesOnlyStaleFactorsForCurrentObjective) {
     EXPECT_EQ(state->collected, 2u);
 }
 
+TEST_F(GraphSolverTest, NormalizesLidarObservabilityByInliersAndRepresentativeLength) {
+    graph::SlidingWindow window(1);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    graph::FactorLinearization lin;
+    lin.H00.diagonal() << 10.0f, 20.0f, 30.0f, 40.0f, 50.0f, 60.0f;
+    lin.inlier = 5;
+    window.add_factor(std::make_shared<SyntheticLidarObservabilityFactor>(
+        window.get_node(id), nullptr, lin));
+
+    graph::GraphSolverParams params;
+    params.degenerate_regularization.enable = true;
+    params.degenerate_regularization.eigenvalue_threshold = 2.0f;
+    params.degenerate_regularization.strength = 0.5f;
+    params.degenerate_regularization.representative_length = 2.0f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    ASSERT_TRUE(result.valid());
+    EXPECT_EQ(result.observability.status, graph::GraphSolver::ObservabilityStatus::VALID);
+    EXPECT_EQ(result.observability.lidar_inliers, 5u);
+    EXPECT_EQ(result.observability.weak_directions, 3u);
+    Eigen::Matrix<float, 6, 1> expected;
+    expected << 0.5f, 1.0f, 1.5f, 8.0f, 10.0f, 12.0f;
+    EXPECT_TRUE(result.observability.normalized_eigenvalues.isApprox(expected, 1e-5f));
+    Eigen::Matrix<float, 6, 1> expected_penalty;
+    expected_penalty << 0.75f, 0.5f, 0.25f, 0.0f, 0.0f, 0.0f;
+    EXPECT_TRUE(result.observability.penalty_eigenvalues.isApprox(expected_penalty, 1e-5f));
+}
+
+TEST_F(GraphSolverTest, ExcludesNonLidarFactorsFromObservability) {
+    graph::SlidingWindow window(1);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    graph::FactorLinearization lin;
+    lin.H00 = 5.0f * Eigen::Matrix<float, 6, 6>::Identity();
+    lin.H00(3, 3) = 0.0f;
+    lin.inlier = 5;
+    window.add_factor(std::make_shared<SyntheticLidarObservabilityFactor>(
+        window.get_node(id), nullptr, lin));
+    window.add_factor(std::make_shared<AnchorFactor>(
+        window.get_node(id), Eigen::Isometry3f::Identity(), 100.0f));
+
+    graph::GraphSolverParams params;
+    params.degenerate_regularization.enable = true;
+    params.degenerate_regularization.eigenvalue_threshold = 0.5f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    ASSERT_TRUE(result.valid());
+    EXPECT_NEAR(result.observability.normalized_eigenvalues.minCoeff(), 0.0f, 1e-6f);
+    EXPECT_NEAR(result.observability.normalized_eigenvalues.maxCoeff(), 1.0f, 1e-6f);
+    EXPECT_EQ(result.observability.weak_directions, 1u);
+}
+
+TEST_F(GraphSolverTest, UsesCutoffPseudoInverseForTipSchurObservability) {
+    graph::SlidingWindow window(2);
+    const graph::NodeId old_id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    const graph::NodeId tip_id = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    graph::FactorLinearization lin;
+    lin.H00 = 10.0f * Eigen::Matrix<float, 6, 6>::Identity();  // tip-tip
+    lin.H11.setZero();                                         // old-old is rank one
+    lin.H11(0, 0) = 10.0f;
+    lin.H01.setZero();
+    lin.H01(0, 0) = -10.0f;
+    lin.inlier = 10;
+    window.add_factor(std::make_shared<SyntheticLidarObservabilityFactor>(
+        window.get_node(tip_id), window.get_node(old_id), lin));
+    // Stabilizes the physical graph but must not affect LiDAR observability.
+    window.add_factor(std::make_shared<AnchorFactor>(
+        window.get_node(old_id), Eigen::Isometry3f::Identity(), 100.0f));
+
+    graph::GraphSolverParams params;
+    params.degenerate_regularization.enable = true;
+    params.degenerate_regularization.eigenvalue_threshold = 0.5f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    ASSERT_TRUE(result.valid());
+    EXPECT_EQ(result.observability.status, graph::GraphSolver::ObservabilityStatus::VALID);
+    EXPECT_EQ(result.observability.old_block_rank, 1u);
+    EXPECT_EQ(result.observability.weak_directions, 1u);
+    EXPECT_NEAR(result.observability.normalized_eigenvalues[0], 0.0f, 1e-5f);
+    EXPECT_NEAR(result.observability.normalized_eigenvalues.tail<5>().minCoeff(), 1.0f, 1e-5f);
+}
+
+TEST_F(GraphSolverTest, AnchorsOnlyWeakTipDirectionToFrameInitialPose) {
+    graph::SlidingWindow window(1);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    window.get_node(id)->pose.translation().x() = 1.0f;
+    graph::FactorLinearization lin;
+    lin.H00 = 10.0f * Eigen::Matrix<float, 6, 6>::Identity();
+    lin.H00(3, 3) = 0.0f;
+    lin.inlier = 1;
+    window.add_factor(std::make_shared<SyntheticLidarObservabilityFactor>(
+        window.get_node(id), nullptr, lin));
+    Eigen::Isometry3f target = Eigen::Isometry3f::Identity();
+    target.translation().x() = 2.0f;
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id), target, 1.0f));
+
+    graph::GraphSolverParams params;
+    params.degenerate_regularization.enable = true;
+    params.degenerate_regularization.eigenvalue_threshold = 1.0f;
+    params.degenerate_regularization.strength = 9.0f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    ASSERT_TRUE(result.valid());
+    EXPECT_TRUE(window.get_node(id)->initial_pose.matrix().isApprox(Eigen::Isometry3f::Identity().matrix()));
+    EXPECT_NEAR(window.get_node(id)->pose.translation().x(), 0.2f, 1e-3f);
+    EXPECT_EQ(result.observability.weak_directions, 1u);
+}
+
+TEST_F(GraphSolverTest, LMDoesNotCountRegularizationAsPhysicalObjective) {
+    graph::SlidingWindow window(1);
+    const graph::NodeId id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    window.get_node(id)->pose.translation().x() = 2.0f;
+    graph::FactorLinearization lin;
+    lin.H00 = 10.0f * Eigen::Matrix<float, 6, 6>::Identity();
+    lin.H00(3, 3) = 0.0f;
+    lin.inlier = 1;
+    window.add_factor(std::make_shared<SyntheticLidarObservabilityFactor>(
+        window.get_node(id), nullptr, lin));
+    Eigen::Isometry3f target = Eigen::Isometry3f::Identity();
+    target.translation().x() = 2.0f;
+    window.add_factor(std::make_shared<AnchorFactor>(window.get_node(id), target, 1.0f));
+
+    graph::GraphSolverParams params;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.lm.max_inner_iterations = 3;
+    params.degenerate_regularization.enable = true;
+    params.degenerate_regularization.eigenvalue_threshold = 1.0f;
+    params.degenerate_regularization.strength = 9.0f;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::NO_PROGRESS);
+    EXPECT_EQ(result.accepted_steps, 0u);
+    EXPECT_NEAR(result.final_error, 0.0f, 1e-6f);
+    EXPECT_NEAR(window.get_node(id)->pose.translation().x(), 2.0f, 1e-6f);
+}
+
 TEST_F(GraphSolverTest, AnchorConstrainsNode) {
     graph::SlidingWindow window(5);
     const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
@@ -999,6 +1174,14 @@ TEST_F(GraphSolverTest, RejectsInvalidIterationAndRobustSettings) {
 
     params.lm.lambda_factor = 2.0f;
     params.optimization_method = registration::OptimizationMethod::POWELL_DOGLEG;
+    EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
+
+    params.optimization_method = registration::OptimizationMethod::GAUSS_NEWTON;
+    params.degenerate_regularization.representative_length = 0.0f;
+    EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
+    params.degenerate_regularization.representative_length = 1.0f;
+    params.degenerate_regularization.pseudo_inverse_relative_cutoff = 0.0f;
+    params.degenerate_regularization.pseudo_inverse_absolute_cutoff = 0.0f;
     EXPECT_THROW(graph::GraphSolver(queue, params), std::invalid_argument);
 }
 

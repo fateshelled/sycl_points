@@ -205,6 +205,16 @@ graph_odometry_node:
     graph/solver/lm/max_lambda: 1.0e+3
     graph/solver/lm/min_lambda: 1.0e-3
     graph/marginalization_lambda: 1.0e-3           # Schur-complement H_mm regularization
+    # LiDAR-only observability regularization. Weak tip modes are anchored to
+    # the frame's initial prediction after eliminating older nodes by a
+    # cutoff pseudo-inverse. This numerical penalty is excluded from both the
+    # physical LM objective and the marginalization prior.
+    graph/degenerate_regularization/enable: false
+    graph/degenerate_regularization/eigenvalue_threshold: 1.0
+    graph/degenerate_regularization/strength: 1.0
+    graph/degenerate_regularization/representative_length: 1.0  # [m]
+    graph/degenerate_regularization/pseudo_inverse_relative_cutoff: 1.0e-6
+    graph/degenerate_regularization/pseudo_inverse_absolute_cutoff: 1.0e-9
     # NOTE: the Schur-complement marginalization prior is built from the
     # ROBUST-WEIGHTED factor Hessians: each factor is re-linearized with the
     # frozen robust scale the optimizer actually adopted (the final ladder

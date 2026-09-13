@@ -68,6 +68,20 @@ void GraphOdometryBaseNode::initialize_processing() {
             "graph/solver/damping_lambda", graph.solver_damping_lambda));
         graph.marginalization_lambda = static_cast<float>(
             this->declare_parameter<double>("graph/marginalization_lambda", graph.marginalization_lambda));
+        auto& deg = graph.degenerate_regularization;
+        deg.enable = this->declare_parameter<bool>("graph/degenerate_regularization/enable", deg.enable);
+        deg.eigenvalue_threshold = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/eigenvalue_threshold", deg.eigenvalue_threshold));
+        deg.strength = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/strength", deg.strength));
+        deg.representative_length = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/representative_length", deg.representative_length));
+        deg.pseudo_inverse_relative_cutoff = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/pseudo_inverse_relative_cutoff",
+            deg.pseudo_inverse_relative_cutoff));
+        deg.pseudo_inverse_absolute_cutoff = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/pseudo_inverse_absolute_cutoff",
+            deg.pseudo_inverse_absolute_cutoff));
         graph.chain_sigma_rotation = static_cast<float>(
             this->declare_parameter<double>("graph/chain/sigma_rotation", graph.chain_sigma_rotation));
         graph.chain_sigma_translation = static_cast<float>(

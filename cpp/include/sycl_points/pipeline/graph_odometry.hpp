@@ -528,6 +528,18 @@ private:
         solver_params.relinearize_rotation_thresh = this->params_.graph.relinearize_rotation_thresh;
         solver_params.solver_damping_lambda = this->params_.graph.solver_damping_lambda;
         solver_params.marginalization_lambda = this->params_.graph.marginalization_lambda;
+        solver_params.degenerate_regularization.enable =
+            this->params_.graph.degenerate_regularization.enable;
+        solver_params.degenerate_regularization.eigenvalue_threshold =
+            this->params_.graph.degenerate_regularization.eigenvalue_threshold;
+        solver_params.degenerate_regularization.strength =
+            this->params_.graph.degenerate_regularization.strength;
+        solver_params.degenerate_regularization.representative_length =
+            this->params_.graph.degenerate_regularization.representative_length;
+        solver_params.degenerate_regularization.pseudo_inverse_relative_cutoff =
+            this->params_.graph.degenerate_regularization.pseudo_inverse_relative_cutoff;
+        solver_params.degenerate_regularization.pseudo_inverse_absolute_cutoff =
+            this->params_.graph.degenerate_regularization.pseudo_inverse_absolute_cutoff;
         solver_params.robust.enable = this->params_.graph.robust_enable;
         solver_params.robust.init_scale = this->params_.graph.robust_init_scale;
         solver_params.robust.min_scale = this->params_.graph.robust_min_scale;
