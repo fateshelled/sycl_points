@@ -32,8 +32,65 @@ struct Parameters : public odometry::CommonParameters {
         Pipeline pipeline;
     };
 
+    /// @brief Sliding-window graph optimizer (local BA) parameters.
+    struct Graph {
+        algorithms::registration::OptimizationMethod optimization_method =
+            algorithms::registration::OptimizationMethod::GAUSS_NEWTON;
+        algorithms::registration::RegistrationOptimizationParams::LevenbergMarquardt lm;
+        size_t window_size = 5;                  ///< persistent keyframe nodes
+        size_t solver_iterations = 10;           ///< nonlinear outer iterations per frame
+        float convergence_translation = 1e-4f;   ///< [m]
+        float convergence_rotation = 1e-4f;      ///< [rad]
+        float relinearize_translation_thresh = 0.05f;  ///< [m] delayed relinearization
+        float relinearize_rotation_thresh = 0.02f;     ///< [rad]
+        float solver_damping_lambda = 1e-6f;     ///< GN solver LDLT fallback regularization
+        float marginalization_lambda = 1e-6f;    ///< Schur-complement regularization
+        float chain_sigma_rotation = 5e-3f;      ///< [rad] RelativePoseFactor info
+        float chain_sigma_translation = 2e-2f;   ///< [m]
+        // Robust scale ladder (GNC) for per-frame tip factors. Disabled by
+        // default: factors then use registration/robust/default_scale as before.
+        bool robust_enable = false;
+        float robust_init_scale = 10.0f;
+        float robust_min_scale = 1.25f;
+        size_t robust_levels = 4;
+        size_t robust_iters_per_level = 2;
+        bool robust_relinearize_per_rung = true;
+        // Robust loss type + fixed default scale applied to graph factors. These are
+        // graph concerns, independent of the LO registration/robust/* auto-scale schedule.
+        algorithms::robust::RobustLossType robust_type = algorithms::robust::RobustLossType::GEMAN_MCCLURE;
+        float robust_default_scale = 10.0f;
+
+        struct DegenerateRegularization {
+            bool enable = false;
+            float eigenvalue_threshold = 1.0f;
+            float strength = 1.0f;
+            float representative_length = 1.0f;
+            float pseudo_inverse_relative_cutoff = 1e-6f;
+            float pseudo_inverse_absolute_cutoff = 1e-9f;
+        };
+        DegenerateRegularization degenerate_regularization;
+
+        /// @brief Registration / linearization settings for the graph factors.
+        /// Decoupled from lidar_odometry::LO::Registration so the graph node can be
+        /// configured independently of the single-frame align path (which owns registration/*).
+        struct Registration {
+            size_t min_num_points = 100;
+            algorithms::registration::RegistrationFactorParams factor;
+            algorithms::registration::RegistrationRandomSamplingParams random_sampling;
+        };
+
+        Registration registration;
+
+        /// @brief Constant-velocity deskew + re-solve for the tip node only.
+        /// Same type as lo.pipeline.velocity_update on purpose (LO-aligned
+        /// composition). Mutually exclusive with imu/deskew: skipped when IMU
+        /// deskew is enabled (same guard as LO).
+        algorithms::registration::RegistrationVelocityUpdateParams velocity_update;
+    };
+
     MotionPrediction motion_prediction;
     LO lo;
+    Graph graph;
 
     algorithms::registration::RegistrationPipelineParams make_registration_pipeline_params() const {
         algorithms::registration::RegistrationPipelineParams result;
