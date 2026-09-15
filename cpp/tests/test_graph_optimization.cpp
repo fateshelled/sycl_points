@@ -2445,8 +2445,8 @@ protected:
 };
 
 // In sparse_chain mode the point-cloud star must only ever touch the current
-// tip, older adjacent pairs live on chain RelativePoseFactors, and the
-// marginalization prior must anchor to the oldest surviving node.
+// tip, older adjacent pairs live on chain RelativePoseFactors, and every node
+// retained by the dense Markov-blanket prior must remain active.
 TEST_F(GraphTopologyTest, SparseChainKeepsStarAtTipOnly) {
     std::mt19937 gen(7);
     std::shared_ptr<knn::KNNBase> submap_knn;
@@ -2481,7 +2481,9 @@ TEST_F(GraphTopologyTest, SparseChainKeepsStarAtTipOnly) {
                 }
             }
             if (w.prior().is_valid()) {
-                EXPECT_EQ(w.prior().node_ids[0], w.active_nodes().front()->id) << "frame " << f;
+                for (const graph::NodeId prior_id : w.prior().node_ids) {
+                    EXPECT_NE(w.get_node(prior_id), nullptr) << "frame " << f;
+                }
             }
         }
     }
@@ -3098,7 +3100,7 @@ TEST_F(GraphVelocityUpdateTest, NoTimestampsFallsBackToPlainPath) {
     vu.raw_source = scan;  // has_timestamps() == false -> inactive
     const auto fr = opt.process_frame(scan, submap, submap_knn, scan_knn, Eigen::Isometry3f::Identity(), 1.0,
                                       gicp_params(), vu);
-    EXPECT_EQ(fr.tip_cloud, nullptr);
+    EXPECT_EQ(fr.tip_cloud.get(), scan.get());
     const auto tip = opt.window().active_nodes().back();
     EXPECT_EQ(tip->cloud.get(), scan.get());
     EXPECT_EQ(tip->knn.get(), scan_knn.get());
