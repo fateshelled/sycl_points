@@ -71,6 +71,11 @@ lidar_inertial_odometry_node:
     imu/bias/accel/y: 0.0
     imu/bias/accel/z: 0.0
 
+    # Initial bias uncertainty. Zero effectively locks bias because random-walk
+    # covariance grows very slowly over one LiDAR frame.
+    lio/initial_covariance/accel_bias_sigma: 0.1  # m/s^2
+    lio/initial_covariance/gyro_bias_sigma: 0.01  # rad/s
+
     # Gravity-aligned initial roll/pitch estimation.
     # Assumes the robot is stationary for at least required_duration_sec at startup.
     # Yaw is preserved from initial_base_link_pose; gravity does not constrain it.

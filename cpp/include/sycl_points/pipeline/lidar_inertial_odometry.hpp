@@ -362,38 +362,28 @@ private:
 
     /// @brief Decide whether the IMU bias states are observable in this window.
     ///
-    /// Returns true (always update biases) unless freeze_on_low_excitation is set,
-    /// in which case the window must show gyro or specific-force variation above the
-    /// configured thresholds.  Near-stationary windows return false so the caller can
-    /// hold the biases fixed instead of letting them absorb measurement noise.
-    ///
-    /// Both deviations are measured on the full 3-D vector, not its magnitude.  Using
-    /// the accel magnitude alone would miss a constant-rate turn: the gravity vector
-    /// rotates in the body frame so the accel components vary while |a| stays ≈ g, and
-    /// the gyro is constant so its deviation is ~0 — the window would be wrongly judged
-    /// unobservable and freeze the gyro bias exactly when rotation makes it observable.
-    bool imu_bias_observable() const {
+    /// Accel and gyro biases are gated independently. Gyro excitation uses the
+    /// bias-corrected angular-rate magnitude so constant-rate turns remain observable;
+    /// accel excitation uses vector variation over the window.
+    algorithms::lio::BiasUpdateMask imu_bias_observable() const {
         const auto& be = this->params_.lio.bias_estimation;
-        if (!be.freeze_on_low_excitation) return true;
-        if (this->imu_batch_.size() < 2) return false;
+        if (!be.freeze_on_low_excitation) return {};
+        if (this->imu_batch_.size() < 2) return {false, false};
 
-        Eigen::Vector3f gyro_mean = Eigen::Vector3f::Zero();
         Eigen::Vector3f accel_mean = Eigen::Vector3f::Zero();
         for (const auto& m : this->imu_batch_) {
-            gyro_mean += m.gyro;
             accel_mean += m.accel;
         }
         const float n = static_cast<float>(this->imu_batch_.size());
-        gyro_mean /= n;
         accel_mean /= n;
 
-        float gyro_dev = 0.0f;
+        float gyro_rate = 0.0f;
         float accel_dev = 0.0f;
         for (const auto& m : this->imu_batch_) {
-            gyro_dev = std::max(gyro_dev, (m.gyro - gyro_mean).norm());
+            gyro_rate = std::max(gyro_rate, (m.gyro - this->x_.gyro_bias).norm());
             accel_dev = std::max(accel_dev, (m.accel - accel_mean).norm());
         }
-        return gyro_dev > be.gyro_excitation_threshold || accel_dev > be.accel_excitation_threshold;
+        return {accel_dev > be.accel_excitation_threshold, gyro_rate > be.gyro_excitation_threshold};
     }
 
     /// @brief Clamp a bias vector to a maximum L2 norm (no-op when max_norm <= 0).
@@ -603,6 +593,14 @@ private:
         // before the first frame's state initialization runs.
         this->x_.accel_bias = this->params_.imu.bias.accel_bias;
         this->x_.gyro_bias = this->params_.imu.bias.gyro_bias;
+        const float accel_bias_variance = this->params_.lio.initial_covariance.accel_bias_sigma *
+                                          this->params_.lio.initial_covariance.accel_bias_sigma;
+        const float gyro_bias_variance = this->params_.lio.initial_covariance.gyro_bias_sigma *
+                                         this->params_.lio.initial_covariance.gyro_bias_sigma;
+        this->P_post_.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) =
+            accel_bias_variance * Eigen::Matrix3f::Identity();
+        this->P_post_.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) =
+            gyro_bias_variance * Eigen::Matrix3f::Identity();
 
         this->clear_total_processing_times();
     }

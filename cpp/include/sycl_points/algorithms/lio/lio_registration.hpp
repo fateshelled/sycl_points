@@ -205,6 +205,18 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
 // solve_ldlt
 // ---------------------------------------------------------------------------
 
+inline void constrain_fixed_biases(Eigen::Matrix<float, 15, 15>& H, Eigen::Matrix<float, 15, 1>& b,
+                                   const BiasUpdateMask& update_bias) {
+    const auto fix_block = [&](int index) {
+        H.block<3, 15>(index, 0).setZero();
+        H.block<15, 3>(0, index).setZero();
+        H.block<3, 3>(index, index).setIdentity();
+        b.segment<3>(index).setZero();
+    };
+    if (!update_bias.accel) fix_block(imu::State::kIdxAccBias);
+    if (!update_bias.gyro) fix_block(imu::State::kIdxGyrBias);
+}
+
 /// @brief Solve the combined LIO normal equation H·δx = −b with LDLT.
 ///
 /// Uses Bunch-Kaufman (LDLT) factorisation for numerical stability with
@@ -222,17 +234,32 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
 /// @param[out] P_post Posterior covariance H⁻¹ (optional, pass nullptr to skip).
 /// @return true on success; false if H is numerically ill-conditioned.
 inline bool solve_ldlt(const Eigen::Matrix<float, 15, 15>& H, const Eigen::Matrix<float, 15, 1>& b,
-                       Eigen::Matrix<float, 15, 1>& delta, Eigen::Matrix<float, 15, 15>* P_post = nullptr) {
-    Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(H);
+                       Eigen::Matrix<float, 15, 1>& delta, Eigen::Matrix<float, 15, 15>* P_post = nullptr,
+                       const BiasUpdateMask& update_bias = {}) {
+    if (!H.allFinite() || !b.allFinite()) {
+        delta.setZero();
+        if (P_post) P_post->setZero();
+        return false;
+    }
+    Eigen::Matrix<float, 15, 15> constrained_H = H;
+    Eigen::Matrix<float, 15, 1> constrained_b = b;
+    constrain_fixed_biases(constrained_H, constrained_b, update_bias);
+
+    Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(constrained_H);
     if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) {
         delta.setZero();
         if (P_post) P_post->setZero();
         return false;
     }
-    delta = ldlt.solve(-b);
+    delta = ldlt.solve(-constrained_b);
     if (P_post) {
         P_post->setIdentity();
         ldlt.solveInPlace(*P_post);  // P_post = H⁻¹
+    }
+    if (!delta.allFinite() || (P_post && !P_post->allFinite())) {
+        delta.setZero();
+        if (P_post) P_post->setZero();
+        return false;
     }
     return true;
 }
@@ -396,7 +423,8 @@ public:
     LIORegistrationResult align(const PointCloudShared& source, const PointCloudShared& target,
                                 const knn::KNNBase& target_knn, const imu::State& predicted_state,
                                 const Eigen::Matrix<float, 15, 15>& predicted_covariance,
-                                const Eigen::Matrix<float, 15, 15>& previous_posterior_covariance, bool update_bias,
+                                const Eigen::Matrix<float, 15, 15>& previous_posterior_covariance,
+                                const BiasUpdateMask& update_bias,
                                 float dt, const TransformMatrix& previous_pose) {
         Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
@@ -431,13 +459,6 @@ public:
             if (!imu_valid) return 0.0f;
             const Eigen::Matrix<float, 15, 1> residual = imu::compute_manifold_residual(predicted_state, state);
             return 0.5f * residual.dot(H_imu * residual);
-        };
-
-        const auto apply_bias_freeze = [&](Eigen::Matrix<float, 15, 1>& delta) {
-            if (!update_bias) {
-                delta.segment<3>(imu::State::kIdxAccBias).setZero();
-                delta.segment<3>(imu::State::kIdxGyrBias).setZero();
-            }
         };
 
         const auto& robust_params = this->params_.robust;
@@ -532,8 +553,7 @@ public:
 
                 switch (optimization.optimization_method) {
                     case registration::OptimizationMethod::GAUSS_NEWTON:
-                        if (solve_ldlt(lio.H + gn_params.lambda * I15, lio.b, delta)) {
-                            apply_bias_freeze(delta);
+                        if (solve_ldlt(lio.H + gn_params.lambda * I15, lio.b, delta, nullptr, update_bias)) {
                             step_accepted = true;
                         } else {
                             stop = true;
@@ -552,8 +572,7 @@ public:
                         for (size_t inner = 0; inner < lm_params.max_inner_iterations; ++inner) {
                             const float trial_lambda = lm_lambda;
                             Eigen::Matrix<float, 15, 1> trial_delta = Eigen::Matrix<float, 15, 1>::Zero();
-                            if (solve_ldlt(lio.H + lm_lambda * I15, lio.b, trial_delta)) {
-                                apply_bias_freeze(trial_delta);
+                            if (solve_ldlt(lio.H + lm_lambda * I15, lio.b, trial_delta, nullptr, update_bias)) {
                                 const imu::State trial_state = retract(operating_state, trial_delta);
                                 const auto [trial_icp_error, trial_inlier] = this->registration_->compute_error_frozen(
                                     source, target, state_to_pose(trial_state).matrix(), options);
@@ -585,12 +604,14 @@ public:
                     case registration::OptimizationMethod::POWELL_DOGLEG: {
                         const float current_cost = icp_cost(operating_state) + imu_cost(operating_state);
                         trust_region_radius = clamp_radius(trust_region_radius);
+                        Eigen::Matrix<float, 15, 15> dogleg_H = lio.H;
+                        Eigen::Matrix<float, 15, 1> dogleg_b = lio.b;
+                        constrain_fixed_biases(dogleg_H, dogleg_b, update_bias);
                         const registration::DoglegStep<15> dogleg =
-                            registration::compute_dogleg_step<15>(lio.H, lio.b, trust_region_radius);
+                            registration::compute_dogleg_step<15>(dogleg_H, dogleg_b, trust_region_radius);
                         Eigen::Matrix<float, 15, 1> trial_delta = dogleg.p;
-                        apply_bias_freeze(trial_delta);
                         const float predicted_reduction =
-                            -(lio.b.dot(trial_delta) + 0.5f * trial_delta.dot(lio.H * trial_delta));
+                            -(dogleg_b.dot(trial_delta) + 0.5f * trial_delta.dot(dogleg_H * trial_delta));
                         if (predicted_reduction <= 0.0f) {
                             trust_region_radius = clamp_radius(trust_region_radius * dl_params.gamma_decrease);
                             break;
@@ -638,7 +659,8 @@ public:
 
         LIORegistrationResult result;
         result.state = operating_state;
-        result.posterior_covariance = posterior_covariance(H_undamped, has_H_undamped, previous_posterior_covariance);
+        result.posterior_covariance =
+            posterior_covariance(H_undamped, has_H_undamped, previous_posterior_covariance, update_bias);
         result.registration_result.T = state_to_pose(operating_state);
         result.registration_result.converged = true;
         result.registration_result.iterations = actual_iterations;
@@ -660,28 +682,30 @@ private:
                delta.segment<3>(imu::State::kIdxPos).norm() < this->params_.criteria.translation;
     }
 
-    static Eigen::Matrix<float, 15, 15> posterior_covariance(const Eigen::Matrix<float, 15, 15>& H, bool valid_H,
-                                                             const Eigen::Matrix<float, 15, 15>& previous_covariance) {
+    static Eigen::Matrix<float, 15, 15> posterior_covariance(
+        const Eigen::Matrix<float, 15, 15>& H, bool valid_H,
+        const Eigen::Matrix<float, 15, 15>& previous_covariance, const BiasUpdateMask& update_bias) {
         if (!valid_H) return previous_covariance;
 
-        Eigen::Matrix<float, 15, 15> covariance = Eigen::Matrix<float, 15, 15>::Identity();
-        Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(H);
-        if (ldlt.info() == Eigen::Success && ldlt.vectorD().minCoeff() > 0.0f) {
-            ldlt.solveInPlace(covariance);
-            return covariance;
+        Eigen::Matrix<float, 15, 1> ignored_delta;
+        Eigen::Matrix<float, 15, 15> covariance;
+        Eigen::Matrix<float, 15, 15> candidate = H;
+        if (!solve_ldlt(candidate, Eigen::Matrix<float, 15, 1>::Zero(), ignored_delta, &covariance, update_bias)) {
+            candidate.diagonal().array() += 1e-4f;
+            if (!solve_ldlt(candidate, Eigen::Matrix<float, 15, 1>::Zero(), ignored_delta, &covariance, update_bias)) {
+                std::cerr << "[LIORegistration] WARNING: posterior covariance solve failed; keeping previous covariance."
+                          << std::endl;
+                return previous_covariance;
+            }
         }
-
-        Eigen::Matrix<float, 15, 15> damped = H;
-        damped.diagonal().array() += 1e-4f;
-        Eigen::LDLT<Eigen::Matrix<float, 15, 15>> damped_ldlt(damped);
-        if (damped_ldlt.info() == Eigen::Success && damped_ldlt.vectorD().minCoeff() > 0.0f) {
-            damped_ldlt.solveInPlace(covariance);
-            return covariance;
-        }
-
-        std::cerr << "[LIORegistration] WARNING: posterior covariance solve failed; keeping previous covariance."
-                  << std::endl;
-        return previous_covariance;
+        const auto restore_fixed_block = [&](int index) {
+            covariance.block<3, 15>(index, 0).setZero();
+            covariance.block<15, 3>(0, index).setZero();
+            covariance.block<3, 3>(index, index) = previous_covariance.block<3, 3>(index, index);
+        };
+        if (!update_bias.accel) restore_fixed_block(imu::State::kIdxAccBias);
+        if (!update_bias.gyro) restore_fixed_block(imu::State::kIdxGyrBias);
+        return covariance;
     }
 
     registration::Registration::Ptr registration_;

@@ -17,6 +17,11 @@ struct LIORobustScheduleParams {
     size_t auto_scaling_iter = 4;
 };
 
+struct BiasUpdateMask {
+    bool accel = true;
+    bool gyro = true;
+};
+
 /// @brief Direction-wise ICP information shaping for degenerate LIO frames.
 ///
 /// The reduced-chi² scalar weight handles globally bad alignments, but geometric

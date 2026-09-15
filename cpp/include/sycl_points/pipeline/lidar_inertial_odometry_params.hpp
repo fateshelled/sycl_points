@@ -30,6 +30,11 @@ struct Parameters : public odometry::CommonParameters {
             float icp_rotation_sigma = 0.01f;
         };
 
+        struct InitialCovariance {
+            float accel_bias_sigma = 0.1f;  ///< [m/s²]
+            float gyro_bias_sigma = 0.01f;  ///< [rad/s]
+        };
+
         /// Bias-estimation safeguards for the weakly-observable IMU bias states.
         struct BiasEstimation {
             /// Skip accel/gyro bias updates when the IMU excitation within the
@@ -38,8 +43,8 @@ struct Parameters : public odometry::CommonParameters {
             /// absorbs measurement noise and drives slow drift.  Default off to
             /// preserve behavior; enable for long stationary periods.
             bool freeze_on_low_excitation = false;
-            /// Window gyro variation (max |ω − mean ω|) above which the gyro is
-            /// considered excited [rad/s].
+            /// Maximum bias-corrected angular rate above which gyro bias updates
+            /// are enabled [rad/s].
             float gyro_excitation_threshold = 0.03f;
             /// Window specific-force variation (max ||a| − mean |a||) above which
             /// the accelerometer is considered excited [m/s²] (raw sensor units).
@@ -50,6 +55,7 @@ struct Parameters : public odometry::CommonParameters {
             float max_gyro_bias = 0.0f;   ///< [rad/s]
         };
         PreintegrationReset preintegration_reset;
+        InitialCovariance initial_covariance;
         BiasEstimation bias_estimation;
     };
 

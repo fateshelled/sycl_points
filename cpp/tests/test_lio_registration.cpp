@@ -63,3 +63,27 @@ TEST(LioRegistration, DirectionalIcpWeightingPreservesCoupledFactorStructure) {
     ASSERT_EQ(solver.info(), Eigen::Success);
     EXPECT_GE(solver.eigenvalues().minCoeff(), -kEps);
 }
+
+TEST(LioRegistration, FixedBiasIsRemovedFromCoupledSolve) {
+    Eigen::Matrix<float, 15, 15> H = Eigen::Matrix<float, 15, 15>::Identity();
+    Eigen::Matrix<float, 15, 1> b = Eigen::Matrix<float, 15, 1>::Zero();
+    H(imu::State::kIdxPos, imu::State::kIdxAccBias) = 0.5f;
+    H(imu::State::kIdxAccBias, imu::State::kIdxPos) = 0.5f;
+    b(imu::State::kIdxPos) = 1.0f;
+    b(imu::State::kIdxAccBias) = 10.0f;
+
+    Eigen::Matrix<float, 15, 1> delta;
+    ASSERT_TRUE(lio::solve_ldlt(H, b, delta, nullptr, {false, true}));
+    EXPECT_NEAR(delta(imu::State::kIdxPos), -1.0f, kEps);
+    EXPECT_TRUE(delta.segment<3>(imu::State::kIdxAccBias).isZero(kEps));
+}
+
+TEST(LioRegistration, BiasMasksAreIndependent) {
+    const Eigen::Matrix<float, 15, 15> H = Eigen::Matrix<float, 15, 15>::Identity();
+    Eigen::Matrix<float, 15, 1> b = Eigen::Matrix<float, 15, 1>::Ones();
+    Eigen::Matrix<float, 15, 1> delta;
+
+    ASSERT_TRUE(lio::solve_ldlt(H, b, delta, nullptr, {true, false}));
+    EXPECT_FALSE(delta.segment<3>(imu::State::kIdxAccBias).isZero(kEps));
+    EXPECT_TRUE(delta.segment<3>(imu::State::kIdxGyrBias).isZero(kEps));
+}
