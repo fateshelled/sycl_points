@@ -65,6 +65,7 @@ public:
         error = 100,
         old_timestamp,
         small_number_of_points,
+        insufficient_imu_coverage,
     };
 
     explicit LidarInertialOdometryPipeline(const Parameters& params) {
@@ -204,12 +205,6 @@ public:
             return ResultType::small_number_of_points;
         }
 
-        this->integrate_imu_window(timestamp);
-
-        if (insufficient_points) {
-            return this->process_imu_only(timestamp);
-        }
-
         // First frame: initialize state and submap, no registration
         if (this->is_first_frame_) {
             try {
@@ -241,6 +236,15 @@ public:
 
             this->reset_imu_preintegration();
             return ResultType::first_frame;
+        }
+
+        if (!this->integrate_imu_window(timestamp)) {
+            this->error_message_ = "IMU measurements do not bracket the frame interval";
+            return ResultType::insufficient_imu_coverage;
+        }
+
+        if (insufficient_points) {
+            return this->process_imu_only(timestamp);
         }
 
         // LIO registration
@@ -458,15 +462,18 @@ private:
         return pred;
     }
 
-    void integrate_imu_window(double timestamp) {
+    bool integrate_imu_window(double timestamp) {
         this->imu_batch_.clear();
         {
             std::lock_guard<std::mutex> lock(this->imu_mutex_);
             this->imu_batch_.reserve(this->imu_buffer_.size());
-            imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
-                                          this->imu_batch_);
+            if (!imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
+                                               this->imu_batch_)) {
+                return false;
+            }
         }
         this->imu_preintegration_->integrate_batch(this->imu_batch_);
+        return true;
     }
 
     ResultType process_imu_only(double timestamp) {
@@ -634,7 +641,12 @@ private:
         if (this->params_.imu.deskew.enable) {
             auto imu_buf = this->get_imu_buffer();
             const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
-            this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf, this->odom_, current_bias, this->x_.velocity);
+            algorithms::deskew::IMUDeskewStatus status;
+            if (!this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf, this->odom_, current_bias,
+                                                      this->x_.velocity, &status)) {
+                throw std::runtime_error("IMU deskew failed (status=" + std::to_string(static_cast<int>(status)) +
+                                         ")");
+            }
         }
         this->pc_processor_->prefilter(*scan, *this->preprocessed_pc_);
     }

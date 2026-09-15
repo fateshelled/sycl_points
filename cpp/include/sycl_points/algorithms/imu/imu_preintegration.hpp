@@ -53,10 +53,10 @@ concept imu_measurement_range = std::ranges::range<Range> && requires(Range& r) 
 /// correction for high-rate IMU data, not a replacement for sufficient IMU
 /// sampling frequency.
 template <imu_measurement_range Range>
-void build_measurement_window(const Range& measurements, double start_timestamp, double end_timestamp,
+bool build_measurement_window(const Range& measurements, double start_timestamp, double end_timestamp,
                               std::vector<IMUMeasurement>& window) {
     window.clear();
-    if (end_timestamp <= start_timestamp) return;
+    if (end_timestamp <= start_timestamp) return false;
 
     IMUMeasurement before_start;
     bool has_before_start = false;
@@ -67,14 +67,19 @@ void build_measurement_window(const Range& measurements, double start_timestamp,
             continue;
         }
 
-        if (measurement.timestamp > end_timestamp) {
+        if (window.empty() && !has_before_start) {
+            return false;
+        }
+
+        if (measurement.timestamp >= end_timestamp) {
             if (window.empty() && has_before_start) {
                 window.push_back(interpolate_measurement(before_start, measurement, start_timestamp));
             }
             if (!window.empty() && window.back().timestamp < end_timestamp) {
                 window.push_back(interpolate_measurement(window.back(), measurement, end_timestamp));
             }
-            break;
+            return !window.empty() && window.front().timestamp == start_timestamp &&
+                   window.back().timestamp == end_timestamp;
         }
 
         if (window.empty() && has_before_start) {
@@ -84,6 +89,11 @@ void build_measurement_window(const Range& measurements, double start_timestamp,
         }
         window.push_back(measurement);
     }
+
+    // Never expose a partial window: callers must not integrate or deskew with
+    // extrapolated IMU data when either boundary is not bracketed.
+    window.clear();
+    return false;
 }
 
 /// @brief Gyroscope and accelerometer biases.

@@ -325,7 +325,8 @@ TEST(IMUDeskewTest, ZeroScanDurationReturnsFalse) {
     EXPECT_EQ(status, IMUDeskewStatus::invalid_scan_duration);
 }
 
-// 7. IMU data covers only the first half → insufficient_imu_coverage.
+// 7. Even a small uncovered tail must be rejected instead of extrapolating the
+//    final IMU pose across the rest of the scan.
 TEST(IMUDeskewTest, PartialIMUCoverageReturnsFalse) {
     auto queue = make_queue();
     PointCloudShared cloud(queue);
@@ -336,10 +337,10 @@ TEST(IMUDeskewTest, PartialIMUCoverageReturnsFalse) {
     cloud.points->push_back(pt);
     cloud.timestamp_offsets->push_back(0.0f);
 
-    // Only covers [0.98, 1.04] — does not reach scan_end = 1.1 s.
-    // With kMarginSec = 0.05 the coverage threshold is scan_end - kMarginSec = 1.05.
-    // Last measurement at 1.04 < 1.05 → coverage check fails as expected.
-    const auto imu_buf = make_imu_buffer(0.98, 0.06, 10, Eigen::Vector3f::Zero(), Eigen::Vector3f(0.0f, 0.0f, 9.81f));
+    // Only covers [0.98, 1.09] — 10 ms short of scan_end = 1.1 s.  The old
+    // 50 ms tolerance accepted this and clamped the tail to a stale pose.
+    const auto imu_buf = make_imu_buffer(0.98, 0.11, 11, Eigen::Vector3f::Zero(),
+                                         Eigen::Vector3f(0.0f, 0.0f, 9.81f));
 
     IMUDeskewStatus status;
     PointCloudShared output(queue);
