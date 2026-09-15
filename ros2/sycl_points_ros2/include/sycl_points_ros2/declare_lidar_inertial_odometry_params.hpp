@@ -48,6 +48,8 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         node->declare_parameter<double>("lio/criteria/translation", registration.criteria.translation);
     registration.invalid_regularization_factor = node->declare_parameter<double>(
         "lio/invalid_regularization_factor", registration.invalid_regularization_factor);
+    registration.icp_information_scale = static_cast<float>(
+        node->declare_parameter<double>("lio/icp_information_scale", registration.icp_information_scale));
     params.lio.preintegration_reset.fd_velocity_sigma = static_cast<float>(
         node->declare_parameter<double>("lio/fd_velocity_sigma", params.lio.preintegration_reset.fd_velocity_sigma));
     params.lio.preintegration_reset.icp_rotation_sigma = static_cast<float>(

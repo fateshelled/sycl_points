@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
@@ -32,7 +33,7 @@
 //   aligned odom (world) frame:
 //     x_.position  = odom-frame position of the LiDAR origin [m]
 //     x_.rotation  = R_odom_lidar  (SO(3))
-//     x_.velocity  = odom-frame velocity of the LiDAR body [m/s]
+//     x_.velocity  = odom-frame velocity of the IMU origin [m/s]
 //     x_.accel_bias / gyro_bias = IMU biases (body frame)
 //
 //   The initial orientation is Rz(user_yaw) * R_gravity (roll/pitch from the IMU
@@ -78,6 +79,12 @@ public:
             if (params_.imu.buffer_duration_sec < need) {
                 params_.imu.buffer_duration_sec = need;
             }
+        }
+        if (!std::isfinite(params_.lio.initial_covariance.accel_bias_sigma) ||
+            params_.lio.initial_covariance.accel_bias_sigma <= 0.0f ||
+            !std::isfinite(params_.lio.initial_covariance.gyro_bias_sigma) ||
+            params_.lio.initial_covariance.gyro_bias_sigma <= 0.0f) {
+            throw std::invalid_argument("LIO initial bias sigmas must be finite and positive");
         }
         initialize();
     }
@@ -253,6 +260,10 @@ public:
             try {
                 *this->reg_result_ = time_utils::measure_execution([&]() { return this->register_frame(); }, dt_reg);
             } catch (const std::exception& e) {
+                // Discard the failed frame's accumulated preintegration. The
+                // accepted state and reset timestamp remain unchanged, so the
+                // next frame can rebuild the complete interval exactly once.
+                this->reset_imu_preintegration();
                 this->error_message_ = std::string("lio_registration: ") + e.what();
                 std::cerr << "[LidarInertialOdometry] " << this->error_message_ << std::endl;
                 return ResultType::error;
@@ -524,6 +535,13 @@ private:
         auto result = this->lio_registration_->align(
             *source, this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(), predicted_state,
             predicted_covariance, this->P_post_, this->imu_bias_observable(), this->dt_, this->odom_.matrix());
+
+        if (!result.valid()) {
+            const char* status = result.status == algorithms::lio::LIORegistrationStatus::invalid_imu
+                                     ? "INVALID_IMU"
+                                     : "NUMERIC_FAILURE";
+            throw std::runtime_error(std::string("solver status: ") + status);
+        }
 
         this->P_post_ = result.posterior_covariance;
         this->x_ = result.state;

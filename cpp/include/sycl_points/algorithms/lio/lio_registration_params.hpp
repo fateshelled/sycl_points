@@ -50,6 +50,8 @@ struct LIORegistrationParams {
     registration::RegistrationOptimizationParams optimization;
     LIORobustScheduleParams robust;
     float invalid_regularization_factor = 1e4f;
+    /// Explicit information multiplier for the robustified ICP factor.
+    float icp_information_scale = 1.0f;
     DirectionalIcpWeightingParams directional_icp_weighting;
 };
 

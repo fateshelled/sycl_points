@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <Eigen/Dense>
+#include <limits>
 
 #include "sycl_points/algorithms/lio/lio_registration.hpp"
 
@@ -86,4 +87,23 @@ TEST(LioRegistration, BiasMasksAreIndependent) {
     ASSERT_TRUE(lio::solve_ldlt(H, b, delta, nullptr, {true, false}));
     EXPECT_FALSE(delta.segment<3>(imu::State::kIdxAccBias).isZero(kEps));
     EXPECT_TRUE(delta.segment<3>(imu::State::kIdxGyrBias).isZero(kEps));
+}
+
+TEST(LioRegistration, SolveRejectsNonFiniteSystem) {
+    Eigen::Matrix<float, 15, 15> H = Eigen::Matrix<float, 15, 15>::Identity();
+    Eigen::Matrix<float, 15, 1> b = Eigen::Matrix<float, 15, 1>::Zero();
+    H(0, 0) = std::numeric_limits<float>::quiet_NaN();
+    Eigen::Matrix<float, 15, 1> delta = Eigen::Matrix<float, 15, 1>::Ones();
+    EXPECT_FALSE(lio::solve_ldlt(H, b, delta));
+    EXPECT_TRUE(delta.isZero());
+}
+
+TEST(LioRegistration, StatusSeparatesNoProgressFromInvalidResults) {
+    lio::LIORegistrationResult result;
+    result.status = lio::LIORegistrationStatus::no_progress;
+    EXPECT_TRUE(result.valid());
+    result.status = lio::LIORegistrationStatus::numeric_failure;
+    EXPECT_FALSE(result.valid());
+    result.status = lio::LIORegistrationStatus::invalid_imu;
+    EXPECT_FALSE(result.valid());
 }

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
 #include "sycl_points/algorithms/lio/lio_linearized_result.hpp"
@@ -416,7 +417,11 @@ public:
                     const LIORegistrationParams& params)
         : registration_(std::make_shared<registration::Registration>(queue, factor_params)),
           factor_params_(factor_params),
-          params_(params) {}
+          params_(params) {
+        if (!std::isfinite(params_.icp_information_scale) || params_.icp_information_scale <= 0.0f) {
+            throw std::invalid_argument("LIO icp_information_scale must be finite and positive");
+        }
+    }
 
     const registration::Registration::Ptr& registration_backend() const { return this->registration_; }
 
@@ -426,10 +431,20 @@ public:
                                 const Eigen::Matrix<float, 15, 15>& previous_posterior_covariance,
                                 const BiasUpdateMask& update_bias,
                                 float dt, const TransformMatrix& previous_pose) {
+        Eigen::Matrix<float, 15, 15> imu_information = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
-        const bool imu_valid =
-            imu::compute_imu_hessian_gradient(predicted_state, predicted_state, predicted_covariance, H_imu, b_imu);
+        const bool imu_valid = imu::compute_imu_information(predicted_covariance, imu_information);
+        if (imu_valid) imu::linearize_imu_prior(predicted_state, predicted_state, imu_information, H_imu, b_imu);
+
+        if (!imu_valid) {
+            LIORegistrationResult result;
+            result.status = LIORegistrationStatus::invalid_imu;
+            result.state = predicted_state;
+            result.posterior_covariance = previous_posterior_covariance;
+            result.registration_result.T = state_to_pose(predicted_state);
+            return result;
+        }
 
         imu::State operating_state = predicted_state;
         registration::Registration::ExecutionOptions options;
@@ -437,15 +452,14 @@ public:
         options.prev_pose = previous_pose;
         const TransformMatrix initial_pose = state_to_pose(predicted_state).matrix();
 
-        const float icp_residual_dim = (this->factor_params_.reg_type == registration::RegType::POINT_TO_PLANE ||
-                                        this->factor_params_.reg_type == registration::RegType::GENZ)
-                                           ? 1.0f
-                                           : 3.0f;
-
         registration::LinearizedResult last_icp;
         size_t actual_iterations = 0;
         Eigen::Matrix<float, 15, 15> H_undamped = Eigen::Matrix<float, 15, 15>::Zero();
         bool has_H_undamped = false;
+        bool any_step_accepted = false;
+        bool numeric_failure = false;
+        bool finite_rejected_trial = false;
+        bool abort_optimization = false;
 
         const auto& optimization = this->params_.optimization;
         const auto& gn_params = optimization.gn;
@@ -458,7 +472,7 @@ public:
         const auto imu_cost = [&](const imu::State& state) -> float {
             if (!imu_valid) return 0.0f;
             const Eigen::Matrix<float, 15, 1> residual = imu::compute_manifold_residual(predicted_state, state);
-            return 0.5f * residual.dot(H_imu * residual);
+            return 0.5f * residual.dot(imu_information * residual);
         };
 
         const auto& robust_params = this->params_.robust;
@@ -512,15 +526,16 @@ public:
                 const TransformMatrix current_pose = state_to_pose(operating_state).matrix();
                 last_icp = this->registration_->compute_linearized_result(source, target, target_knn, current_pose,
                                                                           initial_pose, options);
+                if (!last_icp.H.allFinite() || !last_icp.b.allFinite() || !std::isfinite(last_icp.error)) {
+                    numeric_failure = true;
+                    abort_optimization = true;
+                    break;
+                }
                 if (actual_iterations > 1 && imu_valid) {
-                    imu::compute_imu_gradient(predicted_state, operating_state, H_imu, b_imu);
+                    imu::linearize_imu_prior(predicted_state, operating_state, imu_information, H_imu, b_imu);
                 }
 
-                float icp_weight = 1.0f;
-                const float icp_dof = icp_residual_dim * static_cast<float>(last_icp.inlier) - 6.0f;
-                if (icp_dof > 0.0f && std::isfinite(last_icp.error) && last_icp.error >= 0.0f) {
-                    icp_weight = 1.0f / std::max(1.0f, 2.0f * last_icp.error / icp_dof);
-                }
+                const float icp_weight = this->params_.icp_information_scale;
 
                 LIOLinearizedResult icp_lio;
                 add_icp_factor(icp_lio, last_icp, operating_state.rotation, icp_weight);
@@ -537,6 +552,11 @@ public:
                         regularization * Eigen::Matrix3f::Identity();
                     lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) +=
                         regularization * Eigen::Matrix3f::Identity();
+                }
+                if (!lio.H.allFinite() || !lio.b.allFinite()) {
+                    numeric_failure = true;
+                    abort_optimization = true;
+                    break;
                 }
 
                 const auto icp_cost = [&](const imu::State& state) -> float {
@@ -556,6 +576,7 @@ public:
                         if (solve_ldlt(lio.H + gn_params.lambda * I15, lio.b, delta, nullptr, update_bias)) {
                             step_accepted = true;
                         } else {
+                            numeric_failure = true;
                             stop = true;
                         }
                         if (this->factor_params_.verbose) {
@@ -569,10 +590,17 @@ public:
                         break;
                     case registration::OptimizationMethod::LEVENBERG_MARQUARDT: {
                         const float current_cost = icp_cost(operating_state) + imu_cost(operating_state);
+                        if (!std::isfinite(current_cost)) {
+                            numeric_failure = true;
+                            stop = true;
+                            break;
+                        }
+                        bool inner_solve_succeeded = false;
                         for (size_t inner = 0; inner < lm_params.max_inner_iterations; ++inner) {
                             const float trial_lambda = lm_lambda;
                             Eigen::Matrix<float, 15, 1> trial_delta = Eigen::Matrix<float, 15, 1>::Zero();
                             if (solve_ldlt(lio.H + lm_lambda * I15, lio.b, trial_delta, nullptr, update_bias)) {
+                                inner_solve_succeeded = true;
                                 const imu::State trial_state = retract(operating_state, trial_delta);
                                 const auto [trial_icp_error, trial_inlier] = this->registration_->compute_error_frozen(
                                     source, target, state_to_pose(trial_state).matrix(), options);
@@ -587,17 +615,22 @@ public:
                                     std::cout << "dr: " << trial_delta.segment<3>(imu::State::kIdxRot).norm()
                                               << std::endl;
                                 }
-                                if (trial_cost <= current_cost) {
+                                if (std::isfinite(trial_cost) && std::isfinite(current_cost) &&
+                                    trial_cost <= current_cost) {
                                     delta = trial_delta;
                                     step_accepted = true;
                                     lm_lambda = std::clamp(lm_lambda / lm_params.lambda_factor, lm_params.min_lambda,
                                                            lm_params.max_lambda);
                                     break;
                                 }
+                                if (std::isfinite(trial_cost) && std::isfinite(current_cost)) {
+                                    finite_rejected_trial = true;
+                                }
                             }
                             lm_lambda = std::clamp(lm_lambda * lm_params.lambda_factor, lm_params.min_lambda,
                                                    lm_params.max_lambda);
                         }
+                        if (!inner_solve_succeeded && !step_accepted) numeric_failure = true;
                         stop = !step_accepted;
                         break;
                     }
@@ -612,7 +645,13 @@ public:
                         Eigen::Matrix<float, 15, 1> trial_delta = dogleg.p;
                         const float predicted_reduction =
                             -(dogleg_b.dot(trial_delta) + 0.5f * trial_delta.dot(dogleg_H * trial_delta));
+                        if (!trial_delta.allFinite() || !std::isfinite(predicted_reduction)) {
+                            numeric_failure = true;
+                            stop = true;
+                            break;
+                        }
                         if (predicted_reduction <= 0.0f) {
+                            finite_rejected_trial = true;
                             trust_region_radius = clamp_radius(trust_region_radius * dl_params.gamma_decrease);
                             break;
                         }
@@ -621,6 +660,11 @@ public:
                             source, target, state_to_pose(trial_state).matrix(), options);
                         const float trial_cost = icp_weight * trial_icp_error + imu_cost(trial_state);
                         const float rho = (current_cost - trial_cost) / predicted_reduction;
+                        if (!std::isfinite(trial_cost) || !std::isfinite(rho)) {
+                            numeric_failure = true;
+                            stop = true;
+                            break;
+                        }
                         if (this->factor_params_.verbose) {
                             std::cout << "iter [" << actual_iterations - 1 << "] ";
                             std::cout << "radius: " << trust_region_radius << ", ";
@@ -631,6 +675,7 @@ public:
                             std::cout << "dr: " << trial_delta.segment<3>(imu::State::kIdxRot).norm() << std::endl;
                         }
                         if (rho < dl_params.eta1) {
+                            finite_rejected_trial = true;
                             trust_region_radius = clamp_radius(trust_region_radius * dl_params.gamma_decrease);
                             break;
                         }
@@ -646,6 +691,7 @@ public:
                 H_undamped = lio.H;
                 has_H_undamped = true;
                 if (step_accepted) {
+                    any_step_accepted = true;
                     operating_state = retract(operating_state, delta);
                     if (is_converged(delta)) break;
                 } else if (stop) {
@@ -653,16 +699,22 @@ public:
                 }
             }
 
+            if (abort_optimization) break;
+
             robust_scale *= robust_scale_factor;
             rotation_robust_scale *= rotation_robust_scale_factor;
         }
 
         LIORegistrationResult result;
+        result.status = any_step_accepted
+                            ? LIORegistrationStatus::success
+                            : ((numeric_failure && !finite_rejected_trial) ? LIORegistrationStatus::numeric_failure
+                                                                           : LIORegistrationStatus::no_progress);
         result.state = operating_state;
         result.posterior_covariance =
             posterior_covariance(H_undamped, has_H_undamped, previous_posterior_covariance, update_bias);
         result.registration_result.T = state_to_pose(operating_state);
-        result.registration_result.converged = true;
+        result.registration_result.converged = result.valid();
         result.registration_result.iterations = actual_iterations;
         result.registration_result.inlier = last_icp.inlier;
         result.registration_result.error = last_icp.error;

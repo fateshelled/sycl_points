@@ -175,6 +175,7 @@ lidar_inertial_odometry_node:
     lio/criteria/translation: 0.01  # [m]
     lio/criteria/rotation: 0.0017   # [rad]
     lio/invalid_regularization_factor: 1.0e+4
+    lio/icp_information_scale: 1.0  # Explicit ICP/IMU balance; no residual-dependent feedback
     # Fixed-sigma floors added to P_initial at each IMU reset.
     # Prevents H_imu from dominating H_icp when noise_density is set to a small
     # physical value (accel / gyro).
@@ -197,8 +198,8 @@ lidar_inertial_odometry_node:
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
     #   little motion (biases are unobservable there and would absorb noise).
     lio/bias_estimation/freeze_on_low_excitation: true
-    lio/bias_estimation/gyro_excitation_threshold: 0.03   # [rad/s] max |w - mean w| in window
-    lio/bias_estimation/accel_excitation_threshold: 0.3   # [m/s^2] max ||a| - mean |a|| in window
+    lio/bias_estimation/gyro_excitation_threshold: 0.03   # [rad/s] max bias-corrected angular rate
+    lio/bias_estimation/accel_excitation_threshold: 0.3   # [m/s^2] max vector deviation in window
     # Hard clamp on estimated bias L2 norm (0 = disabled). Bounds runaway/drift.
     lio/bias_estimation/max_accel_bias: 1.0   # [m/s^2]
     lio/bias_estimation/max_gyro_bias: 0.2    # [rad/s]
