@@ -18,8 +18,8 @@ LidarInertialOdometryNode::LidarInertialOdometryNode(const rclcpp::NodeOptions& 
     max_pending_point_clouds_ = static_cast<std::size_t>(max_pending);
 
     const auto timer_period_ms = this->declare_parameter<int64_t>("processing/timer_period_ms", 1);
-    if (timer_period_ms <= 0) {
-        throw std::invalid_argument("processing/timer_period_ms must be positive");
+    if (timer_period_ms < 1 || timer_period_ms > 100) {
+        throw std::invalid_argument("processing/timer_period_ms must be between 1 and 100");
     }
 
     // -----------------------------------------------------------------------
