@@ -18,7 +18,9 @@ enum class DegenerateRegularizationType {
     /// @cite https://arxiv.org/abs/2408.11809
     /// @date 2024
     /// @note Non linear optimization with Tikhonov regularization
-    nl_reg
+    nl_reg,
+    /// @note Truncated SVD. Degenerate components of the pose update are set to zero.
+    tsvd
 };
 
 inline DegenerateRegularizationType DegenerateRegularizationType_from_string(const std::string& str) {
@@ -29,6 +31,8 @@ inline DegenerateRegularizationType DegenerateRegularizationType_from_string(con
         return DegenerateRegularizationType::none;
     } else if (upper.compare("NL-REG") == 0 || upper.compare("NL_REG") == 0) {
         return DegenerateRegularizationType::nl_reg;
+    } else if (upper.compare("TSVD") == 0) {
+        return DegenerateRegularizationType::tsvd;
     }
     std::string error_str = "[DegenerateRegularizationType_from_string] Invalid DegenerateRegularizationType str [";
     error_str += str;
@@ -105,6 +109,41 @@ private:
 
             ret.H += H_penalty;
             ret.b += H_penalty * delta_twist;
+            return ret;
+        } else if (this->params_.type == DegenerateRegularizationType::tsvd) {
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
+            if (solver_rot.info() != Eigen::Success) {
+                return ret;
+            }
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(linearized_result.H.block<3, 3>(3, 3));
+            if (solver_trans.info() != Eigen::Success) {
+                return ret;
+            }
+
+            Eigen::Matrix<float, 6, 6> observable_projector = Eigen::Matrix<float, 6, 6>::Identity();
+            const auto truncate_directions = [&](const auto& solver, const float threshold, const int offset) {
+                if (threshold <= 0.0f) {
+                    return;
+                }
+                for (Eigen::Index i = 0; i < 3; ++i) {
+                    if (solver.eigenvalues()(i) / static_cast<float>(inlier) < threshold) {
+                        Eigen::Vector<float, 6> direction = Eigen::Vector<float, 6>::Zero();
+                        direction.segment<3>(offset) = solver.eigenvectors().col(i);
+                        observable_projector -= direction * direction.transpose();
+                    }
+                }
+            };
+            truncate_directions(solver_rot, this->params_.rot_eigenvalue_threshold, 0);
+            truncate_directions(solver_trans, this->params_.trans_eigenvalue_threshold, 3);
+
+            // The registration solvers consume normal equations instead of a precomputed pseudo-inverse.
+            // Adding identity only in the truncated subspace and setting its gradient to zero is equivalent to
+            // setting the corresponding entries of Sigma^-1 to zero: the resulting update has no component in
+            // degenerate directions, while the observable subspace keeps the original normal equations.
+            const Eigen::Matrix<float, 6, 6> truncated_projector =
+                Eigen::Matrix<float, 6, 6>::Identity() - observable_projector;
+            ret.H = observable_projector * linearized_result.H * observable_projector + truncated_projector;
+            ret.b = observable_projector * linearized_result.b;
             return ret;
         }
         return ret;

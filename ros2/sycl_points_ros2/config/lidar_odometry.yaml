@@ -233,10 +233,9 @@ lidar_odometry_node:
     registration/dogleg/gamma_decrease: 0.80
     registration/dogleg/gamma_increase: 1.25
 
-    registration/degenerate_regularization/type: "NL_REG" # NONE, NL_REG
-    registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold: 10.0
-    registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold: 10.0
-    registration/degenerate_regularization/nl_reg/base_factor: 0.2
+    registration/degenerate_regularization/type: "TSVD" # NONE, NL_REG, TSVD
+    registration/degenerate_regularization/tsvd/trans_eigenvalue_threshold: 10.0
+    registration/degenerate_regularization/tsvd/rot_eigenvalue_threshold: 10.0
     registration/verbose: false
 
     # Visualization

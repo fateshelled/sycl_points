@@ -108,14 +108,18 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             node->declare_parameter<std::string>("registration/degenerate_regularization/type", "NONE");
         degenerate_reg.type = algorithms::registration::DegenerateRegularizationType_from_string(degenerate_reg_type);
 
-        degenerate_reg.base_factor = node->declare_parameter<double>(
-            "registration/degenerate_regularization/nl_reg/base_factor", degenerate_reg.base_factor);
-        degenerate_reg.trans_eigenvalue_threshold =
-            node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold",
-                                            degenerate_reg.trans_eigenvalue_threshold);
-        degenerate_reg.rot_eigenvalue_threshold =
-            node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold",
-                                            degenerate_reg.rot_eigenvalue_threshold);
+        const bool use_tsvd =
+            degenerate_reg.type == algorithms::registration::DegenerateRegularizationType::tsvd;
+        const std::string parameter_prefix = use_tsvd ? "registration/degenerate_regularization/tsvd/"
+                                                      : "registration/degenerate_regularization/nl_reg/";
+        degenerate_reg.trans_eigenvalue_threshold = node->declare_parameter<double>(
+            parameter_prefix + "trans_eigenvalue_threshold", degenerate_reg.trans_eigenvalue_threshold);
+        degenerate_reg.rot_eigenvalue_threshold = node->declare_parameter<double>(
+            parameter_prefix + "rot_eigenvalue_threshold", degenerate_reg.rot_eigenvalue_threshold);
+        if (degenerate_reg.type == algorithms::registration::DegenerateRegularizationType::nl_reg) {
+            degenerate_reg.base_factor = node->declare_parameter<double>(parameter_prefix + "base_factor",
+                                                                         degenerate_reg.base_factor);
+        }
     }
 
     return params;

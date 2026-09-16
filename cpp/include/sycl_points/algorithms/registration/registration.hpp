@@ -245,7 +245,7 @@ public:
                 result.b_raw = linearized_result.b;
                 result.error_raw = linearized_result.error;
 
-                // Regularization: nl_reg (Tikhonov penalty for degenerate directions)
+                // Degeneracy mitigation: NL-Reg (soft Tikhonov penalty) or TSVD (hard subspace truncation)
                 const LinearizedResult regularized_result =
                     this->degenerate_reg_.regularize(linearized_result, result.T, T_initial);
 
