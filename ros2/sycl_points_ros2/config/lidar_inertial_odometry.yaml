@@ -18,6 +18,16 @@ lidar_inertial_odometry_node:
     imu_qos/depth: 100
     imu_qos/reliability: "best_effort"
 
+    # Internal LiDAR backlog after DDS delivery. The active frame is retained
+    # separately while waiting for IMU coverage; when this queue is full, the
+    # oldest pending frame is dropped to keep live processing bounded.
+    processing/max_pending_point_clouds: 3
+
+    # Period of the internal processing timer in milliseconds. The timer is
+    # armed on demand when a point cloud arrives, so this only bounds the
+    # polling granularity while a frame waits for IMU coverage.
+    processing/timer_period_ms: 5
+
     odom_frame_id: odom
     base_link_id: base_link
     lidar_frame_id: os_sensor
@@ -52,7 +62,7 @@ lidar_inertial_odometry_node:
     imu/accel_unit: "m_s2"              # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
     imu/buffer_duration_sec: 2.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew
-    imu/deskew/gyro_only: false         # If true, use rotation only and omit accelerometer/velocity translation
+    imu/deskew/gyro_only: true          # Safer default; full SE3 deskew is opt-in after velocity/bias calibration
     imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
     imu/preintegration/gravity/y: 0.0
     imu/preintegration/gravity/z: -9.80665
@@ -70,6 +80,11 @@ lidar_inertial_odometry_node:
     imu/bias/accel/x: 0.0  # Initial accelerometer bias [m/s^2]
     imu/bias/accel/y: 0.0
     imu/bias/accel/z: 0.0
+
+    # Initial bias uncertainty. Zero effectively locks bias because random-walk
+    # covariance grows very slowly over one LiDAR frame.
+    lio/initial_covariance/accel_bias_sigma: 0.1  # m/s^2
+    lio/initial_covariance/gyro_bias_sigma: 0.01  # rad/s
 
     # Gravity-aligned initial roll/pitch estimation.
     # Assumes the robot is stationary for at least required_duration_sec at startup.
@@ -170,6 +185,7 @@ lidar_inertial_odometry_node:
     lio/criteria/translation: 0.01  # [m]
     lio/criteria/rotation: 0.0017   # [rad]
     lio/invalid_regularization_factor: 1.0e+4
+    lio/icp_information_scale: 1.0  # Explicit ICP/IMU balance; no residual-dependent feedback
     # Fixed-sigma floors added to P_initial at each IMU reset.
     # Prevents H_imu from dominating H_icp when noise_density is set to a small
     # physical value (accel / gyro).
@@ -192,8 +208,8 @@ lidar_inertial_odometry_node:
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
     #   little motion (biases are unobservable there and would absorb noise).
     lio/bias_estimation/freeze_on_low_excitation: true
-    lio/bias_estimation/gyro_excitation_threshold: 0.03   # [rad/s] max |w - mean w| in window
-    lio/bias_estimation/accel_excitation_threshold: 0.3   # [m/s^2] max ||a| - mean |a|| in window
+    lio/bias_estimation/gyro_excitation_threshold: 0.03   # [rad/s] max bias-corrected angular rate
+    lio/bias_estimation/accel_excitation_threshold: 0.3   # [m/s^2] max vector deviation in window
     # Hard clamp on estimated bias L2 norm (0 = disabled). Bounds runaway/drift.
     lio/bias_estimation/max_accel_bias: 1.0   # [m/s^2]
     lio/bias_estimation/max_gyro_bias: 0.2    # [rad/s]

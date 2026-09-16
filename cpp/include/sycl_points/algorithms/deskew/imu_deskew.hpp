@@ -156,24 +156,13 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
     const double scan_end_sec = scan_start_time_sec + scan_duration_sec;
 
     // -----------------------------------------------------------------------
-    // Step 1: Filter IMU buffer to the scan window with a generous margin.
+    // Step 1: Extract an exactly bounded IMU window.  Endpoint extrapolation
+    // would silently clamp the last part of a scan to a stale pose.
     // -----------------------------------------------------------------------
-    constexpr double kMarginSec = 0.05;  // 50 ms — covers up to 50 Hz IMU
     std::vector<imu::IMUMeasurement> filtered;
     filtered.reserve(256);
-    for (const auto& m : imu_buffer) {
-        if (m.timestamp >= scan_start_time_sec - kMarginSec && m.timestamp <= scan_end_sec + kMarginSec) {
-            filtered.push_back(m);
-        }
-    }
-
-    // We need at least 2 measurements and coverage of the full scan window.
-    if (filtered.size() < 2) {
-        set_status(IMUDeskewStatus::insufficient_imu_coverage);
-        return false;
-    }
-    if (filtered.front().timestamp > scan_start_time_sec + kMarginSec ||
-        filtered.back().timestamp < scan_end_sec - kMarginSec) {
+    if (!imu::build_measurement_window(imu_buffer, scan_start_time_sec, scan_end_sec, filtered) ||
+        filtered.size() < 2) {
         set_status(IMUDeskewStatus::insufficient_imu_coverage);
         return false;
     }
@@ -182,36 +171,7 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
     // Step 2: Build a virtual IMU measurement at exactly scan_start_time_sec
     //         by linearly interpolating adjacent measurements.
     // -----------------------------------------------------------------------
-    imu::IMUMeasurement m_start;
-    m_start.timestamp = scan_start_time_sec;
-
-    // Find the first measurement at or after scan_start.
-    auto it_next = std::lower_bound(filtered.begin(), filtered.end(), scan_start_time_sec,
-                                    [](const imu::IMUMeasurement& m, double t) { return m.timestamp < t; });
-
-    if (it_next == filtered.begin()) {
-        // All measurements are at or after scan_start — use the first one as-is.
-        m_start.gyro = it_next->gyro;
-        m_start.accel = it_next->accel;
-    } else if (it_next == filtered.end()) {
-        // All measurements are before scan_start — use the last one as-is.
-        m_start.gyro = filtered.back().gyro;
-        m_start.accel = filtered.back().accel;
-        it_next = filtered.end();
-    } else {
-        // Interpolate between the bracketing measurements.
-        const auto& prev_m = *std::prev(it_next);
-        const float alpha =
-            static_cast<float>((scan_start_time_sec - prev_m.timestamp) / (it_next->timestamp - prev_m.timestamp));
-
-        // LERP
-        m_start.gyro(0) = std::fma(it_next->gyro(0) - prev_m.gyro(0), alpha, prev_m.gyro(0));
-        m_start.gyro(1) = std::fma(it_next->gyro(1) - prev_m.gyro(1), alpha, prev_m.gyro(1));
-        m_start.gyro(2) = std::fma(it_next->gyro(2) - prev_m.gyro(2), alpha, prev_m.gyro(2));
-        m_start.accel(0) = std::fma(it_next->accel(0) - prev_m.accel(0), alpha, prev_m.accel(0));
-        m_start.accel(1) = std::fma(it_next->accel(1) - prev_m.accel(1), alpha, prev_m.accel(1));
-        m_start.accel(2) = std::fma(it_next->accel(2) - prev_m.accel(2), alpha, prev_m.accel(2));
-    }
+    const imu::IMUMeasurement& m_start = filtered.front();
 
     // -----------------------------------------------------------------------
     // Step 3: Integrate IMU from scan_start to build a relative-pose trajectory.
@@ -237,9 +197,7 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
         local_integrator.reset(bias);
         local_integrator.integrate(m_start);  // stores as prev; no integration step yet
 
-        for (auto it = it_next; it != filtered.end(); ++it) {
-            if (it->timestamp > scan_end_sec + kMarginSec) break;
-
+        for (auto it = std::next(filtered.begin()); it != filtered.end(); ++it) {
             local_integrator.integrate(*it);
 
             const float t_rel_sec = static_cast<float>(it->timestamp - scan_start_time_sec);
@@ -278,7 +236,8 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
 
         // Verify the trajectory covers the full scan duration.
         const float scan_duration_f = static_cast<float>(scan_duration_sec);
-        if (traj_cpu.back().timestamp < scan_duration_f - static_cast<float>(kMarginSec)) {
+        constexpr float kCoverageToleranceSec = 1e-6f;
+        if (traj_cpu.back().timestamp < scan_duration_f - kCoverageToleranceSec) {
             set_status(IMUDeskewStatus::insufficient_imu_coverage);
             return false;
         }

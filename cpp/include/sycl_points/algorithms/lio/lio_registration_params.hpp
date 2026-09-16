@@ -17,6 +17,11 @@ struct LIORobustScheduleParams {
     size_t auto_scaling_iter = 4;
 };
 
+struct BiasUpdateMask {
+    bool accel = true;
+    bool gyro = true;
+};
+
 /// @brief Direction-wise ICP information shaping for degenerate LIO frames.
 ///
 /// The reduced-chi² scalar weight handles globally bad alignments, but geometric
@@ -45,6 +50,8 @@ struct LIORegistrationParams {
     registration::RegistrationOptimizationParams optimization;
     LIORobustScheduleParams robust;
     float invalid_regularization_factor = 1e4f;
+    /// Explicit information multiplier for the robustified ICP factor.
+    float icp_information_scale = 1.0f;
     DirectionalIcpWeightingParams directional_icp_weighting;
 };
 

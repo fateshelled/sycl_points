@@ -268,3 +268,40 @@ TEST(ImuFactor, IllConditionedCovarianceReturnsZero) {
     EXPECT_TRUE(H.isZero()) << "H should be zero for ill-conditioned P";
     EXPECT_TRUE(b.isZero()) << "b should be zero for ill-conditioned P";
 }
+
+TEST(ImuFactor, RotationGradientMatchesRightPerturbationFiniteDifference) {
+    imu::State x_pred, x_op;
+    x_op.rotation = Eigen::AngleAxisf(0.45f, Eigen::Vector3f(1.0f, 2.0f, -0.5f).normalized()).toRotationMatrix();
+
+    Eigen::Matrix<float, 15, 15> P = diag_cov(0.2f);
+    P(3, 3) = 0.03f;
+    P(4, 4) = 0.08f;
+    P(5, 5) = 0.15f;
+    Eigen::Matrix<float, 15, 15> H;
+    Eigen::Matrix<float, 15, 1> b;
+    ASSERT_TRUE(imu::compute_imu_hessian_gradient(x_pred, x_op, P, H, b));
+
+    Eigen::Matrix<float, 15, 15> information;
+    ASSERT_TRUE(imu::compute_imu_information(P, information));
+    const auto cost = [&](const imu::State& state) {
+        const auto r = imu::compute_manifold_residual(x_pred, state);
+        return 0.5f * r.dot(information * r);
+    };
+
+    constexpr float eps = 1e-3f;
+    Eigen::Vector3f numeric_gradient;
+    for (int axis = 0; axis < 3; ++axis) {
+        Eigen::Vector3f d = Eigen::Vector3f::Zero();
+        d(axis) = eps;
+        imu::State plus = x_op;
+        imu::State minus = x_op;
+        plus.rotation *= sycl_points::eigen_utils::geometry::quaternion_to_rotation_matrix(
+            sycl_points::eigen_utils::lie::so3_exp(d));
+        minus.rotation *= sycl_points::eigen_utils::geometry::quaternion_to_rotation_matrix(
+            sycl_points::eigen_utils::lie::so3_exp(-d));
+        numeric_gradient(axis) = (cost(plus) - cost(minus)) / (2.0f * eps);
+    }
+    EXPECT_TRUE(numeric_gradient.isApprox(b.segment<3>(imu::State::kIdxRot), 2e-3f))
+        << "numeric=" << numeric_gradient.transpose() << " analytic="
+        << b.segment<3>(imu::State::kIdxRot).transpose();
+}

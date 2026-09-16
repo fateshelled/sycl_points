@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
@@ -32,7 +33,7 @@
 //   aligned odom (world) frame:
 //     x_.position  = odom-frame position of the LiDAR origin [m]
 //     x_.rotation  = R_odom_lidar  (SO(3))
-//     x_.velocity  = odom-frame velocity of the LiDAR body [m/s]
+//     x_.velocity  = odom-frame velocity of the IMU origin [m/s]
 //     x_.accel_bias / gyro_bias = IMU biases (body frame)
 //
 //   The initial orientation is Rz(user_yaw) * R_gravity (roll/pitch from the IMU
@@ -65,6 +66,13 @@ public:
         error = 100,
         old_timestamp,
         small_number_of_points,
+        insufficient_imu_coverage,
+    };
+
+    enum class IMUCoverage : std::int8_t {
+        ready,
+        waiting_for_future,
+        start_expired,
     };
 
     explicit LidarInertialOdometryPipeline(const Parameters& params) {
@@ -77,6 +85,12 @@ public:
             if (params_.imu.buffer_duration_sec < need) {
                 params_.imu.buffer_duration_sec = need;
             }
+        }
+        if (!std::isfinite(params_.lio.initial_covariance.accel_bias_sigma) ||
+            params_.lio.initial_covariance.accel_bias_sigma <= 0.0f ||
+            !std::isfinite(params_.lio.initial_covariance.gyro_bias_sigma) ||
+            params_.lio.initial_covariance.gyro_bias_sigma <= 0.0f) {
+            throw std::invalid_argument("LIO initial bias sigmas must be finite and positive");
         }
         initialize();
     }
@@ -123,6 +137,38 @@ public:
     std::deque<imu::IMUMeasurement> get_imu_buffer() const {
         std::lock_guard<std::mutex> lock(this->imu_mutex_);
         return this->imu_buffer_;
+    }
+
+    /// @brief Check whether the buffered IMU samples bracket a complete time window.
+    ///
+    /// A future sample may make waiting_for_future ready.  start_expired is not
+    /// recoverable because add_imu_measurement() only accepts newer samples.
+    IMUCoverage get_imu_coverage(double start_timestamp, double end_timestamp) const {
+        std::lock_guard<std::mutex> lock(this->imu_mutex_);
+        return classify_imu_coverage_locked(start_timestamp, end_timestamp);
+    }
+
+    /// @brief Check the IMU interval needed to preintegrate the next LiDAR frame.
+    ///
+    /// The first frame establishes the reset timestamp and therefore does not
+    /// require preintegration.  Later frames always require complete coverage,
+    /// independently of whether per-point deskew is enabled.
+    IMUCoverage get_frame_imu_coverage(double frame_timestamp) const {
+        std::lock_guard<std::mutex> lock(this->imu_mutex_);
+        if (this->is_first_frame_) return IMUCoverage::ready;
+        return classify_imu_coverage_locked(this->last_imu_reset_timestamp_, frame_timestamp);
+    }
+
+    /// @brief Combine requirements; an expired start is terminal, otherwise any
+    ///        future requirement keeps the frame waiting.
+    static IMUCoverage combine_imu_coverage(IMUCoverage lhs, IMUCoverage rhs) {
+        if (lhs == IMUCoverage::start_expired || rhs == IMUCoverage::start_expired) {
+            return IMUCoverage::start_expired;
+        }
+        if (lhs == IMUCoverage::waiting_for_future || rhs == IMUCoverage::waiting_for_future) {
+            return IMUCoverage::waiting_for_future;
+        }
+        return IMUCoverage::ready;
     }
 
     // -------------------------------------------------------------------------
@@ -204,12 +250,6 @@ public:
             return ResultType::small_number_of_points;
         }
 
-        this->integrate_imu_window(timestamp);
-
-        if (insufficient_points) {
-            return this->process_imu_only(timestamp);
-        }
-
         // First frame: initialize state and submap, no registration
         if (this->is_first_frame_) {
             try {
@@ -243,12 +283,25 @@ public:
             return ResultType::first_frame;
         }
 
+        if (!this->integrate_imu_window(timestamp)) {
+            this->error_message_ = "IMU measurements do not bracket the frame interval";
+            return ResultType::insufficient_imu_coverage;
+        }
+
+        if (insufficient_points) {
+            return this->process_imu_only(timestamp);
+        }
+
         // LIO registration
         {
             double dt_reg = 0.0;
             try {
                 *this->reg_result_ = time_utils::measure_execution([&]() { return this->register_frame(); }, dt_reg);
             } catch (const std::exception& e) {
+                // Discard the failed frame's accumulated preintegration. The
+                // accepted state and reset timestamp remain unchanged, so the
+                // next frame can rebuild the complete interval exactly once.
+                this->reset_imu_preintegration();
                 this->error_message_ = std::string("lio_registration: ") + e.what();
                 std::cerr << "[LidarInertialOdometry] " << this->error_message_ << std::endl;
                 return ResultType::error;
@@ -280,6 +333,15 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 private:
+    IMUCoverage classify_imu_coverage_locked(double start_timestamp, double end_timestamp) const {
+        if (this->imu_buffer_.empty()) return IMUCoverage::waiting_for_future;
+        // Check the unrecoverable condition first. Newer IMU samples cannot
+        // restore a start sample that has already been evicted.
+        if (this->imu_buffer_.front().timestamp > start_timestamp) return IMUCoverage::start_expired;
+        if (this->imu_buffer_.back().timestamp < end_timestamp) return IMUCoverage::waiting_for_future;
+        return IMUCoverage::ready;
+    }
+
     // -------------------------------------------------------------------------
     // Member variables
     // -------------------------------------------------------------------------
@@ -358,38 +420,28 @@ private:
 
     /// @brief Decide whether the IMU bias states are observable in this window.
     ///
-    /// Returns true (always update biases) unless freeze_on_low_excitation is set,
-    /// in which case the window must show gyro or specific-force variation above the
-    /// configured thresholds.  Near-stationary windows return false so the caller can
-    /// hold the biases fixed instead of letting them absorb measurement noise.
-    ///
-    /// Both deviations are measured on the full 3-D vector, not its magnitude.  Using
-    /// the accel magnitude alone would miss a constant-rate turn: the gravity vector
-    /// rotates in the body frame so the accel components vary while |a| stays ≈ g, and
-    /// the gyro is constant so its deviation is ~0 — the window would be wrongly judged
-    /// unobservable and freeze the gyro bias exactly when rotation makes it observable.
-    bool imu_bias_observable() const {
+    /// Accel and gyro biases are gated independently. Gyro excitation uses the
+    /// bias-corrected angular-rate magnitude so constant-rate turns remain observable;
+    /// accel excitation uses vector variation over the window.
+    algorithms::lio::BiasUpdateMask imu_bias_observable() const {
         const auto& be = this->params_.lio.bias_estimation;
-        if (!be.freeze_on_low_excitation) return true;
-        if (this->imu_batch_.size() < 2) return false;
+        if (!be.freeze_on_low_excitation) return {};
+        if (this->imu_batch_.size() < 2) return {false, false};
 
-        Eigen::Vector3f gyro_mean = Eigen::Vector3f::Zero();
         Eigen::Vector3f accel_mean = Eigen::Vector3f::Zero();
         for (const auto& m : this->imu_batch_) {
-            gyro_mean += m.gyro;
             accel_mean += m.accel;
         }
         const float n = static_cast<float>(this->imu_batch_.size());
-        gyro_mean /= n;
         accel_mean /= n;
 
-        float gyro_dev = 0.0f;
+        float gyro_rate = 0.0f;
         float accel_dev = 0.0f;
         for (const auto& m : this->imu_batch_) {
-            gyro_dev = std::max(gyro_dev, (m.gyro - gyro_mean).norm());
+            gyro_rate = std::max(gyro_rate, (m.gyro - this->x_.gyro_bias).norm());
             accel_dev = std::max(accel_dev, (m.accel - accel_mean).norm());
         }
-        return gyro_dev > be.gyro_excitation_threshold || accel_dev > be.accel_excitation_threshold;
+        return {accel_dev > be.accel_excitation_threshold, gyro_rate > be.gyro_excitation_threshold};
     }
 
     /// @brief Clamp a bias vector to a maximum L2 norm (no-op when max_norm <= 0).
@@ -458,15 +510,18 @@ private:
         return pred;
     }
 
-    void integrate_imu_window(double timestamp) {
+    bool integrate_imu_window(double timestamp) {
         this->imu_batch_.clear();
         {
             std::lock_guard<std::mutex> lock(this->imu_mutex_);
             this->imu_batch_.reserve(this->imu_buffer_.size());
-            imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
-                                          this->imu_batch_);
+            if (!imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
+                                               this->imu_batch_)) {
+                return false;
+            }
         }
         this->imu_preintegration_->integrate_batch(this->imu_batch_);
+        return true;
     }
 
     ResultType process_imu_only(double timestamp) {
@@ -527,6 +582,13 @@ private:
         auto result = this->lio_registration_->align(
             *source, this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(), predicted_state,
             predicted_covariance, this->P_post_, this->imu_bias_observable(), this->dt_, this->odom_.matrix());
+
+        if (!result.valid()) {
+            const char* status = result.status == algorithms::lio::LIORegistrationStatus::invalid_imu
+                                     ? "INVALID_IMU"
+                                     : "NUMERIC_FAILURE";
+            throw std::runtime_error(std::string("solver status: ") + status);
+        }
 
         this->P_post_ = result.posterior_covariance;
         this->x_ = result.state;
@@ -596,6 +658,14 @@ private:
         // before the first frame's state initialization runs.
         this->x_.accel_bias = this->params_.imu.bias.accel_bias;
         this->x_.gyro_bias = this->params_.imu.bias.gyro_bias;
+        const float accel_bias_variance = this->params_.lio.initial_covariance.accel_bias_sigma *
+                                          this->params_.lio.initial_covariance.accel_bias_sigma;
+        const float gyro_bias_variance = this->params_.lio.initial_covariance.gyro_bias_sigma *
+                                         this->params_.lio.initial_covariance.gyro_bias_sigma;
+        this->P_post_.block<3, 3>(imu::State::kIdxAccBias, imu::State::kIdxAccBias) =
+            accel_bias_variance * Eigen::Matrix3f::Identity();
+        this->P_post_.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) =
+            gyro_bias_variance * Eigen::Matrix3f::Identity();
 
         this->clear_total_processing_times();
     }
@@ -634,7 +704,12 @@ private:
         if (this->params_.imu.deskew.enable) {
             auto imu_buf = this->get_imu_buffer();
             const imu::IMUBias current_bias{this->x_.gyro_bias, this->x_.accel_bias};
-            this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf, this->odom_, current_bias, this->x_.velocity);
+            algorithms::deskew::IMUDeskewStatus status;
+            if (!this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf, this->odom_, current_bias,
+                                                      this->x_.velocity, &status)) {
+                throw std::runtime_error("IMU deskew failed (status=" + std::to_string(static_cast<int>(status)) +
+                                         ")");
+            }
         }
         this->pc_processor_->prefilter(*scan, *this->preprocessed_pc_);
     }
