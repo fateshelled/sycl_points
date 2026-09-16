@@ -23,6 +23,11 @@ lidar_inertial_odometry_node:
     # oldest pending frame is dropped to keep live processing bounded.
     processing/max_pending_point_clouds: 3
 
+    # Period of the internal processing timer in milliseconds. The timer is
+    # armed on demand when a point cloud arrives, so this only bounds the
+    # polling granularity while a frame waits for IMU coverage.
+    processing/timer_period_ms: 5
+
     odom_frame_id: odom
     base_link_id: base_link
     lidar_frame_id: os_sensor

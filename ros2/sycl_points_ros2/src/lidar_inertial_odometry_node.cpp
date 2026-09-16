@@ -17,6 +17,11 @@ LidarInertialOdometryNode::LidarInertialOdometryNode(const rclcpp::NodeOptions& 
     }
     max_pending_point_clouds_ = static_cast<std::size_t>(max_pending);
 
+    const auto timer_period_ms = this->declare_parameter<int64_t>("processing/timer_period_ms", 1);
+    if (timer_period_ms <= 0) {
+        throw std::invalid_argument("processing/timer_period_ms must be positive");
+    }
+
     // -----------------------------------------------------------------------
     // Subscriptions
     // -----------------------------------------------------------------------
@@ -44,9 +49,10 @@ LidarInertialOdometryNode::LidarInertialOdometryNode(const rclcpp::NodeOptions& 
                 sub_imu_->get_topic_name(), imu_qos_params_.history.c_str(), imu_qos_params_.depth,
                 imu_qos_params_.reliability.c_str());
 
-    processing_timer_ = this->create_wall_timer(std::chrono::milliseconds(1),
+    processing_timer_ = this->create_wall_timer(std::chrono::milliseconds(timer_period_ms),
                                                 std::bind(&LidarInertialOdometryNode::processing_timer_callback, this),
                                                 cb_group_processing_, false);
+    RCLCPP_INFO(this->get_logger(), "Processing timer period: %ld ms", timer_period_ms);
 }
 
 // ---------------------------------------------------------------------------
