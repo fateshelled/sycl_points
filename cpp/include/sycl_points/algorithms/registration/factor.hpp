@@ -15,6 +15,21 @@ namespace algorithms {
 
 namespace registration {
 
+namespace kernel {
+
+/// @brief Convert a squared residual to its norm without hiding invalid input.
+///
+/// Finite negative values can arise from round-off in near-singular quadratic
+/// forms and are clamped to zero. NaN/Inf are deliberately propagated so the
+/// caller can reject the resulting optimization system instead of treating an
+/// invalid correspondence as a perfect residual.
+SYCL_EXTERNAL inline float residual_norm_from_squared_error(float squared_error) {
+    if (!sycl::isfinite(squared_error)) return squared_error;
+    return sycl::sqrt(sycl::fmax(squared_error, 0.0f));
+}
+
+}  // namespace kernel
+
 enum class RegType {
     POINT_TO_POINT = 0,
     POINT_TO_PLANE,
@@ -270,7 +285,7 @@ SYCL_EXTERNAL inline LinearizedKernelResult linearize_gicp(const std::array<sycl
 
     const float squared_norm =
         eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(mahalanobis_cov_inv, residual));
-    residual_norm = sycl::sqrt(squared_norm);
+    residual_norm = kernel::residual_norm_from_squared_error(squared_norm);
 
     ret.squared_error = squared_norm;
     ret.inlier = 1;
