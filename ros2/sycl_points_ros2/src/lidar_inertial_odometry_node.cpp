@@ -1,6 +1,7 @@
 #include "sycl_points_ros2/lidar_inertial_odometry_node.hpp"
 
 #include <rclcpp_components/register_node_macro.hpp>
+#include <stdexcept>
 
 namespace sycl_points {
 namespace ros2 {
@@ -9,6 +10,12 @@ LidarInertialOdometryNode::LidarInertialOdometryNode(const rclcpp::NodeOptions& 
     : LidarInertialOdometryBaseNode("lidar_inertial_odometry", options) {
     this->initialize_processing();
     this->initialize_publishers({});
+
+    const auto max_pending = this->declare_parameter<int64_t>("processing/max_pending_point_clouds", 3);
+    if (max_pending <= 0) {
+        throw std::invalid_argument("processing/max_pending_point_clouds must be positive");
+    }
+    max_pending_point_clouds_ = static_cast<std::size_t>(max_pending);
 
     // -----------------------------------------------------------------------
     // Subscriptions
@@ -49,6 +56,14 @@ LidarInertialOdometryNode::LidarInertialOdometryNode(const rclcpp::NodeOptions& 
 void LidarInertialOdometryNode::point_cloud_callback(sensor_msgs::msg::PointCloud2::UniquePtr msg) {
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
+        if (pending_point_clouds_.size() >= max_pending_point_clouds_) {
+            pending_point_clouds_.pop_front();
+            ++dropped_pending_point_clouds_;
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                 "Point cloud processing backlog reached %zu frames; dropping the oldest pending "
+                                 "frame (total dropped=%zu)",
+                                 max_pending_point_clouds_, dropped_pending_point_clouds_);
+        }
         pending_point_clouds_.push_back(std::move(msg));
         processing_timer_->reset();
     }
@@ -88,26 +103,29 @@ void LidarInertialOdometryNode::processing_timer_callback() {
         }
     }
 
+    const double frame_timestamp = rclcpp::Time(active_point_cloud_->header.stamp).seconds();
+    auto coverage = pipeline_->get_frame_imu_coverage(frame_timestamp);
+
     if (params_.imu.deskew.enable && scan_pc_->has_timestamps() && scan_pc_->end_time_ms > scan_pc_->start_time_ms) {
         const double scan_start = scan_pc_->start_time_ms * 1e-3;
         const double scan_end = scan_pc_->end_time_ms * 1e-3;
-        const auto coverage = pipeline_->get_imu_coverage(scan_start, scan_end);
-        if (coverage == IMUCoverage::waiting_for_future) return;
-
-        if (coverage == IMUCoverage::start_expired) {
-            RCLCPP_ERROR(this->get_logger(),
-                         "Cannot process point cloud: IMU samples at the scan start have expired "
-                         "(scan=[%.9f, %.9f]). Increase imu/buffer_duration_sec or reduce processing backlog.",
-                         scan_start, scan_end);
-            active_frame_.result = ResultType::insufficient_imu_coverage;
-            this->record_processing_times(active_frame_);
-            active_point_cloud_.reset();
-            return;
-        }
+        coverage = pipeline_->combine_imu_coverage(coverage, pipeline_->get_imu_coverage(scan_start, scan_end));
     }
 
-    this->process_prepared_point_cloud_message(rclcpp::Time(active_point_cloud_->header.stamp).seconds(),
-                                               active_frame_);
+    if (coverage == IMUCoverage::waiting_for_future) return;
+
+    if (coverage == IMUCoverage::start_expired) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Cannot process point cloud: required IMU samples have expired "
+                     "(frame=%.9f). Increase imu/buffer_duration_sec or reduce processing backlog.",
+                     frame_timestamp);
+        active_frame_.result = ResultType::insufficient_imu_coverage;
+        this->record_processing_times(active_frame_);
+        active_point_cloud_.reset();
+        return;
+    }
+
+    this->process_prepared_point_cloud_message(frame_timestamp, active_frame_);
     if (active_frame_.result == ResultType::success || active_frame_.result == ResultType::first_frame ||
         active_frame_.result == ResultType::imu_only) {
         this->publish_processed_frame(active_point_cloud_->header, active_frame_);

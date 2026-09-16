@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <deque>
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
@@ -30,10 +31,13 @@ private:
     rclcpp::TimerBase::SharedPtr processing_timer_;
 
     // The processing timer owns active_point_cloud_. It converts each cloud once,
-    // then retains it until its full scan interval is bracketed by buffered IMU.
+    // then retains it until its preintegration and optional deskew intervals are
+    // bracketed by buffered IMU.
     // Protects pending_point_clouds_ and timer reset/cancel coordination.
     std::mutex pending_mutex_;
     std::deque<sensor_msgs::msg::PointCloud2::UniquePtr> pending_point_clouds_;
+    std::size_t max_pending_point_clouds_ = 3;
+    std::size_t dropped_pending_point_clouds_ = 0;
     sensor_msgs::msg::PointCloud2::UniquePtr active_point_cloud_;
     ProcessedFrame active_frame_;
 

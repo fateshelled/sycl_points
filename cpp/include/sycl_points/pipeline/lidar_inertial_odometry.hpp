@@ -145,11 +145,28 @@ public:
     /// recoverable because add_imu_measurement() only accepts newer samples.
     IMUCoverage get_imu_coverage(double start_timestamp, double end_timestamp) const {
         std::lock_guard<std::mutex> lock(this->imu_mutex_);
-        if (this->imu_buffer_.empty() || this->imu_buffer_.back().timestamp < end_timestamp) {
-            return IMUCoverage::waiting_for_future;
-        }
-        if (this->imu_buffer_.front().timestamp > start_timestamp) {
+        return classify_imu_coverage_locked(start_timestamp, end_timestamp);
+    }
+
+    /// @brief Check the IMU interval needed to preintegrate the next LiDAR frame.
+    ///
+    /// The first frame establishes the reset timestamp and therefore does not
+    /// require preintegration.  Later frames always require complete coverage,
+    /// independently of whether per-point deskew is enabled.
+    IMUCoverage get_frame_imu_coverage(double frame_timestamp) const {
+        std::lock_guard<std::mutex> lock(this->imu_mutex_);
+        if (this->is_first_frame_) return IMUCoverage::ready;
+        return classify_imu_coverage_locked(this->last_imu_reset_timestamp_, frame_timestamp);
+    }
+
+    /// @brief Combine requirements; an expired start is terminal, otherwise any
+    ///        future requirement keeps the frame waiting.
+    static IMUCoverage combine_imu_coverage(IMUCoverage lhs, IMUCoverage rhs) {
+        if (lhs == IMUCoverage::start_expired || rhs == IMUCoverage::start_expired) {
             return IMUCoverage::start_expired;
+        }
+        if (lhs == IMUCoverage::waiting_for_future || rhs == IMUCoverage::waiting_for_future) {
+            return IMUCoverage::waiting_for_future;
         }
         return IMUCoverage::ready;
     }
@@ -316,6 +333,15 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 private:
+    IMUCoverage classify_imu_coverage_locked(double start_timestamp, double end_timestamp) const {
+        if (this->imu_buffer_.empty()) return IMUCoverage::waiting_for_future;
+        // Check the unrecoverable condition first. Newer IMU samples cannot
+        // restore a start sample that has already been evicted.
+        if (this->imu_buffer_.front().timestamp > start_timestamp) return IMUCoverage::start_expired;
+        if (this->imu_buffer_.back().timestamp < end_timestamp) return IMUCoverage::waiting_for_future;
+        return IMUCoverage::ready;
+    }
+
     // -------------------------------------------------------------------------
     // Member variables
     // -------------------------------------------------------------------------
