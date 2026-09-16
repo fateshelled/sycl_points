@@ -69,6 +69,12 @@ public:
         insufficient_imu_coverage,
     };
 
+    enum class IMUCoverage : std::int8_t {
+        ready,
+        waiting_for_future,
+        start_expired,
+    };
+
     explicit LidarInertialOdometryPipeline(const Parameters& params) {
         params_ = params;
         params_.imu.enable = true;  // IMU is mandatory for LIO
@@ -131,6 +137,21 @@ public:
     std::deque<imu::IMUMeasurement> get_imu_buffer() const {
         std::lock_guard<std::mutex> lock(this->imu_mutex_);
         return this->imu_buffer_;
+    }
+
+    /// @brief Check whether the buffered IMU samples bracket a complete time window.
+    ///
+    /// A future sample may make waiting_for_future ready.  start_expired is not
+    /// recoverable because add_imu_measurement() only accepts newer samples.
+    IMUCoverage get_imu_coverage(double start_timestamp, double end_timestamp) const {
+        std::lock_guard<std::mutex> lock(this->imu_mutex_);
+        if (this->imu_buffer_.empty() || this->imu_buffer_.back().timestamp < end_timestamp) {
+            return IMUCoverage::waiting_for_future;
+        }
+        if (this->imu_buffer_.front().timestamp > start_timestamp) {
+            return IMUCoverage::start_expired;
+        }
+        return IMUCoverage::ready;
     }
 
     // -------------------------------------------------------------------------
