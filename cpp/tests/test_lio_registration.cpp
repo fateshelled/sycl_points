@@ -10,6 +10,12 @@ namespace imu = sycl_points::imu;
 
 static constexpr float kEps = 1e-5f;
 
+TEST(LioRegistration, DirectionalIcpWeightingTypeConversion) {
+    EXPECT_EQ(lio::DirectionalIcpWeightingType_from_string("scale"), lio::DirectionalIcpWeightingType::scale);
+    EXPECT_EQ(lio::DirectionalIcpWeightingType_from_string("TSVD"), lio::DirectionalIcpWeightingType::tsvd);
+    EXPECT_THROW(lio::DirectionalIcpWeightingType_from_string("unknown"), std::runtime_error);
+}
+
 TEST(LioRegistration, DirectionalIcpWeightingAttenuatesWeakDirections) {
     lio::LIOLinearizedResult factor;
     factor.inlier = 100;
@@ -63,6 +69,62 @@ TEST(LioRegistration, DirectionalIcpWeightingPreservesCoupledFactorStructure) {
     EXPECT_TRUE(H_pose.isApprox(H_pose.transpose(), kEps));
     ASSERT_EQ(solver.info(), Eigen::Success);
     EXPECT_GE(solver.eigenvalues().minCoeff(), -kEps);
+}
+
+TEST(LioRegistration, TsvdRemovesOnlyWeakIcpDirections) {
+    lio::LIOLinearizedResult factor;
+    factor.inlier = 100;
+    factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0f;
+    factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 20.0f;
+    factor.H(imu::State::kIdxRot, imu::State::kIdxRot) = 2.0f;
+    factor.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1) = 30.0f;
+    factor.H(imu::State::kIdxPos, imu::State::kIdxRot) = 0.5f;
+    factor.H(imu::State::kIdxRot, imu::State::kIdxPos) = 0.5f;
+    factor.b(imu::State::kIdxPos) = 10.0f;
+    factor.b(imu::State::kIdxPos + 1) = 20.0f;
+    factor.b(imu::State::kIdxRot) = 5.0f;
+    factor.b(imu::State::kIdxRot + 1) = 30.0f;
+
+    lio::DirectionalIcpWeightingParams params;
+    params.type = lio::DirectionalIcpWeightingType::tsvd;
+    params.trans_min_eigenvalue_per_inlier = 0.05f;  // threshold = 5
+    params.rot_min_eigenvalue_per_inlier = 0.05f;
+
+    lio::apply_directional_icp_weighting(factor, params);
+
+    EXPECT_NEAR(factor.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.0f, kEps);
+    EXPECT_NEAR(factor.H(imu::State::kIdxRot, imu::State::kIdxRot), 0.0f, kEps);
+    EXPECT_NEAR(factor.H(imu::State::kIdxPos, imu::State::kIdxRot), 0.0f, kEps);
+    EXPECT_NEAR(factor.b(imu::State::kIdxPos), 0.0f, kEps);
+    EXPECT_NEAR(factor.b(imu::State::kIdxRot), 0.0f, kEps);
+    EXPECT_NEAR(factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 20.0f, kEps);
+    EXPECT_NEAR(factor.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1), 30.0f, kEps);
+    EXPECT_NEAR(factor.b(imu::State::kIdxPos + 1), 20.0f, kEps);
+    EXPECT_NEAR(factor.b(imu::State::kIdxRot + 1), 30.0f, kEps);
+}
+
+TEST(LioRegistration, TsvdLeavesImuPriorInTruncatedDirection) {
+    lio::LIOLinearizedResult icp_factor;
+    icp_factor.inlier = 10;
+    icp_factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0f;
+    icp_factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 20.0f;
+    icp_factor.b(imu::State::kIdxPos) = 3.0f;
+    icp_factor.b(imu::State::kIdxPos + 1) = 4.0f;
+
+    lio::DirectionalIcpWeightingParams params;
+    params.type = lio::DirectionalIcpWeightingType::tsvd;
+    params.trans_min_eigenvalue_per_inlier = 0.5f;  // threshold = 5
+    params.rot_min_eigenvalue_per_inlier = 0.0f;
+    lio::apply_directional_icp_weighting(icp_factor, params);
+
+    Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Identity() * 2.0f;
+    Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Ones();
+    lio::add_imu_factor(icp_factor, H_imu, b_imu);
+
+    EXPECT_NEAR(icp_factor.H(imu::State::kIdxPos, imu::State::kIdxPos), 2.0f, kEps);
+    EXPECT_NEAR(icp_factor.b(imu::State::kIdxPos), 1.0f, kEps);
+    EXPECT_NEAR(icp_factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 22.0f, kEps);
+    EXPECT_NEAR(icp_factor.b(imu::State::kIdxPos + 1), 5.0f, kEps);
 }
 
 TEST(LioRegistration, FixedBiasIsRemovedFromCoupledSolve) {

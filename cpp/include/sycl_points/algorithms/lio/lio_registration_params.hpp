@@ -1,6 +1,10 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 
 #include "sycl_points/algorithms/registration/registration_params.hpp"
 
@@ -22,6 +26,20 @@ struct BiasUpdateMask {
     bool gyro = true;
 };
 
+enum class DirectionalIcpWeightingType {
+    scale,
+    tsvd,
+};
+
+inline DirectionalIcpWeightingType DirectionalIcpWeightingType_from_string(const std::string& str) {
+    std::string upper = str;
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (upper == "SCALE" || upper == "SCALED") return DirectionalIcpWeightingType::scale;
+    if (upper == "TSVD") return DirectionalIcpWeightingType::tsvd;
+    throw std::runtime_error("Invalid LIO directional ICP weighting type [" + str + "]");
+}
+
 /// @brief Direction-wise ICP information shaping for degenerate LIO frames.
 ///
 /// The reduced-chi² scalar weight handles globally bad alignments, but geometric
@@ -32,6 +50,8 @@ struct BiasUpdateMask {
 /// pose factor before the IMU prior is added.
 struct DirectionalIcpWeightingParams {
     bool enable = true;
+    /// SCALE continuously attenuates weak information; TSVD removes it.
+    DirectionalIcpWeightingType type = DirectionalIcpWeightingType::scale;
     /// Treat ICP translation eigen-directions below this per-inlier information as weak.
     float trans_min_eigenvalue_per_inlier = 10.0f;
     /// Treat ICP rotation eigen-directions below this per-inlier information as weak.
