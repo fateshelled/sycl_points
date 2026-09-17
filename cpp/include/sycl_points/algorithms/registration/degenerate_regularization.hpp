@@ -20,7 +20,13 @@ enum class DegenerateRegularizationType {
     /// @note Non linear optimization with Tikhonov regularization
     nl_reg,
     /// @note Truncated SVD. Degenerate components of the pose update are set to zero.
-    tsvd
+    tsvd,
+    /// @note Linear least-squares with subspace Tikhonov regularization.
+    l_reg,
+    /// @note Project the unconstrained solution onto the observable subspace.
+    solution_remap,
+    /// @note Zero-update equality constraints along degenerate directions.
+    eq_constraint
 };
 
 inline DegenerateRegularizationType DegenerateRegularizationType_from_string(const std::string& str) {
@@ -33,6 +39,12 @@ inline DegenerateRegularizationType DegenerateRegularizationType_from_string(con
         return DegenerateRegularizationType::nl_reg;
     } else if (upper.compare("TSVD") == 0) {
         return DegenerateRegularizationType::tsvd;
+    } else if (upper.compare("L-REG") == 0 || upper.compare("L_REG") == 0) {
+        return DegenerateRegularizationType::l_reg;
+    } else if (upper.compare("SOLUTION-REMAP") == 0 || upper.compare("SOLUTION_REMAP") == 0) {
+        return DegenerateRegularizationType::solution_remap;
+    } else if (upper.compare("EQ-CONSTRAINT") == 0 || upper.compare("EQ_CONSTRAINT") == 0) {
+        return DegenerateRegularizationType::eq_constraint;
     }
     std::string error_str = "[DegenerateRegularizationType_from_string] Invalid DegenerateRegularizationType str [";
     error_str += str;
@@ -45,6 +57,7 @@ struct DegenerateRegularizationParams {
     float rot_eigenvalue_threshold = 10.0f;
     float trans_eigenvalue_threshold = 1.0f;
     float base_factor = 1.0f;
+    float linear_factor = 440.0f;
 };
 
 class DegenerateRegularization {
@@ -110,7 +123,10 @@ private:
             ret.H += H_penalty;
             ret.b += H_penalty * delta_twist;
             return ret;
-        } else if (this->params_.type == DegenerateRegularizationType::tsvd) {
+        } else if (this->params_.type == DegenerateRegularizationType::tsvd ||
+                   this->params_.type == DegenerateRegularizationType::l_reg ||
+                   this->params_.type == DegenerateRegularizationType::solution_remap ||
+                   this->params_.type == DegenerateRegularizationType::eq_constraint) {
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
             if (solver_rot.info() != Eigen::Success) {
                 return ret;
@@ -136,14 +152,20 @@ private:
             truncate_directions(solver_rot, this->params_.rot_eigenvalue_threshold, 0);
             truncate_directions(solver_trans, this->params_.trans_eigenvalue_threshold, 3);
 
-            // The registration solvers consume normal equations instead of a precomputed pseudo-inverse.
-            // Adding identity only in the truncated subspace and setting its gradient to zero is equivalent to
-            // setting the corresponding entries of Sigma^-1 to zero: the resulting update has no component in
-            // degenerate directions, while the observable subspace keeps the original normal equations.
-            const Eigen::Matrix<float, 6, 6> truncated_projector =
+            const Eigen::Matrix<float, 6, 6> degenerate_projector =
                 Eigen::Matrix<float, 6, 6>::Identity() - observable_projector;
-            ret.H = observable_projector * linearized_result.H * observable_projector + truncated_projector;
-            ret.b = observable_projector * linearized_result.b;
+            if (this->params_.type == DegenerateRegularizationType::l_reg) {
+                ret.H += this->params_.linear_factor * degenerate_projector;
+            } else if (this->params_.type == DegenerateRegularizationType::solution_remap) {
+                ret.solution_projector = observable_projector;
+            } else {
+                // The solvers consume normal equations rather than a precomputed pseudo-inverse. Replacing the
+                // removed subspace with identity and zero gradient makes it non-singular without creating an update.
+                // TSVD and zero-valued equality constraints both solve only in the observable subspace. The identity
+                // formulation is algebraically equivalent to their truncated/reduced solve for these constraints.
+                ret.H = observable_projector * linearized_result.H * observable_projector + degenerate_projector;
+                ret.b = observable_projector * linearized_result.b;
+            }
             return ret;
         }
         return ret;

@@ -789,11 +789,13 @@ private:
     }
 
     bool solve_linear_system(const Eigen::Matrix<float, 6, 6>& H, const Eigen::Vector<float, 6>& b,
-                             Eigen::Vector<float, 6>& solution) const {
+                             Eigen::Vector<float, 6>& solution,
+                             const Eigen::Matrix<float, 6, 6>& solution_projector =
+                                 Eigen::Matrix<float, 6, 6>::Identity()) const {
         Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt;
         ldlt.compute(H);
         if (ldlt.info() == Eigen::Success) {
-            solution = ldlt.solve(-b);
+            solution = solution_projector * ldlt.solve(-b);
             return true;
         }
         solution.setZero();
@@ -805,7 +807,7 @@ private:
         Eigen::Vector<float, 6> delta;
         const bool success = this->solve_linear_system(
             linearized_result.H + this->params_.gn.lambda * Eigen::Matrix<float, 6, 6>::Identity(), linearized_result.b,
-            delta);
+            delta, linearized_result.solution_projector);
         if (success) {
             result.converged = this->is_converged(delta);
         } else {
@@ -841,7 +843,8 @@ private:
         Eigen::Vector<float, 6> delta;
         for (size_t i = 0; i < this->params_.lm.max_inner_iterations; ++i) {
             const bool success =
-                this->solve_linear_system(H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), g, delta);
+                this->solve_linear_system(H + lambda * Eigen::Matrix<float, 6, 6>::Identity(), g, delta,
+                                          linearized_result.solution_projector);
             if (success) {
                 result.converged = this->is_converged(delta);
             } else {
@@ -918,9 +921,9 @@ private:
 
         // Step geometry is shared with the 15-DOF LIO solver (dogleg_step.hpp).
         const DoglegStep<6> dl = compute_dogleg_step<6>(H, g, trust_region_radius);
-        const Eigen::Vector<float, 6>& p_dl = dl.p;
-        const float step_norm = dl.step_norm;
-        const float predicted_reduction = dl.predicted_reduction;
+        const Eigen::Vector<float, 6> p_dl = linearized_result.solution_projector * dl.p;
+        const float step_norm = p_dl.norm();
+        const float predicted_reduction = -(g.dot(p_dl) + 0.5f * p_dl.dot(H * p_dl));
 
         if (predicted_reduction <= 0.0f) {
             trust_region_radius = clamp_radius(trust_region_radius * this->params_.dogleg.gamma_decrease);
