@@ -579,9 +579,12 @@ private:
                 : this->preprocessed_pc_;
         this->registration_source_pc_ = source;
 
+        // x_.velocity still holds the previous accepted velocity here; the align()
+        // result replaces it below.  It is the constant-velocity anchor for the prior.
         auto result = this->lio_registration_->align(
             *source, this->submap_->get_submap_point_cloud(), this->submap_->get_submap_kdtree(), predicted_state,
-            predicted_covariance, this->P_post_, this->imu_bias_observable(), this->dt_, this->odom_.matrix());
+            predicted_covariance, this->P_post_, this->imu_bias_observable(), this->dt_, this->odom_.matrix(),
+            this->x_.velocity);
 
         if (!result.valid()) {
             const char* status = result.status == algorithms::lio::LIORegistrationStatus::invalid_imu

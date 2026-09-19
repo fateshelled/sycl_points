@@ -107,15 +107,21 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         const std::string degenerate_reg_type =
             node->declare_parameter<std::string>("registration/degenerate_regularization/type", "NONE");
         degenerate_reg.type = algorithms::registration::DegenerateRegularizationType_from_string(degenerate_reg_type);
+        degenerate_reg.verbose = node->declare_parameter<bool>("registration/degenerate_regularization/verbose",
+                                                               degenerate_reg.verbose);
 
-        degenerate_reg.base_factor = node->declare_parameter<double>(
-            "registration/degenerate_regularization/nl_reg/base_factor", degenerate_reg.base_factor);
-        degenerate_reg.trans_eigenvalue_threshold =
-            node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/trans_eigenvalue_threshold",
-                                            degenerate_reg.trans_eigenvalue_threshold);
-        degenerate_reg.rot_eigenvalue_threshold =
-            node->declare_parameter<double>("registration/degenerate_regularization/nl_reg/rot_eigenvalue_threshold",
-                                            degenerate_reg.rot_eigenvalue_threshold);
+        degenerate_reg.trans_eigenvalue_threshold = node->declare_parameter<double>(
+            "registration/degenerate_regularization/trans_eigenvalue_threshold",
+            degenerate_reg.trans_eigenvalue_threshold);
+        degenerate_reg.rot_eigenvalue_threshold = node->declare_parameter<double>(
+            "registration/degenerate_regularization/rot_eigenvalue_threshold", degenerate_reg.rot_eigenvalue_threshold);
+        if (degenerate_reg.type == algorithms::registration::DegenerateRegularizationType::nl_reg) {
+            degenerate_reg.base_factor = node->declare_parameter<double>(
+                "registration/degenerate_regularization/nl_reg/base_factor", degenerate_reg.base_factor);
+        } else if (degenerate_reg.type == algorithms::registration::DegenerateRegularizationType::l_reg) {
+            degenerate_reg.linear_factor = node->declare_parameter<double>(
+                "registration/degenerate_regularization/l_reg/factor", degenerate_reg.linear_factor);
+        }
     }
 
     return params;

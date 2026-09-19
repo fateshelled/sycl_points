@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
+#include "sycl_points/algorithms/lio/lio_factor.hpp"
 #include "sycl_points/algorithms/lio/lio_linearized_result.hpp"
 #include "sycl_points/algorithms/lio/lio_registration_params.hpp"
 #include "sycl_points/algorithms/lio/lio_registration_result.hpp"
@@ -53,154 +54,6 @@
 namespace sycl_points {
 namespace algorithms {
 namespace lio {
-
-// ---------------------------------------------------------------------------
-// add_icp_factor
-// ---------------------------------------------------------------------------
-
-/// @brief Embed an ICP 6×6 Hessian/gradient into the LIO 15×15 normal equation.
-///
-/// ## Perturbation-convention mismatch and how it is resolved
-///
-/// The ICP linearization uses SE(3) right-perturbation:
-///
-///   T_new = T · Exp([δω; δt])
-///
-/// where δω and δt are both expressed in the *LiDAR body frame*:
-///   - δω : rotation increment (body frame)
-///   - δt : translation increment (body frame) → p_new = p + R · δt
-///
-/// The LIO 15-D error-state uses:
-///   - δφ : rotation increment (body frame)  — same as ICP δω ✓
-///   - δp : position increment (world frame) — p_new = p + δp ✗
-///
-/// For rotation the conventions agree directly.
-/// For translation they differ by R_world_lidar:
-///
-///   δp_world = R_world_lidar · δt_body
-///
-/// Consequence: the ICP translation gradient and Hessian blocks must be
-/// rotated into the world frame before accumulation:
-///
-///   b_lio[p]     = R · b_icp[t]
-///   H_lio[p,p]   = R · H_icp[t,t] · Rᵀ
-///   H_lio[p,φ]   = R · H_icp[t,ω]         (φ stays in body frame)
-///   H_lio[φ,p]   = H_icp[ω,t] · Rᵀ
-///
-/// @param result        LIO normal equation to accumulate into.
-/// @param icp           ICP linearization from registration::Registration.
-/// @param R_world_lidar Current body-to-world rotation (x_op.rotation).
-/// @param weight        Scalar information weight applied to H/b/error (e.g. the
-///                      reduced chi-squared calibration 1/s² computed by the caller).
-inline void add_icp_factor(LIOLinearizedResult& result, const registration::LinearizedResult& icp,
-                           const Eigen::Matrix3f& R_world_lidar, float weight = 1.0f) {
-    // Rotation block: δω (ICP body frame) == δφ (LIO body frame) — embed directly
-    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += weight * icp.H.block<3, 3>(0, 0);
-    result.b.segment<3>(imu::State::kIdxRot) += weight * icp.b.segment<3>(0);
-
-    // Translation block: rotate ICP body-frame δt into LIO world-frame δp
-    const Eigen::Matrix3f& R = R_world_lidar;
-    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) +=
-        weight * (R * icp.H.block<3, 3>(3, 3) * R.transpose());
-    result.b.segment<3>(imu::State::kIdxPos) += weight * (R * icp.b.segment<3>(3));
-
-    // Cross terms: φ remains body-frame, p becomes world-frame
-    result.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) += weight * (R * icp.H.block<3, 3>(3, 0));
-    result.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) +=
-        weight * (icp.H.block<3, 3>(0, 3) * R.transpose());
-
-    result.error_icp += weight * icp.error;
-    result.inlier += icp.inlier;
-}
-
-// ---------------------------------------------------------------------------
-// add_imu_factor
-// ---------------------------------------------------------------------------
-
-/// @brief Add the IMU prior 15×15 Hessian/gradient into the LIO normal equation.
-///
-/// The IMU factor is already expressed in the LIO 15-D state ordering
-/// (computed by compute_imu_hessian_gradient()), so no index permutation is
-/// needed.
-///
-/// @param result  LIO normal equation to accumulate into.
-/// @param H_imu   15×15 IMU information matrix from compute_imu_hessian_gradient().
-/// @param b_imu   15×1  IMU gradient vector   from compute_imu_hessian_gradient().
-/// @param error   Optional scalar IMU prior cost for logging (default 0).
-inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<float, 15, 15>& H_imu,
-                           const Eigen::Matrix<float, 15, 1>& b_imu, float error = 0.0f) {
-    result.H += H_imu;
-    result.b += b_imu;
-    result.error_imu = error;
-}
-
-// ---------------------------------------------------------------------------
-// apply_directional_icp_weighting
-// ---------------------------------------------------------------------------
-
-/// @brief Attenuate ICP pose information in weak/over-confident directions.
-///
-/// @param icp_factor  LIO factor containing only the embedded ICP contribution.
-/// @param params      Directional weighting parameters.
-inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
-                                            const DirectionalIcpWeightingParams& params) {
-    if (!params.enable || icp_factor.inlier == 0) return;
-
-    constexpr int kPoseDof = 6;
-    constexpr int kBlockDof = 3;
-    Eigen::Matrix<float, kPoseDof, kPoseDof> H_pose = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
-    Eigen::Matrix<float, kPoseDof, 1> b_pose = Eigen::Matrix<float, kPoseDof, 1>::Zero();
-
-    H_pose.block<3, 3>(0, 0) = icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos);
-    H_pose.block<3, 3>(0, 3) = icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot);
-    H_pose.block<3, 3>(3, 0) = icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos);
-    H_pose.block<3, 3>(3, 3) = icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot);
-    H_pose = 0.5f * (H_pose + H_pose.transpose());
-
-    b_pose.segment<3>(0) = icp_factor.b.segment<3>(imu::State::kIdxPos);
-    b_pose.segment<3>(3) = icp_factor.b.segment<3>(imu::State::kIdxRot);
-
-    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block, float min_eigenvalue_per_inlier,
-                                          float weak_direction_scale) -> Eigen::Matrix3f {
-        const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
-        if (solver.info() != Eigen::Success) return Eigen::Matrix3f::Identity();
-
-        const float min_info = std::max(0.0f, min_eigenvalue_per_inlier) * static_cast<float>(icp_factor.inlier);
-        const float weak_scale = std::clamp(weak_direction_scale, 0.0f, 1.0f);
-        Eigen::Matrix3f filter = Eigen::Matrix3f::Zero();
-        for (int i = 0; i < kBlockDof; ++i) {
-            const float lambda = std::max(0.0f, solver.eigenvalues()(i));
-            float scale = 1.0f;
-            if (lambda <= 0.0f || !std::isfinite(lambda)) {
-                scale = 0.0f;
-            } else if (min_info > 0.0f) {
-                const float information_ratio = std::clamp(lambda / min_info, 0.0f, 1.0f);
-                scale = std::max(weak_scale, information_ratio);
-            }
-
-            const Eigen::Vector3f q = solver.eigenvectors().col(i);
-            filter.noalias() += std::sqrt(std::clamp(scale, 0.0f, 1.0f)) * (q * q.transpose());
-        }
-        return filter;
-    };
-
-    Eigen::Matrix<float, kPoseDof, kPoseDof> filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
-    filter.block<3, 3>(0, 0) = compute_block_filter(H_pose.block<3, 3>(0, 0), params.trans_min_eigenvalue_per_inlier,
-                                                    params.trans_weak_direction_scale);
-    filter.block<3, 3>(3, 3) = compute_block_filter(H_pose.block<3, 3>(3, 3), params.rot_min_eigenvalue_per_inlier,
-                                                    params.rot_weak_direction_scale);
-
-    const Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = filter * H_pose * filter;
-    const Eigen::Matrix<float, kPoseDof, 1> b_filtered = filter * filter * b_pose;
-
-    icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) = H_filtered.block<3, 3>(0, 0);
-    icp_factor.H.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot) = H_filtered.block<3, 3>(0, 3);
-    icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos) = H_filtered.block<3, 3>(3, 0);
-    icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) = H_filtered.block<3, 3>(3, 3);
-    icp_factor.b.segment<3>(imu::State::kIdxPos) = b_filtered.segment<3>(0);
-    icp_factor.b.segment<3>(imu::State::kIdxRot) = b_filtered.segment<3>(3);
-}
 
 // ---------------------------------------------------------------------------
 // solve_ldlt
@@ -429,8 +282,8 @@ public:
                                 const knn::KNNBase& target_knn, const imu::State& predicted_state,
                                 const Eigen::Matrix<float, 15, 15>& predicted_covariance,
                                 const Eigen::Matrix<float, 15, 15>& previous_posterior_covariance,
-                                const BiasUpdateMask& update_bias,
-                                float dt, const TransformMatrix& previous_pose) {
+                                const BiasUpdateMask& update_bias, float dt, const TransformMatrix& previous_pose,
+                                const Eigen::Vector3f& previous_velocity) {
         Eigen::Matrix<float, 15, 15> imu_information = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
@@ -539,11 +392,14 @@ public:
 
                 LIOLinearizedResult icp_lio;
                 add_icp_factor(icp_lio, last_icp, operating_state.rotation, icp_weight);
-                apply_directional_icp_weighting(icp_lio, this->params_.directional_icp_weighting);
+                apply_directional_icp_weighting(icp_lio, H_imu, this->params_.directional_icp_weighting);
 
                 LIOLinearizedResult lio = icp_lio;
                 if (imu_valid) {
                     add_imu_factor(lio, H_imu, b_imu);
+                    if (this->params_.directional_icp_weighting.verbose) {
+                        log_imu_effective_information(H_imu, b_imu, last_icp.inlier);
+                    }
                 } else {
                     const float regularization = this->params_.invalid_regularization_factor;
                     lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) +=
@@ -553,6 +409,17 @@ public:
                     lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) +=
                         regularization * Eigen::Matrix3f::Identity();
                 }
+
+                // Constant-velocity prior on the world-frame velocity.  Classify
+                // degenerate axes from the raw ICP position Hessian in the world frame
+                // (before directional weighting) so the decision reflects the actual
+                // geometry rather than the already-attenuated factor.
+                const Eigen::Matrix3f icp_position_H_world =
+                    operating_state.rotation * last_icp.H.block<3, 3>(3, 3) * operating_state.rotation.transpose();
+                const ConstantVelocityPrior cv_prior =
+                    add_constant_velocity_prior(lio, icp_position_H_world, operating_state.velocity, previous_velocity,
+                                                last_icp.inlier, this->params_.constant_velocity_prior);
+
                 if (!lio.H.allFinite() || !lio.b.allFinite()) {
                     numeric_failure = true;
                     abort_optimization = true;
@@ -580,7 +447,8 @@ public:
                             stop = true;
                         }
                         if (this->factor_params_.verbose) {
-                            const float current_cost = icp_weight * last_icp.error + imu_cost(operating_state);
+                            const float current_cost = icp_weight * last_icp.error + imu_cost(operating_state) +
+                                                       cv_prior.cost(operating_state);
                             std::cout << "iter [" << actual_iterations - 1 << "] ";
                             std::cout << "error: " << current_cost << ", ";
                             std::cout << "inlier: " << last_icp.inlier << ", ";
@@ -589,7 +457,8 @@ public:
                         }
                         break;
                     case registration::OptimizationMethod::LEVENBERG_MARQUARDT: {
-                        const float current_cost = icp_cost(operating_state) + imu_cost(operating_state);
+                        const float current_cost =
+                            icp_cost(operating_state) + imu_cost(operating_state) + cv_prior.cost(operating_state);
                         if (!std::isfinite(current_cost)) {
                             numeric_failure = true;
                             stop = true;
@@ -604,7 +473,8 @@ public:
                                 const imu::State trial_state = retract(operating_state, trial_delta);
                                 const auto [trial_icp_error, trial_inlier] = this->registration_->compute_error_frozen(
                                     source, target, state_to_pose(trial_state).matrix(), options);
-                                const float trial_cost = icp_weight * trial_icp_error + imu_cost(trial_state);
+                                const float trial_cost =
+                                    icp_weight * trial_icp_error + imu_cost(trial_state) + cv_prior.cost(trial_state);
                                 if (this->factor_params_.verbose) {
                                     std::cout << "iter [" << actual_iterations - 1 << "] ";
                                     std::cout << "inner: " << inner << ", ";
@@ -635,7 +505,8 @@ public:
                         break;
                     }
                     case registration::OptimizationMethod::POWELL_DOGLEG: {
-                        const float current_cost = icp_cost(operating_state) + imu_cost(operating_state);
+                        const float current_cost =
+                            icp_cost(operating_state) + imu_cost(operating_state) + cv_prior.cost(operating_state);
                         trust_region_radius = clamp_radius(trust_region_radius);
                         Eigen::Matrix<float, 15, 15> dogleg_H = lio.H;
                         Eigen::Matrix<float, 15, 1> dogleg_b = lio.b;
@@ -658,7 +529,8 @@ public:
                         const imu::State trial_state = retract(operating_state, trial_delta);
                         const auto [trial_icp_error, trial_inlier] = this->registration_->compute_error_frozen(
                             source, target, state_to_pose(trial_state).matrix(), options);
-                        const float trial_cost = icp_weight * trial_icp_error + imu_cost(trial_state);
+                        const float trial_cost =
+                            icp_weight * trial_icp_error + imu_cost(trial_state) + cv_prior.cost(trial_state);
                         const float rho = (current_cost - trial_cost) / predicted_reduction;
                         if (!std::isfinite(trial_cost) || !std::isfinite(rho)) {
                             numeric_failure = true;
@@ -689,6 +561,17 @@ public:
                 }
 
                 H_undamped = lio.H;
+                if (cv_prior.active) {
+                    // The constant-velocity prior is a self-referential anti-drift
+                    // regulariser, not independent measurement information: its anchor is
+                    // the previous estimate rather than an observation.  Like the solver
+                    // damping it shapes the step only and is excluded from the posterior
+                    // covariance; leaving it in would make the recursively-carried
+                    // velocity covariance artificially small and feed back through
+                    // P_post -> P_pred -> H_imu, making the IMU prior over-confident
+                    // along exactly the axis it was meant to stabilise.
+                    H_undamped.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) -= cv_prior.information;
+                }
                 has_H_undamped = true;
                 if (step_accepted) {
                     any_step_accepted = true;
@@ -734,9 +617,9 @@ private:
                delta.segment<3>(imu::State::kIdxPos).norm() < this->params_.criteria.translation;
     }
 
-    static Eigen::Matrix<float, 15, 15> posterior_covariance(
-        const Eigen::Matrix<float, 15, 15>& H, bool valid_H,
-        const Eigen::Matrix<float, 15, 15>& previous_covariance, const BiasUpdateMask& update_bias) {
+    static Eigen::Matrix<float, 15, 15> posterior_covariance(const Eigen::Matrix<float, 15, 15>& H, bool valid_H,
+                                                             const Eigen::Matrix<float, 15, 15>& previous_covariance,
+                                                             const BiasUpdateMask& update_bias) {
         if (!valid_H) return previous_covariance;
 
         Eigen::Matrix<float, 15, 1> ignored_delta;
@@ -745,8 +628,9 @@ private:
         if (!solve_ldlt(candidate, Eigen::Matrix<float, 15, 1>::Zero(), ignored_delta, &covariance, update_bias)) {
             candidate.diagonal().array() += 1e-4f;
             if (!solve_ldlt(candidate, Eigen::Matrix<float, 15, 1>::Zero(), ignored_delta, &covariance, update_bias)) {
-                std::cerr << "[LIORegistration] WARNING: posterior covariance solve failed; keeping previous covariance."
-                          << std::endl;
+                std::cerr
+                    << "[LIORegistration] WARNING: posterior covariance solve failed; keeping previous covariance."
+                    << std::endl;
                 return previous_covariance;
             }
         }
