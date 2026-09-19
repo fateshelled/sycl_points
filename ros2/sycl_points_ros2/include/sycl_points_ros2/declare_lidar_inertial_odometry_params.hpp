@@ -64,12 +64,18 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         "lio/directional_icp_weighting/verbose", registration.directional_icp_weighting.verbose);
     registration.directional_icp_weighting.type = algorithms::lio::DirectionalIcpWeightingType_from_string(
         node->declare_parameter<std::string>("lio/directional_icp_weighting/type", "SCALE"));
-    registration.directional_icp_weighting.trans_min_eigenvalue_per_inlier = static_cast<float>(
-        node->declare_parameter<double>("lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier",
-                                        registration.directional_icp_weighting.trans_min_eigenvalue_per_inlier));
-    registration.directional_icp_weighting.rot_min_eigenvalue_per_inlier = static_cast<float>(
-        node->declare_parameter<double>("lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier",
-                                        registration.directional_icp_weighting.rot_min_eigenvalue_per_inlier));
+    registration.directional_icp_weighting.trans_min_information_ratio = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/trans_min_information_ratio",
+                                        registration.directional_icp_weighting.trans_min_information_ratio));
+    registration.directional_icp_weighting.rot_min_information_ratio = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/rot_min_information_ratio",
+                                        registration.directional_icp_weighting.rot_min_information_ratio));
+    registration.directional_icp_weighting.trans_imu_information_floor_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/trans_imu_information_floor_per_inlier",
+                                        registration.directional_icp_weighting.trans_imu_information_floor_per_inlier));
+    registration.directional_icp_weighting.rot_imu_information_floor_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/rot_imu_information_floor_per_inlier",
+                                        registration.directional_icp_weighting.rot_imu_information_floor_per_inlier));
     registration.directional_icp_weighting.trans_weak_direction_scale = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/trans_weak_direction_scale",
                                         registration.directional_icp_weighting.trans_weak_direction_scale));

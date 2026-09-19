@@ -48,15 +48,35 @@ inline DirectionalIcpWeightingType DirectionalIcpWeightingType_from_string(const
 /// detects weak directions separately in the translation and rotation 3x3
 /// blocks, then applies the resulting scales consistently to the full 6-DOF
 /// pose factor before the IMU prior is added.
+///
+/// The filter only changes the balance between the ICP and IMU factors in the
+/// joint solve (it scales H and b by the same factor along an eigen-direction,
+/// leaving the ICP-only solution unchanged).  The comparison must therefore be
+/// made against the IMU prior's information in that same direction, not against
+/// an absolute ICP magnitude: a per-inlier ICP eigenvalue of 10 means nothing
+/// until it is compared with what the IMU already provides.  Using absolute
+/// thresholds flagged well-observed axes whose ICP information merely happened
+/// to sit below the fixed number.
 struct DirectionalIcpWeightingParams {
     bool enable = true;
     bool verbose = false;
     /// SCALE continuously attenuates weak information; TSVD removes it.
     DirectionalIcpWeightingType type = DirectionalIcpWeightingType::scale;
-    /// Treat ICP translation eigen-directions below this per-inlier information as weak.
-    float trans_min_eigenvalue_per_inlier = 10.0f;
-    /// Treat ICP rotation eigen-directions below this per-inlier information as weak.
-    float rot_min_eigenvalue_per_inlier = 10.0f;
+    /// An ICP eigen-direction is weak when its information is below this multiple
+    /// of the IMU prior's information projected onto the same direction.
+    float trans_min_information_ratio = 0.5f;
+    /// Same as trans_min_information_ratio for the rotation block.
+    float rot_min_information_ratio = 0.5f;
+    /// Floor on the IMU per-inlier information used as the comparison baseline.
+    /// The previous frame's degeneracy feeds back through P_post -> P_pred ->
+    /// H_imu, so the measured IMU information collapses along exactly the axes
+    /// that are already degenerate.  Without a floor that feedback makes every
+    /// direction look degenerate.  5.0 per inlier corresponds to sigma ~= 0.01
+    /// (rad / m) at ~2000 inliers, matching the icp_rotation_sigma and
+    /// fd_velocity_sigma P_initial floors.
+    float trans_imu_information_floor_per_inlier = 5.0f;
+    /// Same as trans_imu_information_floor_per_inlier for the rotation block.
+    float rot_imu_information_floor_per_inlier = 5.0f;
     /// Minimum information scale applied to weak translation directions. 0 allows full removal.
     float trans_weak_direction_scale = 0.2f;
     /// Minimum information scale applied to weak rotation directions. 0 allows full removal.

@@ -392,13 +392,13 @@ public:
 
                 LIOLinearizedResult icp_lio;
                 add_icp_factor(icp_lio, last_icp, operating_state.rotation, icp_weight);
-                apply_directional_icp_weighting(icp_lio, this->params_.directional_icp_weighting);
+                apply_directional_icp_weighting(icp_lio, H_imu, this->params_.directional_icp_weighting);
 
                 LIOLinearizedResult lio = icp_lio;
                 if (imu_valid) {
                     add_imu_factor(lio, H_imu, b_imu);
                     if (this->params_.directional_icp_weighting.verbose) {
-                        log_imu_effective_information(H_imu, last_icp.inlier);
+                        log_imu_effective_information(H_imu, b_imu, last_icp.inlier);
                     }
                 } else {
                     const float regularization = this->params_.invalid_regularization_factor;

@@ -44,13 +44,21 @@ inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<floa
     result.error_imu = error;
 }
 
-/// @brief Attenuate ICP pose information in weak or over-confident directions.
+/// @brief Attenuate ICP pose information in directions that are weak relative to the IMU prior.
+///
+/// @param icp_factor  LIO factor containing only the embedded ICP contribution.
+/// @param H_imu       IMU information matrix (15x15) in the LIO state ordering. Pass a
+///                    zero matrix when no valid IMU prior exists; the configured floor
+///                    still provides a usable comparison baseline.
+/// @param params      Directional weighting parameters.
 inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
+                                            const Eigen::Matrix<float, 15, 15>& H_imu,
                                             const DirectionalIcpWeightingParams& params) {
     if (!params.enable || icp_factor.inlier == 0) return;
 
     constexpr int kPoseDof = 6;
     constexpr int kBlockDof = 3;
+    const float inlier_f = static_cast<float>(icp_factor.inlier);
     Eigen::Matrix<float, kPoseDof, kPoseDof> H_pose = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
     Eigen::Matrix<float, kPoseDof, 1> b_pose = Eigen::Matrix<float, kPoseDof, 1>::Zero();
 
@@ -63,45 +71,66 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
     b_pose.segment<3>(0) = icp_factor.b.segment<3>(imu::State::kIdxPos);
     b_pose.segment<3>(3) = icp_factor.b.segment<3>(imu::State::kIdxRot);
 
-    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block, float min_eigenvalue_per_inlier,
-                                          float weak_direction_scale, const char* label) -> Eigen::Matrix3f {
+    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block, const Eigen::Matrix3f& H_imu_block,
+                                          const Eigen::Vector3f& b_block, float min_information_ratio,
+                                          float imu_information_floor_per_inlier, float weak_direction_scale,
+                                          const char* label) -> Eigen::Matrix3f {
         const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
         if (solver.info() != Eigen::Success) return Eigen::Matrix3f::Identity();
 
         if (params.verbose) {
-            std::cout << "[DirectionalIcpWeighting] " << label << " eigenvalues/inlier: "
-                      << (solver.eigenvalues() / static_cast<float>(icp_factor.inlier)).transpose() << std::endl;
+            std::cout << "[DirectionalIcpWeighting] " << label
+                      << " eigenvalues/inlier: " << (solver.eigenvalues() / inlier_f).transpose() << std::endl;
+            std::cout << "[DirectionalIcpWeighting] " << label
+                      << " b/inlier: " << (b_block / inlier_f).transpose() << std::endl;
         }
 
-        const float min_info = std::max(0.0f, min_eigenvalue_per_inlier) * static_cast<float>(icp_factor.inlier);
+        const float ratio = std::max(0.0f, min_information_ratio);
+        const float floor_info = std::max(0.0f, imu_information_floor_per_inlier) * inlier_f;
         const float weak_scale = std::clamp(weak_direction_scale, 0.0f, 1.0f);
         Eigen::Matrix3f filter = Eigen::Matrix3f::Zero();
         for (int i = 0; i < kBlockDof; ++i) {
             const float lambda = std::max(0.0f, solver.eigenvalues()(i));
+            const Eigen::Vector3f q = solver.eigenvectors().col(i);
+
+            // Baseline is the IMU prior's information along this same eigen-direction,
+            // floored so the P_post -> P_pred -> H_imu degeneracy feedback cannot make
+            // every direction look weak.
+            const float imu_info = std::max(floor_info, q.dot(H_imu_block * q));
+            const float weak_threshold = ratio * imu_info;
+
             float scale = 1.0f;
             if (lambda <= 0.0f || !std::isfinite(lambda)) {
                 scale = 0.0f;
-            } else if (min_info > 0.0f && lambda < min_info) {
+            } else if (weak_threshold > 0.0f && lambda < weak_threshold) {
                 if (params.type == DirectionalIcpWeightingType::tsvd) {
                     scale = 0.0f;
                 } else {
-                    const float information_ratio = std::clamp(lambda / min_info, 0.0f, 1.0f);
+                    const float information_ratio = std::clamp(lambda / weak_threshold, 0.0f, 1.0f);
                     scale = std::max(weak_scale, information_ratio);
+                }
+                if (params.verbose) {
+                    std::cout << "[DirectionalIcpWeighting] " << label << " weak eigenvector: " << q.transpose()
+                              << ", scale: " << scale << ", icp_info/inlier: " << (lambda / inlier_f)
+                              << ", imu_info/inlier: " << (imu_info / inlier_f) << std::endl;
                 }
             }
 
-            const Eigen::Vector3f q = solver.eigenvectors().col(i);
             filter.noalias() += std::sqrt(std::clamp(scale, 0.0f, 1.0f)) * (q * q.transpose());
         }
         return filter;
     };
 
     Eigen::Matrix<float, kPoseDof, kPoseDof> filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
-    filter.block<3, 3>(0, 0) = compute_block_filter(H_pose.block<3, 3>(0, 0), params.trans_min_eigenvalue_per_inlier,
-                                                    params.trans_weak_direction_scale, "translation");
-    filter.block<3, 3>(3, 3) = compute_block_filter(H_pose.block<3, 3>(3, 3), params.rot_min_eigenvalue_per_inlier,
-                                                    params.rot_weak_direction_scale, "rotation");
+    filter.block<3, 3>(0, 0) = compute_block_filter(
+        H_pose.block<3, 3>(0, 0), H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), b_pose.segment<3>(0),
+        params.trans_min_information_ratio, params.trans_imu_information_floor_per_inlier,
+        params.trans_weak_direction_scale, "translation");
+    filter.block<3, 3>(3, 3) = compute_block_filter(
+        H_pose.block<3, 3>(3, 3), H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot), b_pose.segment<3>(3),
+        params.rot_min_information_ratio, params.rot_imu_information_floor_per_inlier,
+        params.rot_weak_direction_scale, "rotation");
 
     const Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = filter * H_pose * filter;
     const Eigen::Matrix<float, kPoseDof, 1> b_filtered = filter * filter * b_pose;
@@ -114,25 +143,32 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
     icp_factor.b.segment<3>(imu::State::kIdxRot) = b_filtered.segment<3>(3);
 }
 
-/// @brief Log the IMU prior's effective information per inlier in the same units
-///        as apply_directional_icp_weighting()'s ICP eigenvalues/inlier, so the
-///        weak-direction thresholds can be compared directly against the IMU
-///        information they are delegating to.
+/// @brief Log the IMU prior's effective information and gradient per inlier in the
+///        same units as apply_directional_icp_weighting()'s ICP logs, so the
+///        weak-direction decision and the resulting update direction can be read
+///        directly against the IMU terms they are being balanced against.
 ///
-/// For a diagonal P_pred this prints 1 / (sigma_imu^2 * inlier) per direction.
-inline void log_imu_effective_information(const Eigen::Matrix<float, 15, 15>& H_imu, uint32_t inlier) {
+/// For a diagonal P_pred the information print is 1 / (sigma_imu^2 * inlier) per
+/// direction.  The gradient (b) sign shows whether the IMU prior itself is pulling
+/// the solve forward or backward along each axis.
+inline void log_imu_effective_information(const Eigen::Matrix<float, 15, 15>& H_imu,
+                                          const Eigen::Matrix<float, 15, 1>& b_imu, uint32_t inlier) {
     if (inlier == 0) return;
 
     const float inlier_f = static_cast<float>(inlier);
-    const auto log_block = [&](const Eigen::Matrix3f& block, const char* label) {
-        const Eigen::Matrix3f H_sym = 0.5f * (block + block.transpose());
+    const auto log_block = [&](const Eigen::Matrix3f& H_block, const Eigen::Vector3f& b_block, const char* label) {
+        const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
         if (solver.info() != Eigen::Success) return;
-        std::cout << "[DirectionalIcpWeighting] imu " << label << " eigenvalues/inlier: "
-                  << (solver.eigenvalues() / inlier_f).transpose() << std::endl;
+        std::cout << "[DirectionalIcpWeighting] imu " << label
+                  << " eigenvalues/inlier: " << (solver.eigenvalues() / inlier_f).transpose() << std::endl;
+        std::cout << "[DirectionalIcpWeighting] imu " << label
+                  << " b/inlier: " << (b_block / inlier_f).transpose() << std::endl;
     };
-    log_block(H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), "translation");
-    log_block(H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot), "rotation");
+    log_block(H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), b_imu.segment<3>(imu::State::kIdxPos),
+              "translation");
+    log_block(H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot), b_imu.segment<3>(imu::State::kIdxRot),
+              "rotation");
 }
 
 }  // namespace lio
