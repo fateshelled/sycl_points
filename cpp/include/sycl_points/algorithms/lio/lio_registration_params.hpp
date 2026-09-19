@@ -83,6 +83,55 @@ struct DirectionalIcpWeightingParams {
     float rot_weak_direction_scale = 0.2f;
 };
 
+/// @brief Constant-velocity prior on the world-frame velocity state.
+///
+/// The LiDAR cannot observe motion along a degenerate axis, and the IMU prior is
+/// a position anchor rather than a driver: its gradient vanishes at the prediction,
+/// so neither factor can carry the velocity forward through a corridor.  Without
+/// that the velocity state absorbs whatever residual gradient the weak ICP leaves
+/// and the next prediction inherits it, which shows up as a frame that stalls or
+/// reverses while the platform keeps moving.
+///
+/// This prior anchors the velocity state to the last accepted velocity, which is
+/// the constant-velocity assumption applied to the state the optimiser solves for
+/// rather than to the prediction.  The information is applied per eigen-direction:
+/// only directions whose ICP position information is weak are anchored strongly, so
+/// well-observed axes still take their velocity from the measurement.
+///
+/// A direction must fail BOTH gates to count as degenerate.  The ratio gate is
+/// self-referenced and catches the corridor case where one axis is orders of
+/// magnitude below the others, but on its own it fires in any environment because
+/// the weakest axis is always some fraction of the strongest.  The absolute gate
+/// requires the axis to be weak in an absolute sense as well, so a well-conditioned
+/// frame is left alone regardless of its eigenvalue spread.
+struct ConstantVelocityPriorParams {
+    bool enable = false;
+    bool verbose = false;
+    /// An ICP position eigen-direction is degenerate when its information is below
+    /// this fraction of the largest eigenvalue.  Self-referenced so it does not
+    /// depend on the IMU information, which itself collapses along degenerate axes
+    /// through the P_post -> P_pred -> H_imu feedback.
+    float min_eigenvalue_ratio = 0.05f;
+    /// Absolute per-inlier information floor for the degeneracy gate.  A direction
+    /// must be below this AND below min_eigenvalue_ratio * lambda_max.  ~0.5 rejects
+    /// the corridor weak axis (observed ~0.5 per inlier) while leaving normal frames
+    /// untouched.  Set <= 0 to rely on the ratio gate alone.
+    float min_information_per_inlier = 0.5f;
+    /// Velocity std-dev [m/s] of the anchor in degenerate directions.  The prior
+    /// information is 1 / sigma^2, an absolute quantity on the velocity state: the
+    /// expected velocity change over one frame is a_max * dt, so this should be the
+    /// largest acceleration the platform is expected to undergo times the frame
+    /// period (e.g. 1 m/s^2 * 0.1 s = 0.1 m/s).  Do NOT scale this with the inlier
+    /// count - that gives a velocity information ~1e4, far above what the ICP
+    /// position information can supply as velocity (lambda_p * dt^2 ~ 10), which
+    /// freezes the velocity to whatever error it already carried and integrates
+    /// that error into a slow positional drift.
+    float degenerate_velocity_sigma = 0.1f;
+    /// Velocity std-dev [m/s] of the anchor in well-observed directions.  <= 0 leaves
+    /// those directions entirely to the LiDAR/IMU factors.
+    float observable_velocity_sigma = 0.0f;
+};
+
 /// @brief Parameters for the tightly-coupled ICP/IMU optimization loop.
 struct LIORegistrationParams {
     /// Maximum number of solver iterations summed across all robust levels.
@@ -94,6 +143,7 @@ struct LIORegistrationParams {
     /// Explicit information multiplier for the robustified ICP factor.
     float icp_information_scale = 1.0f;
     DirectionalIcpWeightingParams directional_icp_weighting;
+    ConstantVelocityPriorParams constant_velocity_prior;
 };
 
 }  // namespace lio

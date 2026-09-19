@@ -83,6 +83,23 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         node->declare_parameter<double>("lio/directional_icp_weighting/rot_weak_direction_scale",
                                         registration.directional_icp_weighting.rot_weak_direction_scale));
 
+    // Constant-velocity prior on the world-frame velocity state
+    registration.constant_velocity_prior.enable = node->declare_parameter<bool>(
+        "lio/constant_velocity_prior/enable", registration.constant_velocity_prior.enable);
+    registration.constant_velocity_prior.verbose = node->declare_parameter<bool>(
+        "lio/constant_velocity_prior/verbose", registration.constant_velocity_prior.verbose);
+    registration.constant_velocity_prior.min_eigenvalue_ratio = static_cast<float>(node->declare_parameter<double>(
+        "lio/constant_velocity_prior/min_eigenvalue_ratio", registration.constant_velocity_prior.min_eigenvalue_ratio));
+    registration.constant_velocity_prior.min_information_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/constant_velocity_prior/min_information_per_inlier",
+                                        registration.constant_velocity_prior.min_information_per_inlier));
+    registration.constant_velocity_prior.degenerate_velocity_sigma = static_cast<float>(
+        node->declare_parameter<double>("lio/constant_velocity_prior/degenerate_velocity_sigma",
+                                        registration.constant_velocity_prior.degenerate_velocity_sigma));
+    registration.constant_velocity_prior.observable_velocity_sigma = static_cast<float>(
+        node->declare_parameter<double>("lio/constant_velocity_prior/observable_velocity_sigma",
+                                        registration.constant_velocity_prior.observable_velocity_sigma));
+
     // Bias-estimation safeguards
     params.lio.bias_estimation.freeze_on_low_excitation = node->declare_parameter<bool>(
         "lio/bias_estimation/freeze_on_low_excitation", params.lio.bias_estimation.freeze_on_low_excitation);

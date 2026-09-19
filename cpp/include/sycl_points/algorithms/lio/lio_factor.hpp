@@ -44,6 +44,102 @@ inline void add_imu_factor(LIOLinearizedResult& result, const Eigen::Matrix<floa
     result.error_imu = error;
 }
 
+/// @brief A constant-velocity prior linearized at one LIO operating point.
+///
+/// Keeping the information matrix and anchor velocity lets the LM and dogleg
+/// optimisers evaluate the same factor cost that was accumulated into their
+/// normal equation.
+struct ConstantVelocityPrior {
+    bool active = false;
+    Eigen::Vector3f anchor_velocity = Eigen::Vector3f::Zero();
+    Eigen::Matrix3f information = Eigen::Matrix3f::Zero();
+
+    /// @brief Scalar prior cost 0.5 * (v - v_anchor)^T Omega (v - v_anchor).
+    float cost(const imu::State& state) const {
+        if (!active) return 0.0f;
+        const Eigen::Vector3f residual = state.velocity - anchor_velocity;
+        return 0.5f * residual.dot(information * residual);
+    }
+
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};
+
+/// @brief Anchor the world-frame velocity to a constant-velocity reference in
+///        directions where the LiDAR position information is degenerate.
+///
+/// The anchor is the velocity of the previous accepted state, so the prior encodes
+/// v_k = v_{k-1} exactly (constant velocity) and contributes no gradient while the
+/// platform actually moves at constant speed.  Directions are classified from the
+/// ICP position Hessian alone (self-referenced, so immune to the P_post -> P_pred ->
+/// H_imu feedback).  A direction is degenerate only when it is weak both relatively
+/// (below min_eigenvalue_ratio * lambda_max) and absolutely (below the per-inlier
+/// floor); the absolute gate keeps a well-conditioned frame from being anchored
+/// merely because its weakest axis is the smallest of three strong ones.
+///
+/// @param lio               LIO normal equation; the velocity block is updated in place.
+/// @param icp_position_H    ICP translation Hessian already rotated into the world frame.
+/// @param operating_velocity Current operating-point velocity (world frame), used for
+///                           the gradient so the linearization matches the prior cost.
+/// @param anchor_velocity   Velocity of the previous accepted state (world frame).
+/// @param inlier            ICP inlier count, used by the absolute degeneracy gate.
+/// @param params            Constant-velocity prior parameters.
+/// @return The active factor model, or an inactive model when gated out.
+inline ConstantVelocityPrior add_constant_velocity_prior(LIOLinearizedResult& lio,
+                                                         const Eigen::Matrix3f& icp_position_H,
+                                                         const Eigen::Vector3f& operating_velocity,
+                                                         const Eigen::Vector3f& anchor_velocity, uint32_t inlier,
+                                                         const ConstantVelocityPriorParams& params) {
+    ConstantVelocityPrior prior;
+    if (!params.enable || inlier == 0) return prior;
+    if (!icp_position_H.allFinite() || !operating_velocity.allFinite() || !anchor_velocity.allFinite()) return prior;
+
+    const Eigen::Matrix3f H_sym = 0.5f * (icp_position_H + icp_position_H.transpose());
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
+    if (solver.info() != Eigen::Success) return prior;
+
+    const float lambda_max = solver.eigenvalues().maxCoeff();
+    if (!(lambda_max > 0.0f) || !std::isfinite(lambda_max)) return prior;
+
+    const float inlier_f = static_cast<float>(inlier);
+    const float ratio = std::clamp(params.min_eigenvalue_ratio, 0.0f, 1.0f);
+    const float absolute_threshold = std::max(0.0f, params.min_information_per_inlier) * inlier_f;
+    const auto sigma_to_info = [](float sigma) {
+        return sigma > 0.0f ? 1.0f / (sigma * sigma) : 0.0f;
+    };
+    const float weak_info = sigma_to_info(params.degenerate_velocity_sigma);
+    const float observable_info = sigma_to_info(params.observable_velocity_sigma);
+
+    Eigen::Matrix3f information = Eigen::Matrix3f::Zero();
+    for (int i = 0; i < 3; ++i) {
+        const float lambda = solver.eigenvalues()(i);
+        const Eigen::Vector3f q = solver.eigenvectors().col(i);
+        const bool relatively_weak = (lambda / lambda_max) < ratio;
+        const bool absolutely_weak = absolute_threshold > 0.0f && lambda < absolute_threshold;
+        const bool degenerate = relatively_weak && (absolute_threshold <= 0.0f || absolutely_weak);
+        const float info = degenerate ? weak_info : observable_info;
+        information.noalias() += info * (q * q.transpose());
+
+        if (params.verbose && degenerate) {
+            std::cout << "[ConstantVelocityPrior] degenerate eigenvector: " << q.transpose()
+                      << ", icp_info/inlier: " << (lambda / inlier_f) << ", velocity_info: " << info << std::endl;
+        }
+    }
+
+    if (information.isZero()) return prior;
+    information = 0.5f * (information + information.transpose());
+
+    // Gradient uses the manifold residual convention r = v_op - v_anchor, matching
+    // linearize_imu_prior, so solve_ldlt()'s delta = -H^-1 b drives v_op to v_anchor.
+    lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += information;
+    lio.b.segment<3>(imu::State::kIdxVel) += information * (operating_velocity - anchor_velocity);
+    lio.H = 0.5f * (lio.H + lio.H.transpose());
+
+    prior.active = true;
+    prior.anchor_velocity = anchor_velocity;
+    prior.information = information;
+    return prior;
+}
+
 /// @brief Attenuate ICP pose information in directions that are weak relative to the IMU prior.
 ///
 /// @param icp_factor  LIO factor containing only the embedded ICP contribution.

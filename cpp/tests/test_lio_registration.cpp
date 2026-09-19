@@ -163,6 +163,133 @@ TEST(LioRegistration, DirectionalIcpWeightingPreservesCoupledFactorStructure) {
     EXPECT_GE(solver.eigenvalues().minCoeff(), -kEps);
 }
 
+TEST(LioRegistration, ConstantVelocityPriorAnchorsOnlyDegenerateAxis) {
+    // ICP position information is strong on x/z and weak on y (ratio 0.002 < 0.05).
+    Eigen::Matrix3f icp_position_H = Eigen::Matrix3f::Zero();
+    icp_position_H(0, 0) = 1000.0f;
+    icp_position_H(1, 1) = 2.0f;
+    icp_position_H(2, 2) = 1000.0f;
+
+    lio::LIOLinearizedResult lio;
+    const Eigen::Vector3f operating_velocity(1.0f, 2.0f, 0.0f);
+    const Eigen::Vector3f anchor_velocity(1.0f, 0.0f, 0.0f);
+
+    lio::ConstantVelocityPriorParams params;
+    params.enable = true;
+    params.min_eigenvalue_ratio = 0.05f;
+    params.min_information_per_inlier = 0.5f;
+    params.degenerate_velocity_sigma = 0.1f;  // information 100, absolute
+    params.observable_velocity_sigma = 0.0f;
+
+    const lio::ConstantVelocityPrior prior =
+        lio::add_constant_velocity_prior(lio, icp_position_H, operating_velocity, anchor_velocity, 100, params);
+
+    EXPECT_TRUE(prior.active);
+    // Only the y axis is anchored: information 1 / 0.1^2 = 100.
+    EXPECT_NEAR(lio.H(imu::State::kIdxVel, imu::State::kIdxVel), 0.0f, kEps);
+    EXPECT_NEAR(lio.H(imu::State::kIdxVel + 1, imu::State::kIdxVel + 1), 100.0f, kEps);
+    EXPECT_NEAR(lio.H(imu::State::kIdxVel + 2, imu::State::kIdxVel + 2), 0.0f, kEps);
+    // Gradient uses r = v_op - v_anchor, so only the y component is non-zero.
+    // Tolerance accounts for eigenvector rotation in single precision.
+    EXPECT_NEAR(lio.b(imu::State::kIdxVel + 1), 100.0f * 2.0f, 1e-3f);
+
+    const imu::State at_anchor = [&] {
+        imu::State s;
+        s.velocity = anchor_velocity;
+        return s;
+    }();
+    const imu::State at_operating = [&] {
+        imu::State s;
+        s.velocity = operating_velocity;
+        return s;
+    }();
+    EXPECT_NEAR(prior.cost(at_anchor), 0.0f, kEps);
+    EXPECT_GT(prior.cost(at_operating), 0.0f);
+}
+
+TEST(LioRegistration, ConstantVelocityPriorDisabledLeavesVelocityUntouched) {
+    Eigen::Matrix3f icp_position_H = Eigen::Matrix3f::Zero();
+    icp_position_H(0, 0) = 1000.0f;
+    icp_position_H(1, 1) = 2.0f;
+
+    lio::LIOLinearizedResult lio;
+    lio::ConstantVelocityPriorParams params;
+    params.enable = false;
+
+    const lio::ConstantVelocityPrior prior = lio::add_constant_velocity_prior(
+        lio, icp_position_H, Eigen::Vector3f(1.0f, 2.0f, 0.0f), Eigen::Vector3f::Zero(), 100, params);
+
+    EXPECT_FALSE(prior.active);
+    EXPECT_TRUE(lio.H.isZero());
+    EXPECT_TRUE(lio.b.isZero());
+}
+
+TEST(LioRegistration, ConstantVelocityPriorObservableInformationAppliesEverywhere) {
+    Eigen::Matrix3f icp_position_H = Eigen::Matrix3f::Identity();
+    lio::LIOLinearizedResult lio;
+
+    lio::ConstantVelocityPriorParams params;
+    params.enable = true;
+    params.min_eigenvalue_ratio = 0.05f;
+    params.degenerate_velocity_sigma = 0.1f;
+    params.observable_velocity_sigma = 1.0f;  // information 1, absolute
+
+    const lio::ConstantVelocityPrior prior = lio::add_constant_velocity_prior(
+        lio, icp_position_H, Eigen::Vector3f::Zero(), Eigen::Vector3f::Zero(), 100, params);
+
+    EXPECT_TRUE(prior.active);
+    EXPECT_NEAR(lio.H(imu::State::kIdxVel, imu::State::kIdxVel), 1.0f, kEps);
+    EXPECT_NEAR(lio.H(imu::State::kIdxVel + 1, imu::State::kIdxVel + 1), 1.0f, kEps);
+    EXPECT_NEAR(lio.H(imu::State::kIdxVel + 2, imu::State::kIdxVel + 2), 1.0f, kEps);
+}
+
+TEST(LioRegistration, ConstantVelocityPriorAbsoluteGateSkipsWellConditionedFrame) {
+    // z is relatively weak (40 < 0.05 * 1000 = 50) but still strong in absolute
+    // terms (40 > 0.5 * 50 = 25), so the frame is well-conditioned and must not be
+    // anchored.  The ratio gate alone would fire here.
+    Eigen::Matrix3f icp_position_H = Eigen::Matrix3f::Zero();
+    icp_position_H(0, 0) = 1000.0f;
+    icp_position_H(1, 1) = 800.0f;
+    icp_position_H(2, 2) = 40.0f;
+
+    lio::LIOLinearizedResult lio;
+    lio::ConstantVelocityPriorParams params;
+    params.enable = true;
+    params.min_eigenvalue_ratio = 0.05f;
+    params.min_information_per_inlier = 0.5f;
+    params.degenerate_velocity_sigma = 0.1f;
+    params.observable_velocity_sigma = 0.0f;
+
+    const lio::ConstantVelocityPrior prior = lio::add_constant_velocity_prior(
+        lio, icp_position_H, Eigen::Vector3f::Zero(), Eigen::Vector3f::Zero(), 50, params);
+
+    EXPECT_FALSE(prior.active);
+    EXPECT_TRUE(lio.H.isZero());
+}
+
+TEST(LioRegistration, ConstantVelocityPriorAbsoluteGateStillCatchesCorridorAxis) {
+    // z is relatively weak (20 < 0.05 * 1000 = 50) and also absolutely weak
+    // (20 < 0.5 * 50 = 25), so the corridor axis is anchored.
+    Eigen::Matrix3f icp_position_H = Eigen::Matrix3f::Zero();
+    icp_position_H(0, 0) = 1000.0f;
+    icp_position_H(1, 1) = 800.0f;
+    icp_position_H(2, 2) = 20.0f;  // 0.4 per inlier at 50 inliers, below 0.5
+
+    lio::LIOLinearizedResult lio;
+    lio::ConstantVelocityPriorParams params;
+    params.enable = true;
+    params.min_eigenvalue_ratio = 0.05f;
+    params.min_information_per_inlier = 0.5f;
+    params.degenerate_velocity_sigma = 0.1f;
+    params.observable_velocity_sigma = 0.0f;
+
+    const lio::ConstantVelocityPrior prior = lio::add_constant_velocity_prior(
+        lio, icp_position_H, Eigen::Vector3f::Zero(), Eigen::Vector3f::Zero(), 50, params);
+
+    EXPECT_TRUE(prior.active);
+    EXPECT_NEAR(lio.H(imu::State::kIdxVel + 2, imu::State::kIdxVel + 2), 100.0f, kEps);
+}
+
 TEST(LioRegistration, TsvdRemovesOnlyWeakIcpDirections) {
     lio::LIOLinearizedResult factor;
     factor.inlier = 100;

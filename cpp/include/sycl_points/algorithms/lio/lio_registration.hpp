@@ -282,8 +282,8 @@ public:
                                 const knn::KNNBase& target_knn, const imu::State& predicted_state,
                                 const Eigen::Matrix<float, 15, 15>& predicted_covariance,
                                 const Eigen::Matrix<float, 15, 15>& previous_posterior_covariance,
-                                const BiasUpdateMask& update_bias,
-                                float dt, const TransformMatrix& previous_pose) {
+                                const BiasUpdateMask& update_bias, float dt, const TransformMatrix& previous_pose,
+                                const Eigen::Vector3f& previous_velocity) {
         Eigen::Matrix<float, 15, 15> imu_information = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
         Eigen::Matrix<float, 15, 1> b_imu = Eigen::Matrix<float, 15, 1>::Zero();
@@ -409,6 +409,17 @@ public:
                     lio.H.block<3, 3>(imu::State::kIdxGyrBias, imu::State::kIdxGyrBias) +=
                         regularization * Eigen::Matrix3f::Identity();
                 }
+
+                // Constant-velocity prior on the world-frame velocity.  Classify
+                // degenerate axes from the raw ICP position Hessian in the world frame
+                // (before directional weighting) so the decision reflects the actual
+                // geometry rather than the already-attenuated factor.
+                const Eigen::Matrix3f icp_position_H_world =
+                    operating_state.rotation * last_icp.H.block<3, 3>(3, 3) * operating_state.rotation.transpose();
+                const ConstantVelocityPrior cv_prior =
+                    add_constant_velocity_prior(lio, icp_position_H_world, operating_state.velocity, previous_velocity,
+                                                last_icp.inlier, this->params_.constant_velocity_prior);
+
                 if (!lio.H.allFinite() || !lio.b.allFinite()) {
                     numeric_failure = true;
                     abort_optimization = true;
@@ -436,7 +447,8 @@ public:
                             stop = true;
                         }
                         if (this->factor_params_.verbose) {
-                            const float current_cost = icp_weight * last_icp.error + imu_cost(operating_state);
+                            const float current_cost = icp_weight * last_icp.error + imu_cost(operating_state) +
+                                                       cv_prior.cost(operating_state);
                             std::cout << "iter [" << actual_iterations - 1 << "] ";
                             std::cout << "error: " << current_cost << ", ";
                             std::cout << "inlier: " << last_icp.inlier << ", ";
@@ -445,7 +457,8 @@ public:
                         }
                         break;
                     case registration::OptimizationMethod::LEVENBERG_MARQUARDT: {
-                        const float current_cost = icp_cost(operating_state) + imu_cost(operating_state);
+                        const float current_cost =
+                            icp_cost(operating_state) + imu_cost(operating_state) + cv_prior.cost(operating_state);
                         if (!std::isfinite(current_cost)) {
                             numeric_failure = true;
                             stop = true;
@@ -460,7 +473,8 @@ public:
                                 const imu::State trial_state = retract(operating_state, trial_delta);
                                 const auto [trial_icp_error, trial_inlier] = this->registration_->compute_error_frozen(
                                     source, target, state_to_pose(trial_state).matrix(), options);
-                                const float trial_cost = icp_weight * trial_icp_error + imu_cost(trial_state);
+                                const float trial_cost =
+                                    icp_weight * trial_icp_error + imu_cost(trial_state) + cv_prior.cost(trial_state);
                                 if (this->factor_params_.verbose) {
                                     std::cout << "iter [" << actual_iterations - 1 << "] ";
                                     std::cout << "inner: " << inner << ", ";
@@ -491,7 +505,8 @@ public:
                         break;
                     }
                     case registration::OptimizationMethod::POWELL_DOGLEG: {
-                        const float current_cost = icp_cost(operating_state) + imu_cost(operating_state);
+                        const float current_cost =
+                            icp_cost(operating_state) + imu_cost(operating_state) + cv_prior.cost(operating_state);
                         trust_region_radius = clamp_radius(trust_region_radius);
                         Eigen::Matrix<float, 15, 15> dogleg_H = lio.H;
                         Eigen::Matrix<float, 15, 1> dogleg_b = lio.b;
@@ -514,7 +529,8 @@ public:
                         const imu::State trial_state = retract(operating_state, trial_delta);
                         const auto [trial_icp_error, trial_inlier] = this->registration_->compute_error_frozen(
                             source, target, state_to_pose(trial_state).matrix(), options);
-                        const float trial_cost = icp_weight * trial_icp_error + imu_cost(trial_state);
+                        const float trial_cost =
+                            icp_weight * trial_icp_error + imu_cost(trial_state) + cv_prior.cost(trial_state);
                         const float rho = (current_cost - trial_cost) / predicted_reduction;
                         if (!std::isfinite(trial_cost) || !std::isfinite(rho)) {
                             numeric_failure = true;
@@ -545,6 +561,17 @@ public:
                 }
 
                 H_undamped = lio.H;
+                if (cv_prior.active) {
+                    // The constant-velocity prior is a self-referential anti-drift
+                    // regulariser, not independent measurement information: its anchor is
+                    // the previous estimate rather than an observation.  Like the solver
+                    // damping it shapes the step only and is excluded from the posterior
+                    // covariance; leaving it in would make the recursively-carried
+                    // velocity covariance artificially small and feed back through
+                    // P_post -> P_pred -> H_imu, making the IMU prior over-confident
+                    // along exactly the axis it was meant to stabilise.
+                    H_undamped.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) -= cv_prior.information;
+                }
                 has_H_undamped = true;
                 if (step_accepted) {
                     any_step_accepted = true;
@@ -590,9 +617,9 @@ private:
                delta.segment<3>(imu::State::kIdxPos).norm() < this->params_.criteria.translation;
     }
 
-    static Eigen::Matrix<float, 15, 15> posterior_covariance(
-        const Eigen::Matrix<float, 15, 15>& H, bool valid_H,
-        const Eigen::Matrix<float, 15, 15>& previous_covariance, const BiasUpdateMask& update_bias) {
+    static Eigen::Matrix<float, 15, 15> posterior_covariance(const Eigen::Matrix<float, 15, 15>& H, bool valid_H,
+                                                             const Eigen::Matrix<float, 15, 15>& previous_covariance,
+                                                             const BiasUpdateMask& update_bias) {
         if (!valid_H) return previous_covariance;
 
         Eigen::Matrix<float, 15, 1> ignored_delta;
@@ -601,8 +628,9 @@ private:
         if (!solve_ldlt(candidate, Eigen::Matrix<float, 15, 1>::Zero(), ignored_delta, &covariance, update_bias)) {
             candidate.diagonal().array() += 1e-4f;
             if (!solve_ldlt(candidate, Eigen::Matrix<float, 15, 1>::Zero(), ignored_delta, &covariance, update_bias)) {
-                std::cerr << "[LIORegistration] WARNING: posterior covariance solve failed; keeping previous covariance."
-                          << std::endl;
+                std::cerr
+                    << "[LIORegistration] WARNING: posterior covariance solve failed; keeping previous covariance."
+                    << std::endl;
                 return previous_covariance;
             }
         }

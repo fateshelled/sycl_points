@@ -214,6 +214,28 @@ lidar_inertial_odometry_node:
     lio/directional_icp_weighting/rot_imu_information_floor_per_inlier: 5.0
     lio/directional_icp_weighting/trans_weak_direction_scale: 0.2
     lio/directional_icp_weighting/rot_weak_direction_scale: 0.2
+    # Constant-velocity prior on the world-frame velocity state.
+    # Neither LiDAR nor the IMU prior can carry velocity along a degenerate axis:
+    # the IMU prior is a position anchor whose gradient vanishes at the prediction.
+    # This anchors velocity to the previous accepted value, but only along directions
+    # whose ICP position information is below min_eigenvalue_ratio times the strongest
+    # axis.  The ratio is self-referenced (not IMU-relative) so it does not inherit the
+    # P_post -> P_pred -> H_imu degeneracy feedback.  Start with the prior on and check
+    # the [ConstantVelocityPrior] log to see which axis is anchored.
+    # degenerate_velocity_sigma is an absolute velocity uncertainty [m/s], roughly the
+    # largest expected velocity change per frame (a_max * dt).  It is NOT per-inlier:
+    # scaling it with the inlier count over-constrains velocity by orders of magnitude
+    # and turns any existing velocity error into a slow positional drift.
+    lio/constant_velocity_prior/enable: true
+    lio/constant_velocity_prior/verbose: true
+    # A direction must be weak both relatively (below min_eigenvalue_ratio * lambda_max)
+    # and absolutely (below min_information_per_inlier) to be anchored.  The absolute
+    # gate stops a well-conditioned frame from being anchored just because its weakest
+    # axis is the smallest of three strong ones.
+    lio/constant_velocity_prior/min_eigenvalue_ratio: 0.05
+    lio/constant_velocity_prior/min_information_per_inlier: 0.5
+    lio/constant_velocity_prior/degenerate_velocity_sigma: 0.1
+    lio/constant_velocity_prior/observable_velocity_sigma: 0.0
     # Bias-estimation safeguards for the weakly-observable IMU bias states.
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
     #   little motion (biases are unobservable there and would absorb noise).
