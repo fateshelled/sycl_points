@@ -114,6 +114,27 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
     icp_factor.b.segment<3>(imu::State::kIdxRot) = b_filtered.segment<3>(3);
 }
 
+/// @brief Log the IMU prior's effective information per inlier in the same units
+///        as apply_directional_icp_weighting()'s ICP eigenvalues/inlier, so the
+///        weak-direction thresholds can be compared directly against the IMU
+///        information they are delegating to.
+///
+/// For a diagonal P_pred this prints 1 / (sigma_imu^2 * inlier) per direction.
+inline void log_imu_effective_information(const Eigen::Matrix<float, 15, 15>& H_imu, uint32_t inlier) {
+    if (inlier == 0) return;
+
+    const float inlier_f = static_cast<float>(inlier);
+    const auto log_block = [&](const Eigen::Matrix3f& block, const char* label) {
+        const Eigen::Matrix3f H_sym = 0.5f * (block + block.transpose());
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
+        if (solver.info() != Eigen::Success) return;
+        std::cout << "[DirectionalIcpWeighting] imu " << label << " eigenvalues/inlier: "
+                  << (solver.eigenvalues() / inlier_f).transpose() << std::endl;
+    };
+    log_block(H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), "translation");
+    log_block(H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot), "rotation");
+}
+
 }  // namespace lio
 }  // namespace algorithms
 }  // namespace sycl_points

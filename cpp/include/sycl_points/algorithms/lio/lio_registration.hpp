@@ -397,6 +397,9 @@ public:
                 LIOLinearizedResult lio = icp_lio;
                 if (imu_valid) {
                     add_imu_factor(lio, H_imu, b_imu);
+                    if (this->params_.directional_icp_weighting.verbose) {
+                        log_imu_effective_information(H_imu, last_icp.inlier);
+                    }
                 } else {
                     const float regularization = this->params_.invalid_regularization_factor;
                     lio.H.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) +=
