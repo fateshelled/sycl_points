@@ -107,6 +107,8 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
         const std::string degenerate_reg_type =
             node->declare_parameter<std::string>("registration/degenerate_regularization/type", "NONE");
         degenerate_reg.type = algorithms::registration::DegenerateRegularizationType_from_string(degenerate_reg_type);
+        degenerate_reg.verbose = node->declare_parameter<bool>("registration/degenerate_regularization/verbose",
+                                                               degenerate_reg.verbose);
 
         degenerate_reg.trans_eigenvalue_threshold = node->declare_parameter<double>(
             "registration/degenerate_regularization/trans_eigenvalue_threshold",

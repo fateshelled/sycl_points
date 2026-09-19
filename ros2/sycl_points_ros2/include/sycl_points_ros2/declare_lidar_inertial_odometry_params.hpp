@@ -60,6 +60,8 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         "lio/initial_covariance/gyro_bias_sigma", params.lio.initial_covariance.gyro_bias_sigma));
     registration.directional_icp_weighting.enable = node->declare_parameter<bool>(
         "lio/directional_icp_weighting/enable", registration.directional_icp_weighting.enable);
+    registration.directional_icp_weighting.verbose = node->declare_parameter<bool>(
+        "lio/directional_icp_weighting/verbose", registration.directional_icp_weighting.verbose);
     registration.directional_icp_weighting.type = algorithms::lio::DirectionalIcpWeightingType_from_string(
         node->declare_parameter<std::string>("lio/directional_icp_weighting/type", "SCALE"));
     registration.directional_icp_weighting.trans_min_eigenvalue_per_inlier = static_cast<float>(

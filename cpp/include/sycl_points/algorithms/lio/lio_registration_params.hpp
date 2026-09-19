@@ -50,6 +50,7 @@ inline DirectionalIcpWeightingType DirectionalIcpWeightingType_from_string(const
 /// pose factor before the IMU prior is added.
 struct DirectionalIcpWeightingParams {
     bool enable = true;
+    bool verbose = false;
     /// SCALE continuously attenuates weak information; TSVD removes it.
     DirectionalIcpWeightingType type = DirectionalIcpWeightingType::scale;
     /// Treat ICP translation eigen-directions below this per-inlier information as weak.

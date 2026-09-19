@@ -45,6 +45,27 @@ TEST(DegenerateRegularization, NlRegPenalizesOnlyDegenerateDirections) {
     EXPECT_FLOAT_EQ(output.error, input.error);
 }
 
+TEST(DegenerateRegularization, VerboseLogsEigenvaluesPerInlier) {
+    registration::LinearizedResult input;
+    input.inlier = 10;
+    input.H.diagonal() << 10.0f, 20.0f, 30.0f, 40.0f, 50.0f, 60.0f;
+
+    registration::DegenerateRegularizationParams params;
+    params.type = registration::DegenerateRegularizationType::nl_reg;
+    params.verbose = true;
+
+    registration::DegenerateRegularization regularization;
+    regularization.set_params(params);
+    testing::internal::CaptureStdout();
+    regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
+    const std::string output = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(output.find("[DegenerateRegularization] rotation eigenvalues/inlier:"), std::string::npos);
+    EXPECT_NE(output.find("[DegenerateRegularization] translation eigenvalues/inlier:"), std::string::npos);
+    EXPECT_NE(output.find("1 2 3"), std::string::npos);
+    EXPECT_NE(output.find("4 5 6"), std::string::npos);
+}
+
 TEST(DegenerateRegularization, ParsesTsvdType) {
     EXPECT_EQ(registration::DegenerateRegularizationType_from_string("TSVD"),
               registration::DegenerateRegularizationType::tsvd);

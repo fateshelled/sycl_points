@@ -44,6 +44,28 @@ TEST(LioRegistration, DirectionalIcpWeightingAttenuatesWeakDirections) {
     EXPECT_NEAR(factor.b(imu::State::kIdxRot), 2.5f, kEps);
 }
 
+TEST(LioRegistration, DirectionalIcpWeightingVerboseLogsEigenvaluesPerInlier) {
+    lio::LIOLinearizedResult factor;
+    factor.inlier = 10;
+    factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 10.0f;
+    factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 20.0f;
+    factor.H(imu::State::kIdxPos + 2, imu::State::kIdxPos + 2) = 30.0f;
+    factor.H(imu::State::kIdxRot, imu::State::kIdxRot) = 40.0f;
+    factor.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1) = 50.0f;
+    factor.H(imu::State::kIdxRot + 2, imu::State::kIdxRot + 2) = 60.0f;
+
+    lio::DirectionalIcpWeightingParams params;
+    params.verbose = true;
+    testing::internal::CaptureStdout();
+    lio::apply_directional_icp_weighting(factor, params);
+    const std::string output = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(output.find("[DirectionalIcpWeighting] translation eigenvalues/inlier:"), std::string::npos);
+    EXPECT_NE(output.find("[DirectionalIcpWeighting] rotation eigenvalues/inlier:"), std::string::npos);
+    EXPECT_NE(output.find("1 2 3"), std::string::npos);
+    EXPECT_NE(output.find("4 5 6"), std::string::npos);
+}
+
 TEST(LioRegistration, DirectionalIcpWeightingPreservesCoupledFactorStructure) {
     lio::LIOLinearizedResult factor;
     factor.inlier = 100;

@@ -2,6 +2,8 @@
 
 #include <Eigen/Dense>
 
+#include <iostream>
+
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
@@ -54,6 +56,7 @@ inline DegenerateRegularizationType DegenerateRegularizationType_from_string(con
 
 struct DegenerateRegularizationParams {
     DegenerateRegularizationType type = DegenerateRegularizationType::none;
+    bool verbose = false;
     float rot_eigenvalue_threshold = 10.0f;
     float trans_eigenvalue_threshold = 1.0f;
     float base_factor = 1.0f;
@@ -82,19 +85,29 @@ private:
 
         if (this->params_.type == DegenerateRegularizationType::none) {
             return ret;
-        } else if (this->params_.type == DegenerateRegularizationType::nl_reg) {
+        }
+
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
+        if (solver_rot.info() != Eigen::Success) {
+            return ret;
+        }
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(linearized_result.H.block<3, 3>(3, 3));
+        if (solver_trans.info() != Eigen::Success) {
+            return ret;
+        }
+
+        if (this->params_.verbose) {
+            const float inlier_f = static_cast<float>(inlier);
+            std::cout << "[DegenerateRegularization] rotation eigenvalues/inlier: "
+                      << (solver_rot.eigenvalues() / inlier_f).transpose() << std::endl;
+            std::cout << "[DegenerateRegularization] translation eigenvalues/inlier: "
+                      << (solver_trans.eigenvalues() / inlier_f).transpose() << std::endl;
+        }
+
+        if (this->params_.type == DegenerateRegularizationType::nl_reg) {
             const float rot_threshold = this->params_.rot_eigenvalue_threshold;
             const float trans_threshold = this->params_.trans_eigenvalue_threshold;
             const float lambda = this->params_.base_factor * inlier;
-
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
-            if (solver_rot.info() != Eigen::Success) {
-                return ret;
-            }
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(linearized_result.H.block<3, 3>(3, 3));
-            if (solver_trans.info() != Eigen::Success) {
-                return ret;
-            }
 
             Eigen::Matrix<float, 6, 6> H_penalty = Eigen::Matrix<float, 6, 6>::Zero();
             if (rot_threshold > 0.0f) {
@@ -127,15 +140,6 @@ private:
                    this->params_.type == DegenerateRegularizationType::l_reg ||
                    this->params_.type == DegenerateRegularizationType::solution_remap ||
                    this->params_.type == DegenerateRegularizationType::eq_constraint) {
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
-            if (solver_rot.info() != Eigen::Success) {
-                return ret;
-            }
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(linearized_result.H.block<3, 3>(3, 3));
-            if (solver_trans.info() != Eigen::Success) {
-                return ret;
-            }
-
             Eigen::Matrix<float, 6, 6> observable_projector = Eigen::Matrix<float, 6, 6>::Identity();
             const auto truncate_directions = [&](const auto& solver, const float threshold, const int offset) {
                 if (threshold <= 0.0f) {
