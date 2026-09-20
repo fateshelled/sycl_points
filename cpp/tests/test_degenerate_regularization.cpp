@@ -255,8 +255,32 @@ TEST(DegenerateRegularization, SchurDirectionsHandleRankDeficientBlock) {
     EXPECT_EQ(schur.translation_block_rank, 1);
 }
 
+TEST(DegenerateRegularization, SchurDirectionsRespectBlockOrdering) {
+    // Distinct, weakly constrained axes in each block pin the block ordering: a
+    // swapped PoseHessianOrder would report the weak axes in the wrong blocks.
+    Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
+    H.block<3, 3>(0, 0).diagonal() = Eigen::Vector3f(100.0f, 100.0f, 1.0f);  // rotation: z weak
+    H.block<3, 3>(3, 3).diagonal() = Eigen::Vector3f(1.0f, 100.0f, 100.0f);  // translation: x weak
+
+    const auto rotation_first =
+        registration::compute_schur_directions(H, registration::PoseHessianOrder::rotation_first);
+    ASSERT_TRUE(rotation_first.valid);
+    EXPECT_NEAR(rotation_first.trans_eigenvalues(0), 1.0, 1e-5);
+    EXPECT_NEAR(std::abs(rotation_first.trans_eigenvectors(0, 0)), 1.0, 1e-5);
+    EXPECT_NEAR(rotation_first.rot_eigenvalues(0), 1.0, 1e-5);
+    EXPECT_NEAR(std::abs(rotation_first.rot_eigenvectors(2, 0)), 1.0, 1e-5);
+
+    const auto translation_first =
+        registration::compute_schur_directions(H, registration::PoseHessianOrder::translation_first);
+    ASSERT_TRUE(translation_first.valid);
+    EXPECT_NEAR(std::abs(translation_first.trans_eigenvectors(2, 0)), 1.0, 1e-5);
+    EXPECT_NEAR(std::abs(translation_first.rot_eigenvectors(0, 0)), 1.0, 1e-5);
+}
+
 TEST(DegenerateRegularization, SchurComplementDetectsCoupledDegeneracyMissedByBlocks) {
-    // Same coupled x-axis degeneracy as above, end to end through TSVD.
+    // Translation along x and rotation about x are each individually strong (100),
+    // but the coupled mode w = (t_x, theta_x) = (1, 1) is exactly flat while the
+    // orthogonal coupled direction (1, -1) is observable (curvature 200).
     registration::LinearizedResult input;
     input.inlier = 1;
     input.H.block<3, 3>(0, 0) = 100.0f * Eigen::Matrix3f::Identity();
@@ -265,6 +289,13 @@ TEST(DegenerateRegularization, SchurComplementDetectsCoupledDegeneracyMissedByBl
     input.H(3, 0) = -100.0f;
     input.b.setOnes();
 
+    Eigen::Matrix<float, 6, 1> flat = Eigen::Matrix<float, 6, 1>::Zero();  // (e0 + e3) / sqrt(2)
+    flat(0) = 1.0f / std::sqrt(2.0f);
+    flat(3) = 1.0f / std::sqrt(2.0f);
+    Eigen::Matrix<float, 6, 1> observable = Eigen::Matrix<float, 6, 1>::Zero();  // (e0 - e3) / sqrt(2)
+    observable(0) = 1.0f / std::sqrt(2.0f);
+    observable(3) = -1.0f / std::sqrt(2.0f);
+
     registration::DegenerateRegularizationParams params;
     params.type = registration::DegenerateRegularizationType::tsvd;
     params.rot_eigenvalue_threshold = 1.0f;
@@ -272,28 +303,62 @@ TEST(DegenerateRegularization, SchurComplementDetectsCoupledDegeneracyMissedByBl
 
     registration::DegenerateRegularization regularization;
 
-    // Block-diagonal analysis: every diagonal eigenvalue is 100, so nothing is
-    // truncated and the coupled degeneracy is missed.
+    // Block-diagonal analysis: every diagonal eigenvalue is 100, so the flat
+    // coupled mode is left with zero information (missed).
     params.use_schur_complement = false;
     regularization.set_params(params);
     const auto block_output =
         regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
-    EXPECT_NEAR(block_output.H(0, 0), 100.0f, 1e-4f);
-    EXPECT_NEAR(block_output.H(3, 3), 100.0f, 1e-4f);
+    EXPECT_NEAR(flat.dot(block_output.H * flat), 0.0f, 1e-3f);
+    EXPECT_NEAR(observable.dot(block_output.H * observable), 200.0f, 1e-2f);
 
-    // Schur analysis: the coupled x mode is singular (0), so the x rotation and
-    // translation directions are truncated while the uncoupled y/z axes keep
-    // their information.
+    // Schur analysis: the flat coupled mode gets unit information (TSVD identity
+    // replacement) while the observable coupled direction is preserved.
     params.use_schur_complement = true;
     regularization.set_params(params);
     const auto schur_output =
         regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
-    EXPECT_NEAR(schur_output.H(0, 0), 1.0f, 1e-4f);
-    EXPECT_NEAR(schur_output.H(3, 3), 1.0f, 1e-4f);
-    EXPECT_NEAR(schur_output.H(1, 1), 100.0f, 1e-4f);
-    EXPECT_NEAR(schur_output.H(2, 2), 100.0f, 1e-4f);
-    EXPECT_NEAR(schur_output.H(4, 4), 100.0f, 1e-4f);
-    EXPECT_NEAR(schur_output.H(5, 5), 100.0f, 1e-4f);
+    EXPECT_NEAR(flat.dot(schur_output.H * flat), 1.0f, 1e-3f);
+    EXPECT_NEAR(observable.dot(schur_output.H * observable), 200.0f, 1e-2f);
+}
+
+TEST(DegenerateRegularization, SchurComplementProjectorHasCoupledNullityOne) {
+    // The flat coupled mode is one-dimensional, so the observable projector must
+    // have nullity exactly one. Zero-padding would have removed both block axes
+    // (nullity two) and discarded the observable (1, -1) coupled direction.
+    registration::LinearizedResult input;
+    input.inlier = 1;
+    input.H.block<3, 3>(0, 0) = 100.0f * Eigen::Matrix3f::Identity();
+    input.H.block<3, 3>(3, 3) = 100.0f * Eigen::Matrix3f::Identity();
+    input.H(0, 3) = -100.0f;
+    input.H(3, 0) = -100.0f;
+
+    registration::DegenerateRegularizationParams params;
+    params.type = registration::DegenerateRegularizationType::solution_remap;
+    params.rot_eigenvalue_threshold = 1.0f;
+    params.trans_eigenvalue_threshold = 1.0f;
+    params.use_schur_complement = true;
+
+    registration::DegenerateRegularization regularization;
+    regularization.set_params(params);
+    const auto output =
+        regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
+
+    const Eigen::Matrix<float, 6, 6> projector = output.solution_projector;
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> solver(projector);
+    ASSERT_EQ(solver.info(), Eigen::Success);
+    int removed = 0;
+    for (int i = 0; i < 6; ++i) {
+        if (solver.eigenvalues()(i) < 0.5f) {
+            ++removed;
+        }
+    }
+    EXPECT_EQ(removed, 1);
+
+    Eigen::Matrix<float, 6, 1> observable = Eigen::Matrix<float, 6, 1>::Zero();
+    observable(0) = 1.0f / std::sqrt(2.0f);
+    observable(3) = -1.0f / std::sqrt(2.0f);
+    EXPECT_NEAR((projector * observable).norm(), 1.0f, 1e-4f);
 }
 
 TEST(DegenerateRegularization, SchurComplementMatchesBlocksForDiagonalHessian) {

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace sycl_points {
 namespace algorithms {
@@ -50,6 +51,11 @@ struct SchurDirections {
     /// @brief Numerical rank of the diagonal block that was marginalized out.
     int translation_block_rank = 0;
     int rotation_block_rank = 0;
+    // Retained so a block eigenvector can be lifted into a coupled 6D twist.
+    Eigen::Matrix3d pinv_rotation = Eigen::Matrix3d::Zero();     ///< pinv(H_rr)
+    Eigen::Matrix3d pinv_translation = Eigen::Matrix3d::Zero();  ///< pinv(H_tt)
+    Eigen::Matrix3d H_tr = Eigen::Matrix3d::Zero();              ///< d2 / (d_t d_theta)
+    Eigen::Matrix3d H_rt = Eigen::Matrix3d::Zero();              ///< d2 / (d_theta d_t)
 };
 
 /// @brief Rank-aware pseudo-inverse of a symmetric 3x3 block.
@@ -68,7 +74,7 @@ inline Eigen::Matrix3d schur_pseudo_inverse(const Eigen::Matrix3d& block, double
         return Eigen::Matrix3d::Zero();
     }
 
-    const double largest = std::max(0.0, solver.eigenvalues().maxCoeff());
+    const double largest = solver.eigenvalues().cwiseAbs().maxCoeff();
     const double cutoff = std::max(std::max(0.0, absolute_cutoff), std::max(0.0, relative_cutoff) * largest);
     Eigen::Vector3d inverse = Eigen::Vector3d::Zero();
     int rank = 0;
@@ -137,15 +143,121 @@ inline SchurDirections compute_schur_directions(const Eigen::Matrix<float, 6, 6>
         return result;
     }
 
-    result.S_translation = S_t;
-    result.S_rotation = S_r;
-    // Floating-point cancellation can leave tiny negative eigenvalues; clamp for ranking.
+    // Floating-point cancellation can leave tiny negative eigenvalues; clamp so
+    // the stored Schur matrices and their spectra are consistent and PSD.
     result.trans_eigenvalues = trans_eig.eigenvalues().cwiseMax(0.0);
-    result.trans_eigenvectors = trans_eig.eigenvectors();
     result.rot_eigenvalues = rot_eig.eigenvalues().cwiseMax(0.0);
+    result.trans_eigenvectors = trans_eig.eigenvectors();
     result.rot_eigenvectors = rot_eig.eigenvectors();
+    result.S_translation =
+        trans_eig.eigenvectors() * result.trans_eigenvalues.asDiagonal() * trans_eig.eigenvectors().transpose();
+    result.S_rotation = rot_eig.eigenvectors() * result.rot_eigenvalues.asDiagonal() * rot_eig.eigenvectors().transpose();
+
+    result.pinv_rotation = pinv_rr;
+    result.pinv_translation = pinv_tt;
+    result.H_tr = H_tr;
+    result.H_rt = H_rt;
     result.valid = true;
     return result;
+}
+
+/// @brief Lift a translation Schur eigenvector to the coupled 6D twist.
+///
+/// For a translation direction `u_t`, the rotation that minimizes the local
+/// quadratic model is `u_r = -pinv(H_rr) H_rt u_t`, and the curvature of the
+/// resulting coupled twist equals the Schur eigenvalue `u_t^T S_t u_t`. Using
+/// the coupled twist (instead of zero-padding the block direction) removes
+/// exactly the weak subspace and keeps observable coupled motions orthogonal to
+/// it.
+inline Eigen::Matrix<double, 6, 1> lift_translation_direction(const SchurDirections& schur,
+                                                              const Eigen::Vector3d& u_t, PoseHessianOrder order) {
+    const Eigen::Vector3d u_r = -schur.pinv_rotation * schur.H_rt * u_t;
+    Eigen::Matrix<double, 6, 1> twist;
+    if (order == PoseHessianOrder::translation_first) {
+        twist.head<3>() = u_t;
+        twist.tail<3>() = u_r;
+    } else {
+        twist.head<3>() = u_r;
+        twist.tail<3>() = u_t;
+    }
+    return twist;
+}
+
+/// @brief Lift a rotation Schur eigenvector to the coupled 6D twist.
+///
+/// For a rotation direction `u_r`, the translation that minimizes the local
+/// quadratic model is `u_t = -pinv(H_tt) H_tr u_r`.
+inline Eigen::Matrix<double, 6, 1> lift_rotation_direction(const SchurDirections& schur,
+                                                           const Eigen::Vector3d& u_r, PoseHessianOrder order) {
+    const Eigen::Vector3d u_t = -schur.pinv_translation * schur.H_tr * u_r;
+    Eigen::Matrix<double, 6, 1> twist;
+    if (order == PoseHessianOrder::translation_first) {
+        twist.head<3>() = u_t;
+        twist.tail<3>() = u_r;
+    } else {
+        twist.head<3>() = u_r;
+        twist.tail<3>() = u_t;
+    }
+    return twist;
+}
+
+/// @brief Modified Gram-Schmidt over 6D pose directions.
+///
+/// Translation-derived and rotation-derived candidates can represent the same
+/// physical motion, and the lifted twists are not orthogonal in general. This
+/// returns an orthonormal basis of their span; dependent directions (norm below
+/// `tolerance` after projection) are dropped so the caller's projector rank
+/// matches the true weak subspace dimension.
+inline std::vector<Eigen::Matrix<double, 6, 1>> orthonormalize_directions(
+    std::vector<Eigen::Matrix<double, 6, 1>> directions, double tolerance = 1e-6) {
+    std::vector<Eigen::Matrix<double, 6, 1>> basis;
+    basis.reserve(directions.size());
+    for (auto& direction : directions) {
+        for (const auto& b : basis) {
+            direction -= b.dot(direction) * b;
+        }
+        const double norm = direction.norm();
+        if (norm > tolerance) {
+            basis.push_back(direction / norm);
+        }
+    }
+    return basis;
+}
+
+/// @brief A normalized pose direction with an associated information scale.
+struct ScaledDirection {
+    Eigen::Matrix<double, 6, 1> direction = Eigen::Matrix<double, 6, 1>::Zero();
+    double scale = 1.0;
+};
+
+/// @brief Gram-Schmidt that carries a per-direction scale.
+///
+/// Used by the directional ICP weighting, where each weak coupled direction has
+/// its own attenuation factor. When a candidate is dependent on an earlier
+/// basis vector (for example a translation and rotation lift of the same
+/// physical mode) it is dropped and the kept basis vector takes the smaller of
+/// the two scales, which is the conservative choice.
+inline std::vector<ScaledDirection> orthonormalize_scaled_directions(
+    std::vector<ScaledDirection> directions, double tolerance = 1e-6) {
+    std::vector<ScaledDirection> basis;
+    basis.reserve(directions.size());
+    for (auto candidate : directions) {
+        double scale = candidate.scale;
+        for (const auto& b : basis) {
+            const double projection = b.direction.dot(candidate.direction);
+            candidate.direction -= projection * b.direction;
+            if (std::abs(projection) > tolerance) {
+                scale = std::min(scale, b.scale);
+            }
+        }
+        const double norm = candidate.direction.norm();
+        if (norm > tolerance) {
+            candidate.direction /= norm;
+            candidate.scale = scale;
+            basis.push_back(candidate);
+        }
+    }
+    return basis;
 }
 
 }  // namespace registration

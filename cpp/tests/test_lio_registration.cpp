@@ -163,11 +163,12 @@ TEST(LioRegistration, DirectionalIcpWeightingPreservesCoupledFactorStructure) {
     EXPECT_GE(solver.eigenvalues().minCoeff(), -kEps);
 }
 
-TEST(LioRegistration, DirectionalIcpWeightingSchurDetectsCoupledDegeneracy) {
+TEST(LioRegistration, DirectionalIcpWeightingSchurAttenuatesCoupledDegeneracy) {
     // Translation along x and rotation about x are each individually strong
-    // (100), but the coupled mode t_x = theta_x is flat. The block-diagonal
-    // analysis sees only the 100s and keeps the factor untouched; the Schur
-    // analysis sees the coupled null mode and attenuates both x directions.
+    // (100), but they are partially coupled (cross term -90), leaving a weak
+    // coupled mode with marginal information 19. The block-diagonal analysis
+    // sees only the 100s and leaves the factor untouched; the Schur analysis
+    // detects the coupled mode and attenuates it along the coupled direction.
     const auto weighted = [](bool use_schur) {
         lio::LIOLinearizedResult factor;
         factor.inlier = 10;
@@ -177,8 +178,8 @@ TEST(LioRegistration, DirectionalIcpWeightingSchurDetectsCoupledDegeneracy) {
         factor.H(imu::State::kIdxRot, imu::State::kIdxRot) = 100.0f;
         factor.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1) = 100.0f;
         factor.H(imu::State::kIdxRot + 2, imu::State::kIdxRot + 2) = 100.0f;
-        factor.H(imu::State::kIdxPos, imu::State::kIdxRot) = -100.0f;
-        factor.H(imu::State::kIdxRot, imu::State::kIdxPos) = -100.0f;
+        factor.H(imu::State::kIdxPos, imu::State::kIdxRot) = -90.0f;
+        factor.H(imu::State::kIdxRot, imu::State::kIdxPos) = -90.0f;
 
         lio::DirectionalIcpWeightingParams params;
         params.use_schur_complement = use_schur;
@@ -192,16 +193,17 @@ TEST(LioRegistration, DirectionalIcpWeightingSchurDetectsCoupledDegeneracy) {
         return factor;
     };
 
+    // Block-diagonal analysis: no diagonal block is weak, so nothing is changed.
     const lio::LIOLinearizedResult block = weighted(false);
     EXPECT_NEAR(block.H(imu::State::kIdxPos, imu::State::kIdxPos), 100.0f, kEps);
     EXPECT_NEAR(block.H(imu::State::kIdxRot, imu::State::kIdxRot), 100.0f, kEps);
 
-    // The coupled x mode has zero marginal information. The existing weak
-    // handling maps an exactly zero eigenvalue to full removal, so both x
-    // directions are zeroed while the uncoupled y/z axes keep their 100.
+    // Schur analysis: marginal information 19 < 25 gives scale 0.76 on the
+    // coupled mode, so the (pos x, rot x) plane is scaled by 0.76 while the
+    // uncoupled y/z axes keep their 100.
     const lio::LIOLinearizedResult schur = weighted(true);
-    EXPECT_NEAR(schur.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.0f, kEps);
-    EXPECT_NEAR(schur.H(imu::State::kIdxRot, imu::State::kIdxRot), 0.0f, kEps);
+    EXPECT_NEAR(schur.H(imu::State::kIdxPos, imu::State::kIdxPos), 76.0f, kEps);
+    EXPECT_NEAR(schur.H(imu::State::kIdxRot, imu::State::kIdxRot), 76.0f, kEps);
     EXPECT_NEAR(schur.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 100.0f, kEps);
     EXPECT_NEAR(schur.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1), 100.0f, kEps);
 }
