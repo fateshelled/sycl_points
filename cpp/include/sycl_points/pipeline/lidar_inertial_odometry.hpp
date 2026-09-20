@@ -457,16 +457,13 @@ private:
 
         Eigen::Matrix<float, 15, 15> P_initial = this->P_post_;
 
-        // Add fixed-sigma floors to P_initial before resetting the integrator.
-        // Velocity floor: ensures P_pred[p,p] ≳ (fd_velocity_sigma × dt)², keeping
-        //   H_imu[p,p] on the same scale as H_icp regardless of accel_noise_density.
-        // Rotation floor: same mechanism for H_imu[φ,φ] vs gyro_noise_density.
-        const float sv2 = this->params_.lio.preintegration_reset.fd_velocity_sigma *
-                          this->params_.lio.preintegration_reset.fd_velocity_sigma;
-        P_initial.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel) += sv2 * Eigen::Matrix3f::Identity();
-        const float sr2 = this->params_.lio.preintegration_reset.icp_rotation_sigma *
-                          this->params_.lio.preintegration_reset.icp_rotation_sigma;
-        P_initial.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) += sr2 * Eigen::Matrix3f::Identity();
+        // Fixed-sigma floors on P_initial before resetting the integrator, so a
+        // posterior that is very confident along an unobserved direction cannot
+        // make H_imu orders of magnitude larger than H_icp.
+        algorithms::lio::apply_preintegration_covariance_floors(
+            P_initial, this->params_.lio.preintegration_reset.fd_position_sigma,
+            this->params_.lio.preintegration_reset.fd_velocity_sigma,
+            this->params_.lio.preintegration_reset.icp_rotation_sigma);
 
         // P_post_ uses LiDAR right-rotation error; IMUPreintegration uses IMU
         // right-rotation error. Position and velocity remain in the world frame.

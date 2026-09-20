@@ -189,6 +189,9 @@ lidar_inertial_odometry_node:
     # Fixed-sigma floors added to P_initial at each IMU reset.
     # Prevents H_imu from dominating H_icp when noise_density is set to a small
     # physical value (accel / gyro).
+    # fd_position_sigma: σ_p [m]  → P_pred[p,p] ≳ σ_p²  (LiDAR per-frame resolution;
+    #   position/velocity correlation can make P_pred[p,p] smaller than (σ_v × dt)²)
+    lio/fd_position_sigma: 0.01   # [m]
     # fd_velocity_sigma: σ_v [m/s]  → P_pred[p,p] ≳ (σ_v × dt)²  ≈ σ_icp²
     #   rule of thumb: σ_icp / dt  (e.g. 0.01 m / 0.1 s = 0.1 m/s)
     lio/fd_velocity_sigma: 0.1    # [m/s]
@@ -202,17 +205,21 @@ lidar_inertial_odometry_node:
     # A direction is weak when its ICP information is below min_information_ratio
     # times the IMU prior information along the same direction, so the decision is
     # relative to what the IMU already provides rather than an absolute ICP magnitude.
-    # The IMU baseline is floored per inlier because the previous frame's degeneracy
-    # feeds back through P_post -> P_pred -> H_imu and would otherwise make every
-    # direction look degenerate.
+    # The IMU baseline is clamped to [floor, ceiling] per inlier: the floor absorbs the
+    # previous frame's degeneracy feedback through P_post -> P_pred -> H_imu, the
+    # ceiling stops an over-confident IMU prior from inflating the threshold until
+    # every direction is weak (which silently turns the filter into a uniform
+    # down-scale of the ICP factor).
     lio/directional_icp_weighting/enable: true
     lio/directional_icp_weighting/verbose: false
     lio/directional_icp_weighting/type: "SCALE" # SCALE, TSVD
-    lio/directional_icp_weighting/trans_min_information_ratio: 0.5
+    lio/directional_icp_weighting/trans_min_information_ratio: 0.3
     lio/directional_icp_weighting/rot_min_information_ratio: 0.5
-    lio/directional_icp_weighting/trans_imu_information_floor_per_inlier: 5.0
+    lio/directional_icp_weighting/trans_imu_information_floor_per_inlier: 50.0
     lio/directional_icp_weighting/rot_imu_information_floor_per_inlier: 5.0
-    lio/directional_icp_weighting/trans_weak_direction_scale: 0.2
+    lio/directional_icp_weighting/trans_max_imu_information_per_inlier: 500.0
+    lio/directional_icp_weighting/rot_max_imu_information_per_inlier: 500.0
+    lio/directional_icp_weighting/trans_weak_direction_scale: 0.1
     lio/directional_icp_weighting/rot_weak_direction_scale: 0.2
     # Constant-velocity prior on the world-frame velocity state.
     # Neither LiDAR nor the IMU prior can carry velocity along a degenerate axis:

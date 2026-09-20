@@ -4,9 +4,11 @@
 #include <limits>
 
 #include "sycl_points/algorithms/lio/lio_registration.hpp"
+#include "sycl_points/pipeline/lidar_inertial_odometry_params.hpp"
 
 namespace lio = sycl_points::algorithms::lio;
 namespace imu = sycl_points::imu;
+namespace pipeline = sycl_points::pipeline;
 
 static constexpr float kEps = 1e-5f;
 
@@ -359,6 +361,107 @@ TEST(LioRegistration, TsvdLeavesImuPriorInTruncatedDirection) {
     EXPECT_NEAR(icp_factor.b(imu::State::kIdxPos), 1.0f, kEps);
     EXPECT_NEAR(icp_factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 22.0f, kEps);
     EXPECT_NEAR(icp_factor.b(imu::State::kIdxPos + 1), 5.0f, kEps);
+}
+
+TEST(LioRegistration, DirectionalIcpWeightingCeilingBlocksOverConfidentImu) {
+    // Without the ceiling the 1e6 IMU information would raise the weak threshold to
+    // 1e5 and attenuate both axes.  The ceiling (10 per inlier) caps the threshold
+    // at 1e3, so only the weak axis is attenuated and the strong axis is kept.
+    // Perpendicular to H_imu (y) the baseline falls back to the floor (5 per inlier).
+    lio::LIOLinearizedResult factor;
+    factor.inlier = 100;
+    factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0f;            // weak
+    factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 5000.0f;  // observable
+    factor.b(imu::State::kIdxPos) = 1.0f;
+
+    Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
+    H_imu(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0e6f;
+
+    lio::DirectionalIcpWeightingParams params;
+    params.trans_min_information_ratio = 1.0f;
+    params.rot_min_information_ratio = 0.0f;
+    params.trans_imu_information_floor_per_inlier = 5.0f;
+    params.trans_max_imu_information_per_inlier = 10.0f;
+    params.rot_imu_information_floor_per_inlier = 0.0f;
+    params.rot_max_imu_information_per_inlier = 0.0f;
+    params.trans_weak_direction_scale = 0.1f;
+
+    lio::apply_directional_icp_weighting(factor, H_imu, params);
+
+    // x: threshold = 1.0 * clamp(1e6, 500, 1000) = 1000, scale = max(0.1, 1 / 1000) = 0.1.
+    EXPECT_NEAR(factor.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.1f, kEps);
+    EXPECT_NEAR(factor.b(imu::State::kIdxPos), 0.1f, kEps);
+    // y: threshold = 1.0 * clamp(0, 500, 1000) = 500, 5000 > 500 keeps scale 1.
+    EXPECT_NEAR(factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 5000.0f, kEps);
+    EXPECT_NEAR(factor.b(imu::State::kIdxPos + 1), 0.0f, kEps);
+}
+
+TEST(LioRegistration, DirectionalIcpWeightingFloorRaisesThreshold) {
+    // A tiny IMU prior still uses the floor (5 per inlier) as the baseline: the weak
+    // axis is attenuated by the linear information ratio, the observable axis is kept.
+    lio::LIOLinearizedResult factor;
+    factor.inlier = 100;
+    factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0f;            // weak
+    factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 5000.0f;  // observable
+    factor.b(imu::State::kIdxPos) = 1.0f;
+
+    Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
+    H_imu(imu::State::kIdxPos, imu::State::kIdxPos) = 0.5f;
+
+    lio::DirectionalIcpWeightingParams params;
+    params.trans_min_information_ratio = 1.0f;
+    params.rot_min_information_ratio = 0.0f;
+    params.trans_imu_information_floor_per_inlier = 5.0f;
+    params.trans_max_imu_information_per_inlier = 10.0f;
+    params.trans_weak_direction_scale = 0.1f;
+
+    lio::apply_directional_icp_weighting(factor, H_imu, params);
+
+    // x: threshold = 1.0 * clamp(0.5, 500, 1000) = 500, scale = max(0.1, 1 / 500) = 0.1.
+    EXPECT_NEAR(factor.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.1f, kEps);
+    EXPECT_NEAR(factor.b(imu::State::kIdxPos), 0.1f, kEps);
+    // y: threshold = 500, 5000 > 500 keeps scale 1.
+    EXPECT_NEAR(factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 5000.0f, kEps);
+}
+
+TEST(LioRegistration, PreintegrationCovarianceFloorsBoundEachDiagonalBlock) {
+    Eigen::Matrix<float, 15, 15> covariance = Eigen::Matrix<float, 15, 15>::Zero();
+
+    lio::apply_preintegration_covariance_floors(covariance, 0.2f, 0.3f, 0.4f);
+
+    EXPECT_NEAR(covariance(imu::State::kIdxPos, imu::State::kIdxPos), 0.04f, kEps);
+    EXPECT_NEAR(covariance(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 0.04f, kEps);
+    EXPECT_NEAR(covariance(imu::State::kIdxPos + 2, imu::State::kIdxPos + 2), 0.04f, kEps);
+    EXPECT_NEAR(covariance(imu::State::kIdxVel, imu::State::kIdxVel), 0.09f, kEps);
+    EXPECT_NEAR(covariance(imu::State::kIdxRot, imu::State::kIdxRot), 0.16f, kEps);
+    EXPECT_NEAR(covariance(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1), 0.16f, kEps);
+    EXPECT_NEAR(covariance(imu::State::kIdxRot + 2, imu::State::kIdxRot + 2), 0.16f, kEps);
+    EXPECT_NEAR(covariance(imu::State::kIdxAccBias, imu::State::kIdxAccBias), 0.0f, kEps);
+}
+
+TEST(LioRegistration, PreintegrationCovarianceFloorsKeepLargerCovariance) {
+    Eigen::Matrix<float, 15, 15> covariance = Eigen::Matrix<float, 15, 15>::Zero();
+    covariance.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos) =
+        0.25f * Eigen::Matrix3f::Identity();  // > 0.2^2
+
+    lio::apply_preintegration_covariance_floors(covariance, 0.2f, 0.3f, 0.4f);
+
+    EXPECT_NEAR(covariance(imu::State::kIdxPos, imu::State::kIdxPos), 0.29f, kEps);
+    EXPECT_NEAR(covariance(imu::State::kIdxVel, imu::State::kIdxVel), 0.09f, kEps);
+}
+
+TEST(LioRegistration, PreintegrationResetDefaultsBoundPositionInformation) {
+    // P_pred[p,p] >= fd_position_sigma^2 even when P_post is a perfect diagonal,
+    // so the default floors keep H_imu[p,p] finite (~1e4 at 0.01 m).
+    const pipeline::lidar_inertial_odometry::Parameters::LIO::PreintegrationReset reset;
+
+    Eigen::Matrix<float, 15, 15> covariance = Eigen::Matrix<float, 15, 15>::Zero();
+    lio::apply_preintegration_covariance_floors(covariance, reset.fd_position_sigma, reset.fd_velocity_sigma,
+                                                reset.icp_rotation_sigma);
+
+    EXPECT_NEAR(covariance(imu::State::kIdxPos, imu::State::kIdxPos), 1.0e-4f, 1e-9f);
+    EXPECT_NEAR(covariance(imu::State::kIdxVel, imu::State::kIdxVel), 1.0e-2f, 1e-7f);
+    EXPECT_NEAR(covariance(imu::State::kIdxRot, imu::State::kIdxRot), 1.0e-4f, 1e-9f);
 }
 
 TEST(LioRegistration, FixedBiasIsRemovedFromCoupledSolve) {

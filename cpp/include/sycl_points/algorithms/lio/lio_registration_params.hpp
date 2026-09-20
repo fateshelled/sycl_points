@@ -77,6 +77,12 @@ struct DirectionalIcpWeightingParams {
     float trans_imu_information_floor_per_inlier = 5.0f;
     /// Same as trans_imu_information_floor_per_inlier for the rotation block.
     float rot_imu_information_floor_per_inlier = 5.0f;
+    /// Ceiling on the IMU per-inlier information used as the comparison baseline.
+    /// Without it an unusually confident IMU prior inflates the threshold until
+    /// every direction is weak and the filter becomes a uniform down-scale.
+    float trans_max_imu_information_per_inlier = 50.0f;
+    /// Same as trans_max_imu_information_per_inlier for the rotation block.
+    float rot_max_imu_information_per_inlier = 50.0f;
     /// Minimum information scale applied to weak translation directions. 0 allows full removal.
     float trans_weak_direction_scale = 0.2f;
     /// Minimum information scale applied to weak rotation directions. 0 allows full removal.

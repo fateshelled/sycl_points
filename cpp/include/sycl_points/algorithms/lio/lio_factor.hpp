@@ -142,6 +142,10 @@ inline ConstantVelocityPrior add_constant_velocity_prior(LIOLinearizedResult& li
 
 /// @brief Attenuate ICP pose information in directions that are weak relative to the IMU prior.
 ///
+/// The baseline is the IMU information along each ICP eigen-direction, clamped to
+/// [floor * inlier, ceiling * inlier] to stay robust to both directions of
+/// covariance collapse.
+///
 /// @param icp_factor  LIO factor containing only the embedded ICP contribution.
 /// @param H_imu       IMU information matrix (15x15) in the LIO state ordering. Pass a
 ///                    zero matrix when no valid IMU prior exists; the configured floor
@@ -169,7 +173,8 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
 
     const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block, const Eigen::Matrix3f& H_imu_block,
                                           const Eigen::Vector3f& b_block, float min_information_ratio,
-                                          float imu_information_floor_per_inlier, float weak_direction_scale,
+                                          float imu_information_floor_per_inlier,
+                                          float imu_information_ceiling_per_inlier, float weak_direction_scale,
                                           const char* label) -> Eigen::Matrix3f {
         const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
@@ -184,16 +189,18 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
 
         const float ratio = std::max(0.0f, min_information_ratio);
         const float floor_info = std::max(0.0f, imu_information_floor_per_inlier) * inlier_f;
+        const float ceiling_info = std::max(0.0f, imu_information_ceiling_per_inlier) * inlier_f;
         const float weak_scale = std::clamp(weak_direction_scale, 0.0f, 1.0f);
         Eigen::Matrix3f filter = Eigen::Matrix3f::Zero();
         for (int i = 0; i < kBlockDof; ++i) {
             const float lambda = std::max(0.0f, solver.eigenvalues()(i));
             const Eigen::Vector3f q = solver.eigenvectors().col(i);
 
-            // Baseline is the IMU prior's information along this same eigen-direction,
-            // floored so the P_post -> P_pred -> H_imu degeneracy feedback cannot make
-            // every direction look weak.
-            const float imu_info = std::max(floor_info, q.dot(H_imu_block * q));
+            // Baseline is the IMU information along this direction, clamped to
+            // [floor, ceiling] per inlier.  The floor absorbs the P_post -> P_pred ->
+            // H_imu degeneracy feedback; the ceiling stops an over-confident IMU
+            // prior from making every direction weak.
+            const float imu_info = std::clamp(q.dot(H_imu_block * q), floor_info, ceiling_info);
             const float weak_threshold = ratio * imu_info;
 
             float scale = 1.0f;
@@ -222,11 +229,11 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
     filter.block<3, 3>(0, 0) = compute_block_filter(
         H_pose.block<3, 3>(0, 0), H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), b_pose.segment<3>(0),
         params.trans_min_information_ratio, params.trans_imu_information_floor_per_inlier,
-        params.trans_weak_direction_scale, "translation");
+        params.trans_max_imu_information_per_inlier, params.trans_weak_direction_scale, "translation");
     filter.block<3, 3>(3, 3) = compute_block_filter(
         H_pose.block<3, 3>(3, 3), H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot), b_pose.segment<3>(3),
         params.rot_min_information_ratio, params.rot_imu_information_floor_per_inlier,
-        params.rot_weak_direction_scale, "rotation");
+        params.rot_max_imu_information_per_inlier, params.rot_weak_direction_scale, "rotation");
 
     const Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = filter * H_pose * filter;
     const Eigen::Matrix<float, kPoseDof, 1> b_filtered = filter * filter * b_pose;
@@ -237,6 +244,22 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
     icp_factor.H.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot) = H_filtered.block<3, 3>(3, 3);
     icp_factor.b.segment<3>(imu::State::kIdxPos) = b_filtered.segment<3>(0);
     icp_factor.b.segment<3>(imu::State::kIdxRot) = b_filtered.segment<3>(3);
+}
+
+/// @brief Apply the fixed-sigma covariance floors used at each IMU reset.
+///
+/// Bounds P_pred along directions the LiDAR cannot observe, so preintegration
+/// cannot inject information orders of magnitude above what the LiDAR contributes.
+inline void apply_preintegration_covariance_floors(Eigen::Matrix<float, 15, 15>& covariance, float position_sigma,
+                                                   float velocity_sigma, float rotation_sigma) {
+    const auto variance = [](float sigma) { return sigma > 0.0f ? sigma * sigma : 0.0f; };
+    const float sv2 = variance(velocity_sigma);
+    const float sp2 = variance(position_sigma);
+    const float sr2 = variance(rotation_sigma);
+    if (sp2 > 0.0f) covariance.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos).diagonal().array() += sp2;
+    if (sv2 > 0.0f) covariance.block<3, 3>(imu::State::kIdxVel, imu::State::kIdxVel).diagonal().array() += sv2;
+    if (sr2 > 0.0f) covariance.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot).diagonal().array() += sr2;
+    covariance = 0.5f * (covariance + covariance.transpose());
 }
 
 /// @brief Log the IMU prior's effective information and gradient per inlier in the

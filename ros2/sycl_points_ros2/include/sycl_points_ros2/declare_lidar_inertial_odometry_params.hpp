@@ -52,6 +52,8 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         node->declare_parameter<double>("lio/icp_information_scale", registration.icp_information_scale));
     params.lio.preintegration_reset.fd_velocity_sigma = static_cast<float>(
         node->declare_parameter<double>("lio/fd_velocity_sigma", params.lio.preintegration_reset.fd_velocity_sigma));
+    params.lio.preintegration_reset.fd_position_sigma = static_cast<float>(
+        node->declare_parameter<double>("lio/fd_position_sigma", params.lio.preintegration_reset.fd_position_sigma));
     params.lio.preintegration_reset.icp_rotation_sigma = static_cast<float>(
         node->declare_parameter<double>("lio/icp_rotation_sigma", params.lio.preintegration_reset.icp_rotation_sigma));
     params.lio.initial_covariance.accel_bias_sigma = static_cast<float>(node->declare_parameter<double>(
@@ -76,6 +78,12 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     registration.directional_icp_weighting.rot_imu_information_floor_per_inlier = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/rot_imu_information_floor_per_inlier",
                                         registration.directional_icp_weighting.rot_imu_information_floor_per_inlier));
+    registration.directional_icp_weighting.trans_max_imu_information_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/trans_max_imu_information_per_inlier",
+                                        registration.directional_icp_weighting.trans_max_imu_information_per_inlier));
+    registration.directional_icp_weighting.rot_max_imu_information_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/rot_max_imu_information_per_inlier",
+                                        registration.directional_icp_weighting.rot_max_imu_information_per_inlier));
     registration.directional_icp_weighting.trans_weak_direction_scale = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/trans_weak_direction_scale",
                                         registration.directional_icp_weighting.trans_weak_direction_scale));
