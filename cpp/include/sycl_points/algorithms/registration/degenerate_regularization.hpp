@@ -3,7 +3,10 @@
 #include <Eigen/Dense>
 
 #include <iostream>
+#include <utility>
+#include <vector>
 
+#include "sycl_points/algorithms/registration/coupled_degeneracy.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
@@ -61,6 +64,26 @@ struct DegenerateRegularizationParams {
     float trans_eigenvalue_threshold = 1.0f;
     float base_factor = 1.0f;
     float linear_factor = 440.0f;
+    /// @brief Analyse the coupled translation/rotation modes with a unit-balanced
+    ///        full 6x6 eigendecomposition instead of the independent 3x3 diagonal
+    ///        blocks. The independent analysis discards the cross terms, so a
+    ///        motion that couples translation and rotation (e.g. translation along,
+    ///        and rotation about, a cylinder axis) can appear well constrained in
+    ///        both blocks while the full pose space is weakly constrained. The
+    ///        coupled analysis catches those modes; the balanced eigenvector is
+    ///        used directly, so no lift step is needed. The default keeps the
+    ///        existing block-diagonal behaviour.
+    bool use_coupled_degeneracy = false;
+    /// @brief Weak-mode threshold on the balanced, inlier-normalised eigenvalues
+    ///        used when `use_coupled_degeneracy` is enabled (replaces the
+    ///        per-block thresholds for that path).
+    float coupled_eigenvalue_threshold = 1.0f;
+    /// @brief Representative length [m] balancing the rotation and translation
+    ///        blocks of the coupled analysis (a rotation of theta corresponds to a
+    ///        displacement of `representative_length * theta`). `<= 0` estimates it
+    ///        per frame from the Hessian trace ratio (~= weighted RMS point range),
+    ///        which adapts to the scene distance; a positive value is used fixed.
+    float coupled_representative_length = 0.0f;
 };
 
 class DegenerateRegularization {
@@ -87,52 +110,87 @@ private:
             return ret;
         }
 
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
-        if (solver_rot.info() != Eigen::Success) {
-            return ret;
-        }
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(linearized_result.H.block<3, 3>(3, 3));
-        if (solver_trans.info() != Eigen::Success) {
-            return ret;
+        const float inlier_f = static_cast<float>(inlier);
+
+        // Collect the weak pose directions as 6D vectors. The block-diagonal path
+        // zero-pads the weak block eigenvectors. The coupled path takes the weak
+        // unit-balanced 6x6 eigenvectors directly, which already combine
+        // translation and rotation, so exactly the coupled weak subspace is
+        // removed and observable coupled motions are preserved.
+        std::vector<Eigen::Matrix<double, 6, 1>> weak_directions;
+
+        if (this->params_.use_coupled_degeneracy) {
+            // A non-positive configured length means "estimate it from the Hessian"
+            // (~= weighted RMS point range); a positive value is used directly.
+            double length = static_cast<double>(this->params_.coupled_representative_length);
+            if (!(length > 0.0)) {
+                length = estimate_representative_length(linearized_result.H, PoseHessianOrder::rotation_first, 1.0);
+            }
+            const CoupledEigenAnalysis analysis = compute_coupled_eigen_analysis(
+                linearized_result.H, PoseHessianOrder::rotation_first, length, static_cast<double>(inlier));
+            if (!analysis.valid) {
+                return ret;
+            }
+            if (this->params_.verbose) {
+                std::cout << "[DegenerateRegularization] coupled eigenvalues/inlier: "
+                          << analysis.normalized_eigenvalues.transpose() << std::endl;
+                std::cout << "[DegenerateRegularization] coupled representative_length: " << length << std::endl;
+            }
+            std::vector<int> weak;
+            for (int k = 0; k < 6; ++k) {
+                if (analysis.normalized_eigenvalues(k) < this->params_.coupled_eigenvalue_threshold) {
+                    weak.push_back(k);
+                }
+            }
+            weak_directions = coupled_weak_directions(analysis, weak);
+        } else {
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
+            if (solver_rot.info() != Eigen::Success) {
+                return ret;
+            }
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_trans(linearized_result.H.block<3, 3>(3, 3));
+            if (solver_trans.info() != Eigen::Success) {
+                return ret;
+            }
+            if (this->params_.verbose) {
+                std::cout << "[DegenerateRegularization] rotation eigenvalues/inlier: "
+                          << (solver_rot.eigenvalues() / inlier_f).transpose() << std::endl;
+                std::cout << "[DegenerateRegularization] translation eigenvalues/inlier: "
+                          << (solver_trans.eigenvalues() / inlier_f).transpose() << std::endl;
+            }
+            if (this->params_.rot_eigenvalue_threshold > 0.0f) {
+                for (int i = 0; i < 3; ++i) {
+                    if (solver_rot.eigenvalues()(i) / inlier_f < this->params_.rot_eigenvalue_threshold) {
+                        Eigen::Matrix<double, 6, 1> direction = Eigen::Matrix<double, 6, 1>::Zero();
+                        direction.head<3>() = solver_rot.eigenvectors().col(i).cast<double>();
+                        weak_directions.push_back(direction);
+                    }
+                }
+            }
+            if (this->params_.trans_eigenvalue_threshold > 0.0f) {
+                for (int i = 0; i < 3; ++i) {
+                    if (solver_trans.eigenvalues()(i) / inlier_f < this->params_.trans_eigenvalue_threshold) {
+                        Eigen::Matrix<double, 6, 1> direction = Eigen::Matrix<double, 6, 1>::Zero();
+                        direction.tail<3>() = solver_trans.eigenvectors().col(i).cast<double>();
+                        weak_directions.push_back(direction);
+                    }
+                }
+            }
+            weak_directions = orthonormalize_directions(std::move(weak_directions));
         }
 
-        if (this->params_.verbose) {
-            const float inlier_f = static_cast<float>(inlier);
-            std::cout << "[DegenerateRegularization] rotation eigenvalues/inlier: "
-                      << (solver_rot.eigenvalues() / inlier_f).transpose() << std::endl;
-            std::cout << "[DegenerateRegularization] translation eigenvalues/inlier: "
-                      << (solver_trans.eigenvalues() / inlier_f).transpose() << std::endl;
+        Eigen::Matrix<float, 6, 6> degenerate_projector = Eigen::Matrix<float, 6, 6>::Zero();
+        for (const auto& direction : weak_directions) {
+            const Eigen::Matrix<float, 6, 1> d = direction.cast<float>();
+            degenerate_projector.noalias() += d * d.transpose();
         }
+        const Eigen::Matrix<float, 6, 6> observable_projector =
+            Eigen::Matrix<float, 6, 6>::Identity() - degenerate_projector;
 
         if (this->params_.type == DegenerateRegularizationType::nl_reg) {
-            const float rot_threshold = this->params_.rot_eigenvalue_threshold;
-            const float trans_threshold = this->params_.trans_eigenvalue_threshold;
-            const float lambda = this->params_.base_factor * inlier;
-
-            Eigen::Matrix<float, 6, 6> H_penalty = Eigen::Matrix<float, 6, 6>::Zero();
-            if (rot_threshold > 0.0f) {
-                for (size_t i = 0; i < 3; ++i) {
-                    const float val = solver_rot.eigenvalues()(i) / inlier;
-                    if (val < rot_threshold) {
-                        Eigen::Vector<float, 6> degenerate_vector = Eigen::Vector<float, 6>::Zero();
-                        degenerate_vector.head<3>() = solver_rot.eigenvectors().col(i);
-                        H_penalty += lambda * (degenerate_vector * degenerate_vector.transpose());
-                    }
-                }
-            }
-            if (trans_threshold > 0.0f) {
-                for (size_t i = 0; i < 3; ++i) {
-                    const float val = solver_trans.eigenvalues()(i) / inlier;
-                    if (val < trans_threshold) {
-                        Eigen::Vector<float, 6> degenerate_vector = Eigen::Vector<float, 6>::Zero();
-                        degenerate_vector.tail<3>() = solver_trans.eigenvectors().col(i);
-                        H_penalty += lambda * (degenerate_vector * degenerate_vector.transpose());
-                    }
-                }
-            }
+            const Eigen::Matrix<float, 6, 6> H_penalty = (this->params_.base_factor * inlier_f) * degenerate_projector;
             const Eigen::Isometry3f delta_pose = initial_guess.inverse() * current_pose;
             const Eigen::Vector<float, 6> delta_twist = eigen_utils::lie::se3_log(delta_pose);
-
             ret.H += H_penalty;
             ret.b += H_penalty * delta_twist;
             return ret;
@@ -140,24 +198,6 @@ private:
                    this->params_.type == DegenerateRegularizationType::l_reg ||
                    this->params_.type == DegenerateRegularizationType::solution_remap ||
                    this->params_.type == DegenerateRegularizationType::eq_constraint) {
-            Eigen::Matrix<float, 6, 6> observable_projector = Eigen::Matrix<float, 6, 6>::Identity();
-            const auto truncate_directions = [&](const auto& solver, const float threshold, const int offset) {
-                if (threshold <= 0.0f) {
-                    return;
-                }
-                for (Eigen::Index i = 0; i < 3; ++i) {
-                    if (solver.eigenvalues()(i) / static_cast<float>(inlier) < threshold) {
-                        Eigen::Vector<float, 6> direction = Eigen::Vector<float, 6>::Zero();
-                        direction.segment<3>(offset) = solver.eigenvectors().col(i);
-                        observable_projector -= direction * direction.transpose();
-                    }
-                }
-            };
-            truncate_directions(solver_rot, this->params_.rot_eigenvalue_threshold, 0);
-            truncate_directions(solver_trans, this->params_.trans_eigenvalue_threshold, 3);
-
-            const Eigen::Matrix<float, 6, 6> degenerate_projector =
-                Eigen::Matrix<float, 6, 6>::Identity() - observable_projector;
             if (this->params_.type == DegenerateRegularizationType::l_reg) {
                 ret.H += this->params_.linear_factor * degenerate_projector;
             } else if (this->params_.type == DegenerateRegularizationType::solution_remap) {

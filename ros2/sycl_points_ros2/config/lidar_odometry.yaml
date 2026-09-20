@@ -237,6 +237,14 @@ lidar_odometry_node:
     registration/degenerate_regularization/verbose: false
     registration/degenerate_regularization/trans_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/rot_eigenvalue_threshold: 10.0
+    # Analyse the coupled translation/rotation modes with a unit-balanced full 6x6
+    # eigendecomposition instead of the independent 3x3 blocks (catches combined
+    # degenerate motions). Enabling this replaces the per-block thresholds above
+    # with coupled_eigenvalue_threshold.
+    registration/degenerate_regularization/use_coupled_degeneracy: false
+    registration/degenerate_regularization/coupled_eigenvalue_threshold: 1.0
+    # <= 0 estimates the length per frame from the Hessian trace ratio (~= RMS range).
+    registration/degenerate_regularization/coupled_representative_length: 0.0 # [m]
     registration/degenerate_regularization/nl_reg/base_factor: 0.2
     registration/degenerate_regularization/l_reg/factor: 440.0
     registration/verbose: false

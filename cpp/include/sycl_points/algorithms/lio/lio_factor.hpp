@@ -8,6 +8,7 @@
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
 #include "sycl_points/algorithms/lio/lio_linearized_result.hpp"
 #include "sycl_points/algorithms/lio/lio_registration_params.hpp"
+#include "sycl_points/algorithms/registration/coupled_degeneracy.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
 
 namespace sycl_points {
@@ -169,20 +170,16 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
     b_pose.segment<3>(0) = icp_factor.b.segment<3>(imu::State::kIdxPos);
     b_pose.segment<3>(3) = icp_factor.b.segment<3>(imu::State::kIdxRot);
 
-    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block, const Eigen::Matrix3f& H_imu_block,
-                                          const Eigen::Vector3f& b_block, float min_information_ratio,
-                                          float imu_information_floor_per_inlier,
+    const auto compute_block_filter = [&](const Eigen::Vector3f& eigenvalues, const Eigen::Matrix3f& eigenvectors,
+                                          const Eigen::Matrix3f& H_imu_block, const Eigen::Vector3f& b_block,
+                                          float min_information_ratio, float imu_information_floor_per_inlier,
                                           float imu_information_ceiling_per_inlier, float weak_direction_scale,
                                           const char* label) -> Eigen::Matrix3f {
-        const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
-        if (solver.info() != Eigen::Success) return Eigen::Matrix3f::Identity();
-
         if (params.verbose) {
             std::cout << "[DirectionalIcpWeighting] " << label
-                      << " eigenvalues/inlier: " << (solver.eigenvalues() / inlier_f).transpose() << std::endl;
-            std::cout << "[DirectionalIcpWeighting] " << label << " b/inlier: " << (b_block / inlier_f).transpose()
-                      << std::endl;
+                      << " eigenvalues/inlier: " << (eigenvalues / inlier_f).transpose() << std::endl;
+            std::cout << "[DirectionalIcpWeighting] " << label
+                      << " b/inlier: " << (b_block / inlier_f).transpose() << std::endl;
         }
 
         const float ratio = std::max(0.0f, min_information_ratio);
@@ -193,8 +190,8 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
         const float ceiling_info = std::max(floor_info, std::max(0.0f, imu_information_ceiling_per_inlier) * inlier_f);
         Eigen::Matrix3f filter = Eigen::Matrix3f::Zero();
         for (int i = 0; i < kBlockDof; ++i) {
-            const float lambda = std::max(0.0f, solver.eigenvalues()(i));
-            const Eigen::Vector3f q = solver.eigenvectors().col(i);
+            const float lambda = std::max(0.0f, eigenvalues(i));
+            const Eigen::Vector3f q = eigenvectors.col(i);
 
             // Baseline is the IMU information along this direction, clamped to
             // [floor, ceiling] per inlier.  The floor absorbs the P_post -> P_pred ->
@@ -228,15 +225,116 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
         return filter;
     };
 
+    const auto block_eigendata = [](const Eigen::Matrix3f& H_block, Eigen::Vector3f& eigenvalues,
+                                    Eigen::Matrix3f& eigenvectors) -> bool {
+        const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
+        if (solver.info() != Eigen::Success) return false;
+        eigenvalues = solver.eigenvalues();
+        eigenvectors = solver.eigenvectors();
+        return true;
+    };
+
+    // Build the 6x6 attenuation filter. The block-diagonal path keeps the
+    // existing independent translation/rotation blocks. The coupled path
+    // diagonalises the unit-balanced full 6x6 pose Hessian, so each eigenvector
+    // is a coupled translation/rotation motion. Each balanced eigen-direction is
+    // compared against the IMU prior in the same balanced units and, when weak,
+    // attenuated along its original-space direction. This removes only the
+    // coupled weak subspace instead of both block axes, so an observable coupled
+    // motion is not over-attenuated.
     Eigen::Matrix<float, kPoseDof, kPoseDof> filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
-    filter.block<3, 3>(0, 0) = compute_block_filter(
-        H_pose.block<3, 3>(0, 0), H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), b_pose.segment<3>(0),
-        params.trans_min_information_ratio, params.trans_imu_information_floor_per_inlier,
-        params.trans_max_imu_information_per_inlier, params.trans_weak_direction_scale, "translation");
-    filter.block<3, 3>(3, 3) = compute_block_filter(
-        H_pose.block<3, 3>(3, 3), H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot), b_pose.segment<3>(3),
-        params.rot_min_information_ratio, params.rot_imu_information_floor_per_inlier,
-        params.rot_max_imu_information_per_inlier, params.rot_weak_direction_scale, "rotation");
+
+    if (params.use_coupled_degeneracy) {
+        // A non-positive configured length means "estimate it from the Hessian"
+        // (~= weighted RMS point range); a positive value is used directly.
+        double length = static_cast<double>(params.coupled_representative_length);
+        if (!(length > 0.0)) {
+            length = registration::estimate_representative_length(
+                H_pose, registration::PoseHessianOrder::translation_first, 1.0);
+        }
+
+        const registration::CoupledEigenAnalysis analysis = registration::compute_coupled_eigen_analysis(
+            H_pose, registration::PoseHessianOrder::translation_first, length, static_cast<double>(inlier_f));
+        if (!analysis.valid) return;
+
+        Eigen::Matrix<double, kPoseDof, kPoseDof> H_imu_pose = Eigen::Matrix<double, kPoseDof, kPoseDof>::Zero();
+        H_imu_pose.block<3, 3>(0, 0) = H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos).cast<double>();
+        H_imu_pose.block<3, 3>(0, 3) = H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxRot).cast<double>();
+        H_imu_pose.block<3, 3>(3, 0) = H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxPos).cast<double>();
+        H_imu_pose.block<3, 3>(3, 3) = H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot).cast<double>();
+        const Eigen::Matrix<double, kPoseDof, kPoseDof> H_imu_balanced =
+            analysis.balance_inverse *
+            (0.5 * (H_imu_pose + H_imu_pose.transpose()) / static_cast<double>(inlier_f)) *
+            analysis.balance_inverse;
+
+        if (params.verbose) {
+            std::cout << "[DirectionalIcpWeighting] coupled eigenvalues/inlier: "
+                      << analysis.normalized_eigenvalues.transpose() << std::endl;
+            std::cout << "[DirectionalIcpWeighting] coupled representative_length: " << length << std::endl;
+        }
+
+        const double ratio = std::max(0.0, static_cast<double>(params.coupled_min_information_ratio));
+        const double floor_info = std::max(0.0, static_cast<double>(params.coupled_imu_information_floor_per_inlier));
+        const double weak_scale = std::clamp(static_cast<double>(params.coupled_weak_direction_scale), 0.0, 1.0);
+
+        std::vector<int> weak_indices;
+        std::vector<double> weak_scales;
+        for (int k = 0; k < kPoseDof; ++k) {
+            const double lambda = analysis.normalized_eigenvalues(k);
+            const Eigen::Matrix<double, kPoseDof, 1> v = analysis.normalized_eigenvectors.col(k);
+            const double imu_info = std::max(floor_info, v.dot(H_imu_balanced * v));
+            const double weak_threshold = ratio * imu_info;
+
+            double scale = 1.0;
+            if (lambda <= 0.0) {
+                scale = 0.0;
+            } else if (weak_threshold > 0.0 && lambda < weak_threshold) {
+                if (params.type == DirectionalIcpWeightingType::tsvd) {
+                    scale = 0.0;
+                } else {
+                    scale = std::max(weak_scale, std::clamp(lambda / weak_threshold, 0.0, 1.0));
+                }
+                if (params.verbose) {
+                    std::cout << "[DirectionalIcpWeighting] coupled weak eigenvector: " << v.transpose()
+                              << ", scale: " << scale << ", icp_info: " << lambda << ", imu_info: " << imu_info
+                              << std::endl;
+                }
+            }
+            if (scale < 1.0) {
+                weak_indices.push_back(k);
+                weak_scales.push_back(scale);
+            }
+        }
+
+        // The per-mode scale is attached before orthonormalisation, so it is
+        // exact for a single weak mode and approximate when several weak modes
+        // are non-orthogonal (L != 1); see coupled_weak_scaled_directions.
+        filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Identity();
+        for (const auto& candidate :
+             registration::coupled_weak_scaled_directions(analysis, weak_indices, weak_scales)) {
+            const Eigen::Matrix<float, kPoseDof, 1> direction = candidate.direction.cast<float>();
+            const float sqrt_scale = std::sqrt(std::clamp(static_cast<float>(candidate.scale), 0.0f, 1.0f));
+            filter.noalias() -= (1.0f - sqrt_scale) * (direction * direction.transpose());
+        }
+        filter = 0.5f * (filter + filter.transpose());
+    } else {
+        Eigen::Vector3f trans_eigenvalues;
+        Eigen::Matrix3f trans_eigenvectors;
+        Eigen::Vector3f rot_eigenvalues;
+        Eigen::Matrix3f rot_eigenvectors;
+        if (!block_eigendata(H_pose.block<3, 3>(0, 0), trans_eigenvalues, trans_eigenvectors)) return;
+        if (!block_eigendata(H_pose.block<3, 3>(3, 3), rot_eigenvalues, rot_eigenvectors)) return;
+
+        filter.block<3, 3>(0, 0) = compute_block_filter(
+            trans_eigenvalues, trans_eigenvectors, H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos),
+            b_pose.segment<3>(0), params.trans_min_information_ratio, params.trans_imu_information_floor_per_inlier,
+            params.trans_max_imu_information_per_inlier, params.trans_weak_direction_scale, "translation");
+        filter.block<3, 3>(3, 3) = compute_block_filter(
+            rot_eigenvalues, rot_eigenvectors, H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot),
+            b_pose.segment<3>(3), params.rot_min_information_ratio, params.rot_imu_information_floor_per_inlier,
+            params.rot_max_imu_information_per_inlier, params.rot_weak_direction_scale, "rotation");
+    }
 
     const Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = filter * H_pose * filter;
     const Eigen::Matrix<float, kPoseDof, 1> b_filtered = filter * filter * b_pose;

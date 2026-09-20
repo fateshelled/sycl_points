@@ -1,0 +1,264 @@
+#pragma once
+
+#include <Eigen/Dense>
+
+#include <algorithm>
+#include <cmath>
+#include <utility>
+#include <vector>
+
+namespace sycl_points {
+namespace algorithms {
+namespace registration {
+
+/// @brief Block ordering of a 6x6 pose Hessian.
+///
+/// Two orderings coexist in this codebase, so the caller must state which one
+/// it passes. The raw ICP Hessian produced by registration uses
+/// `[delta_omega; delta_t]` (rotation first); the local pose Hessian assembled
+/// in `apply_directional_icp_weighting` uses `[delta_t; delta_omega]`.
+enum class PoseHessianOrder {
+    /// @brief [rotation (0-2); translation (3-5)] — Registration 6x6 convention.
+    rotation_first,
+    /// @brief [translation (0-2); rotation (3-5)] — LIO directional weighting H_pose convention.
+    translation_first
+};
+
+/// @brief Unit-balance matrix for the coupled pose analysis.
+///
+/// A 6x6 pose Hessian mixes metre and radian units, so a raw 6x6 eigen test
+/// would compare incomparable scales and a block-diagonal test would discard the
+/// translation-rotation coupling. The analysis instead balances the two blocks
+/// with a representative length `L` (a rotation of `theta` corresponds to a
+/// lever-arm displacement `L*theta`) and then diagonalises the full 6x6 matrix:
+///
+///   H_balanced = S^-1 (H / inlier) S^-1,   S = diag(L, L, L, 1, 1, 1)  (rotation first)
+///
+/// The eigenvalues of the balanced Hessian are unit-consistent, and its
+/// eigenvectors are the coupled 6D motions (translation combined with rotation)
+/// ordered from weakest to strongest. This is the approach already used by the
+/// graph solver's LiDAR observability regularisation.
+/// @note `representative_length` must be positive; a non-positive value is
+///       rejected by compute_coupled_eigen_analysis(). This function only keeps a
+///       defensive floor so a direct caller cannot produce an infinite balance.
+///       A NaN argument is not guarded here; callers must validate before use.
+inline Eigen::Matrix<double, 6, 6> coupled_balance_matrix(double representative_length, PoseHessianOrder order) {
+    Eigen::Matrix<double, 6, 6> balance = Eigen::Matrix<double, 6, 6>::Identity();
+    const double length = std::max(representative_length, 1e-6);
+    if (order == PoseHessianOrder::rotation_first) {
+        balance.diagonal().head<3>().setConstant(length);
+    } else {
+        balance.diagonal().tail<3>().setConstant(length);
+    }
+    return balance;
+}
+
+/// @brief Unit-balanced eigendecomposition of a 6x6 pose Hessian.
+struct CoupledEigenAnalysis {
+    bool valid = false;
+    Eigen::Matrix<double, 6, 6> balance = Eigen::Matrix<double, 6, 6>::Identity();          ///< S
+    Eigen::Matrix<double, 6, 6> balance_inverse = Eigen::Matrix<double, 6, 6>::Identity();  ///< S^-1
+    /// @brief Ascending eigenvalues of the balanced, inlier-normalised Hessian.
+    Eigen::Vector<double, 6> normalized_eigenvalues = Eigen::Vector<double, 6>::Zero();
+    /// @brief Orthonormal eigenvectors (columns) of the balanced Hessian.
+    Eigen::Matrix<double, 6, 6> normalized_eigenvectors = Eigen::Matrix<double, 6, 6>::Identity();
+};
+
+/// @brief Diagonalise the unit-balanced, inlier-normalised pose Hessian.
+///
+/// The input is promoted to double and symmetrised before the addition of the
+/// balance matrix. Negative eigenvalues from floating-point error are clamped to
+/// zero for ranking.
+///
+/// @param H    6x6 pose Hessian (PSD; Gauss-Newton information matrix).
+/// @param order Block ordering of @p H.
+/// @param representative_length Representative length [m] balancing rotation and translation.
+///        Must be finite and positive. A non-positive or non-finite value is
+///        reported invalid so the caller leaves the factor untouched instead of
+///        silently applying an extreme, unvalidated rotation/translation scale
+///        (the graph solver also rejects a non-positive length).
+/// @param inlier Inlier count used to normalise the Hessian.
+inline CoupledEigenAnalysis compute_coupled_eigen_analysis(const Eigen::Matrix<float, 6, 6>& H, PoseHessianOrder order,
+                                                           double representative_length, double inlier) {
+    CoupledEigenAnalysis result;
+    if (!(inlier > 0.0) || !std::isfinite(representative_length) || representative_length <= 0.0) {
+        return result;
+    }
+    const Eigen::Matrix<double, 6, 6> Hd = H.cast<double>();
+    if (!Hd.allFinite()) {
+        return result;
+    }
+
+    const Eigen::Matrix<double, 6, 6> balance = coupled_balance_matrix(representative_length, order);
+    const Eigen::Matrix<double, 6, 6> balance_inverse = balance.diagonal().cwiseInverse().asDiagonal();
+    Eigen::Matrix<double, 6, 6> balanced =
+        balance_inverse * (0.5 * (Hd + Hd.transpose()) / inlier) * balance_inverse;
+    balanced = 0.5 * (balanced + balanced.transpose());
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> solver(balanced);
+    if (solver.info() != Eigen::Success || !solver.eigenvalues().allFinite() ||
+        !solver.eigenvectors().allFinite()) {
+        return result;
+    }
+
+    result.balance = balance;
+    result.balance_inverse = balance_inverse;
+    result.normalized_eigenvalues = solver.eigenvalues().cwiseMax(0.0);
+    result.normalized_eigenvectors = solver.eigenvectors();
+    result.valid = true;
+    return result;
+}
+
+/// @brief Estimate the representative lever arm from the pose Hessian blocks.
+///
+/// For an ICP Jacobian `[-[p]x, I]` per point, `tr(H_rr) = 2 * sum(|p|^2)` and
+/// `tr(H_tt) = 3 * N`, so `sqrt(tr(H_rr) / tr(H_tt))` is the (information-weighted)
+/// RMS point range: the lever arm at which a rotation of theta produces a
+/// displacement `L * theta`. Deriving it from the Hessian adapts the balance to
+/// the scene distance instead of requiring a hand-tuned constant.
+///
+/// @param H    6x6 pose Hessian.
+/// @param order Block ordering of @p H.
+/// @param fallback Length returned when the estimate is unavailable (non-finite
+///        or degenerate blocks). Must be positive for the analysis to succeed.
+/// @param min_length Lower clamp for the estimate [m].
+/// @param max_length Upper clamp for the estimate [m].
+inline double estimate_representative_length(const Eigen::Matrix<float, 6, 6>& H, PoseHessianOrder order,
+                                             double fallback, double min_length = 0.1, double max_length = 100.0) {
+    const Eigen::Matrix<double, 6, 6> Hd = H.cast<double>();
+    if (!Hd.allFinite()) {
+        return fallback;
+    }
+    Eigen::Matrix3d H_tt;
+    Eigen::Matrix3d H_rr;
+    if (order == PoseHessianOrder::translation_first) {
+        H_tt = Hd.block<3, 3>(0, 0);
+        H_rr = Hd.block<3, 3>(3, 3);
+    } else {
+        H_rr = Hd.block<3, 3>(0, 0);
+        H_tt = Hd.block<3, 3>(3, 3);
+    }
+    const double tr_tt = H_tt.trace();
+    const double tr_rr = H_rr.trace();
+    if (!(tr_tt > 0.0) || !(tr_rr > 0.0)) {
+        return fallback;
+    }
+    const double length = std::sqrt(tr_rr / tr_tt);
+    if (!std::isfinite(length) || !(length > 0.0)) {
+        return fallback;
+    }
+    return std::clamp(length, min_length, max_length);
+}
+
+/// @brief Modified Gram-Schmidt over 6D pose directions.
+///
+/// Returns an orthonormal basis of the span of @p directions; dependent
+/// directions are dropped so a projector built from the result has the true
+/// weak-subspace rank. Dependency uses the residual relative to the direction's
+/// own magnitude, so the test is scale-invariant (the balanced directions
+/// `S v_k` have magnitudes that depend on the representative length).
+inline std::vector<Eigen::Matrix<double, 6, 1>> orthonormalize_directions(
+    std::vector<Eigen::Matrix<double, 6, 1>> directions, double tolerance = 1e-6) {
+    std::vector<Eigen::Matrix<double, 6, 1>> basis;
+    basis.reserve(directions.size());
+    for (auto& direction : directions) {
+        const double original_norm = direction.norm();
+        for (const auto& b : basis) {
+            direction -= b.dot(direction) * b;
+        }
+        const double norm = direction.norm();
+        if (norm > tolerance * std::max(original_norm, 1e-12) && norm > 1e-12) {
+            basis.push_back(direction / norm);
+        }
+    }
+    return basis;
+}
+
+/// @brief A normalized pose direction with an associated information scale.
+struct ScaledDirection {
+    Eigen::Matrix<double, 6, 1> direction = Eigen::Matrix<double, 6, 1>::Zero();
+    double scale = 1.0;
+};
+
+/// @brief Gram-Schmidt that carries a per-direction scale.
+///
+/// Used by the directional ICP weighting, where each weak coupled direction has
+/// its own attenuation factor. Independent candidates keep their own scale. A
+/// candidate that is dependent on an earlier basis vector is dropped and its
+/// scale is merged (minimum) into the basis vector it is closest to, so a
+/// strongly attenuated physical mode is not lost when the second representation
+/// of the same mode is deduplicated. A candidate with zero magnitude is dropped
+/// without a dominant vector (its scale is discarded).
+inline std::vector<ScaledDirection> orthonormalize_scaled_directions(
+    std::vector<ScaledDirection> directions, double tolerance = 1e-6) {
+    std::vector<ScaledDirection> basis;
+    basis.reserve(directions.size());
+    for (auto candidate : directions) {
+        const double original_norm = candidate.direction.norm();
+        double scale = candidate.scale;
+        int dominant = -1;
+        double dominant_abs = 0.0;
+        for (int b = 0; b < static_cast<int>(basis.size()); ++b) {
+            const double projection = basis[b].direction.dot(candidate.direction);
+            candidate.direction -= projection * basis[b].direction;
+            if (std::abs(projection) > dominant_abs) {
+                dominant_abs = std::abs(projection);
+                dominant = b;
+            }
+        }
+        const double norm = candidate.direction.norm();
+        const bool independent = norm > tolerance * std::max(original_norm, 1e-12) && norm > 1e-12;
+        if (independent) {
+            candidate.direction /= norm;
+            candidate.scale = scale;
+            basis.push_back(candidate);
+        } else if (dominant >= 0) {
+            // Dependent on an existing basis vector: merge the scale rather than
+            // discarding it, keeping the more conservative (smaller) value.
+            basis[dominant].scale = std::min(basis[dominant].scale, scale);
+        }
+    }
+    return basis;
+}
+
+/// @brief Map selected balanced eigenvectors to orthonormal original-space directions.
+///
+/// The balanced eigenvector `v_k` corresponds to the original-space motion
+/// `S v_k`. Those vectors are the constraint (dual) directions: `S v_k` is what a
+/// projector or filter acts on, while the primal pose displacement corresponds to
+/// `S^-1 v_k`. They are generally not orthogonal, so they are orthonormalised; the
+/// resulting basis spans the same weak subspace, which is what a projector or a
+/// directional filter needs.
+inline std::vector<Eigen::Matrix<double, 6, 1>> coupled_weak_directions(
+    const CoupledEigenAnalysis& analysis, const std::vector<int>& weak_indices) {
+    std::vector<Eigen::Matrix<double, 6, 1>> directions;
+    directions.reserve(weak_indices.size());
+    for (const int index : weak_indices) {
+        directions.push_back(analysis.balance * analysis.normalized_eigenvectors.col(index));
+    }
+    return orthonormalize_directions(std::move(directions));
+}
+
+/// @brief Map selected balanced eigenvectors to scaled original-space directions.
+///
+/// The per-mode scale is attached before orthonormalisation and carried onto the
+/// resulting basis vector. When several weak modes are non-orthogonal (L != 1) the
+/// applied scale is therefore an approximation of the per-mode scale; it is exact
+/// for a single weak mode or when the balanced directions are orthogonal.
+inline std::vector<ScaledDirection> coupled_weak_scaled_directions(
+    const CoupledEigenAnalysis& analysis, const std::vector<int>& weak_indices,
+    const std::vector<double>& scales) {
+    std::vector<ScaledDirection> directions;
+    directions.reserve(weak_indices.size());
+    for (size_t i = 0; i < weak_indices.size(); ++i) {
+        ScaledDirection direction;
+        direction.direction = analysis.balance * analysis.normalized_eigenvectors.col(weak_indices[i]);
+        direction.scale = i < scales.size() ? scales[i] : 1.0;
+        directions.push_back(direction);
+    }
+    return orthonormalize_scaled_directions(std::move(directions));
+}
+
+}  // namespace registration
+}  // namespace algorithms
+}  // namespace sycl_points

@@ -90,6 +90,21 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     registration.directional_icp_weighting.rot_weak_direction_scale = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/rot_weak_direction_scale",
                                         registration.directional_icp_weighting.rot_weak_direction_scale));
+    registration.directional_icp_weighting.use_coupled_degeneracy = node->declare_parameter<bool>(
+        "lio/directional_icp_weighting/use_coupled_degeneracy",
+        registration.directional_icp_weighting.use_coupled_degeneracy);
+    registration.directional_icp_weighting.coupled_representative_length = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/coupled_representative_length",
+                                        registration.directional_icp_weighting.coupled_representative_length));
+    registration.directional_icp_weighting.coupled_min_information_ratio = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/coupled_min_information_ratio",
+                                        registration.directional_icp_weighting.coupled_min_information_ratio));
+    registration.directional_icp_weighting.coupled_imu_information_floor_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/coupled_imu_information_floor_per_inlier",
+                                        registration.directional_icp_weighting.coupled_imu_information_floor_per_inlier));
+    registration.directional_icp_weighting.coupled_weak_direction_scale = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/coupled_weak_direction_scale",
+                                        registration.directional_icp_weighting.coupled_weak_direction_scale));
 
     // Constant-velocity prior on the world-frame velocity state
     registration.constant_velocity_prior.enable = node->declare_parameter<bool>(
