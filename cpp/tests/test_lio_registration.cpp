@@ -163,13 +163,13 @@ TEST(LioRegistration, DirectionalIcpWeightingPreservesCoupledFactorStructure) {
     EXPECT_GE(solver.eigenvalues().minCoeff(), -kEps);
 }
 
-TEST(LioRegistration, DirectionalIcpWeightingSchurAttenuatesCoupledDegeneracy) {
-    // Translation along x and rotation about x are each individually strong
-    // (100), but they are partially coupled (cross term -90), leaving a weak
-    // coupled mode with marginal information 19. The block-diagonal analysis
-    // sees only the 100s and leaves the factor untouched; the Schur analysis
-    // detects the coupled mode and attenuates it along the coupled direction.
-    const auto weighted = [](bool use_schur) {
+TEST(LioRegistration, DirectionalIcpWeightingCoupledAttenuatesWeakModeOnly) {
+    // Translation along x and rotation about x are partially coupled (cross
+    // term -90), leaving one weak coupled mode (balanced information 1) and one
+    // observable coupled mode (balanced information 19). The block-diagonal
+    // analysis sees only the 100s and changes nothing; the coupled analysis
+    // attenuates the weak mode while preserving the observable coupled direction.
+    const auto weighted = [](bool use_coupled) {
         lio::LIOLinearizedResult factor;
         factor.inlier = 10;
         factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 100.0f;
@@ -182,7 +182,12 @@ TEST(LioRegistration, DirectionalIcpWeightingSchurAttenuatesCoupledDegeneracy) {
         factor.H(imu::State::kIdxRot, imu::State::kIdxPos) = -90.0f;
 
         lio::DirectionalIcpWeightingParams params;
-        params.use_schur_complement = use_schur;
+        params.use_coupled_degeneracy = use_coupled;
+        params.coupled_representative_length = 1.0f;
+        params.coupled_min_information_ratio = 0.5f;
+        params.coupled_imu_information_floor_per_inlier = 5.0f;
+        params.coupled_weak_direction_scale = 0.2f;
+        // Block-path parameters, unused when the coupled path is selected.
         params.trans_min_information_ratio = 0.5f;
         params.rot_min_information_ratio = 0.5f;
         params.trans_imu_information_floor_per_inlier = 5.0f;
@@ -198,14 +203,21 @@ TEST(LioRegistration, DirectionalIcpWeightingSchurAttenuatesCoupledDegeneracy) {
     EXPECT_NEAR(block.H(imu::State::kIdxPos, imu::State::kIdxPos), 100.0f, kEps);
     EXPECT_NEAR(block.H(imu::State::kIdxRot, imu::State::kIdxRot), 100.0f, kEps);
 
-    // Schur analysis: marginal information 19 < 25 gives scale 0.76 on the
-    // coupled mode, so the (pos x, rot x) plane is scaled by 0.76 while the
-    // uncoupled y/z axes keep their 100.
-    const lio::LIOLinearizedResult schur = weighted(true);
-    EXPECT_NEAR(schur.H(imu::State::kIdxPos, imu::State::kIdxPos), 76.0f, kEps);
-    EXPECT_NEAR(schur.H(imu::State::kIdxRot, imu::State::kIdxRot), 76.0f, kEps);
-    EXPECT_NEAR(schur.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 100.0f, kEps);
-    EXPECT_NEAR(schur.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1), 100.0f, kEps);
+    const lio::LIOLinearizedResult coupled = weighted(true);
+    const Eigen::Matrix<float, 6, 6> pose = coupled.H.block<6, 6>(0, 0);
+
+    Eigen::Matrix<float, 6, 1> flat = Eigen::Matrix<float, 6, 1>::Zero();  // (e0 + e3) / sqrt(2)
+    flat(0) = 1.0f / std::sqrt(2.0f);
+    flat(3) = 1.0f / std::sqrt(2.0f);
+    Eigen::Matrix<float, 6, 1> observable = Eigen::Matrix<float, 6, 1>::Zero();  // (e0 - e3) / sqrt(2)
+    observable(0) = 1.0f / std::sqrt(2.0f);
+    observable(3) = -1.0f / std::sqrt(2.0f);
+
+    // Weak mode: information 1, threshold ratio * floor = 0.5 * 5 = 2.5, so the
+    // scale is max(0.2, 1 / 2.5) = 0.4. Raw curvature 10 -> 0.4 * 10 = 4.
+    EXPECT_NEAR(flat.dot(pose * flat), 4.0f, 1e-2f);
+    // Observable coupled mode (information 19, raw curvature 190) is preserved.
+    EXPECT_NEAR(observable.dot(pose * observable), 190.0f, 1e-2f);
 }
 
 TEST(LioRegistration, ConstantVelocityPriorAnchorsOnlyDegenerateAxis) {

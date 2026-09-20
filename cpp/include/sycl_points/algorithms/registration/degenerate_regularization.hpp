@@ -3,9 +3,11 @@
 #include <Eigen/Dense>
 
 #include <iostream>
+#include <utility>
+#include <vector>
 
+#include "sycl_points/algorithms/registration/coupled_degeneracy.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
-#include "sycl_points/algorithms/registration/schur_degeneracy.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sycl_points {
@@ -62,19 +64,24 @@ struct DegenerateRegularizationParams {
     float trans_eigenvalue_threshold = 1.0f;
     float base_factor = 1.0f;
     float linear_factor = 440.0f;
-    /// @brief Analyse the coupled translation/rotation Schur complements instead
-    ///        of the independent 3x3 diagonal blocks. This catches coupled
-    ///        degenerate motions (e.g. translation along, and rotation about, a
-    ///        cylinder axis) that the block-diagonal analysis misses. The
-    ///        default keeps the existing block-diagonal behaviour. Schur
-    ///        eigenvalues are marginal and therefore no larger than the
-    ///        corresponding block eigenvalues, so the thresholds may need
-    ///        retuning when this is enabled.
-    bool use_schur_complement = false;
-    /// @brief Relative eigenvalue cutoff for the Schur block pseudo-inverse.
-    double schur_relative_cutoff = 1e-6;
-    /// @brief Absolute eigenvalue cutoff for the Schur block pseudo-inverse.
-    double schur_absolute_cutoff = 1e-9;
+    /// @brief Analyse the coupled translation/rotation modes with a unit-balanced
+    ///        full 6x6 eigendecomposition instead of the independent 3x3 diagonal
+    ///        blocks. The independent analysis discards the cross terms, so a
+    ///        motion that couples translation and rotation (e.g. translation along,
+    ///        and rotation about, a cylinder axis) can appear well constrained in
+    ///        both blocks while the full pose space is weakly constrained. The
+    ///        coupled analysis catches those modes; the balanced eigenvector is
+    ///        used directly, so no lift step is needed. The default keeps the
+    ///        existing block-diagonal behaviour.
+    bool use_coupled_degeneracy = false;
+    /// @brief Weak-mode threshold on the balanced, inlier-normalised eigenvalues
+    ///        used when `use_coupled_degeneracy` is enabled (replaces the
+    ///        per-block thresholds for that path).
+    float coupled_eigenvalue_threshold = 1.0f;
+    /// @brief Representative length [m] balancing the rotation and translation
+    ///        blocks of the coupled analysis (a rotation of theta corresponds to a
+    ///        displacement of `representative_length * theta`).
+    float coupled_representative_length = 1.0f;
 };
 
 class DegenerateRegularization {
@@ -102,49 +109,34 @@ private:
         }
 
         const float inlier_f = static_cast<float>(inlier);
-        const float rot_threshold = this->params_.rot_eigenvalue_threshold;
-        const float trans_threshold = this->params_.trans_eigenvalue_threshold;
 
         // Collect the weak pose directions as 6D vectors. The block-diagonal path
-        // zero-pads the weak block eigenvectors. The Schur path lifts each weak
-        // Schur eigenvector to the coupled 6D twist that minimizes the local
-        // quadratic model in the other block; the lifted set is orthonormalized
-        // so the projector removes exactly the coupled weak subspace and keeps
-        // observable coupled motions that zero-padding would have discarded.
+        // zero-pads the weak block eigenvectors. The coupled path takes the weak
+        // unit-balanced 6x6 eigenvectors directly, which already combine
+        // translation and rotation, so exactly the coupled weak subspace is
+        // removed and observable coupled motions are preserved.
         std::vector<Eigen::Matrix<double, 6, 1>> weak_directions;
 
-        if (this->params_.use_schur_complement) {
-            const SchurDirections schur =
-                compute_schur_directions(linearized_result.H, PoseHessianOrder::rotation_first,
-                                         this->params_.schur_relative_cutoff, this->params_.schur_absolute_cutoff);
-            if (!schur.valid) {
+        if (this->params_.use_coupled_degeneracy) {
+            const CoupledEigenAnalysis analysis = compute_coupled_eigen_analysis(
+                linearized_result.H, PoseHessianOrder::rotation_first,
+                static_cast<double>(this->params_.coupled_representative_length), static_cast<double>(inlier));
+            if (!analysis.valid) {
                 return ret;
             }
             if (this->params_.verbose) {
-                const double inlier_d = static_cast<double>(inlier);
-                std::cout << "[DegenerateRegularization] schur ranks: rotation=" << schur.rotation_block_rank
-                          << ", translation=" << schur.translation_block_rank << std::endl;
-                std::cout << "[DegenerateRegularization] schur rotation eigenvalues/inlier: "
-                          << (schur.rot_eigenvalues / inlier_d).transpose() << std::endl;
-                std::cout << "[DegenerateRegularization] schur translation eigenvalues/inlier: "
-                          << (schur.trans_eigenvalues / inlier_d).transpose() << std::endl;
+                std::cout << "[DegenerateRegularization] coupled eigenvalues/inlier: "
+                          << analysis.normalized_eigenvalues.transpose() << std::endl;
+                std::cout << "[DegenerateRegularization] coupled representative_length: "
+                          << this->params_.coupled_representative_length << std::endl;
             }
-            if (trans_threshold > 0.0f) {
-                for (int i = 0; i < 3; ++i) {
-                    if (schur.trans_eigenvalues(i) / static_cast<double>(inlier) < trans_threshold) {
-                        weak_directions.push_back(lift_translation_direction(
-                            schur, schur.trans_eigenvectors.col(i), PoseHessianOrder::rotation_first));
-                    }
+            std::vector<int> weak;
+            for (int k = 0; k < 6; ++k) {
+                if (analysis.normalized_eigenvalues(k) < this->params_.coupled_eigenvalue_threshold) {
+                    weak.push_back(k);
                 }
             }
-            if (rot_threshold > 0.0f) {
-                for (int i = 0; i < 3; ++i) {
-                    if (schur.rot_eigenvalues(i) / static_cast<double>(inlier) < rot_threshold) {
-                        weak_directions.push_back(lift_rotation_direction(
-                            schur, schur.rot_eigenvectors.col(i), PoseHessianOrder::rotation_first));
-                    }
-                }
-            }
+            weak_directions = coupled_weak_directions(analysis, weak);
         } else {
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver_rot(linearized_result.H.block<3, 3>(0, 0));
             if (solver_rot.info() != Eigen::Success) {
@@ -160,27 +152,26 @@ private:
                 std::cout << "[DegenerateRegularization] translation eigenvalues/inlier: "
                           << (solver_trans.eigenvalues() / inlier_f).transpose() << std::endl;
             }
-            if (rot_threshold > 0.0f) {
+            if (this->params_.rot_eigenvalue_threshold > 0.0f) {
                 for (int i = 0; i < 3; ++i) {
-                    if (solver_rot.eigenvalues()(i) / inlier_f < rot_threshold) {
+                    if (solver_rot.eigenvalues()(i) / inlier_f < this->params_.rot_eigenvalue_threshold) {
                         Eigen::Matrix<double, 6, 1> direction = Eigen::Matrix<double, 6, 1>::Zero();
                         direction.head<3>() = solver_rot.eigenvectors().col(i).cast<double>();
                         weak_directions.push_back(direction);
                     }
                 }
             }
-            if (trans_threshold > 0.0f) {
+            if (this->params_.trans_eigenvalue_threshold > 0.0f) {
                 for (int i = 0; i < 3; ++i) {
-                    if (solver_trans.eigenvalues()(i) / inlier_f < trans_threshold) {
+                    if (solver_trans.eigenvalues()(i) / inlier_f < this->params_.trans_eigenvalue_threshold) {
                         Eigen::Matrix<double, 6, 1> direction = Eigen::Matrix<double, 6, 1>::Zero();
                         direction.tail<3>() = solver_trans.eigenvectors().col(i).cast<double>();
                         weak_directions.push_back(direction);
                     }
                 }
             }
+            weak_directions = orthonormalize_directions(std::move(weak_directions));
         }
-
-        weak_directions = orthonormalize_directions(weak_directions);
 
         Eigen::Matrix<float, 6, 6> degenerate_projector = Eigen::Matrix<float, 6, 6>::Zero();
         for (const auto& direction : weak_directions) {

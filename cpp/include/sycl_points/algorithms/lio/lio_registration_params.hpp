@@ -81,18 +81,23 @@ struct DirectionalIcpWeightingParams {
     float trans_weak_direction_scale = 0.2f;
     /// Minimum information scale applied to weak rotation directions. 0 allows full removal.
     float rot_weak_direction_scale = 0.2f;
-    /// Select the weak directions from the coupled translation/rotation Schur
-    /// complements instead of the independent 3x3 diagonal blocks. This catches
-    /// combined degenerate motions (e.g. translation along, and rotation about,
-    /// a cylinder axis) that the block-diagonal analysis misses. The default
-    /// keeps the existing block-diagonal behaviour. Schur eigenvalues are
-    /// marginal and no larger than the corresponding block eigenvalues, so the
-    /// information ratios may need retuning when this is enabled.
-    bool use_schur_complement = false;
-    /// Relative eigenvalue cutoff for the Schur block pseudo-inverse.
-    double schur_relative_cutoff = 1e-6;
-    /// Absolute eigenvalue cutoff for the Schur block pseudo-inverse.
-    double schur_absolute_cutoff = 1e-9;
+    /// Analyse the coupled translation/rotation modes with a unit-balanced full
+    /// 6x6 eigendecomposition instead of the independent 3x3 diagonal blocks.
+    /// This catches combined degenerate motions (e.g. translation along, and
+    /// rotation about, a cylinder axis) that the block-diagonal analysis misses.
+    /// The default keeps the existing block-diagonal behaviour.
+    bool use_coupled_degeneracy = false;
+    /// Representative length [m] balancing the rotation and translation blocks
+    /// of the coupled analysis.
+    float coupled_representative_length = 1.0f;
+    /// Weak-mode ratio on the balanced, inlier-normalised information used by
+    /// the coupled analysis (replaces the per-block ratios for that path).
+    float coupled_min_information_ratio = 0.5f;
+    /// Per-inlier IMU information floor in the balanced, inlier-normalised units
+    /// used by the coupled weak-direction gate.
+    float coupled_imu_information_floor_per_inlier = 5.0f;
+    /// Information scale applied to a weak coupled direction (0 removes it).
+    float coupled_weak_direction_scale = 0.2f;
 };
 
 /// @brief Constant-velocity prior on the world-frame velocity state.
