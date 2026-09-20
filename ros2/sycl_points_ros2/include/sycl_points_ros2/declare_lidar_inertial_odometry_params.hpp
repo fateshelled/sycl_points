@@ -82,6 +82,15 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     registration.directional_icp_weighting.rot_weak_direction_scale = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/rot_weak_direction_scale",
                                         registration.directional_icp_weighting.rot_weak_direction_scale));
+    registration.directional_icp_weighting.use_schur_complement = node->declare_parameter<bool>(
+        "lio/directional_icp_weighting/use_schur_complement",
+        registration.directional_icp_weighting.use_schur_complement);
+    registration.directional_icp_weighting.schur_relative_cutoff = node->declare_parameter<double>(
+        "lio/directional_icp_weighting/schur_relative_cutoff",
+        registration.directional_icp_weighting.schur_relative_cutoff);
+    registration.directional_icp_weighting.schur_absolute_cutoff = node->declare_parameter<double>(
+        "lio/directional_icp_weighting/schur_absolute_cutoff",
+        registration.directional_icp_weighting.schur_absolute_cutoff);
 
     // Constant-velocity prior on the world-frame velocity state
     registration.constant_velocity_prior.enable = node->declare_parameter<bool>(

@@ -237,6 +237,12 @@ lidar_odometry_node:
     registration/degenerate_regularization/verbose: false
     registration/degenerate_regularization/trans_eigenvalue_threshold: 10.0
     registration/degenerate_regularization/rot_eigenvalue_threshold: 10.0
+    # Analyse the coupled translation/rotation Schur complements instead of the
+    # independent 3x3 blocks (catches combined degenerate motions). Schur
+    # eigenvalues are marginal, so the thresholds may need retuning when enabled.
+    registration/degenerate_regularization/use_schur_complement: false
+    registration/degenerate_regularization/schur_relative_cutoff: 1.0e-6
+    registration/degenerate_regularization/schur_absolute_cutoff: 1.0e-9
     registration/degenerate_regularization/nl_reg/base_factor: 0.2
     registration/degenerate_regularization/l_reg/factor: 440.0
     registration/verbose: false

@@ -81,6 +81,18 @@ struct DirectionalIcpWeightingParams {
     float trans_weak_direction_scale = 0.2f;
     /// Minimum information scale applied to weak rotation directions. 0 allows full removal.
     float rot_weak_direction_scale = 0.2f;
+    /// Select the weak directions from the coupled translation/rotation Schur
+    /// complements instead of the independent 3x3 diagonal blocks. This catches
+    /// combined degenerate motions (e.g. translation along, and rotation about,
+    /// a cylinder axis) that the block-diagonal analysis misses. The default
+    /// keeps the existing block-diagonal behaviour. Schur eigenvalues are
+    /// marginal and no larger than the corresponding block eigenvalues, so the
+    /// information ratios may need retuning when this is enabled.
+    bool use_schur_complement = false;
+    /// Relative eigenvalue cutoff for the Schur block pseudo-inverse.
+    double schur_relative_cutoff = 1e-6;
+    /// Absolute eigenvalue cutoff for the Schur block pseudo-inverse.
+    double schur_absolute_cutoff = 1e-9;
 };
 
 /// @brief Constant-velocity prior on the world-frame velocity state.

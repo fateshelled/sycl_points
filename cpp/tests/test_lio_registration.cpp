@@ -163,6 +163,49 @@ TEST(LioRegistration, DirectionalIcpWeightingPreservesCoupledFactorStructure) {
     EXPECT_GE(solver.eigenvalues().minCoeff(), -kEps);
 }
 
+TEST(LioRegistration, DirectionalIcpWeightingSchurDetectsCoupledDegeneracy) {
+    // Translation along x and rotation about x are each individually strong
+    // (100), but the coupled mode t_x = theta_x is flat. The block-diagonal
+    // analysis sees only the 100s and keeps the factor untouched; the Schur
+    // analysis sees the coupled null mode and attenuates both x directions.
+    const auto weighted = [](bool use_schur) {
+        lio::LIOLinearizedResult factor;
+        factor.inlier = 10;
+        factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 100.0f;
+        factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 100.0f;
+        factor.H(imu::State::kIdxPos + 2, imu::State::kIdxPos + 2) = 100.0f;
+        factor.H(imu::State::kIdxRot, imu::State::kIdxRot) = 100.0f;
+        factor.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1) = 100.0f;
+        factor.H(imu::State::kIdxRot + 2, imu::State::kIdxRot + 2) = 100.0f;
+        factor.H(imu::State::kIdxPos, imu::State::kIdxRot) = -100.0f;
+        factor.H(imu::State::kIdxRot, imu::State::kIdxPos) = -100.0f;
+
+        lio::DirectionalIcpWeightingParams params;
+        params.use_schur_complement = use_schur;
+        params.trans_min_information_ratio = 0.5f;
+        params.rot_min_information_ratio = 0.5f;
+        params.trans_imu_information_floor_per_inlier = 5.0f;
+        params.rot_imu_information_floor_per_inlier = 5.0f;
+        params.trans_weak_direction_scale = 0.1f;
+        params.rot_weak_direction_scale = 0.1f;
+        lio::apply_directional_icp_weighting(factor, Eigen::Matrix<float, 15, 15>::Zero(), params);
+        return factor;
+    };
+
+    const lio::LIOLinearizedResult block = weighted(false);
+    EXPECT_NEAR(block.H(imu::State::kIdxPos, imu::State::kIdxPos), 100.0f, kEps);
+    EXPECT_NEAR(block.H(imu::State::kIdxRot, imu::State::kIdxRot), 100.0f, kEps);
+
+    // The coupled x mode has zero marginal information. The existing weak
+    // handling maps an exactly zero eigenvalue to full removal, so both x
+    // directions are zeroed while the uncoupled y/z axes keep their 100.
+    const lio::LIOLinearizedResult schur = weighted(true);
+    EXPECT_NEAR(schur.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.0f, kEps);
+    EXPECT_NEAR(schur.H(imu::State::kIdxRot, imu::State::kIdxRot), 0.0f, kEps);
+    EXPECT_NEAR(schur.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 100.0f, kEps);
+    EXPECT_NEAR(schur.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1), 100.0f, kEps);
+}
+
 TEST(LioRegistration, ConstantVelocityPriorAnchorsOnlyDegenerateAxis) {
     // ICP position information is strong on x/z and weak on y (ratio 0.002 < 0.05).
     Eigen::Matrix3f icp_position_H = Eigen::Matrix3f::Zero();

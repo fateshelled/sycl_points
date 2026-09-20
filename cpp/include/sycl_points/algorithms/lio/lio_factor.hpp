@@ -9,6 +9,7 @@
 #include "sycl_points/algorithms/lio/lio_linearized_result.hpp"
 #include "sycl_points/algorithms/lio/lio_registration_params.hpp"
 #include "sycl_points/algorithms/registration/linearized_result.hpp"
+#include "sycl_points/algorithms/registration/schur_degeneracy.hpp"
 
 namespace sycl_points {
 namespace algorithms {
@@ -167,17 +168,13 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
     b_pose.segment<3>(0) = icp_factor.b.segment<3>(imu::State::kIdxPos);
     b_pose.segment<3>(3) = icp_factor.b.segment<3>(imu::State::kIdxRot);
 
-    const auto compute_block_filter = [&](const Eigen::Matrix3f& H_block, const Eigen::Matrix3f& H_imu_block,
-                                          const Eigen::Vector3f& b_block, float min_information_ratio,
-                                          float imu_information_floor_per_inlier, float weak_direction_scale,
-                                          const char* label) -> Eigen::Matrix3f {
-        const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
-        if (solver.info() != Eigen::Success) return Eigen::Matrix3f::Identity();
-
+    const auto compute_block_filter = [&](const Eigen::Vector3f& eigenvalues, const Eigen::Matrix3f& eigenvectors,
+                                          const Eigen::Matrix3f& H_imu_block, const Eigen::Vector3f& b_block,
+                                          float min_information_ratio, float imu_information_floor_per_inlier,
+                                          float weak_direction_scale, const char* label) -> Eigen::Matrix3f {
         if (params.verbose) {
             std::cout << "[DirectionalIcpWeighting] " << label
-                      << " eigenvalues/inlier: " << (solver.eigenvalues() / inlier_f).transpose() << std::endl;
+                      << " eigenvalues/inlier: " << (eigenvalues / inlier_f).transpose() << std::endl;
             std::cout << "[DirectionalIcpWeighting] " << label
                       << " b/inlier: " << (b_block / inlier_f).transpose() << std::endl;
         }
@@ -187,8 +184,8 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
         const float weak_scale = std::clamp(weak_direction_scale, 0.0f, 1.0f);
         Eigen::Matrix3f filter = Eigen::Matrix3f::Zero();
         for (int i = 0; i < kBlockDof; ++i) {
-            const float lambda = std::max(0.0f, solver.eigenvalues()(i));
-            const Eigen::Vector3f q = solver.eigenvectors().col(i);
+            const float lambda = std::max(0.0f, eigenvalues(i));
+            const Eigen::Vector3f q = eigenvectors.col(i);
 
             // Baseline is the IMU prior's information along this same eigen-direction,
             // floored so the P_post -> P_pred -> H_imu degeneracy feedback cannot make
@@ -218,14 +215,50 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
         return filter;
     };
 
+    // Eigendata of the translation and rotation subspaces, either from the
+    // independent diagonal blocks or from the coupled Schur complements.
+    Eigen::Vector3f trans_eigenvalues = Eigen::Vector3f::Zero();
+    Eigen::Matrix3f trans_eigenvectors = Eigen::Matrix3f::Identity();
+    Eigen::Vector3f rot_eigenvalues = Eigen::Vector3f::Zero();
+    Eigen::Matrix3f rot_eigenvectors = Eigen::Matrix3f::Identity();
+
+    const auto block_eigendata = [](const Eigen::Matrix3f& H_block, Eigen::Vector3f& eigenvalues,
+                                    Eigen::Matrix3f& eigenvectors) -> bool {
+        const Eigen::Matrix3f H_sym = 0.5f * (H_block + H_block.transpose());
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(H_sym);
+        if (solver.info() != Eigen::Success) return false;
+        eigenvalues = solver.eigenvalues();
+        eigenvectors = solver.eigenvectors();
+        return true;
+    };
+
+    if (params.use_schur_complement) {
+        const registration::SchurDirections schur = registration::compute_schur_directions(
+            H_pose, registration::PoseHessianOrder::translation_first, params.schur_relative_cutoff,
+            params.schur_absolute_cutoff);
+        if (!schur.valid) return;
+        trans_eigenvalues = schur.trans_eigenvalues.cast<float>();
+        trans_eigenvectors = schur.trans_eigenvectors.cast<float>();
+        rot_eigenvalues = schur.rot_eigenvalues.cast<float>();
+        rot_eigenvectors = schur.rot_eigenvectors.cast<float>();
+
+        if (params.verbose) {
+            std::cout << "[DirectionalIcpWeighting] schur ranks: translation=" << schur.translation_block_rank
+                      << ", rotation=" << schur.rotation_block_rank << std::endl;
+        }
+    } else {
+        if (!block_eigendata(H_pose.block<3, 3>(0, 0), trans_eigenvalues, trans_eigenvectors)) return;
+        if (!block_eigendata(H_pose.block<3, 3>(3, 3), rot_eigenvalues, rot_eigenvectors)) return;
+    }
+
     Eigen::Matrix<float, kPoseDof, kPoseDof> filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
     filter.block<3, 3>(0, 0) = compute_block_filter(
-        H_pose.block<3, 3>(0, 0), H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), b_pose.segment<3>(0),
-        params.trans_min_information_ratio, params.trans_imu_information_floor_per_inlier,
+        trans_eigenvalues, trans_eigenvectors, H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos),
+        b_pose.segment<3>(0), params.trans_min_information_ratio, params.trans_imu_information_floor_per_inlier,
         params.trans_weak_direction_scale, "translation");
     filter.block<3, 3>(3, 3) = compute_block_filter(
-        H_pose.block<3, 3>(3, 3), H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot), b_pose.segment<3>(3),
-        params.rot_min_information_ratio, params.rot_imu_information_floor_per_inlier,
+        rot_eigenvalues, rot_eigenvectors, H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot),
+        b_pose.segment<3>(3), params.rot_min_information_ratio, params.rot_imu_information_floor_per_inlier,
         params.rot_weak_direction_scale, "rotation");
 
     const Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = filter * H_pose * filter;

@@ -115,6 +115,12 @@ inline pipeline::lidar_odometry::Parameters declare_lidar_odometry_parameters(rc
             degenerate_reg.trans_eigenvalue_threshold);
         degenerate_reg.rot_eigenvalue_threshold = node->declare_parameter<double>(
             "registration/degenerate_regularization/rot_eigenvalue_threshold", degenerate_reg.rot_eigenvalue_threshold);
+        degenerate_reg.use_schur_complement = node->declare_parameter<bool>(
+            "registration/degenerate_regularization/use_schur_complement", degenerate_reg.use_schur_complement);
+        degenerate_reg.schur_relative_cutoff = node->declare_parameter<double>(
+            "registration/degenerate_regularization/schur_relative_cutoff", degenerate_reg.schur_relative_cutoff);
+        degenerate_reg.schur_absolute_cutoff = node->declare_parameter<double>(
+            "registration/degenerate_regularization/schur_absolute_cutoff", degenerate_reg.schur_absolute_cutoff);
         if (degenerate_reg.type == algorithms::registration::DegenerateRegularizationType::nl_reg) {
             degenerate_reg.base_factor = node->declare_parameter<double>(
                 "registration/degenerate_regularization/nl_reg/base_factor", degenerate_reg.base_factor);

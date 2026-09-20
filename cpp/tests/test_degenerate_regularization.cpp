@@ -213,3 +213,114 @@ TEST(DegenerateRegularization, TsvdPreservesCoupledObservableSubspace) {
     EXPECT_NEAR(output.b(3), 0.0f, 1e-6f);
     EXPECT_TRUE(output.H.isApprox(output.H.transpose(), 1e-6f));
 }
+
+TEST(DegenerateRegularization, SchurDirectionsExposeCoupledNullMode) {
+    // Translation along x and rotation about x are each individually strong (100),
+    // but the coupled mode t_x = theta_x is exactly flat. The independent 3x3
+    // blocks only see the 100s; the Schur complement sees the 0.
+    Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
+    H.block<3, 3>(0, 0) = 100.0f * Eigen::Matrix3f::Identity();  // rotation
+    H.block<3, 3>(3, 3) = 100.0f * Eigen::Matrix3f::Identity();  // translation
+    H(0, 3) = -100.0f;
+    H(3, 0) = -100.0f;
+
+    const auto schur =
+        registration::compute_schur_directions(H, registration::PoseHessianOrder::rotation_first);
+
+    ASSERT_TRUE(schur.valid);
+    EXPECT_NEAR(schur.rot_eigenvalues(0), 0.0f, 1e-5);
+    EXPECT_NEAR(schur.trans_eigenvalues(0), 0.0f, 1e-5);
+    EXPECT_GT(schur.rot_eigenvalues(1), 99.0);
+    EXPECT_GT(schur.trans_eigenvalues(1), 99.0);
+    EXPECT_EQ(schur.rotation_block_rank, 3);
+    EXPECT_EQ(schur.translation_block_rank, 3);
+}
+
+TEST(DegenerateRegularization, SchurDirectionsHandleRankDeficientBlock) {
+    // A rank-deficient marginalized block must yield a finite, rank-aware
+    // pseudo-inverse instead of a NaN Schur complement.
+    Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
+    H(0, 0) = 50.0f;
+    H(3, 3) = 50.0f;
+    H(0, 3) = -50.0f;
+    H(3, 0) = -50.0f;
+
+    const auto schur =
+        registration::compute_schur_directions(H, registration::PoseHessianOrder::rotation_first);
+
+    ASSERT_TRUE(schur.valid);
+    EXPECT_TRUE(schur.S_translation.allFinite());
+    EXPECT_TRUE(schur.S_rotation.allFinite());
+    EXPECT_EQ(schur.rotation_block_rank, 1);
+    EXPECT_EQ(schur.translation_block_rank, 1);
+}
+
+TEST(DegenerateRegularization, SchurComplementDetectsCoupledDegeneracyMissedByBlocks) {
+    // Same coupled x-axis degeneracy as above, end to end through TSVD.
+    registration::LinearizedResult input;
+    input.inlier = 1;
+    input.H.block<3, 3>(0, 0) = 100.0f * Eigen::Matrix3f::Identity();
+    input.H.block<3, 3>(3, 3) = 100.0f * Eigen::Matrix3f::Identity();
+    input.H(0, 3) = -100.0f;
+    input.H(3, 0) = -100.0f;
+    input.b.setOnes();
+
+    registration::DegenerateRegularizationParams params;
+    params.type = registration::DegenerateRegularizationType::tsvd;
+    params.rot_eigenvalue_threshold = 1.0f;
+    params.trans_eigenvalue_threshold = 1.0f;
+
+    registration::DegenerateRegularization regularization;
+
+    // Block-diagonal analysis: every diagonal eigenvalue is 100, so nothing is
+    // truncated and the coupled degeneracy is missed.
+    params.use_schur_complement = false;
+    regularization.set_params(params);
+    const auto block_output =
+        regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
+    EXPECT_NEAR(block_output.H(0, 0), 100.0f, 1e-4f);
+    EXPECT_NEAR(block_output.H(3, 3), 100.0f, 1e-4f);
+
+    // Schur analysis: the coupled x mode is singular (0), so the x rotation and
+    // translation directions are truncated while the uncoupled y/z axes keep
+    // their information.
+    params.use_schur_complement = true;
+    regularization.set_params(params);
+    const auto schur_output =
+        regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
+    EXPECT_NEAR(schur_output.H(0, 0), 1.0f, 1e-4f);
+    EXPECT_NEAR(schur_output.H(3, 3), 1.0f, 1e-4f);
+    EXPECT_NEAR(schur_output.H(1, 1), 100.0f, 1e-4f);
+    EXPECT_NEAR(schur_output.H(2, 2), 100.0f, 1e-4f);
+    EXPECT_NEAR(schur_output.H(4, 4), 100.0f, 1e-4f);
+    EXPECT_NEAR(schur_output.H(5, 5), 100.0f, 1e-4f);
+}
+
+TEST(DegenerateRegularization, SchurComplementMatchesBlocksForDiagonalHessian) {
+    // With no translation/rotation coupling the Schur complements reduce to the
+    // diagonal blocks, so both analyses select the same degenerate directions.
+    registration::LinearizedResult input;
+    input.inlier = 10;
+    input.H.diagonal() << 5.0f, 20.0f, 30.0f, 2.0f, 30.0f, 40.0f;
+    input.b << 10.0f, 20.0f, 30.0f, 4.0f, 30.0f, 40.0f;
+
+    registration::DegenerateRegularizationParams params;
+    params.type = registration::DegenerateRegularizationType::tsvd;
+    params.rot_eigenvalue_threshold = 1.0f;
+    params.trans_eigenvalue_threshold = 1.0f;
+
+    registration::DegenerateRegularization regularization;
+
+    params.use_schur_complement = false;
+    regularization.set_params(params);
+    const auto block_output =
+        regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
+
+    params.use_schur_complement = true;
+    regularization.set_params(params);
+    const auto schur_output =
+        regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
+
+    EXPECT_TRUE(schur_output.H.isApprox(block_output.H, 1e-4f));
+    EXPECT_TRUE(schur_output.b.isApprox(block_output.b, 1e-4f));
+}

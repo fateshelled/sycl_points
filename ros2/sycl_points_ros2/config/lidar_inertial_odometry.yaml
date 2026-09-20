@@ -214,6 +214,13 @@ lidar_inertial_odometry_node:
     lio/directional_icp_weighting/rot_imu_information_floor_per_inlier: 5.0
     lio/directional_icp_weighting/trans_weak_direction_scale: 0.2
     lio/directional_icp_weighting/rot_weak_direction_scale: 0.2
+    # Select weak directions from the coupled translation/rotation Schur
+    # complements instead of the independent 3x3 blocks (catches combined
+    # degenerate motions). Schur eigenvalues are marginal, so the information
+    # ratios may need retuning when enabled.
+    lio/directional_icp_weighting/use_schur_complement: false
+    lio/directional_icp_weighting/schur_relative_cutoff: 1.0e-6
+    lio/directional_icp_weighting/schur_absolute_cutoff: 1.0e-9
     # Constant-velocity prior on the world-frame velocity state.
     # Neither LiDAR nor the IMU prior can carry velocity along a degenerate axis:
     # the IMU prior is a position anchor whose gradient vanishes at the prediction.
