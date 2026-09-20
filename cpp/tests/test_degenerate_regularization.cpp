@@ -2,6 +2,8 @@
 
 #include <Eigen/Dense>
 
+#include <limits>
+
 #include "sycl_points/algorithms/registration/degenerate_regularization.hpp"
 
 namespace registration = sycl_points::algorithms::registration;
@@ -295,8 +297,30 @@ TEST(DegenerateRegularization, CoupledAnalysisRejectsNonPositiveRepresentativeLe
             .valid);
     EXPECT_FALSE(registration::compute_coupled_eigen_analysis(H, registration::PoseHessianOrder::rotation_first, 1.0, 0.0)
                      .valid);
+    EXPECT_FALSE(registration::compute_coupled_eigen_analysis(
+                     H, registration::PoseHessianOrder::rotation_first, std::numeric_limits<double>::quiet_NaN(), 1.0)
+                     .valid);
+    EXPECT_FALSE(registration::compute_coupled_eigen_analysis(
+                     H, registration::PoseHessianOrder::rotation_first, std::numeric_limits<double>::infinity(), 1.0)
+                     .valid);
     EXPECT_TRUE(registration::compute_coupled_eigen_analysis(H, registration::PoseHessianOrder::rotation_first, 1.0, 1.0)
                     .valid);
+}
+
+TEST(DegenerateRegularization, OrthonormalizeScaledDirectionsKeepsIndependentScales) {
+    // Orthogonal candidates are independent, so each keeps its own scale.
+    std::vector<registration::ScaledDirection> directions(2);
+    directions[0].direction = Eigen::Matrix<double, 6, 1>::Zero();
+    directions[0].direction(0) = 1.0;
+    directions[0].scale = 0.8;
+    directions[1].direction = Eigen::Matrix<double, 6, 1>::Zero();
+    directions[1].direction(1) = 1.0;
+    directions[1].scale = 0.3;
+
+    const auto basis = registration::orthonormalize_scaled_directions(directions);
+    ASSERT_EQ(basis.size(), 2u);
+    EXPECT_NEAR(basis[0].scale, 0.8, 1e-9);
+    EXPECT_NEAR(basis[1].scale, 0.3, 1e-9);
 }
 
 TEST(DegenerateRegularization, OrthonormalizeScaledDirectionsMergesDroppedScale) {

@@ -216,7 +216,8 @@ lidar_inertial_odometry_node:
     lio/directional_icp_weighting/rot_weak_direction_scale: 0.2
     # Analyse the coupled translation/rotation modes with a unit-balanced full 6x6
     # eigendecomposition instead of the independent 3x3 blocks (catches combined
-    # degenerate motions). The coupled_* keys are only used on this path.
+    # degenerate motions). The coupled_* keys are only used on this path, and
+    # coupled_representative_length must be > 0.
     lio/directional_icp_weighting/use_coupled_degeneracy: false
     lio/directional_icp_weighting/coupled_representative_length: 1.0 # [m]
     lio/directional_icp_weighting/coupled_min_information_ratio: 0.5

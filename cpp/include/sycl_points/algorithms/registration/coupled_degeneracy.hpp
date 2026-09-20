@@ -41,6 +41,7 @@ enum class PoseHessianOrder {
 /// @note `representative_length` must be positive; a non-positive value is
 ///       rejected by compute_coupled_eigen_analysis(). This function only keeps a
 ///       defensive floor so a direct caller cannot produce an infinite balance.
+///       A NaN argument is not guarded here; callers must validate before use.
 inline Eigen::Matrix<double, 6, 6> coupled_balance_matrix(double representative_length, PoseHessianOrder order) {
     Eigen::Matrix<double, 6, 6> balance = Eigen::Matrix<double, 6, 6>::Identity();
     const double length = std::max(representative_length, 1e-6);
@@ -72,9 +73,10 @@ struct CoupledEigenAnalysis {
 /// @param H    6x6 pose Hessian (PSD; Gauss-Newton information matrix).
 /// @param order Block ordering of @p H.
 /// @param representative_length Representative length [m] balancing rotation and translation.
-///        Must be finite and positive; otherwise the analysis is reported invalid
-///        so the caller leaves the factor untouched rather than scaling every
-///        rotation mode into the weak set.
+///        Must be finite and positive. A non-positive or non-finite value is
+///        reported invalid so the caller leaves the factor untouched instead of
+///        silently applying an extreme, unvalidated rotation/translation scale
+///        (the graph solver also rejects a non-positive length).
 /// @param inlier Inlier count used to normalise the Hessian.
 inline CoupledEigenAnalysis compute_coupled_eigen_analysis(const Eigen::Matrix<float, 6, 6>& H, PoseHessianOrder order,
                                                            double representative_length, double inlier) {
