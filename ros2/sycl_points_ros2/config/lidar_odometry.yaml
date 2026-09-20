@@ -239,8 +239,8 @@ lidar_odometry_node:
     registration/degenerate_regularization/rot_eigenvalue_threshold: 10.0
     # Analyse the coupled translation/rotation modes with a unit-balanced full 6x6
     # eigendecomposition instead of the independent 3x3 blocks (catches combined
-    # degenerate motions). The threshold and representative length are only used
-    # on this path.
+    # degenerate motions). Enabling this replaces the per-block thresholds above
+    # with coupled_eigenvalue_threshold; representative_length must be > 0.
     registration/degenerate_regularization/use_coupled_degeneracy: false
     registration/degenerate_regularization/coupled_eigenvalue_threshold: 1.0
     registration/degenerate_regularization/coupled_representative_length: 1.0 # [m]

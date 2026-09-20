@@ -291,6 +291,9 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
             }
         }
 
+        // The per-mode scale is attached before orthonormalisation, so it is
+        // exact for a single weak mode and approximate when several weak modes
+        // are non-orthogonal (L != 1); see coupled_weak_scaled_directions.
         filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Identity();
         for (const auto& candidate :
              registration::coupled_weak_scaled_directions(analysis, weak_indices, weak_scales)) {

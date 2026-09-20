@@ -38,6 +38,9 @@ enum class PoseHessianOrder {
 /// eigenvectors are the coupled 6D motions (translation combined with rotation)
 /// ordered from weakest to strongest. This is the approach already used by the
 /// graph solver's LiDAR observability regularisation.
+/// @note `representative_length` must be positive; a non-positive value is
+///       rejected by compute_coupled_eigen_analysis(). This function only keeps a
+///       defensive floor so a direct caller cannot produce an infinite balance.
 inline Eigen::Matrix<double, 6, 6> coupled_balance_matrix(double representative_length, PoseHessianOrder order) {
     Eigen::Matrix<double, 6, 6> balance = Eigen::Matrix<double, 6, 6>::Identity();
     const double length = std::max(representative_length, 1e-6);
@@ -69,11 +72,14 @@ struct CoupledEigenAnalysis {
 /// @param H    6x6 pose Hessian (PSD; Gauss-Newton information matrix).
 /// @param order Block ordering of @p H.
 /// @param representative_length Representative length [m] balancing rotation and translation.
+///        Must be finite and positive; otherwise the analysis is reported invalid
+///        so the caller leaves the factor untouched rather than scaling every
+///        rotation mode into the weak set.
 /// @param inlier Inlier count used to normalise the Hessian.
 inline CoupledEigenAnalysis compute_coupled_eigen_analysis(const Eigen::Matrix<float, 6, 6>& H, PoseHessianOrder order,
                                                            double representative_length, double inlier) {
     CoupledEigenAnalysis result;
-    if (!(inlier > 0.0)) {
+    if (!(inlier > 0.0) || !std::isfinite(representative_length) || representative_length <= 0.0) {
         return result;
     }
     const Eigen::Matrix<double, 6, 6> Hd = H.cast<double>();
@@ -82,7 +88,7 @@ inline CoupledEigenAnalysis compute_coupled_eigen_analysis(const Eigen::Matrix<f
     }
 
     const Eigen::Matrix<double, 6, 6> balance = coupled_balance_matrix(representative_length, order);
-    const Eigen::Matrix<double, 6, 6> balance_inverse = balance.inverse();
+    const Eigen::Matrix<double, 6, 6> balance_inverse = balance.diagonal().cwiseInverse().asDiagonal();
     Eigen::Matrix<double, 6, 6> balanced =
         balance_inverse * (0.5 * (Hd + Hd.transpose()) / inlier) * balance_inverse;
     balanced = 0.5 * (balanced + balanced.transpose());
@@ -104,18 +110,21 @@ inline CoupledEigenAnalysis compute_coupled_eigen_analysis(const Eigen::Matrix<f
 /// @brief Modified Gram-Schmidt over 6D pose directions.
 ///
 /// Returns an orthonormal basis of the span of @p directions; dependent
-/// directions (norm below @p tolerance after projection) are dropped so a
-/// projector built from the result has the true weak-subspace rank.
+/// directions are dropped so a projector built from the result has the true
+/// weak-subspace rank. Dependency uses the residual relative to the direction's
+/// own magnitude, so the test is scale-invariant (the balanced directions
+/// `S v_k` have magnitudes that depend on the representative length).
 inline std::vector<Eigen::Matrix<double, 6, 1>> orthonormalize_directions(
     std::vector<Eigen::Matrix<double, 6, 1>> directions, double tolerance = 1e-6) {
     std::vector<Eigen::Matrix<double, 6, 1>> basis;
     basis.reserve(directions.size());
     for (auto& direction : directions) {
+        const double original_norm = direction.norm();
         for (const auto& b : basis) {
             direction -= b.dot(direction) * b;
         }
         const double norm = direction.norm();
-        if (norm > tolerance) {
+        if (norm > tolerance * std::max(original_norm, 1e-12) && norm > 1e-12) {
             basis.push_back(direction / norm);
         }
     }
@@ -131,15 +140,18 @@ struct ScaledDirection {
 /// @brief Gram-Schmidt that carries a per-direction scale.
 ///
 /// Used by the directional ICP weighting, where each weak coupled direction has
-/// its own attenuation factor. A candidate that is dependent on an earlier basis
-/// vector is dropped and its scale is merged (minimum) into the basis vector it
-/// is closest to, so a strongly attenuated physical mode is not lost when the
-/// second representation of the same mode is deduplicated.
+/// its own attenuation factor. Independent candidates keep their own scale. A
+/// candidate that is dependent on an earlier basis vector is dropped and its
+/// scale is merged (minimum) into the basis vector it is closest to, so a
+/// strongly attenuated physical mode is not lost when the second representation
+/// of the same mode is deduplicated. A candidate with zero magnitude is dropped
+/// without a dominant vector (its scale is discarded).
 inline std::vector<ScaledDirection> orthonormalize_scaled_directions(
     std::vector<ScaledDirection> directions, double tolerance = 1e-6) {
     std::vector<ScaledDirection> basis;
     basis.reserve(directions.size());
     for (auto candidate : directions) {
+        const double original_norm = candidate.direction.norm();
         double scale = candidate.scale;
         int dominant = -1;
         double dominant_abs = 0.0;
@@ -152,7 +164,8 @@ inline std::vector<ScaledDirection> orthonormalize_scaled_directions(
             }
         }
         const double norm = candidate.direction.norm();
-        if (norm > tolerance) {
+        const bool independent = norm > tolerance * std::max(original_norm, 1e-12) && norm > 1e-12;
+        if (independent) {
             candidate.direction /= norm;
             candidate.scale = scale;
             basis.push_back(candidate);
@@ -168,9 +181,11 @@ inline std::vector<ScaledDirection> orthonormalize_scaled_directions(
 /// @brief Map selected balanced eigenvectors to orthonormal original-space directions.
 ///
 /// The balanced eigenvector `v_k` corresponds to the original-space motion
-/// `S v_k`. Those motions are generally not orthogonal, so they are
-/// orthonormalised; the resulting basis spans the same weak subspace, which is
-/// what a projector or a directional filter needs.
+/// `S v_k`. Those vectors are the constraint (dual) directions: `S v_k` is what a
+/// projector or filter acts on, while the primal pose displacement corresponds to
+/// `S^-1 v_k`. They are generally not orthogonal, so they are orthonormalised; the
+/// resulting basis spans the same weak subspace, which is what a projector or a
+/// directional filter needs.
 inline std::vector<Eigen::Matrix<double, 6, 1>> coupled_weak_directions(
     const CoupledEigenAnalysis& analysis, const std::vector<int>& weak_indices) {
     std::vector<Eigen::Matrix<double, 6, 1>> directions;
@@ -182,6 +197,11 @@ inline std::vector<Eigen::Matrix<double, 6, 1>> coupled_weak_directions(
 }
 
 /// @brief Map selected balanced eigenvectors to scaled original-space directions.
+///
+/// The per-mode scale is attached before orthonormalisation and carried onto the
+/// resulting basis vector. When several weak modes are non-orthogonal (L != 1) the
+/// applied scale is therefore an approximation of the per-mode scale; it is exact
+/// for a single weak mode or when the balanced directions are orthogonal.
 inline std::vector<ScaledDirection> coupled_weak_scaled_directions(
     const CoupledEigenAnalysis& analysis, const std::vector<int>& weak_indices,
     const std::vector<double>& scales) {

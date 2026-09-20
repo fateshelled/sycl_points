@@ -275,7 +275,85 @@ TEST(DegenerateRegularization, CoupledAnalysisHandlesRankDeficientHessian) {
 
     ASSERT_TRUE(analysis.valid);
     EXPECT_TRUE(analysis.normalized_eigenvalues.allFinite());
-    EXPECT_NEAR(analysis.normalized_eigenvalues(0), 0.0, 1e-5);
+    // The coupled (0, 3) 2x2 block has eigenvalues 0 and 100; the other four
+    // diagonal entries are zero, so five eigenvalues are zero and one is 100.
+    for (int k = 0; k < 5; ++k) {
+        EXPECT_NEAR(analysis.normalized_eigenvalues(k), 0.0, 1e-4);
+    }
+    EXPECT_NEAR(analysis.normalized_eigenvalues(5), 100.0, 1e-3);
+}
+
+TEST(DegenerateRegularization, CoupledAnalysisRejectsNonPositiveRepresentativeLength) {
+    Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
+    H.block<3, 3>(0, 0) = 100.0f * Eigen::Matrix3f::Identity();
+    H.block<3, 3>(3, 3) = 100.0f * Eigen::Matrix3f::Identity();
+
+    EXPECT_FALSE(registration::compute_coupled_eigen_analysis(H, registration::PoseHessianOrder::rotation_first, 0.0, 1.0)
+                     .valid);
+    EXPECT_FALSE(
+        registration::compute_coupled_eigen_analysis(H, registration::PoseHessianOrder::rotation_first, -1.0, 1.0)
+            .valid);
+    EXPECT_FALSE(registration::compute_coupled_eigen_analysis(H, registration::PoseHessianOrder::rotation_first, 1.0, 0.0)
+                     .valid);
+    EXPECT_TRUE(registration::compute_coupled_eigen_analysis(H, registration::PoseHessianOrder::rotation_first, 1.0, 1.0)
+                    .valid);
+}
+
+TEST(DegenerateRegularization, OrthonormalizeScaledDirectionsMergesDroppedScale) {
+    // A candidate dependent on an existing basis vector is dropped, but its
+    // (smaller) scale must be merged into the kept basis vector rather than lost.
+    std::vector<registration::ScaledDirection> directions(2);
+    directions[0].direction = Eigen::Matrix<double, 6, 1>::Zero();
+    directions[0].direction(0) = 1.0;
+    directions[0].scale = 0.8;
+    directions[1].direction = Eigen::Matrix<double, 6, 1>::Zero();
+    directions[1].direction(0) = 2.0;  // same direction -> dependent
+    directions[1].scale = 0.6;
+
+    const auto basis = registration::orthonormalize_scaled_directions(directions);
+    ASSERT_EQ(basis.size(), 1u);
+    EXPECT_NEAR(basis[0].scale, 0.6, 1e-9);
+    EXPECT_NEAR(std::abs(basis[0].direction(0)), 1.0, 1e-9);
+}
+
+TEST(DegenerateRegularization, CoupledDegeneracyPreservesObservableModeForNonUnitLength) {
+    // L != 1: the balance changes the eigenbasis, but the projector must still
+    // remove only the weak constraint direction S v_weak and preserve the primal
+    // observable modes S^-1 v_observable.
+    Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
+    H.block<3, 3>(0, 0) = 100.0f * Eigen::Matrix3f::Identity();
+    H.block<3, 3>(3, 3) = 100.0f * Eigen::Matrix3f::Identity();
+    H(0, 3) = -90.0f;
+    H(3, 0) = -90.0f;
+
+    const double length = 2.0;
+    const auto analysis =
+        registration::compute_coupled_eigen_analysis(H, registration::PoseHessianOrder::rotation_first, length, 1.0);
+    ASSERT_TRUE(analysis.valid);
+
+    int weak = 0;
+    for (int k = 1; k < 6; ++k) {
+        if (analysis.normalized_eigenvalues(k) < analysis.normalized_eigenvalues(weak)) {
+            weak = k;
+        }
+    }
+
+    Eigen::Matrix<double, 6, 6> degenerate = Eigen::Matrix<double, 6, 6>::Zero();
+    for (const auto& d : registration::coupled_weak_directions(analysis, {weak})) {
+        degenerate.noalias() += d * d.transpose();
+    }
+    const Eigen::Matrix<double, 6, 6> observable = Eigen::Matrix<double, 6, 6>::Identity() - degenerate;
+
+    const Eigen::Matrix<double, 6, 1> weak_constraint = analysis.balance * analysis.normalized_eigenvectors.col(weak);
+    EXPECT_NEAR((observable * weak_constraint).norm(), 0.0, 1e-6);
+
+    for (int k = 0; k < 6; ++k) {
+        if (k == weak) {
+            continue;
+        }
+        const Eigen::Matrix<double, 6, 1> mode = analysis.balance_inverse * analysis.normalized_eigenvectors.col(k);
+        EXPECT_NEAR((observable * mode - mode).norm(), 0.0, 1e-6);
+    }
 }
 
 TEST(DegenerateRegularization, CoupledDegeneracyDetectsModeMissedByBlocks) {
