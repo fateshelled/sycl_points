@@ -364,10 +364,9 @@ TEST(LioRegistration, TsvdLeavesImuPriorInTruncatedDirection) {
 }
 
 TEST(LioRegistration, DirectionalIcpWeightingCeilingBlocksOverConfidentImu) {
-    // Without the ceiling the 1e6 IMU information would raise the weak threshold to
-    // 1e5 and attenuate both axes.  The ceiling (10 per inlier) caps the threshold
-    // at 1e3, so only the weak axis is attenuated and the strong axis is kept.
-    // Perpendicular to H_imu (y) the baseline falls back to the floor (5 per inlier).
+    // The measured IMU information is far above the ceiling, and the ceiling sets
+    // the weak threshold: x (1) is attenuated, y (5000) is kept.  Perpendicular to
+    // H_imu (y) the baseline falls back to the floor.
     lio::LIOLinearizedResult factor;
     factor.inlier = 100;
     factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0f;            // weak
@@ -381,46 +380,45 @@ TEST(LioRegistration, DirectionalIcpWeightingCeilingBlocksOverConfidentImu) {
     params.trans_min_information_ratio = 1.0f;
     params.rot_min_information_ratio = 0.0f;
     params.trans_imu_information_floor_per_inlier = 5.0f;
-    params.trans_max_imu_information_per_inlier = 10.0f;
+    params.trans_max_imu_information_per_inlier = 20.0f;
     params.rot_imu_information_floor_per_inlier = 0.0f;
     params.rot_max_imu_information_per_inlier = 0.0f;
     params.trans_weak_direction_scale = 0.1f;
 
     lio::apply_directional_icp_weighting(factor, H_imu, params);
 
-    // x: threshold = 1.0 * clamp(1e6, 500, 1000) = 1000, scale = max(0.1, 1 / 1000) = 0.1.
+    // x: threshold = 1.0 * clamp(1e6, 500, 2000) = 2000, scale = max(0.1, 1 / 2000) = 0.1.
     EXPECT_NEAR(factor.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.1f, kEps);
     EXPECT_NEAR(factor.b(imu::State::kIdxPos), 0.1f, kEps);
-    // y: threshold = 1.0 * clamp(0, 500, 1000) = 500, 5000 > 500 keeps scale 1.
+    // y: threshold = 1.0 * clamp(0, 500, 2000) = 500, 5000 > 500 keeps scale 1.
     EXPECT_NEAR(factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 5000.0f, kEps);
     EXPECT_NEAR(factor.b(imu::State::kIdxPos + 1), 0.0f, kEps);
 }
 
-TEST(LioRegistration, DirectionalIcpWeightingFloorRaisesThreshold) {
-    // A tiny IMU prior still uses the floor (5 per inlier) as the baseline: the weak
-    // axis is attenuated by the linear information ratio, the observable axis is kept.
+TEST(LioRegistration, DirectionalIcpWeightingZeroCeilingKeepsFlooredBaseline) {
+    // ceiling <= 0 disables the cap: the baseline is the floored IMU information,
+    // so the huge x information raises the x threshold far above its eigenvalue,
+    // while y falls back to the floor baseline and is kept.
     lio::LIOLinearizedResult factor;
     factor.inlier = 100;
-    factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0f;            // weak
-    factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 5000.0f;  // observable
+    factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0f;
+    factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 5000.0f;
     factor.b(imu::State::kIdxPos) = 1.0f;
 
     Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
-    H_imu(imu::State::kIdxPos, imu::State::kIdxPos) = 0.5f;
+    H_imu(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0e6f;
 
     lio::DirectionalIcpWeightingParams params;
     params.trans_min_information_ratio = 1.0f;
     params.rot_min_information_ratio = 0.0f;
     params.trans_imu_information_floor_per_inlier = 5.0f;
-    params.trans_max_imu_information_per_inlier = 10.0f;
+    params.trans_max_imu_information_per_inlier = 0.0f;
     params.trans_weak_direction_scale = 0.1f;
 
     lio::apply_directional_icp_weighting(factor, H_imu, params);
 
-    // x: threshold = 1.0 * clamp(0.5, 500, 1000) = 500, scale = max(0.1, 1 / 500) = 0.1.
+    // x: threshold 1e6, scale 0.1; y: threshold 500, 5000 > 500 stays.
     EXPECT_NEAR(factor.H(imu::State::kIdxPos, imu::State::kIdxPos), 0.1f, kEps);
-    EXPECT_NEAR(factor.b(imu::State::kIdxPos), 0.1f, kEps);
-    // y: threshold = 500, 5000 > 500 keeps scale 1.
     EXPECT_NEAR(factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1), 5000.0f, kEps);
 }
 

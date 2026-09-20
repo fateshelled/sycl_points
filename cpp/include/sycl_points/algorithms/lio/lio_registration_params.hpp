@@ -80,6 +80,7 @@ struct DirectionalIcpWeightingParams {
     /// Ceiling on the IMU per-inlier information used as the comparison baseline.
     /// Without it an unusually confident IMU prior inflates the threshold until
     /// every direction is weak and the filter becomes a uniform down-scale.
+    /// Must be >= the matching floor; <= 0 disables the cap.
     float trans_max_imu_information_per_inlier = 50.0f;
     /// Same as trans_max_imu_information_per_inlier for the rotation block.
     float rot_max_imu_information_per_inlier = 50.0f;

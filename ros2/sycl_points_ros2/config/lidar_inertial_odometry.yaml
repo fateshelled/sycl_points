@@ -209,7 +209,7 @@ lidar_inertial_odometry_node:
     # previous frame's degeneracy feedback through P_post -> P_pred -> H_imu, the
     # ceiling stops an over-confident IMU prior from inflating the threshold until
     # every direction is weak (which silently turns the filter into a uniform
-    # down-scale of the ICP factor).
+    # down-scale of the ICP factor).  ceiling <= 0 disables the cap.
     lio/directional_icp_weighting/enable: true
     lio/directional_icp_weighting/verbose: false
     lio/directional_icp_weighting/type: "SCALE" # SCALE, TSVD

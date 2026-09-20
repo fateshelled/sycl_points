@@ -103,9 +103,7 @@ inline ConstantVelocityPrior add_constant_velocity_prior(LIOLinearizedResult& li
     const float inlier_f = static_cast<float>(inlier);
     const float ratio = std::clamp(params.min_eigenvalue_ratio, 0.0f, 1.0f);
     const float absolute_threshold = std::max(0.0f, params.min_information_per_inlier) * inlier_f;
-    const auto sigma_to_info = [](float sigma) {
-        return sigma > 0.0f ? 1.0f / (sigma * sigma) : 0.0f;
-    };
+    const auto sigma_to_info = [](float sigma) { return sigma > 0.0f ? 1.0f / (sigma * sigma) : 0.0f; };
     const float weak_info = sigma_to_info(params.degenerate_velocity_sigma);
     const float observable_info = sigma_to_info(params.observable_velocity_sigma);
 
@@ -144,15 +142,15 @@ inline ConstantVelocityPrior add_constant_velocity_prior(LIOLinearizedResult& li
 ///
 /// The baseline is the IMU information along each ICP eigen-direction, clamped to
 /// [floor * inlier, ceiling * inlier] to stay robust to both directions of
-/// covariance collapse.
+/// covariance collapse.  A ceiling <= 0 disables the cap and uses the floored
+/// baseline instead.
 ///
 /// @param icp_factor  LIO factor containing only the embedded ICP contribution.
 /// @param H_imu       IMU information matrix (15x15) in the LIO state ordering. Pass a
 ///                    zero matrix when no valid IMU prior exists; the configured floor
 ///                    still provides a usable comparison baseline.
 /// @param params      Directional weighting parameters.
-inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
-                                            const Eigen::Matrix<float, 15, 15>& H_imu,
+inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, const Eigen::Matrix<float, 15, 15>& H_imu,
                                             const DirectionalIcpWeightingParams& params) {
     if (!params.enable || icp_factor.inlier == 0) return;
 
@@ -183,14 +181,16 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
         if (params.verbose) {
             std::cout << "[DirectionalIcpWeighting] " << label
                       << " eigenvalues/inlier: " << (solver.eigenvalues() / inlier_f).transpose() << std::endl;
-            std::cout << "[DirectionalIcpWeighting] " << label
-                      << " b/inlier: " << (b_block / inlier_f).transpose() << std::endl;
+            std::cout << "[DirectionalIcpWeighting] " << label << " b/inlier: " << (b_block / inlier_f).transpose()
+                      << std::endl;
         }
 
         const float ratio = std::max(0.0f, min_information_ratio);
         const float floor_info = std::max(0.0f, imu_information_floor_per_inlier) * inlier_f;
-        const float ceiling_info = std::max(0.0f, imu_information_ceiling_per_inlier) * inlier_f;
         const float weak_scale = std::clamp(weak_direction_scale, 0.0f, 1.0f);
+        // ceiling <= 0 disables the cap; clamp the remainder so a misconfigured
+        // ceiling below the floor cannot feed std::clamp an inverted range.
+        const float ceiling_info = std::max(floor_info, std::max(0.0f, imu_information_ceiling_per_inlier) * inlier_f);
         Eigen::Matrix3f filter = Eigen::Matrix3f::Zero();
         for (int i = 0; i < kBlockDof; ++i) {
             const float lambda = std::max(0.0f, solver.eigenvalues()(i));
@@ -200,7 +200,10 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor,
             // [floor, ceiling] per inlier.  The floor absorbs the P_post -> P_pred ->
             // H_imu degeneracy feedback; the ceiling stops an over-confident IMU
             // prior from making every direction weak.
-            const float imu_info = std::clamp(q.dot(H_imu_block * q), floor_info, ceiling_info);
+            const float measured_info = q.dot(H_imu_block * q);
+            const float imu_info = imu_information_ceiling_per_inlier > 0.0f
+                                       ? std::clamp(measured_info, floor_info, ceiling_info)
+                                       : std::max(floor_info, measured_info);
             const float weak_threshold = ratio * imu_info;
 
             float scale = 1.0f;
@@ -281,8 +284,8 @@ inline void log_imu_effective_information(const Eigen::Matrix<float, 15, 15>& H_
         if (solver.info() != Eigen::Success) return;
         std::cout << "[DirectionalIcpWeighting] imu " << label
                   << " eigenvalues/inlier: " << (solver.eigenvalues() / inlier_f).transpose() << std::endl;
-        std::cout << "[DirectionalIcpWeighting] imu " << label
-                  << " b/inlier: " << (b_block / inlier_f).transpose() << std::endl;
+        std::cout << "[DirectionalIcpWeighting] imu " << label << " b/inlier: " << (b_block / inlier_f).transpose()
+                  << std::endl;
     };
     log_block(H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), b_imu.segment<3>(imu::State::kIdxPos),
               "translation");
