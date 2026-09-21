@@ -339,17 +339,27 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
         Eigen::Matrix3f trans_eigenvectors;
         Eigen::Vector3f rot_eigenvalues;
         Eigen::Matrix3f rot_eigenvectors;
-        if (!block_eigendata(H_pose.block<3, 3>(0, 0), trans_eigenvalues, trans_eigenvectors)) return;
-        if (!block_eigendata(H_pose.block<3, 3>(3, 3), rot_eigenvalues, rot_eigenvectors)) return;
+        // Match the previous behaviour: if one block's eigendecomposition fails,
+        // leave only that block unfiltered (identity) and still process the other.
+        const bool trans_ok = block_eigendata(H_pose.block<3, 3>(0, 0), trans_eigenvalues, trans_eigenvectors);
+        const bool rot_ok = block_eigendata(H_pose.block<3, 3>(3, 3), rot_eigenvalues, rot_eigenvectors);
 
-        filter.block<3, 3>(0, 0) = compute_block_filter(
-            trans_eigenvalues, trans_eigenvectors, H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos),
-            b_pose.segment<3>(0), params.trans_min_information_ratio, params.trans_imu_information_floor_per_inlier,
-            params.trans_max_imu_information_per_inlier, params.trans_weak_direction_scale, "translation");
-        filter.block<3, 3>(3, 3) = compute_block_filter(
-            rot_eigenvalues, rot_eigenvectors, H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot),
-            b_pose.segment<3>(3), params.rot_min_information_ratio, params.rot_imu_information_floor_per_inlier,
-            params.rot_max_imu_information_per_inlier, params.rot_weak_direction_scale, "rotation");
+        filter.block<3, 3>(0, 0) =
+            trans_ok
+                ? compute_block_filter(trans_eigenvalues, trans_eigenvectors,
+                                       H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos), b_pose.segment<3>(0),
+                                       params.trans_min_information_ratio, params.trans_imu_information_floor_per_inlier,
+                                       params.trans_max_imu_information_per_inlier, params.trans_weak_direction_scale,
+                                       "translation")
+                : Eigen::Matrix3f::Identity();
+        filter.block<3, 3>(3, 3) =
+            rot_ok ? compute_block_filter(rot_eigenvalues, rot_eigenvectors,
+                                          H_imu.block<3, 3>(imu::State::kIdxRot, imu::State::kIdxRot),
+                                          b_pose.segment<3>(3), params.rot_min_information_ratio,
+                                          params.rot_imu_information_floor_per_inlier,
+                                          params.rot_max_imu_information_per_inlier, params.rot_weak_direction_scale,
+                                          "rotation")
+                   : Eigen::Matrix3f::Identity();
     }
 
     const Eigen::Matrix<float, kPoseDof, kPoseDof> H_filtered = filter * H_pose * filter;

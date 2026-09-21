@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <Eigen/Dense>
+
+#include <cmath>
 #include <limits>
 
 #include "sycl_points/algorithms/lio/lio_registration.hpp"
@@ -271,9 +273,10 @@ TEST(LioRegistration, DirectionalIcpWeightingCoupledImuCeiling) {
 
     // Different ceilings change the weak scale (threshold = ratio * ceiling), which
     // proves the ceiling, not the floor, sets the baseline: 2.5 -> scale 0.4,
-    // 10 -> the 0.2 floor.
+    // 11 -> the 0.2 floor. (22 is used instead of 20 so the threshold 11 does not
+    // coincide with the other coupled eigenvalues at 10.)
     EXPECT_NEAR(flat.dot(capped.H.block<6, 6>(0, 0) * flat), 4.0f, 1e-2f);
-    const auto capped_mid = weighted(20.0f);
+    const auto capped_mid = weighted(22.0f);
     EXPECT_NEAR(flat.dot(capped_mid.H.block<6, 6>(0, 0) * flat), 2.0f, 1e-2f);
 }
 
