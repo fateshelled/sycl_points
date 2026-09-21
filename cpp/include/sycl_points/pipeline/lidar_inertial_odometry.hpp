@@ -12,6 +12,7 @@
 #include "sycl_points/algorithms/imu/imu_factor.hpp"
 #include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
+#include "sycl_points/algorithms/lio/lio_factor.hpp"
 #include "sycl_points/algorithms/lio/lio_registration.hpp"
 #include "sycl_points/pipeline/lidar_inertial_odometry_params.hpp"
 #include "sycl_points/pipeline/pointcloud_processing.hpp"
