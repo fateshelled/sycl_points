@@ -228,8 +228,11 @@ lidar_inertial_odometry_node:
     # <= 0 estimates the length per frame from the Hessian trace ratio (~= RMS range).
     lio/directional_icp_weighting/coupled_representative_length: 0.0 # [m]
     lio/directional_icp_weighting/coupled_min_information_ratio: 0.5
+    # Coupled uses a single floor/ceiling pair (balanced, inlier-normalised units)
+    # instead of the per-block trans/rot floors above, so enabling it shifts the
+    # baseline scale. <= 0 disables the ceiling.
     lio/directional_icp_weighting/coupled_imu_information_floor_per_inlier: 5.0
-    lio/directional_icp_weighting/coupled_max_imu_information_per_inlier: 50.0 # <= 0 disables the cap
+    lio/directional_icp_weighting/coupled_max_imu_information_per_inlier: 50.0
     lio/directional_icp_weighting/coupled_weak_direction_scale: 0.2
     # Constant-velocity prior on the world-frame velocity state.
     # Neither LiDAR nor the IMU prior can carry velocity along a degenerate axis:

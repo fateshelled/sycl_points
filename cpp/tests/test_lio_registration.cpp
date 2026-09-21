@@ -257,6 +257,10 @@ TEST(LioRegistration, DirectionalIcpWeightingCoupledImuCeiling) {
                                                    -1.0f / std::sqrt(2.0f), 0.0f, 0.0f)
                                                       .finished();
 
+    const Eigen::Matrix<float, 6, 1> flat =
+        (Eigen::Matrix<float, 6, 1>() << 1.0f / std::sqrt(2.0f), 0.0f, 0.0f, 1.0f / std::sqrt(2.0f), 0.0f, 0.0f)
+            .finished();
+
     const auto uncapped = weighted(0.0f);
     const float uncapped_curvature = observable.dot(uncapped.H.block<6, 6>(0, 0) * observable);
     EXPECT_LT(uncapped_curvature, 100.0f);
@@ -264,6 +268,13 @@ TEST(LioRegistration, DirectionalIcpWeightingCoupledImuCeiling) {
     const auto capped = weighted(5.0f);
     const float capped_curvature = observable.dot(capped.H.block<6, 6>(0, 0) * observable);
     EXPECT_NEAR(capped_curvature, 190.0f, 1e-2f);
+
+    // Different ceilings change the weak scale (threshold = ratio * ceiling), which
+    // proves the ceiling, not the floor, sets the baseline: 2.5 -> scale 0.4,
+    // 10 -> the 0.2 floor.
+    EXPECT_NEAR(flat.dot(capped.H.block<6, 6>(0, 0) * flat), 4.0f, 1e-2f);
+    const auto capped_mid = weighted(20.0f);
+    EXPECT_NEAR(flat.dot(capped_mid.H.block<6, 6>(0, 0) * flat), 2.0f, 1e-2f);
 }
 
 TEST(LioRegistration, DirectionalIcpWeightingCoupledAutoRepresentativeLength) {
@@ -292,6 +303,10 @@ TEST(LioRegistration, DirectionalIcpWeightingCoupledAutoRepresentativeLength) {
     const lio::LIOLinearizedResult manual = weighted(2.0f);
     const lio::LIOLinearizedResult automatic = weighted(0.0f);  // <= 0 -> auto estimate
     EXPECT_TRUE(automatic.H.isApprox(manual.H, 1e-4f));
+
+    // Non-finite lengths also fall back to the auto estimate.
+    EXPECT_TRUE(weighted(std::numeric_limits<float>::quiet_NaN()).H.isApprox(manual.H, 1e-4f));
+    EXPECT_TRUE(weighted(std::numeric_limits<float>::infinity()).H.isApprox(manual.H, 1e-4f));
 }
 
 TEST(LioRegistration, ConstantVelocityPriorAnchorsOnlyDegenerateAxis) {

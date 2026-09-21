@@ -257,7 +257,12 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
 
         const registration::CoupledEigenAnalysis analysis = registration::compute_coupled_eigen_analysis(
             H_pose, registration::PoseHessianOrder::translation_first, length, static_cast<double>(inlier_f));
-        if (!analysis.valid) return;
+        if (!analysis.valid) {
+            if (params.verbose) {
+                std::cerr << "[DirectionalIcpWeighting] coupled analysis invalid; skipping." << std::endl;
+            }
+            return;
+        }
 
         Eigen::Matrix<double, kPoseDof, kPoseDof> H_imu_pose = Eigen::Matrix<double, kPoseDof, kPoseDof>::Zero();
         H_imu_pose.block<3, 3>(0, 0) = H_imu.block<3, 3>(imu::State::kIdxPos, imu::State::kIdxPos).cast<double>();

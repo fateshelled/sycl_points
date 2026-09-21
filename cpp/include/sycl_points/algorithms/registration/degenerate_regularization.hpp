@@ -2,6 +2,7 @@
 
 #include <Eigen/Dense>
 
+#include <cmath>
 #include <iostream>
 #include <utility>
 #include <vector>
@@ -130,6 +131,9 @@ private:
             const CoupledEigenAnalysis analysis = compute_coupled_eigen_analysis(
                 linearized_result.H, PoseHessianOrder::rotation_first, length, static_cast<double>(inlier));
             if (!analysis.valid) {
+                if (this->params_.verbose) {
+                    std::cerr << "[DegenerateRegularization] coupled analysis invalid; skipping." << std::endl;
+                }
                 return ret;
             }
             if (this->params_.verbose) {

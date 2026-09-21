@@ -562,4 +562,14 @@ TEST(DegenerateRegularization, CoupledDegeneracyAutoEstimatesRepresentativeLengt
         regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity());
 
     EXPECT_TRUE(automatic.solution_projector.isApprox(manual.solution_projector, 1e-4f));
+
+    // Non-finite lengths also fall back to the auto estimate.
+    params.coupled_representative_length = std::numeric_limits<float>::quiet_NaN();
+    regularization.set_params(params);
+    EXPECT_TRUE(regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity())
+                    .solution_projector.isApprox(manual.solution_projector, 1e-4f));
+    params.coupled_representative_length = std::numeric_limits<float>::infinity();
+    regularization.set_params(params);
+    EXPECT_TRUE(regularization.regularize(input, Eigen::Isometry3f::Identity(), Eigen::Isometry3f::Identity())
+                    .solution_projector.isApprox(manual.solution_projector, 1e-4f));
 }
