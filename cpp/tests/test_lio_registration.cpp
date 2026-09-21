@@ -222,6 +222,78 @@ TEST(LioRegistration, DirectionalIcpWeightingCoupledAttenuatesWeakModeOnly) {
     EXPECT_NEAR(observable.dot(pose * observable), 190.0f, 1e-2f);
 }
 
+TEST(LioRegistration, DirectionalIcpWeightingCoupledImuCeiling) {
+    // An over-confident IMU along x would flag every x-plane coupled mode when the
+    // baseline is unbounded. The ceiling caps the baseline so only the genuinely
+    // weak mode is attenuated and the observable coupled mode is preserved.
+    const auto weighted = [](float ceiling) {
+        lio::LIOLinearizedResult factor;
+        factor.inlier = 10;
+        factor.H(imu::State::kIdxPos, imu::State::kIdxPos) = 100.0f;
+        factor.H(imu::State::kIdxPos + 1, imu::State::kIdxPos + 1) = 100.0f;
+        factor.H(imu::State::kIdxPos + 2, imu::State::kIdxPos + 2) = 100.0f;
+        factor.H(imu::State::kIdxRot, imu::State::kIdxRot) = 100.0f;
+        factor.H(imu::State::kIdxRot + 1, imu::State::kIdxRot + 1) = 100.0f;
+        factor.H(imu::State::kIdxRot + 2, imu::State::kIdxRot + 2) = 100.0f;
+        factor.H(imu::State::kIdxPos, imu::State::kIdxRot) = -90.0f;
+        factor.H(imu::State::kIdxRot, imu::State::kIdxPos) = -90.0f;
+
+        Eigen::Matrix<float, 15, 15> H_imu = Eigen::Matrix<float, 15, 15>::Zero();
+        H_imu(imu::State::kIdxPos, imu::State::kIdxPos) = 1.0e8f;
+        H_imu(imu::State::kIdxRot, imu::State::kIdxRot) = 1.0e8f;
+
+        lio::DirectionalIcpWeightingParams params;
+        params.use_coupled_degeneracy = true;
+        params.coupled_representative_length = 1.0f;
+        params.coupled_min_information_ratio = 0.5f;
+        params.coupled_imu_information_floor_per_inlier = 5.0f;
+        params.coupled_max_imu_information_per_inlier = ceiling;
+        params.coupled_weak_direction_scale = 0.2f;
+        lio::apply_directional_icp_weighting(factor, H_imu, params);
+        return factor;
+    };
+
+    const Eigen::Matrix<float, 6, 1> observable = (Eigen::Matrix<float, 6, 1>() << 1.0f / std::sqrt(2.0f), 0.0f, 0.0f,
+                                                   -1.0f / std::sqrt(2.0f), 0.0f, 0.0f)
+                                                      .finished();
+
+    const auto uncapped = weighted(0.0f);
+    const float uncapped_curvature = observable.dot(uncapped.H.block<6, 6>(0, 0) * observable);
+    EXPECT_LT(uncapped_curvature, 100.0f);
+
+    const auto capped = weighted(5.0f);
+    const float capped_curvature = observable.dot(capped.H.block<6, 6>(0, 0) * observable);
+    EXPECT_NEAR(capped_curvature, 190.0f, 1e-2f);
+}
+
+TEST(LioRegistration, DirectionalIcpWeightingCoupledAutoRepresentativeLength) {
+    // tr(H_rr) = 1200, tr(H_tt) = 300 -> auto L = 2, matching an explicit 2.0.
+    const auto weighted = [](float length) {
+        lio::LIOLinearizedResult factor;
+        factor.inlier = 10;
+        for (int i = 0; i < 3; ++i) {
+            factor.H(imu::State::kIdxRot + i, imu::State::kIdxRot + i) = 400.0f;
+            factor.H(imu::State::kIdxPos + i, imu::State::kIdxPos + i) = 100.0f;
+        }
+        factor.H(imu::State::kIdxPos, imu::State::kIdxRot) = -180.0f;
+        factor.H(imu::State::kIdxRot, imu::State::kIdxPos) = -180.0f;
+
+        lio::DirectionalIcpWeightingParams params;
+        params.use_coupled_degeneracy = true;
+        params.coupled_representative_length = length;
+        params.coupled_min_information_ratio = 0.5f;
+        params.coupled_imu_information_floor_per_inlier = 5.0f;
+        params.coupled_max_imu_information_per_inlier = 0.0f;  // disabled
+        params.coupled_weak_direction_scale = 0.2f;
+        lio::apply_directional_icp_weighting(factor, Eigen::Matrix<float, 15, 15>::Zero(), params);
+        return factor;
+    };
+
+    const lio::LIOLinearizedResult manual = weighted(2.0f);
+    const lio::LIOLinearizedResult automatic = weighted(0.0f);  // <= 0 -> auto estimate
+    EXPECT_TRUE(automatic.H.isApprox(manual.H, 1e-4f));
+}
+
 TEST(LioRegistration, ConstantVelocityPriorAnchorsOnlyDegenerateAxis) {
     // ICP position information is strong on x/z and weak on y (ratio 0.002 < 0.05).
     Eigen::Matrix3f icp_position_H = Eigen::Matrix3f::Zero();

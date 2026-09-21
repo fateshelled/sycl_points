@@ -102,6 +102,9 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     registration.directional_icp_weighting.coupled_imu_information_floor_per_inlier = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/coupled_imu_information_floor_per_inlier",
                                         registration.directional_icp_weighting.coupled_imu_information_floor_per_inlier));
+    registration.directional_icp_weighting.coupled_max_imu_information_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/coupled_max_imu_information_per_inlier",
+                                        registration.directional_icp_weighting.coupled_max_imu_information_per_inlier));
     registration.directional_icp_weighting.coupled_weak_direction_scale = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/coupled_weak_direction_scale",
                                         registration.directional_icp_weighting.coupled_weak_direction_scale));

@@ -120,10 +120,11 @@ private:
         std::vector<Eigen::Matrix<double, 6, 1>> weak_directions;
 
         if (this->params_.use_coupled_degeneracy) {
-            // A non-positive configured length means "estimate it from the Hessian"
-            // (~= weighted RMS point range); a positive value is used directly.
+            // A non-positive or non-finite configured length means "estimate it
+            // from the Hessian" (~= weighted RMS point range); a positive finite
+            // value is used directly.
             double length = static_cast<double>(this->params_.coupled_representative_length);
-            if (!(length > 0.0)) {
+            if (!std::isfinite(length) || length <= 0.0) {
                 length = estimate_representative_length(linearized_result.H, PoseHessianOrder::rotation_first, 1.0);
             }
             const CoupledEigenAnalysis analysis = compute_coupled_eigen_analysis(

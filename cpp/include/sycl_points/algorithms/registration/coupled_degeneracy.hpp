@@ -117,6 +117,10 @@ inline CoupledEigenAnalysis compute_coupled_eigen_analysis(const Eigen::Matrix<f
 /// displacement `L * theta`. Deriving it from the Hessian adapts the balance to
 /// the scene distance instead of requiring a hand-tuned constant.
 ///
+/// The closed form is exact for point-to-point and for isotropic-whitening GICP;
+/// with anisotropic covariances the ratio is still a range-scale estimate but the
+/// constant is approximate.
+///
 /// @param H    6x6 pose Hessian.
 /// @param order Block ordering of @p H.
 /// @param fallback Length returned when the estimate is unavailable (non-finite

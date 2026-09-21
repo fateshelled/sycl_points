@@ -104,6 +104,11 @@ struct DirectionalIcpWeightingParams {
     /// Per-inlier IMU information floor in the balanced, inlier-normalised units
     /// used by the coupled weak-direction gate.
     float coupled_imu_information_floor_per_inlier = 5.0f;
+    /// Ceiling on the balanced, inlier-normalised IMU information used as the
+    /// coupled comparison baseline (mirrors the block-path ceilings). Without it
+    /// an over-confident IMU prior makes every coupled direction look weak.
+    /// Must be >= the floor; <= 0 disables the cap.
+    float coupled_max_imu_information_per_inlier = 50.0f;
     /// Information scale applied to a weak coupled direction (0 removes it).
     float coupled_weak_direction_scale = 0.2f;
 };

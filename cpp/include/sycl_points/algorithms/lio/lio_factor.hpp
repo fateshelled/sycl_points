@@ -246,10 +246,11 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
     Eigen::Matrix<float, kPoseDof, kPoseDof> filter = Eigen::Matrix<float, kPoseDof, kPoseDof>::Zero();
 
     if (params.use_coupled_degeneracy) {
-        // A non-positive configured length means "estimate it from the Hessian"
-        // (~= weighted RMS point range); a positive value is used directly.
+        // A non-positive or non-finite configured length means "estimate it from
+        // the Hessian" (~= weighted RMS point range); a positive finite value is
+        // used directly.
         double length = static_cast<double>(params.coupled_representative_length);
-        if (!(length > 0.0)) {
+        if (!std::isfinite(length) || length <= 0.0) {
             length = registration::estimate_representative_length(
                 H_pose, registration::PoseHessianOrder::translation_first, 1.0);
         }
@@ -276,6 +277,14 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
 
         const double ratio = std::max(0.0, static_cast<double>(params.coupled_min_information_ratio));
         const double floor_info = std::max(0.0, static_cast<double>(params.coupled_imu_information_floor_per_inlier));
+        // Mirror the block path's IMU information ceiling: without it an unusually
+        // confident IMU prior inflates the threshold until every coupled direction
+        // looks weak and the filter becomes a uniform down-scale. <= 0 disables it.
+        const bool cap_enabled = params.coupled_max_imu_information_per_inlier > 0.0f;
+        const double ceiling_info =
+            cap_enabled
+                ? std::max(floor_info, static_cast<double>(params.coupled_max_imu_information_per_inlier))
+                : 0.0;
         const double weak_scale = std::clamp(static_cast<double>(params.coupled_weak_direction_scale), 0.0, 1.0);
 
         std::vector<int> weak_indices;
@@ -283,7 +292,9 @@ inline void apply_directional_icp_weighting(LIOLinearizedResult& icp_factor, con
         for (int k = 0; k < kPoseDof; ++k) {
             const double lambda = analysis.normalized_eigenvalues(k);
             const Eigen::Matrix<double, kPoseDof, 1> v = analysis.normalized_eigenvectors.col(k);
-            const double imu_info = std::max(floor_info, v.dot(H_imu_balanced * v));
+            const double measured_info = v.dot(H_imu_balanced * v);
+            const double imu_info = cap_enabled ? std::clamp(measured_info, floor_info, ceiling_info)
+                                                : std::max(floor_info, measured_info);
             const double weak_threshold = ratio * imu_info;
 
             double scale = 1.0;
