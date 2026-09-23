@@ -17,6 +17,14 @@ struct Parameters : public odometry::CommonParameters {
         algorithms::lio::LIORegistrationParams registration;
 
         struct PreintegrationReset {
+            /// Position std-dev [m] for the P_initial floor at each IMU reset.
+            /// Bounds P_pred[p,p] >= fd_position_sigma^2 and therefore the IMU
+            /// position information.  Rule of thumb: the LiDAR per-frame position
+            /// resolution (e.g. 0.01 m).  Separate from fd_velocity_sigma because
+            /// position/velocity correlation can make P_pred[p,p] much smaller
+            /// than (fd_velocity_sigma * dt)^2.
+            float fd_position_sigma = 0.01f;
+
             /// Velocity std-dev [m/s] for the P_initial floor at each IMU reset.
             /// Ensures P_pred[p,p] ≳ (fd_velocity_sigma × dt)² so H_imu[p,p]
             /// stays on the same scale as H_icp regardless of accel_noise_density.

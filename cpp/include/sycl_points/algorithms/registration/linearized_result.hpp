@@ -18,6 +18,8 @@ struct LinearizedResult {
     float error = std::numeric_limits<float>::max();
     /// @brief inlier point num
     uint32_t inlier = 0;
+    /// @brief Optional post-solve projection used by solution remapping.
+    Eigen::Matrix<float, 6, 6> solution_projector = Eigen::Matrix<float, 6, 6>::Identity();
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
