@@ -144,10 +144,8 @@ void LidarInertialOdometryBaseNode::initialize_publishers(const PublishOptions& 
     }
 }
 
-LidarInertialOdometryBaseNode::ProcessedFrame LidarInertialOdometryBaseNode::process_point_cloud_message(
-    const sensor_msgs::msg::PointCloud2& msg) {
-    ProcessedFrame frame;
-    const double timestamp = rclcpp::Time(msg.header.stamp).seconds();
+bool LidarInertialOdometryBaseNode::prepare_point_cloud_message(const sensor_msgs::msg::PointCloud2& msg,
+                                                                ProcessedFrame& frame) {
     bool converted = false;
 
     double dt_from_ros2_msg = 0.0;
@@ -162,13 +160,13 @@ LidarInertialOdometryBaseNode::ProcessedFrame LidarInertialOdometryBaseNode::pro
     if (!converted || this->scan_pc_ == nullptr) {
         RCLCPP_WARN(this->get_logger(), "failed to convert input point cloud");
         frame.result = ResultType::error;
-        return frame;
+        return false;
     }
 
     if (this->scan_pc_->size() == 0) {
         RCLCPP_WARN(this->get_logger(), "input point cloud is empty");
         frame.result = ResultType::error;
-        return frame;
+        return false;
     }
 
     if (this->params_.scan.enhanced_reflectivity.enable && this->scan_pc_->has_intensity()) {
@@ -183,27 +181,40 @@ LidarInertialOdometryBaseNode::ProcessedFrame LidarInertialOdometryBaseNode::pro
         }
     }
 
+    frame.dt_from_ros2_msg = dt_from_ros2_msg;
+    return true;
+}
+
+void LidarInertialOdometryBaseNode::process_prepared_point_cloud_message(double timestamp, ProcessedFrame& frame) {
     frame.result = this->pipeline_->process(this->scan_pc_, timestamp);
     if (frame.result >= ResultType::error) {
         RCLCPP_WARN(this->get_logger(), "LIO failed: %s", this->pipeline_->get_error_message().c_str());
-        return frame;
+        return;
     }
     if (frame.result == ResultType::waiting_initial_alignment) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "%s",
                              this->pipeline_->get_error_message().c_str());
-        return frame;
+        return;
     }
 
     frame.odom = this->pipeline_->get_odom();
     frame.keyframe_pose = this->pipeline_->get_last_keyframe_pose();
 
-    frame.dt_from_ros2_msg = dt_from_ros2_msg;
     frame.pipeline_processing_times = this->pipeline_->get_current_processing_time();
-    frame.processing_subtotal = dt_from_ros2_msg;
+    frame.processing_subtotal = frame.dt_from_ros2_msg;
     for (const auto& item : frame.pipeline_processing_times) {
         frame.processing_subtotal += item.second;
     }
+}
 
+LidarInertialOdometryBaseNode::ProcessedFrame LidarInertialOdometryBaseNode::process_point_cloud_message(
+    const sensor_msgs::msg::PointCloud2& msg) {
+    ProcessedFrame frame;
+    if (!this->prepare_point_cloud_message(msg, frame)) {
+        return frame;
+    }
+
+    this->process_prepared_point_cloud_message(rclcpp::Time(msg.header.stamp).seconds(), frame);
     return frame;
 }
 

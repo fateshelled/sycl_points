@@ -48,6 +48,8 @@ public:
 protected:
     void initialize_processing();
     void initialize_publishers(const PublishOptions& options);
+    bool prepare_point_cloud_message(const sensor_msgs::msg::PointCloud2& msg, ProcessedFrame& frame);
+    void process_prepared_point_cloud_message(double timestamp, ProcessedFrame& frame);
     ProcessedFrame process_point_cloud_message(const sensor_msgs::msg::PointCloud2& msg);
     void publish_processed_frame(const std_msgs::msg::Header& header, ProcessedFrame& frame);
     void record_processing_times(const ProcessedFrame& frame);

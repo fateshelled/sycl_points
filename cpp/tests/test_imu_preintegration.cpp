@@ -573,7 +573,7 @@ TEST(IMUPreintegration, MeasurementWindowInterpolatesBoundaries) {
     }
 
     std::vector<imu::IMUMeasurement> window;
-    imu::build_measurement_window(measurements, 0.25, 1.75, window);
+    ASSERT_TRUE(imu::build_measurement_window(measurements, 0.25, 1.75, window));
 
     ASSERT_EQ(window.size(), 3U);
     EXPECT_DOUBLE_EQ(window.front().timestamp, 0.25);
@@ -581,4 +581,15 @@ TEST(IMUPreintegration, MeasurementWindowInterpolatesBoundaries) {
     EXPECT_DOUBLE_EQ(window.back().timestamp, 1.75);
     EXPECT_TRUE(window.front().gyro.isApprox(Eigen::Vector3f::Constant(0.25f)));
     EXPECT_TRUE(window.back().accel.isApprox(Eigen::Vector3f::Constant(17.5f)));
+}
+
+TEST(IMUPreintegration, MeasurementWindowRejectsPartialCoverage) {
+    std::vector<imu::IMUMeasurement> measurements(3);
+    for (size_t i = 0; i < measurements.size(); ++i) measurements[i].timestamp = 1.0 + 0.1 * i;
+
+    std::vector<imu::IMUMeasurement> window;
+    EXPECT_FALSE(imu::build_measurement_window(measurements, 0.9, 1.15, window));
+    EXPECT_TRUE(window.empty());
+    EXPECT_FALSE(imu::build_measurement_window(measurements, 1.05, 1.3, window));
+    EXPECT_TRUE(window.empty());
 }

@@ -34,6 +34,14 @@
 build/*
 build_test/*
 cpp/build*/
+
+# CMake / colcon build artifacts
+/install/
+/log/
+/ros2/build/
+/ros2/install/
+/ros2/log/
+
 .vscode/*
 .claude/*
 CLAUDE.md

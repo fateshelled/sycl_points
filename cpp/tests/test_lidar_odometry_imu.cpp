@@ -5,12 +5,14 @@
 #include <numbers>
 
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
+#include "sycl_points/pipeline/lidar_inertial_odometry.hpp"
 #include "sycl_points/pipeline/lidar_odometry.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 
 namespace sp = sycl_points;
 namespace imu = sycl_points::imu;
 namespace lo = sycl_points::pipeline::lidar_odometry;
+namespace lio = sycl_points::pipeline::lidar_inertial_odometry;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -95,6 +97,84 @@ TEST(LidarOdometryIMU, IMUParamDefaults) {
     EXPECT_NEAR(p.imu.preintegration.gravity.norm(), 9.80665f, 1e-3f);
     EXPECT_TRUE(p.imu.bias.gyro_bias.isZero());
     EXPECT_TRUE(p.imu.bias.accel_bias.isZero());
+}
+
+TEST(LidarInertialOdometryIMU, CoverageCombinationPrioritizesExpiredThenWaiting) {
+    using Coverage = lio::LidarInertialOdometryPipeline::IMUCoverage;
+    const auto combine = lio::LidarInertialOdometryPipeline::combine_imu_coverage;
+
+    EXPECT_EQ(combine(Coverage::ready, Coverage::ready), Coverage::ready);
+    EXPECT_EQ(combine(Coverage::ready, Coverage::waiting_for_future), Coverage::waiting_for_future);
+    EXPECT_EQ(combine(Coverage::waiting_for_future, Coverage::start_expired), Coverage::start_expired);
+    EXPECT_EQ(combine(Coverage::start_expired, Coverage::ready), Coverage::start_expired);
+}
+
+TEST(LidarInertialOdometryIMU, CoverageDistinguishesFutureReadyAndExpiredWindows) {
+    lio::Parameters params;
+    params.device.vendor = "default";
+    params.device.type = "";
+    params.imu.initial_alignment.enable = false;
+    params.imu.buffer_duration_sec = 1.0;
+    lio::LidarInertialOdometryPipeline pipeline(params);
+    using Coverage = lio::LidarInertialOdometryPipeline::IMUCoverage;
+
+    EXPECT_EQ(pipeline.get_imu_coverage(1.0, 2.0), Coverage::waiting_for_future);
+
+    imu::IMUMeasurement measurement;
+    measurement.accel = Eigen::Vector3f::Zero();
+    measurement.gyro = Eigen::Vector3f::Zero();
+    for (const double timestamp : {1.0, 1.5}) {
+        measurement.timestamp = timestamp;
+        pipeline.add_imu_measurement(measurement);
+    }
+    EXPECT_EQ(pipeline.get_imu_coverage(1.0, 2.0), Coverage::waiting_for_future);
+
+    measurement.timestamp = 2.0;
+    pipeline.add_imu_measurement(measurement);
+    EXPECT_EQ(pipeline.get_imu_coverage(1.0, 2.0), Coverage::ready);
+
+    measurement.timestamp = 3.5;
+    pipeline.add_imu_measurement(measurement);
+    EXPECT_EQ(pipeline.get_imu_coverage(1.0, 4.0), Coverage::start_expired);
+}
+
+TEST(LidarInertialOdometryIMU, FrameCoverageWaitsForPreintegrationWithoutDeskew) {
+    lio::Parameters params;
+    params.device.vendor = "default";
+    params.device.type = "";
+    params.imu.initial_alignment.enable = false;
+    params.imu.deskew.enable = false;
+    params.scan.downsampling.polar.enable = false;
+    params.scan.downsampling.voxel.enable = false;
+    params.scan.downsampling.random.enable = false;
+    params.scan.intensity_correction.enable = false;
+    params.scan.preprocess.box_filter.enable = false;
+    params.scan.preprocess.angle_incidence_filter.enable = false;
+    params.submap.map_type = sp::pipeline::odometry::SubmapMapType::VOXEL_HASH_MAP;
+    params.submap.voxel_size = 0.5f;
+    params.registration.min_num_points = 3;
+    params.covariance_estimation.m_estimation.enable = false;
+
+    lio::LidarInertialOdometryPipeline pipeline(params);
+    using Coverage = lio::LidarInertialOdometryPipeline::IMUCoverage;
+    const auto scan = make_flat_cloud(*pipeline.get_device_queue(), 20);
+
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(10.0), Coverage::ready);
+    ASSERT_EQ(pipeline.process(scan, 10.0), lio::LidarInertialOdometryPipeline::ResultType::first_frame);
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(10.1), Coverage::waiting_for_future);
+
+    imu::IMUMeasurement measurement;
+    measurement.accel = Eigen::Vector3f::Zero();
+    measurement.gyro = Eigen::Vector3f::Zero();
+    for (const double timestamp : {10.0, 10.05}) {
+        measurement.timestamp = timestamp;
+        pipeline.add_imu_measurement(measurement);
+    }
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(10.1), Coverage::waiting_for_future);
+
+    measurement.timestamp = 10.1;
+    pipeline.add_imu_measurement(measurement);
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(10.1), Coverage::ready);
 }
 
 TEST(LidarOdometryIMU, MotionPredictionModeConversion) {

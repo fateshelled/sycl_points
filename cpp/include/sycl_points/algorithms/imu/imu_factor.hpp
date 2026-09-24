@@ -67,7 +67,7 @@ struct State {
 ///
 /// Vector quantities use plain subtraction; SO(3) quantities use the group
 /// logarithm (right-perturbation convention).  Shared by both
-/// compute_imu_hessian_gradient() and compute_imu_gradient().
+/// compute_imu_hessian_gradient().
 inline Eigen::Matrix<float, 15, 1> compute_manifold_residual(const State& x_pred, const State& x_op) {
     Eigen::Matrix<float, 15, 1> r;
 
@@ -88,6 +88,39 @@ inline Eigen::Matrix<float, 15, 1> compute_manifold_residual(const State& x_pred
 // compute_imu_hessian_gradient
 // ---------------------------------------------------------------------------
 
+inline Eigen::Matrix3f so3_right_jacobian_inverse(const Eigen::Vector3f& phi) {
+    const float theta_sq = phi.squaredNorm();
+    const Eigen::Matrix3f Phi = eigen_utils::lie::skew(phi);
+    float coefficient = 1.0f / 12.0f;
+    if (theta_sq > 1e-8f) {
+        const float theta = std::sqrt(theta_sq);
+        const float half_theta = 0.5f * theta;
+        coefficient = (1.0f - half_theta * std::cos(half_theta) / std::sin(half_theta)) / theta_sq;
+    }
+    return Eigen::Matrix3f::Identity() + 0.5f * Phi + coefficient * Phi * Phi;
+}
+
+inline bool compute_imu_information(const Eigen::Matrix<float, 15, 15>& P_pred,
+                                    Eigen::Matrix<float, 15, 15>& information) {
+    if (!P_pred.allFinite()) return false;
+    Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(P_pred);
+    if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) return false;
+    information.setIdentity();
+    ldlt.solveInPlace(information);
+    return information.allFinite();
+}
+
+inline void linearize_imu_prior(const State& x_pred, const State& x_op,
+                                const Eigen::Matrix<float, 15, 15>& information,
+                                Eigen::Matrix<float, 15, 15>& H_imu, Eigen::Matrix<float, 15, 1>& b_imu) {
+    const Eigen::Matrix<float, 15, 1> r = compute_manifold_residual(x_pred, x_op);
+    Eigen::Matrix<float, 15, 15> J = Eigen::Matrix<float, 15, 15>::Identity();
+    J.block<3, 3>(State::kIdxRot, State::kIdxRot) =
+        so3_right_jacobian_inverse(r.segment<3>(State::kIdxRot));
+    H_imu = J.transpose() * information * J;
+    b_imu = J.transpose() * information * r;
+}
+
 /// @brief Compute the Hessian and gradient of the IMU prior term.
 ///
 /// The IMU prior cost is the Mahalanobis distance between the current
@@ -102,15 +135,15 @@ inline Eigen::Matrix<float, 15, 1> compute_manifold_residual(const State& x_pred
 ///
 ///   H_imu · δx = −b_imu
 ///
-/// with
-///   H_imu = P_pred⁻¹      (information matrix)
-///   b_imu = H_imu · r     (gradient of the cost)
+/// with J containing the inverse right Jacobian of the SO(3) Log residual:
+///   H_imu = Jᵀ · P_pred⁻¹ · J
+///   b_imu = Jᵀ · P_pred⁻¹ · r
 ///
 /// @param x_pred   IMU-preintegration prediction (prior mean).
 /// @param x_op     Current Gauss-Newton operating point (linearisation point).
 /// @param P_pred   15×15 prior covariance.  Must be symmetric positive-definite.
-/// @param[out] H_imu  15×15 information matrix  (= P_pred⁻¹).
-/// @param[out] b_imu  15×1  gradient vector     (= H_imu · r).
+/// @param[out] H_imu  15×15 Gauss-Newton Hessian.
+/// @param[out] b_imu  15×1 gradient vector.
 /// @return true on success; false if P_pred is ill-conditioned (H_imu and
 ///         b_imu are set to zero in that case).
 inline bool compute_imu_hessian_gradient(const State& x_pred, const State& x_op,
@@ -119,41 +152,14 @@ inline bool compute_imu_hessian_gradient(const State& x_pred, const State& x_op,
     // ------------------------------------------------------------------
     // 1. Information matrix  H_imu = P_pred⁻¹
     // ------------------------------------------------------------------
-    Eigen::LDLT<Eigen::Matrix<float, 15, 15>> ldlt(P_pred);
-    if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) {
+    Eigen::Matrix<float, 15, 15> information;
+    if (!compute_imu_information(P_pred, information)) {
         H_imu.setZero();
         b_imu.setZero();
         return false;
     }
-    H_imu.setIdentity();
-    ldlt.solveInPlace(H_imu);
-
-    // ------------------------------------------------------------------
-    // 2. Manifold residual  r = x_op ⊖ x_pred  (15×1)
-    // ------------------------------------------------------------------
-    const Eigen::Matrix<float, 15, 1> r = compute_manifold_residual(x_pred, x_op);
-
-    // ------------------------------------------------------------------
-    // 3. Gradient  b_imu = P_pred⁻¹ · r  (via LDLT for numerical stability)
-    // ------------------------------------------------------------------
-    b_imu = ldlt.solve(r);
-    return true;
-}
-
-/// @brief Update only the gradient b_imu given a pre-computed information matrix H_imu.
-///
-/// Inner-loop companion to compute_imu_hessian_gradient().  P_pred is constant
-/// within a single Gauss-Newton frame, so H_imu = P_pred⁻¹ need only be
-/// computed once.  Subsequent iterations reuse H_imu and only update b_imu as
-/// x_op changes — this avoids repeated LDLT factorisation of the 15×15 matrix.
-///
-/// @param x_pred  IMU-preintegration prediction (prior mean, fixed for the frame).
-/// @param x_op    Current Gauss-Newton operating point (linearisation point).
-/// @param H_imu   15×15 information matrix from compute_imu_hessian_gradient().
-/// @param[out] b_imu  15×1 updated gradient vector (= H_imu · r).
-inline void compute_imu_gradient(const State& x_pred, const State& x_op, const Eigen::Matrix<float, 15, 15>& H_imu,
-                                 Eigen::Matrix<float, 15, 1>& b_imu) {
-    b_imu = H_imu * compute_manifold_residual(x_pred, x_op);
+    linearize_imu_prior(x_pred, x_op, information, H_imu, b_imu);
+    return H_imu.allFinite() && b_imu.allFinite();
 }
 
 }  // namespace imu

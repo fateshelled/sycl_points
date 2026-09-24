@@ -18,6 +18,16 @@ lidar_inertial_odometry_node:
     imu_qos/depth: 100
     imu_qos/reliability: "best_effort"
 
+    # Internal LiDAR backlog after DDS delivery. The active frame is retained
+    # separately while waiting for IMU coverage; when this queue is full, the
+    # oldest pending frame is dropped to keep live processing bounded.
+    processing/max_pending_point_clouds: 3
+
+    # Period of the internal processing timer in milliseconds. The timer is
+    # armed on demand when a point cloud arrives, so this only bounds the
+    # polling granularity while a frame waits for IMU coverage.
+    processing/timer_period_ms: 5
+
     odom_frame_id: odom
     base_link_id: base_link
     lidar_frame_id: os_sensor
@@ -52,7 +62,7 @@ lidar_inertial_odometry_node:
     imu/accel_unit: "m_s2"              # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
     imu/buffer_duration_sec: 2.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew
-    imu/deskew/gyro_only: false         # If true, use rotation only and omit accelerometer/velocity translation
+    imu/deskew/gyro_only: true          # Safer default; full SE3 deskew is opt-in after velocity/bias calibration
     imu/preintegration/gravity/x: 0.0   # Gravity vector in world frame [m/s^2]
     imu/preintegration/gravity/y: 0.0
     imu/preintegration/gravity/z: -9.80665
@@ -70,6 +80,11 @@ lidar_inertial_odometry_node:
     imu/bias/accel/x: 0.0  # Initial accelerometer bias [m/s^2]
     imu/bias/accel/y: 0.0
     imu/bias/accel/z: 0.0
+
+    # Initial bias uncertainty. Zero effectively locks bias because random-walk
+    # covariance grows very slowly over one LiDAR frame.
+    lio/initial_covariance/accel_bias_sigma: 0.1  # m/s^2
+    lio/initial_covariance/gyro_bias_sigma: 0.01  # rad/s
 
     # Gravity-aligned initial roll/pitch estimation.
     # Assumes the robot is stationary for at least required_duration_sec at startup.
@@ -170,9 +185,13 @@ lidar_inertial_odometry_node:
     lio/criteria/translation: 0.01  # [m]
     lio/criteria/rotation: 0.0017   # [rad]
     lio/invalid_regularization_factor: 1.0e+4
+    lio/icp_information_scale: 1.0  # Explicit ICP/IMU balance; no residual-dependent feedback
     # Fixed-sigma floors added to P_initial at each IMU reset.
     # Prevents H_imu from dominating H_icp when noise_density is set to a small
     # physical value (accel / gyro).
+    # fd_position_sigma: σ_p [m]  → P_pred[p,p] ≳ σ_p²  (LiDAR per-frame resolution;
+    #   position/velocity correlation can make P_pred[p,p] smaller than (σ_v × dt)²)
+    lio/fd_position_sigma: 0.01   # [m]
     # fd_velocity_sigma: σ_v [m/s]  → P_pred[p,p] ≳ (σ_v × dt)²  ≈ σ_icp²
     #   rule of thumb: σ_icp / dt  (e.g. 0.01 m / 0.1 s = 0.1 m/s)
     lio/fd_velocity_sigma: 0.1    # [m/s]
@@ -183,17 +202,53 @@ lidar_inertial_odometry_node:
     # The scalar reduced-chi² weight handles globally bad matches; this filter
     # detects weak translation and rotation directions separately so corridor /
     # stairwell degeneracy leans on the IMU prediction instead of noisy LiDAR increments.
+    # A direction is weak when its ICP information is below min_information_ratio
+    # times the IMU prior information along the same direction, so the decision is
+    # relative to what the IMU already provides rather than an absolute ICP magnitude.
+    # The IMU baseline is clamped to [floor, ceiling] per inlier: the floor absorbs the
+    # previous frame's degeneracy feedback through P_post -> P_pred -> H_imu, the
+    # ceiling stops an over-confident IMU prior from inflating the threshold until
+    # every direction is weak (which silently turns the filter into a uniform
+    # down-scale of the ICP factor).  ceiling <= 0 disables the cap.
     lio/directional_icp_weighting/enable: true
-    lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier: 10.0
-    lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier: 50.0
-    lio/directional_icp_weighting/trans_weak_direction_scale: 0.2
-    lio/directional_icp_weighting/rot_weak_direction_scale: 0.02
+    lio/directional_icp_weighting/verbose: false
+    lio/directional_icp_weighting/type: "SCALE" # SCALE, TSVD
+    lio/directional_icp_weighting/trans_min_information_ratio: 0.3
+    lio/directional_icp_weighting/rot_min_information_ratio: 0.5
+    lio/directional_icp_weighting/trans_imu_information_floor_per_inlier: 50.0
+    lio/directional_icp_weighting/rot_imu_information_floor_per_inlier: 5.0
+    lio/directional_icp_weighting/trans_max_imu_information_per_inlier: 500.0
+    lio/directional_icp_weighting/rot_max_imu_information_per_inlier: 500.0
+    lio/directional_icp_weighting/trans_weak_direction_scale: 0.1
+    lio/directional_icp_weighting/rot_weak_direction_scale: 0.2
+    # Constant-velocity prior on the world-frame velocity state.
+    # Neither LiDAR nor the IMU prior can carry velocity along a degenerate axis:
+    # the IMU prior is a position anchor whose gradient vanishes at the prediction.
+    # This anchors velocity to the previous accepted value, but only along directions
+    # whose ICP position information is below min_eigenvalue_ratio times the strongest
+    # axis.  The ratio is self-referenced (not IMU-relative) so it does not inherit the
+    # P_post -> P_pred -> H_imu degeneracy feedback.  Start with the prior on and check
+    # the [ConstantVelocityPrior] log to see which axis is anchored.
+    # degenerate_velocity_sigma is an absolute velocity uncertainty [m/s], roughly the
+    # largest expected velocity change per frame (a_max * dt).  It is NOT per-inlier:
+    # scaling it with the inlier count over-constrains velocity by orders of magnitude
+    # and turns any existing velocity error into a slow positional drift.
+    lio/constant_velocity_prior/enable: true
+    lio/constant_velocity_prior/verbose: true
+    # A direction must be weak both relatively (below min_eigenvalue_ratio * lambda_max)
+    # and absolutely (below min_information_per_inlier) to be anchored.  The absolute
+    # gate stops a well-conditioned frame from being anchored just because its weakest
+    # axis is the smallest of three strong ones.
+    lio/constant_velocity_prior/min_eigenvalue_ratio: 0.05
+    lio/constant_velocity_prior/min_information_per_inlier: 0.5
+    lio/constant_velocity_prior/degenerate_velocity_sigma: 0.1
+    lio/constant_velocity_prior/observable_velocity_sigma: 0.0
     # Bias-estimation safeguards for the weakly-observable IMU bias states.
     # freeze_on_low_excitation: hold accel/gyro bias fixed when the IMU window shows
     #   little motion (biases are unobservable there and would absorb noise).
     lio/bias_estimation/freeze_on_low_excitation: true
-    lio/bias_estimation/gyro_excitation_threshold: 0.03   # [rad/s] max |w - mean w| in window
-    lio/bias_estimation/accel_excitation_threshold: 0.3   # [m/s^2] max ||a| - mean |a|| in window
+    lio/bias_estimation/gyro_excitation_threshold: 0.03   # [rad/s] max bias-corrected angular rate
+    lio/bias_estimation/accel_excitation_threshold: 0.3   # [m/s^2] max vector deviation in window
     # Hard clamp on estimated bias L2 norm (0 = disabled). Bounds runaway/drift.
     lio/bias_estimation/max_accel_bias: 1.0   # [m/s^2]
     lio/bias_estimation/max_gyro_bias: 0.2    # [rad/s]

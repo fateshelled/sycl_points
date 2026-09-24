@@ -48,24 +48,65 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
         node->declare_parameter<double>("lio/criteria/translation", registration.criteria.translation);
     registration.invalid_regularization_factor = node->declare_parameter<double>(
         "lio/invalid_regularization_factor", registration.invalid_regularization_factor);
+    registration.icp_information_scale = static_cast<float>(
+        node->declare_parameter<double>("lio/icp_information_scale", registration.icp_information_scale));
     params.lio.preintegration_reset.fd_velocity_sigma = static_cast<float>(
         node->declare_parameter<double>("lio/fd_velocity_sigma", params.lio.preintegration_reset.fd_velocity_sigma));
+    params.lio.preintegration_reset.fd_position_sigma = static_cast<float>(
+        node->declare_parameter<double>("lio/fd_position_sigma", params.lio.preintegration_reset.fd_position_sigma));
     params.lio.preintegration_reset.icp_rotation_sigma = static_cast<float>(
         node->declare_parameter<double>("lio/icp_rotation_sigma", params.lio.preintegration_reset.icp_rotation_sigma));
+    params.lio.initial_covariance.accel_bias_sigma = static_cast<float>(node->declare_parameter<double>(
+        "lio/initial_covariance/accel_bias_sigma", params.lio.initial_covariance.accel_bias_sigma));
+    params.lio.initial_covariance.gyro_bias_sigma = static_cast<float>(node->declare_parameter<double>(
+        "lio/initial_covariance/gyro_bias_sigma", params.lio.initial_covariance.gyro_bias_sigma));
     registration.directional_icp_weighting.enable = node->declare_parameter<bool>(
         "lio/directional_icp_weighting/enable", registration.directional_icp_weighting.enable);
-    registration.directional_icp_weighting.trans_min_eigenvalue_per_inlier = static_cast<float>(
-        node->declare_parameter<double>("lio/directional_icp_weighting/trans_min_eigenvalue_per_inlier",
-                                        registration.directional_icp_weighting.trans_min_eigenvalue_per_inlier));
-    registration.directional_icp_weighting.rot_min_eigenvalue_per_inlier = static_cast<float>(
-        node->declare_parameter<double>("lio/directional_icp_weighting/rot_min_eigenvalue_per_inlier",
-                                        registration.directional_icp_weighting.rot_min_eigenvalue_per_inlier));
+    registration.directional_icp_weighting.verbose = node->declare_parameter<bool>(
+        "lio/directional_icp_weighting/verbose", registration.directional_icp_weighting.verbose);
+    registration.directional_icp_weighting.type = algorithms::lio::DirectionalIcpWeightingType_from_string(
+        node->declare_parameter<std::string>("lio/directional_icp_weighting/type", "SCALE"));
+    registration.directional_icp_weighting.trans_min_information_ratio = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/trans_min_information_ratio",
+                                        registration.directional_icp_weighting.trans_min_information_ratio));
+    registration.directional_icp_weighting.rot_min_information_ratio = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/rot_min_information_ratio",
+                                        registration.directional_icp_weighting.rot_min_information_ratio));
+    registration.directional_icp_weighting.trans_imu_information_floor_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/trans_imu_information_floor_per_inlier",
+                                        registration.directional_icp_weighting.trans_imu_information_floor_per_inlier));
+    registration.directional_icp_weighting.rot_imu_information_floor_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/rot_imu_information_floor_per_inlier",
+                                        registration.directional_icp_weighting.rot_imu_information_floor_per_inlier));
+    registration.directional_icp_weighting.trans_max_imu_information_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/trans_max_imu_information_per_inlier",
+                                        registration.directional_icp_weighting.trans_max_imu_information_per_inlier));
+    registration.directional_icp_weighting.rot_max_imu_information_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/directional_icp_weighting/rot_max_imu_information_per_inlier",
+                                        registration.directional_icp_weighting.rot_max_imu_information_per_inlier));
     registration.directional_icp_weighting.trans_weak_direction_scale = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/trans_weak_direction_scale",
                                         registration.directional_icp_weighting.trans_weak_direction_scale));
     registration.directional_icp_weighting.rot_weak_direction_scale = static_cast<float>(
         node->declare_parameter<double>("lio/directional_icp_weighting/rot_weak_direction_scale",
                                         registration.directional_icp_weighting.rot_weak_direction_scale));
+
+    // Constant-velocity prior on the world-frame velocity state
+    registration.constant_velocity_prior.enable = node->declare_parameter<bool>(
+        "lio/constant_velocity_prior/enable", registration.constant_velocity_prior.enable);
+    registration.constant_velocity_prior.verbose = node->declare_parameter<bool>(
+        "lio/constant_velocity_prior/verbose", registration.constant_velocity_prior.verbose);
+    registration.constant_velocity_prior.min_eigenvalue_ratio = static_cast<float>(node->declare_parameter<double>(
+        "lio/constant_velocity_prior/min_eigenvalue_ratio", registration.constant_velocity_prior.min_eigenvalue_ratio));
+    registration.constant_velocity_prior.min_information_per_inlier = static_cast<float>(
+        node->declare_parameter<double>("lio/constant_velocity_prior/min_information_per_inlier",
+                                        registration.constant_velocity_prior.min_information_per_inlier));
+    registration.constant_velocity_prior.degenerate_velocity_sigma = static_cast<float>(
+        node->declare_parameter<double>("lio/constant_velocity_prior/degenerate_velocity_sigma",
+                                        registration.constant_velocity_prior.degenerate_velocity_sigma));
+    registration.constant_velocity_prior.observable_velocity_sigma = static_cast<float>(
+        node->declare_parameter<double>("lio/constant_velocity_prior/observable_velocity_sigma",
+                                        registration.constant_velocity_prior.observable_velocity_sigma));
 
     // Bias-estimation safeguards
     params.lio.bias_estimation.freeze_on_low_excitation = node->declare_parameter<bool>(
