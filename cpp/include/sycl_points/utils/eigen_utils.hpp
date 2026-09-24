@@ -1033,6 +1033,80 @@ inline Eigen::Vector<float, 6> se3_log(const Eigen::Transform<float, 3, 1>& tran
     return result;
 }
 
+/// @brief SE(3) adjoint matrix of a twist xi = [rot; trans] (se3 bracket):
+///        ad(xi) = [[w^, 0], [v^, w^]].
+///        Host-only helper (not SYCL_EXTERNAL) shared by graph factors.
+inline Eigen::Matrix<float, 6, 6> se3_adjoint_twist(const Eigen::Matrix<float, 6, 1>& xi) {
+    const Eigen::Vector3f omega = xi.head<3>();
+    const Eigen::Vector3f tau = xi.tail<3>();
+    const Eigen::Matrix3f w_hat = skew(omega);
+    const Eigen::Matrix3f v_hat = skew(tau);
+    Eigen::Matrix<float, 6, 6> ad = Eigen::Matrix<float, 6, 6>::Zero();
+    ad.block<3, 3>(0, 0) = w_hat;
+    ad.block<3, 3>(3, 0) = v_hat;
+    ad.block<3, 3>(3, 3) = w_hat;
+    return ad;
+}
+
+/// @brief SE(3) left Jacobian Jl(xi) = sum_k ad(xi)^k / (k+1)! with twists
+///        packed [rot; trans]. Truncated exponential series; the truncation
+///        order scales with ||rot|| so the result stays usable up to PI.
+///        Host-only helper (not SYCL_EXTERNAL) shared by graph factors.
+inline Eigen::Matrix<float, 6, 6> se3_left_jacobian(const Eigen::Matrix<float, 6, 1>& xi) {
+    const int terms = xi.head<3>().norm() > 1.0f ? 20 : 12;
+    const Eigen::Matrix<float, 6, 6> a = se3_adjoint_twist(xi);
+    Eigen::Matrix<float, 6, 6> result = Eigen::Matrix<float, 6, 6>::Identity();
+    Eigen::Matrix<float, 6, 6> power = Eigen::Matrix<float, 6, 6>::Identity();
+    float factorial = 1.0f;
+    for (int k = 1; k <= terms; ++k) {
+        power = power * a;
+        factorial *= static_cast<float>(k + 1);
+        result += power / factorial;
+    }
+    return result;
+}
+
+/// @brief SE(3) left Jacobian inverse Jl(xi)^-1 = sum_k B_k/k! ad(xi)^k
+///        (Bernoulli numbers; converges for ||rot|| < 2PI). For larger
+///        rotations falls back to numerically inverting the series-built Jl
+///        (host linear algebra; Jl is nonsingular up to |theta| < 2PI).
+///        Host-only helper shared by graph factors and the marginalization
+///        prior: it converts a cached linearization taken at a restricted
+///        pose into the current right-tangent coordinates.
+inline Eigen::Matrix<float, 6, 6> se3_left_jacobian_inverse(const Eigen::Matrix<float, 6, 1>& xi) {
+    // Bernoulli numbers B_0..B_16 (odd k >= 3 are zero).
+    static constexpr float bernoulli[17] = {1.0f,     -0.5f,    1.0f / 6.0f,  0.0f,
+                                            -1.0f / 30.0f, 0.0f,    1.0f / 42.0f,  0.0f,
+                                            -1.0f / 30.0f, 0.0f,    5.0f / 66.0f,  0.0f,
+                                            -691.0f / 2730.0f, 0.0f, 7.0f / 6.0f,  0.0f,
+                                            -3617.0f / 510.0f};
+    const float theta = xi.head<3>().norm();
+    Eigen::Matrix<float, 6, 6> result = Eigen::Matrix<float, 6, 6>::Zero();
+    if (theta < 2.2f) {
+        const Eigen::Matrix<float, 6, 6> a = se3_adjoint_twist(xi);
+        Eigen::Matrix<float, 6, 6> power = Eigen::Matrix<float, 6, 6>::Identity();
+        float factorial = 1.0f;
+        for (int k = 0; k <= 16; ++k) {
+            if (k > 0) power = power * a;
+            if (k > 0) factorial *= static_cast<float>(k);
+            result += (bernoulli[k] / factorial) * power;
+        }
+        return result;
+    }
+    const Eigen::Matrix<float, 6, 6> jl = se3_left_jacobian(xi);
+    const Eigen::PartialPivLU<Eigen::Matrix<float, 6, 6>> lu(jl);
+    return lu.inverse();
+}
+
+/// @brief SE(3) right Jacobian Jr(o) = Jl(-o)^-1 for a twist o = [rot; trans]
+///        (rotation-first packing). For a pose offset o = Log(T_lin^-1 T) it
+///        satisfies o(delta) = o + Jr(o) delta under the right perturbation
+///        T <- T Exp(delta) used by the graph solver.
+///        Host-only helper shared by graph factors and the marginalization prior.
+inline Eigen::Matrix<float, 6, 6> se3_right_jacobian(const Eigen::Matrix<float, 6, 1>& o) {
+    return se3_left_jacobian_inverse(-o);
+}
+
 }  // namespace lie
 }  // namespace eigen_utils
 }  // namespace sycl_points

@@ -29,7 +29,18 @@ public:
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_last_keyframe_point_cloud() const { return *this->last_keyframe_pc_; }
 
-    Submap(const sycl_utils::DeviceQueue& queue, const OdometryCommonParams& params) : queue_(queue) {
+    Submap(const sycl_utils::DeviceQueue& queue, const OdometryCommonParams& params)
+        : Submap(queue, params, params.registration.factor, params.registration.min_num_points) {}
+
+    /// @brief Construct a submap with an explicit registration contract.
+    ///
+    /// GraphOdometry has its own factor namespace, so covariance/normal
+    /// requirements and minimum target size must not silently fall back to the
+    /// single-frame LO registration defaults.
+    Submap(const sycl_utils::DeviceQueue& queue, const OdometryCommonParams& params,
+           const algorithms::registration::RegistrationFactorParams& factor_params,
+           size_t min_num_points)
+        : queue_(queue) {
         this->last_keyframe_pc_ = std::make_shared<PointCloudShared>(this->queue_);
         this->submap_pc_ptr_ = std::make_shared<PointCloudShared>(this->queue_);
         this->submap_pc_tmp_ = std::make_shared<PointCloudShared>(this->queue_);
@@ -37,6 +48,8 @@ public:
         this->submap_params_ = params.submap;
         this->cov_params_ = params.covariance_estimation;
         this->reg_params_ = params.registration;
+        this->reg_params_.factor = factor_params;
+        this->reg_params_.min_num_points = min_num_points;
 
         // initialize keyframe
         {
@@ -120,6 +133,18 @@ public:
         return false;
     }
 
+    /// @brief Insert an already-evicted graph keyframe's geometry at its FINAL
+    ///        optimized pose, without keyframe gating and without consulting
+    ///        the Submap's own keyframe thresholds: the graph pipeline owns the
+    ///        promotion/retention lifecycle and calls this exactly when the
+    ///        node left the active sliding window (its graph state is gone).
+    ///        This keeps ActiveKeyframeScans and FixedSubmapScans disjoint.
+    void freeze_keyframe_to_submap(const PointCloudShared& cloud,
+                                   const Eigen::Isometry3f& optimized_pose,
+                                   shared_vector_ptr<float> random_sampling_weights = nullptr) {
+        this->build_submap(cloud, optimized_pose, false, random_sampling_weights);
+    }
+
 private:
     sycl_points::sycl_utils::DeviceQueue queue_;
 
@@ -141,8 +166,7 @@ private:
     PointCloudShared::Ptr submap_pc_ptr_ = nullptr;     // Odom/World coordinate
     PointCloudShared::Ptr submap_pc_tmp_ = nullptr;     // Odom/World coordinate
 
-    bool is_keyframe(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {
-        // calculate delta pose
+    bool is_keyframe(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {        // calculate delta pose
         const auto delta_pose = this->last_keyframe_pose_.inverse() * reg_result.T;
 
         // calculate moving distance and angle
