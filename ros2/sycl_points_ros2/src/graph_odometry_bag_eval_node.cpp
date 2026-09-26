@@ -81,6 +81,60 @@ void GraphOdometryBagEvalNode::run() {
 
         int64_t handled_frames = 0;
         int64_t written_frames = 0;
+        int64_t expired_frames = 0;
+        int64_t incomplete_frames = 0;
+        std::deque<sensor_msgs::msg::PointCloud2> pending_clouds;
+        ProcessedFrame active_frame;
+        bool active_prepared = false;
+
+        auto drain_ready_clouds = [&]() {
+            using IMUCoverage = pipeline::graph_odometry::GraphOdometryPipeline::IMUCoverage;
+            while (!pending_clouds.empty()) {
+                auto& msg = pending_clouds.front();
+                if (!active_prepared) {
+                    active_frame = ProcessedFrame{};
+                    if (!this->prepare_point_cloud_message(msg, active_frame)) {
+                        this->record_processing_times(active_frame);
+                        pending_clouds.pop_front();
+                        ++handled_frames;
+                        continue;
+                    }
+                    active_prepared = true;
+                }
+
+                const double timestamp = rclcpp::Time(msg.header.stamp).seconds();
+                auto coverage = this->pipeline_->get_frame_imu_coverage(timestamp);
+                if (this->scan_pc_->has_timestamps() &&
+                    this->scan_pc_->end_time_ms > this->scan_pc_->start_time_ms) {
+                    coverage = this->pipeline_->combine_imu_coverage(
+                        coverage, this->pipeline_->get_imu_coverage(
+                                      this->scan_pc_->start_time_ms * 1e-3,
+                                      this->scan_pc_->end_time_ms * 1e-3));
+                }
+                if (coverage == IMUCoverage::waiting_for_future) return;
+                if (coverage == IMUCoverage::start_expired) {
+                    ++expired_frames;
+                    ++handled_frames;
+                    active_prepared = false;
+                    pending_clouds.pop_front();
+                    continue;
+                }
+
+                this->process_prepared_point_cloud_message(timestamp, active_frame);
+                this->record_processing_times(active_frame);
+                const bool should_write_tum = active_frame.result == ResultType::success ||
+                                              active_frame.result == ResultType::imu_only ||
+                                              (active_frame.result == ResultType::first_frame &&
+                                               this->write_first_frame_);
+                if (should_write_tum) {
+                    this->write_tum_line(this->make_pose_message(msg.header, active_frame.odom));
+                    ++written_frames;
+                }
+                ++handled_frames;
+                active_prepared = false;
+                pending_clouds.pop_front();
+            }
+        };
 
         while (rclcpp::ok() && reader->has_next()) {
             auto bag_message = reader->read_next();
@@ -100,6 +154,7 @@ void GraphOdometryBagEvalNode::run() {
                                              static_cast<float>(imu_msg.linear_acceleration.y),
                                              static_cast<float>(imu_msg.linear_acceleration.z));
                 this->pipeline_->add_imu_measurement(meas);
+                drain_ready_clouds();
                 continue;
             }
 
@@ -109,25 +164,21 @@ void GraphOdometryBagEvalNode::run() {
             rclcpp::SerializedMessage serialized_msg(*bag_message->serialized_data);
             pc_serializer.deserialize_message(&serialized_msg, &msg);
 
-            ++handled_frames;
-            const auto frame = this->process_point_cloud_message(msg);
-            this->record_processing_times(frame);
-
-            const bool should_write_tum = frame.result == ResultType::success ||
-                                          (frame.result == ResultType::first_frame && this->write_first_frame_);
-            if (should_write_tum) {
-                const auto pose_msg = this->make_pose_message(msg.header, frame.odom);
-                this->write_tum_line(pose_msg);
-                ++written_frames;
-            }
+            pending_clouds.push_back(std::move(msg));
+            drain_ready_clouds();
         }
+
+        drain_ready_clouds();
+        incomplete_frames = static_cast<int64_t>(pending_clouds.size());
 
         this->tum_stream_.flush();
         this->tum_stream_.close();
 
         RCLCPP_INFO(this->get_logger(),
-                    "Bag evaluation finished. topic=%s handled_frames=%ld written_frames=%ld tum=%s",
-                    this->points_topic_.c_str(), handled_frames, written_frames, this->output_tum_.c_str());
+                     "Bag evaluation finished. topic=%s handled_frames=%ld written_frames=%ld "
+                     "expired_frames=%ld incomplete_frames=%ld tum=%s",
+                     this->points_topic_.c_str(), handled_frames, written_frames, expired_frames,
+                     incomplete_frames, this->output_tum_.c_str());
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "bag evaluation failed: %s", e.what());
     }

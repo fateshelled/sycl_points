@@ -1,9 +1,6 @@
-# Root key is the handle used by launch/graph_odometry_launch.py (it flattens
-# this section into per-node -p args). If you bypass launch and run
-# `ros2 run sycl_points_ros2 graph_odometry_node --params-file <this>`, rename
-# the root key below to the real node name `graph_odometry` (or use **),
-# otherwise every parameter here is silently ignored.
-graph_odometry_node:
+# Wildcard root makes this file valid for the live and bag-evaluation nodes,
+# both through launch and direct --params-file use.
+/**:
   ros__parameters:
     sycl/device_type: gpu      # gpu, cpu
     sycl/device_vendor: intel  # intel, nvidia, amd, omp(for AdaptiveCpp CPU backend)
@@ -22,6 +19,9 @@ graph_odometry_node:
     imu_qos/history: "keep_last"
     imu_qos/depth: 100
     imu_qos/reliability: "best_effort"
+
+    processing/max_pending_point_clouds: 3
+    processing/timer_period_ms: 5
 
     odom_frame_id: odom
     base_link_id: base_link
@@ -93,7 +93,7 @@ graph_odometry_node:
 
     # Initial-pose motion prediction (graph odometry uses it for the per-frame
     # initial guess; IMU_SE3 mode requires imu/enable=true).
-    motion_prediction/mode: GYRO_LIDAR_CV  # LIDAR_CV, GYRO_LIDAR_CV, IMU_SE3
+    motion_prediction/mode: IMU_SE3
     motion_prediction/verbose: false
     motion_prediction/velocity/ema_alpha: 1.0
     motion_prediction/adaptive/rotation/factor/min: 0.2
@@ -196,6 +196,16 @@ graph_odometry_node:
     graph/convergence/bias: 1.0e-5           # (15-DOF LIO nodes)
     graph/solver/max_step_velocity: 10.0     # [m/s] per-iteration instability bound
     graph/solver/max_step_bias: 10.0         # per-iteration instability bound
+    graph/lio/reintegration/accel_bias_threshold: 0.05
+    graph/lio/reintegration/gyro_bias_threshold: 0.01
+    graph/lio/reintegration/source_rotation_threshold: 0.02
+    graph/lio/raw_imu/max_duration_sec: 2.0
+    graph/lio/raw_imu/max_samples: 4000
+    graph/lio/coverage/timestamp_tolerance_sec: 1.0e-6
+    graph/lio/root_prior/pose_sigma: 1.0e-4
+    graph/lio/root_prior/velocity_sigma: 0.1
+    graph/lio/root_prior/accel_bias_sigma: 0.1
+    graph/lio/root_prior/gyro_bias_sigma: 0.01
     # Delayed relinearization thresholds: cached factor linearizations are
     # reused while node poses stay within these bounds of the linearization
     # point (gradients are refreshed at the current pose; correspondences are

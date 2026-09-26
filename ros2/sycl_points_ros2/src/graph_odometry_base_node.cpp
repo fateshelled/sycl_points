@@ -31,6 +31,11 @@ void GraphOdometryBaseNode::initialize_processing() {
                      "the LiDAR-only graph mode was removed.");
         throw std::invalid_argument("graph_odometry: imu/enable must be true");
     }
+    if (!this->params_.imu.initial_alignment.enable || !this->params_.imu.deskew.enable ||
+        this->params_.motion_prediction.mode != pipeline::lidar_odometry::MotionPredictionMode::IMU_SE3) {
+        throw std::invalid_argument(
+            "graph_odometry requires initial alignment, IMU deskew, and motion_prediction/mode=IMU_SE3");
+    }
 
     // Graph factor registration / linearization settings (graph/factor/*), decoupled from the
     // single-frame align path's registration/* keys used by lidar_odometry / lidar_inertial_odometry.
@@ -119,10 +124,31 @@ void GraphOdometryBaseNode::initialize_processing() {
         graph.robust_type = algorithms::robust::RobustLossType_from_string(graph_robust_type);
         graph.robust_default_scale = static_cast<float>(
             this->declare_parameter<double>("graph/robust/default_scale", graph.robust_default_scale));
+        auto& lio = graph.lio;
+        lio.reintegrate_accel_bias_threshold = static_cast<float>(this->declare_parameter<double>(
+            "graph/lio/reintegration/accel_bias_threshold", lio.reintegrate_accel_bias_threshold));
+        lio.reintegrate_gyro_bias_threshold = static_cast<float>(this->declare_parameter<double>(
+            "graph/lio/reintegration/gyro_bias_threshold", lio.reintegrate_gyro_bias_threshold));
+        lio.source_rotation_rebase_threshold = static_cast<float>(this->declare_parameter<double>(
+            "graph/lio/reintegration/source_rotation_threshold", lio.source_rotation_rebase_threshold));
+        lio.max_edge_duration_sec = this->declare_parameter<double>(
+            "graph/lio/raw_imu/max_duration_sec", lio.max_edge_duration_sec);
+        lio.max_edge_samples = positive_size("graph/lio/raw_imu/max_samples", lio.max_edge_samples);
+        lio.timestamp_tolerance_sec = this->declare_parameter<double>(
+            "graph/lio/coverage/timestamp_tolerance_sec", lio.timestamp_tolerance_sec);
+        lio.root_prior_sigma_pose = static_cast<float>(this->declare_parameter<double>(
+            "graph/lio/root_prior/pose_sigma", lio.root_prior_sigma_pose));
+        lio.root_prior_sigma_velocity = static_cast<float>(this->declare_parameter<double>(
+            "graph/lio/root_prior/velocity_sigma", lio.root_prior_sigma_velocity));
+        lio.root_prior_sigma_accel_bias = static_cast<float>(this->declare_parameter<double>(
+            "graph/lio/root_prior/accel_bias_sigma", lio.root_prior_sigma_accel_bias));
+        lio.root_prior_sigma_gyro_bias = static_cast<float>(this->declare_parameter<double>(
+            "graph/lio/root_prior/gyro_bias_sigma", lio.root_prior_sigma_gyro_bias));
     }
 
     this->points_topic_ = this->declare_parameter<std::string>("points_topic", this->points_topic_);
     this->imu_topic_ = this->declare_parameter<std::string>("imu_topic", this->imu_topic_);
+    if (this->imu_topic_.empty()) throw std::invalid_argument("imu_topic must not be empty");
     this->input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
     this->input_convert_intensity_ = this->declare_parameter<bool>("input/convert_intensity", true);
     this->input_use_reflectivity_as_intensity =
@@ -240,10 +266,8 @@ void GraphOdometryBaseNode::initialize_publishers(const PublishOptions& options)
     }
 }
 
-GraphOdometryBaseNode::ProcessedFrame GraphOdometryBaseNode::process_point_cloud_message(
-    const sensor_msgs::msg::PointCloud2& msg) {
-    ProcessedFrame frame;
-    const double timestamp = rclcpp::Time(msg.header.stamp).seconds();
+bool GraphOdometryBaseNode::prepare_point_cloud_message(const sensor_msgs::msg::PointCloud2& msg,
+                                                        ProcessedFrame& frame) {
     bool converted = false;
 
     double dt_from_ros2_msg = 0.0;
@@ -258,13 +282,13 @@ GraphOdometryBaseNode::ProcessedFrame GraphOdometryBaseNode::process_point_cloud
     if (!converted || this->scan_pc_ == nullptr) {
         RCLCPP_WARN(this->get_logger(), "failed to convert input point cloud");
         frame.result = ResultType::error;
-        return frame;
+        return false;
     }
 
     if (this->scan_pc_->size() == 0) {
         RCLCPP_WARN(this->get_logger(), "input point cloud is empty");
         frame.result = ResultType::error;
-        return frame;
+        return false;
     }
 
     if (this->params_.scan.enhanced_reflectivity.enable && this->scan_pc_->has_intensity()) {
@@ -277,27 +301,39 @@ GraphOdometryBaseNode::ProcessedFrame GraphOdometryBaseNode::process_point_cloud
         }
     }
 
+    frame.dt_from_ros2_msg = dt_from_ros2_msg;
+    return true;
+}
+
+void GraphOdometryBaseNode::process_prepared_point_cloud_message(double timestamp,
+                                                                 ProcessedFrame& frame) {
     frame.result = this->pipeline_->process(this->scan_pc_, timestamp);
     if (frame.result >= ResultType::error) {
         RCLCPP_WARN(this->get_logger(), "graph odometry failed: %s", this->pipeline_->get_error_message().c_str());
-        return frame;
+        return;
     }
     if (frame.result == ResultType::waiting_initial_alignment) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "%s",
                              this->pipeline_->get_error_message().c_str());
-        return frame;
+        return;
     }
 
     frame.odom = this->pipeline_->get_odom();
     frame.keyframe_pose = this->pipeline_->get_last_keyframe_pose();
 
-    frame.dt_from_ros2_msg = dt_from_ros2_msg;
     frame.pipeline_processing_times = this->pipeline_->get_current_processing_time();
-    frame.processing_subtotal = dt_from_ros2_msg;
+    frame.processing_subtotal = frame.dt_from_ros2_msg;
     for (const auto& item : frame.pipeline_processing_times) {
         frame.processing_subtotal += item.second;
     }
 
+}
+
+GraphOdometryBaseNode::ProcessedFrame GraphOdometryBaseNode::process_point_cloud_message(
+    const sensor_msgs::msg::PointCloud2& msg) {
+    ProcessedFrame frame;
+    if (!this->prepare_point_cloud_message(msg, frame)) return frame;
+    this->process_prepared_point_cloud_message(rclcpp::Time(msg.header.stamp).seconds(), frame);
     return frame;
 }
 

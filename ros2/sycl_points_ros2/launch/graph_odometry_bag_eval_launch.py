@@ -15,7 +15,7 @@ def declare_params_from_yaml(yaml_path: str, target_node="graph_odometry_node"):
         all_params = yaml.safe_load(f)
 
     for node_name in all_params.keys():
-        if node_name == target_node:
+        if node_name == target_node or node_name == "/**":
             node_params: dict = all_params[node_name]["ros__parameters"]
             for name, value in node_params.items():
                 if isinstance(value, float):

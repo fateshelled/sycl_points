@@ -1,6 +1,7 @@
 #include "sycl_points_ros2/graph_odometry_node.hpp"
 
 #include <rclcpp_components/register_node_macro.hpp>
+#include <stdexcept>
 
 namespace sycl_points {
 namespace ros2 {
@@ -10,8 +11,20 @@ GraphOdometryNode::GraphOdometryNode(const rclcpp::NodeOptions& options)
     this->initialize_processing();
     this->initialize_publishers({});
 
+    const auto max_pending = this->declare_parameter<int64_t>("processing/max_pending_point_clouds", 3);
+    if (max_pending <= 0) {
+        throw std::invalid_argument("processing/max_pending_point_clouds must be positive");
+    }
+    max_pending_point_clouds_ = static_cast<std::size_t>(max_pending);
+    const auto timer_period_ms = this->declare_parameter<int64_t>("processing/timer_period_ms", 5);
+    if (timer_period_ms < 1 || timer_period_ms > 100) {
+        throw std::invalid_argument("processing/timer_period_ms must be between 1 and 100");
+    }
+    if (this->imu_topic_.empty()) throw std::invalid_argument("imu_topic must not be empty");
+
     cb_group_lidar_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     cb_group_imu_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cb_group_processing_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     rclcpp::SubscriptionOptions lidar_opts;
     lidar_opts.callback_group = cb_group_lidar_;
@@ -22,26 +35,31 @@ GraphOdometryNode::GraphOdometryNode(const rclcpp::NodeOptions& options)
                 sub_pc_->get_topic_name(), points_qos_params_.history.c_str(), points_qos_params_.depth,
                 points_qos_params_.reliability.c_str());
 
-    if (this->params_.imu.enable) {
-        rclcpp::SubscriptionOptions imu_opts;
-        imu_opts.callback_group = cb_group_imu_;
-        sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
-            imu_topic_, imu_qos_params_.to_qos(),
-            std::bind(&GraphOdometryNode::imu_callback, this, std::placeholders::_1), imu_opts);
-        RCLCPP_INFO(this->get_logger(), "Subscribe IMU: %s (history=%s, depth=%ld, reliability=%s)",
-                    sub_imu_->get_topic_name(), imu_qos_params_.history.c_str(), imu_qos_params_.depth,
-                    imu_qos_params_.reliability.c_str());
-    } else {
-        RCLCPP_INFO(this->get_logger(), "IMU disabled");
-    }
+    rclcpp::SubscriptionOptions imu_opts;
+    imu_opts.callback_group = cb_group_imu_;
+    sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
+        imu_topic_, imu_qos_params_.to_qos(),
+        std::bind(&GraphOdometryNode::imu_callback, this, std::placeholders::_1), imu_opts);
+    RCLCPP_INFO(this->get_logger(), "Subscribe IMU: %s (history=%s, depth=%ld, reliability=%s)",
+                sub_imu_->get_topic_name(), imu_qos_params_.history.c_str(), imu_qos_params_.depth,
+                imu_qos_params_.reliability.c_str());
+
+    processing_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(timer_period_ms),
+        std::bind(&GraphOdometryNode::processing_timer_callback, this), cb_group_processing_, false);
 }
 
-void GraphOdometryNode::point_cloud_callback(const sensor_msgs::msg::PointCloud2::UniquePtr msg) {
-    auto frame = this->process_point_cloud_message(*msg);
-    if (frame.result == ResultType::success || frame.result == ResultType::first_frame) {
-        this->publish_processed_frame(msg->header, frame);
+void GraphOdometryNode::point_cloud_callback(sensor_msgs::msg::PointCloud2::UniquePtr msg) {
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    if (pending_point_clouds_.size() >= max_pending_point_clouds_) {
+        pending_point_clouds_.pop_front();
+        ++dropped_pending_point_clouds_;
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                             "Graph LIO backlog reached %zu frames; dropping oldest pending frame",
+                             max_pending_point_clouds_);
     }
-    this->record_processing_times(frame);
+    pending_point_clouds_.push_back(std::move(msg));
+    processing_timer_->reset();
 }
 
 void GraphOdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
@@ -54,6 +72,53 @@ void GraphOdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg)
         Eigen::Vector3f(static_cast<float>(msg->linear_acceleration.x), static_cast<float>(msg->linear_acceleration.y),
                         static_cast<float>(msg->linear_acceleration.z));
     pipeline_->add_imu_measurement(meas);
+}
+
+void GraphOdometryNode::processing_timer_callback() {
+    using IMUCoverage = pipeline::graph_odometry::GraphOdometryPipeline::IMUCoverage;
+    if (active_point_cloud_ == nullptr) {
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            if (pending_point_clouds_.empty()) {
+                processing_timer_->cancel();
+                return;
+            }
+            active_point_cloud_ = std::move(pending_point_clouds_.front());
+            pending_point_clouds_.pop_front();
+        }
+        active_frame_ = ProcessedFrame{};
+        if (!this->prepare_point_cloud_message(*active_point_cloud_, active_frame_)) {
+            this->record_processing_times(active_frame_);
+            active_point_cloud_.reset();
+            return;
+        }
+    }
+
+    const double timestamp = rclcpp::Time(active_point_cloud_->header.stamp).seconds();
+    auto coverage = pipeline_->get_frame_imu_coverage(timestamp);
+    if (scan_pc_->has_timestamps() && scan_pc_->end_time_ms > scan_pc_->start_time_ms) {
+        coverage = pipeline_->combine_imu_coverage(
+            coverage, pipeline_->get_imu_coverage(scan_pc_->start_time_ms * 1e-3,
+                                                  scan_pc_->end_time_ms * 1e-3));
+    }
+    if (coverage == IMUCoverage::waiting_for_future) return;
+    if (coverage == IMUCoverage::start_expired) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Cannot process graph LIO cloud: required IMU samples expired (frame=%.9f)",
+                     timestamp);
+        active_frame_.result = ResultType::insufficient_imu_coverage;
+        this->record_processing_times(active_frame_);
+        active_point_cloud_.reset();
+        return;
+    }
+
+    this->process_prepared_point_cloud_message(timestamp, active_frame_);
+    if (active_frame_.result == ResultType::success || active_frame_.result == ResultType::first_frame ||
+        active_frame_.result == ResultType::imu_only) {
+        this->publish_processed_frame(active_point_cloud_->header, active_frame_);
+    }
+    this->record_processing_times(active_frame_);
+    active_point_cloud_.reset();
 }
 
 }  // namespace ros2
