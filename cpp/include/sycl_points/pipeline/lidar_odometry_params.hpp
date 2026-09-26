@@ -41,6 +41,12 @@ struct Parameters : public odometry::CommonParameters {
         size_t solver_iterations = 10;           ///< nonlinear outer iterations per frame
         float convergence_translation = 1e-4f;   ///< [m]
         float convergence_rotation = 1e-4f;      ///< [rad]
+        /// @brief 15-DOF solver convergence/step bounds for velocity and biases
+        ///        (tightly-coupled graph LIO). Ignored by pose-only graphs.
+        float convergence_velocity = 1e-4f;      ///< [m/s]
+        float convergence_bias = 1e-5f;
+        float max_step_velocity = 10.0f;         ///< [m/s] per-iteration bound
+        float max_step_bias = 10.0f;             ///< per-iteration bound
         float relinearize_translation_thresh = 0.05f;  ///< [m] delayed relinearization
         float relinearize_rotation_thresh = 0.02f;     ///< [rad]
         float solver_damping_lambda = 1e-6f;     ///< GN solver LDLT fallback regularization

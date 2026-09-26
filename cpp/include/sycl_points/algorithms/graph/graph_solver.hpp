@@ -27,6 +27,8 @@ struct GraphSolverParams {
     size_t max_iterations = 10;
     float convergence_rotation = 1e-4f;      // [rad]
     float convergence_translation = 1e-4f;   // [m]
+    float convergence_velocity = 1e-4f;      // [m/s] (15-DOF nodes only)
+    float convergence_bias = 1e-5f;          // (15-DOF nodes only)
     float relinearize_rotation_thresh = 0.02f;
     float relinearize_translation_thresh = 0.05f;
     float solver_damping_lambda = 1e-6f;
@@ -54,6 +56,8 @@ struct GraphSolverParams {
     ///        exposed as ROS parameters.
     float max_step_translation = 10.0f;  ///< [m] per-iteration translation bound
     float max_step_rotation = 1.0f;      ///< [rad] per-iteration rotation bound
+    float max_step_velocity = 10.0f;     ///< [m/s] per-iteration velocity bound (15-DOF nodes only)
+    float max_step_bias = 10.0f;         ///< per-iteration bias bound (15-DOF nodes only)
 
     /// @brief Print per-iteration solver logs (mirrors RegistrationFactorParams::verbose
     ///        on the LO align path; wired from graph/factor/verbose).
@@ -110,8 +114,17 @@ inline float robust_ladder_scale_at_level(const GraphSolverParams::RobustSchedul
 }
 
 /// @brief Gauss-Newton solver over the sliding-window pose graph.
+///
+/// The solver operates on either the legacy 6-DOF pose-only layout (one 6-vector
+/// per node) or the full 15-DOF layout (pose + velocity + accel/gyro bias) when
+/// any submitted factor reports uses_full_state(). Pose-only graphs therefore
+/// keep their previous numerics exactly.
 class GraphSolver {
 public:
+    using MatrixMap = Eigen::Matrix<float, kNodeDof, kNodeDof>;
+    using VectorMap = Eigen::Matrix<float, kNodeDof, 1>;
+    using StateVector = std::vector<NodeState, Eigen::aligned_allocator<NodeState>>;
+
     enum class Status {
         MAX_ITERATIONS,
         CONVERGED,
@@ -235,6 +248,7 @@ public:
     Result optimize(SlidingWindow& window, std::optional<float> robust_scale_override = std::nullopt,
                     std::optional<size_t> max_iterations_override = std::nullopt) {
         Result result;
+        dof_ = select_dof(window);
         const size_t max_iterations = max_iterations_override.value_or(params_.max_iterations);
         float lm_lambda = params_.lm.init_lambda;
         result.final_lambda = params_.optimization_method == registration::OptimizationMethod::LEVENBERG_MARQUARDT
@@ -256,9 +270,9 @@ public:
             }
 
             if (params_.optimization_method == registration::OptimizationMethod::LEVENBERG_MARQUARDT) {
-                const auto current_poses = collect_poses(window, sys.node_ids);
+                const auto current_states = collect_states(window, sys.node_ids);
                 const auto current_eval = evaluate_objective(
-                    window, sys.node_ids, current_poses, &sys.stale_factors,
+                    window, sys.node_ids, current_states, &sys.stale_factors,
                     sys.current_error_base, sys.current_inliers_base, false);
                 result.final_error = current_eval.error;
                 if (!current_eval.finite) {
@@ -281,24 +295,23 @@ public:
                     if (!solve_damped(sys, lm_lambda, delta, max_dt, max_dr, failure)) {
                         ++result.rejected_steps;
                     } else {
-                        auto trial_poses = current_poses;
-                        for (size_t i = 0; i < trial_poses.size(); ++i) {
-                            trial_poses[i] = Eigen::Isometry3f(
-                                trial_poses[i].matrix() *
-                                eigen_utils::lie::se3_exp(delta.segment<6>(6 * i)));
+                        auto trial_states = current_states;
+                        for (size_t i = 0; i < trial_states.size(); ++i) {
+                            apply_delta(trial_states[i], delta, i);
                         }
-                        const auto trial_eval = evaluate_objective(window, sys.node_ids, trial_poses);
+                        const auto trial_eval = evaluate_objective(window, sys.node_ids, trial_states);
                         if (trial_eval.finite) {
                             saw_finite_trial = true;
                             if (trial_eval.error <= current_eval.error) {
-                                apply_poses(window, sys.node_ids, trial_poses);
+                                apply_states(window, sys.node_ids, trial_states);
                                 result.final_error = trial_eval.error;
                                 result.accepted_steps++;
                                 accepted = true;
                                 accepted_max_dt = max_dt;
                                 accepted_max_dr = max_dr;
-                                result.final_tip_rotation_step = delta.tail<6>().head<3>().norm();
-                                result.final_tip_translation_step = delta.tail<3>().norm();
+                                const Eigen::Index tb = tip_base(sys.node_ids.size());
+                                result.final_tip_rotation_step = delta.segment<6>(tb).head<3>().norm();
+                                result.final_tip_translation_step = delta.segment<6>(tb).tail<3>().norm();
                                 converged = step_converged(delta, sys.node_ids.size());
                                 lm_lambda = std::clamp(lm_lambda / params_.lm.lambda_factor,
                                                        params_.lm.min_lambda, params_.lm.max_lambda);
@@ -382,7 +395,8 @@ public:
                         float max_dt = 0.0f;
                         float max_dr = 0.0f;
                         for (size_t i = 0; i < sys.node_ids.size(); ++i) {
-                            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
+                            const Eigen::Index b = dof_ * static_cast<Eigen::Index>(i);
+                            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(b);
                             max_dr = std::max(max_dr, d.head<3>().norm());
                             max_dt = std::max(max_dt, d.tail<3>().norm());
                         }
@@ -406,36 +420,47 @@ public:
             float max_dt = 0.0f;
             float max_dr = 0.0f;
             for (size_t i = 0; i < sys.node_ids.size(); ++i) {
-                Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
+                const Eigen::Index b = dof_ * static_cast<Eigen::Index>(i);
+                Eigen::Matrix<float, 6, 1> d = delta.segment<6>(b);
                 max_dr = std::max(max_dr, d.head<3>().norm());
                 max_dt = std::max(max_dt, d.tail<3>().norm());
                 if (d.head<3>().norm() > params_.convergence_rotation ||
                     d.tail<3>().norm() > params_.convergence_translation)
                     converged = false;
+                if (dof_ == kNodeDof) {
+                    if (delta.segment<3>(b + kVelOffset).norm() > params_.convergence_velocity ||
+                        delta.segment<3>(b + kAccBiasOffset).norm() > params_.convergence_bias ||
+                        delta.segment<3>(b + kGyrBiasOffset).norm() > params_.convergence_bias) {
+                        converged = false;
+                    }
+                }
             }
 
             if (params_.verbose) {
+                const Eigen::Index tb = tip_base(sys.node_ids.size());
                 std::cout << "iter [" << iter << "] ";
                 std::cout << "error: " << sys.error << ", ";
                 std::cout << "inlier: " << sys.inliers << ", ";
                 std::cout << "lambda: " << lambda << ", ";
                 std::cout << "dt: " << max_dt << ", ";
                 std::cout << "dr: " << max_dr << ", ";
-                std::cout << "tip_dt: " << delta.tail<3>().norm() << ", ";
-                std::cout << "tip_dr: " << delta.tail<6>().head<3>().norm() << std::endl;
+                std::cout << "tip_dt: " << delta.segment<6>(tb).tail<3>().norm() << ", ";
+                std::cout << "tip_dr: " << delta.segment<6>(tb).head<3>().norm() << std::endl;
             }
 
             for (size_t i = 0; i < sys.node_ids.size(); ++i) {
                 auto node = window.get_node(sys.node_ids[i]);
                 if (!node) continue;
-                const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
-                node->pose = Eigen::Isometry3f(node->pose.matrix() * eigen_utils::lie::se3_exp(d));
+                apply_delta(*node, delta, i);
             }
 
             result.final_error = sys.error;
             result.final_lambda = lambda;
-            result.final_tip_rotation_step = delta.tail<6>().head<3>().norm();
-            result.final_tip_translation_step = delta.tail<3>().norm();
+            {
+                const Eigen::Index tb = tip_base(sys.node_ids.size());
+                result.final_tip_rotation_step = delta.segment<6>(tb).head<3>().norm();
+                result.final_tip_translation_step = delta.segment<6>(tb).tail<3>().norm();
+            }
             result.iterations = iter + 1;
             // With an active ladder, small steps alone must not stop the loop:
             // convergence is only granted once the schedule reached its floor
@@ -490,38 +515,113 @@ private:
         bool finite = true;
     };
 
-    static std::vector<Eigen::Isometry3f> collect_poses(
-        SlidingWindow& window, const std::vector<NodeId>& node_ids) {
-        std::vector<Eigen::Isometry3f> poses;
-        poses.reserve(node_ids.size());
+    /// @brief 6-DOF pose-only layout unless a factor (or the live prior)
+    ///        constrains the full navigation state.
+    int select_dof(const SlidingWindow& window) const {
+        for (const auto& f : window.factors()) {
+            if (f->uses_full_state()) return kNodeDof;
+        }
+        if (window.prior().is_valid() && window.prior().dof == kNodeDof) return kNodeDof;
+        return kPoseDof;
+    }
+
+    Eigen::Index tip_base(size_t node_count) const {
+        // Tip is the last active node; its pose block starts the node's tangent.
+        if (node_count == 0) return 0;
+        return dof_ * static_cast<Eigen::Index>(node_count - 1);
+    }
+
+    static StateVector collect_states(SlidingWindow& window, const std::vector<NodeId>& node_ids) {
+        StateVector states;
+        states.reserve(node_ids.size());
         for (const NodeId id : node_ids) {
             const auto node = window.get_node(id);
             if (!node) throw std::logic_error("[GraphSolver] active node not found");
-            poses.push_back(node->pose);
+            states.push_back(node->state());
         }
-        return poses;
+        return states;
     }
 
-    static void apply_poses(SlidingWindow& window, const std::vector<NodeId>& node_ids,
-                            const std::vector<Eigen::Isometry3f>& poses) {
+    static void apply_states(SlidingWindow& window, const std::vector<NodeId>& node_ids,
+                             const StateVector& states) {
         for (size_t i = 0; i < node_ids.size(); ++i) {
             const auto node = window.get_node(node_ids[i]);
             if (!node) throw std::logic_error("[GraphSolver] active node not found");
-            node->pose = poses[i];
+            node->pose = states[i].pose;
+            node->velocity = states[i].velocity;
+            node->accel_bias = states[i].accel_bias;
+            node->gyro_bias = states[i].gyro_bias;
+        }
+    }
+
+    void apply_delta(NodeState& state, const Eigen::VectorXf& delta, size_t i) const {
+        if (dof_ == kNodeDof) {
+            const Eigen::Matrix<float, kNodeDof, 1> d =
+                delta.segment<kNodeDof>(kNodeDof * static_cast<Eigen::Index>(i));
+            apply_node_delta(state, d);
+        } else {
+            state.pose = Eigen::Isometry3f(
+                state.pose.matrix() *
+                eigen_utils::lie::se3_exp(delta.segment<6>(6 * static_cast<Eigen::Index>(i))));
+        }
+    }
+
+    void apply_delta(PoseNode& node, const Eigen::VectorXf& delta, size_t i) const {
+        if (dof_ == kNodeDof) {
+            const Eigen::Matrix<float, kNodeDof, 1> d =
+                delta.segment<kNodeDof>(kNodeDof * static_cast<Eigen::Index>(i));
+            apply_node_delta(node, d);
+        } else {
+            node.pose = Eigen::Isometry3f(
+                node.pose.matrix() *
+                eigen_utils::lie::se3_exp(delta.segment<6>(6 * static_cast<Eigen::Index>(i))));
+        }
+    }
+
+    /// @brief Right-perturbation transport for a node block of dimension `dof`
+    ///        (pose part se3, velocity/bias additive).
+    static Eigen::MatrixXf make_transport(int dof, const Eigen::Matrix<float, 6, 1>& pose_offset) {
+        Eigen::MatrixXf U = Eigen::MatrixXf::Identity(dof, dof);
+        U.block<6, 6>(0, 0) = eigen_utils::lie::se3_right_jacobian(pose_offset);
+        return U;
+    }
+
+    /// @brief Expand a factor's cached linearization into `dof`-sized dense
+    ///        blocks (pose sub-block at 0:6 for pose-only factors).
+    static void embed_linearization(const FactorLinearization& lin, int dof, Eigen::MatrixXf& H00,
+                                    Eigen::MatrixXf& H01, Eigen::MatrixXf& H11, Eigen::VectorXf& b0,
+                                    Eigen::VectorXf& b1) {
+        H00 = Eigen::MatrixXf::Zero(dof, dof);
+        H01 = Eigen::MatrixXf::Zero(dof, dof);
+        H11 = Eigen::MatrixXf::Zero(dof, dof);
+        b0 = Eigen::VectorXf::Zero(dof);
+        b1 = Eigen::VectorXf::Zero(dof);
+        if (dof == kNodeDof && lin.full_state) {
+            H00 = lin.H00_full;
+            H01 = lin.H01_full;
+            H11 = lin.H11_full;
+            b0 = lin.b0_full;
+            b1 = lin.b1_full;
+        } else {
+            H00.block<6, 6>(0, 0) = lin.H00;
+            H01.block<6, 6>(0, 0) = lin.H01;
+            H11.block<6, 6>(0, 0) = lin.H11;
+            b0.head<6>() = lin.b0;
+            b1.head<6>() = lin.b1;
         }
     }
 
     ObjectiveEvaluation evaluate_objective(const SlidingWindow& window,
                                             const std::vector<NodeId>& node_ids,
-                                            const std::vector<Eigen::Isometry3f>& poses,
+                                            const StateVector& states,
                                             const std::vector<GraphFactorBase::Ptr>* factors = nullptr,
                                             float base_error = 0.0f,
                                             size_t base_inliers = 0,
                                             bool include_prior = true) const {
-        auto pose_of = [&](NodeId id) -> const Eigen::Isometry3f& {
+        auto state_of = [&](NodeId id) -> const NodeState& {
             const auto it = std::find(node_ids.begin(), node_ids.end(), id);
             if (it == node_ids.end()) throw std::logic_error("[GraphSolver] factor node not active");
-            return poses[static_cast<size_t>(std::distance(node_ids.begin(), it))];
+            return states[static_cast<size_t>(std::distance(node_ids.begin(), it))];
         };
 
         ObjectiveEvaluation eval;
@@ -529,15 +629,15 @@ private:
         eval.inliers = base_inliers;
         eval.finite = std::isfinite(base_error);
         if (!eval.finite) return eval;
-        const Eigen::Isometry3f fixed_target = Eigen::Isometry3f::Identity();
+        const NodeState fixed_target;
         const auto& selected_factors = factors ? *factors : window.factors();
         std::vector<FactorErrorEvaluation> pending;
         pending.reserve(selected_factors.size());
         sycl_utils::events all_events;
         for (const auto& factor : selected_factors) {
             const auto [sid, tid] = factor->node_ids();
-            pending.push_back(factor->compute_error_async(
-                pose_of(sid), tid == INVALID_NODE_ID ? fixed_target : pose_of(tid)));
+            pending.push_back(factor->compute_error_state_async(
+                state_of(sid), tid == INVALID_NODE_ID ? fixed_target : state_of(tid)));
             all_events += pending.back().events;
         }
         // Every GPU factor is now in flight. Waiting here, once per objective,
@@ -555,11 +655,11 @@ private:
         }
 
         const auto& prior = window.prior();
-        if (include_prior && prior.is_valid()) {
-            std::vector<Eigen::Isometry3f> prior_poses;
-            prior_poses.reserve(prior.node_ids.size());
-            for (const NodeId id : prior.node_ids) prior_poses.push_back(pose_of(id));
-            const auto contribution = prior.evaluate(prior_poses);
+        if (include_prior && prior.is_valid() && prior.dof == dof_) {
+            std::vector<NodeState, Eigen::aligned_allocator<NodeState>> prior_states;
+            prior_states.reserve(prior.node_ids.size());
+            for (const NodeId id : prior.node_ids) prior_states.push_back(state_of(id));
+            const auto contribution = prior.evaluate_states(prior_states);
             eval.error += contribution.error;
             if (!std::isfinite(contribution.error) || !std::isfinite(eval.error)) eval.finite = false;
         }
@@ -583,9 +683,18 @@ private:
         max_dt = 0.0f;
         max_dr = 0.0f;
         for (size_t i = 0; i < sys.node_ids.size(); ++i) {
-            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
+            const Eigen::Index b = dof_ * static_cast<Eigen::Index>(i);
+            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(b);
             max_dr = std::max(max_dr, d.head<3>().norm());
             max_dt = std::max(max_dt, d.tail<3>().norm());
+            if (dof_ == kNodeDof) {
+                if (delta.segment<3>(b + kVelOffset).norm() > params_.max_step_velocity ||
+                    delta.segment<3>(b + kAccBiasOffset).norm() > params_.max_step_bias ||
+                    delta.segment<3>(b + kGyrBiasOffset).norm() > params_.max_step_bias) {
+                    failure = Status::UNSTABLE_STEP;
+                    return false;
+                }
+            }
         }
         if (max_dt > params_.max_step_translation || max_dr > params_.max_step_rotation) {
             failure = Status::UNSTABLE_STEP;
@@ -600,10 +709,18 @@ private:
 
     bool step_converged(const Eigen::VectorXf& delta, size_t node_count) const {
         for (size_t i = 0; i < node_count; ++i) {
-            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(6 * i);
+            const Eigen::Index b = dof_ * static_cast<Eigen::Index>(i);
+            const Eigen::Matrix<float, 6, 1> d = delta.segment<6>(b);
             if (d.head<3>().norm() > params_.convergence_rotation ||
                 d.tail<3>().norm() > params_.convergence_translation) {
                 return false;
+            }
+            if (dof_ == kNodeDof) {
+                if (delta.segment<3>(b + kVelOffset).norm() > params_.convergence_velocity ||
+                    delta.segment<3>(b + kAccBiasOffset).norm() > params_.convergence_bias ||
+                    delta.segment<3>(b + kGyrBiasOffset).norm() > params_.convergence_bias) {
+                    return false;
+                }
             }
         }
         return true;
@@ -626,15 +743,34 @@ private:
             return diag;
         }
 
+        const size_t K = sys.node_ids.size();
+        // Reduce H_lidar to the 6K pose-only system (velocity/bias blocks are
+        // identically zero because only LiDAR observation factors contribute and
+        // they are pose-only). For the legacy 6-DOF layout this is the matrix
+        // itself; for 15-DOF nodes it extracts each node's leading pose block.
+        Eigen::MatrixXf H_pose;
+        if (dof_ == kPoseDof) {
+            H_pose = sys.H_lidar;
+        } else {
+            const Eigen::Index K6 = static_cast<Eigen::Index>(K);
+            H_pose = Eigen::MatrixXf::Zero(6 * K6, 6 * K6);
+            for (Eigen::Index i = 0; i < K6; ++i) {
+                for (Eigen::Index j = 0; j < K6; ++j) {
+                    H_pose.block<6, 6>(6 * i, 6 * j) =
+                        sys.H_lidar.block<6, 6>(static_cast<Eigen::Index>(dof_) * i,
+                                                static_cast<Eigen::Index>(dof_) * j);
+                }
+            }
+        }
+
         constexpr int kTipDim = 6;
-        const Eigen::Index old_dim = sys.H_lidar.rows() - kTipDim;
-        Eigen::Matrix<float, 6, 6> H_effective =
-            sys.H_lidar.bottomRightCorner<6, 6>();
+        const Eigen::Index old_dim = H_pose.rows() - kTipDim;
+        Eigen::Matrix<float, 6, 6> H_effective = H_pose.bottomRightCorner<6, 6>();
         if (old_dim > 0) {
             const Eigen::MatrixXf H_oo =
-                0.5f * (sys.H_lidar.topLeftCorner(old_dim, old_dim) +
-                        sys.H_lidar.topLeftCorner(old_dim, old_dim).transpose());
-            const Eigen::MatrixXf H_ot = sys.H_lidar.topRightCorner(old_dim, kTipDim);
+                0.5f * (H_pose.topLeftCorner(old_dim, old_dim) +
+                        H_pose.topLeftCorner(old_dim, old_dim).transpose());
+            const Eigen::MatrixXf H_ot = H_pose.topRightCorner(old_dim, kTipDim);
             Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> old_eig(H_oo);
             if (old_eig.info() != Eigen::Success || !old_eig.eigenvalues().allFinite() ||
                 !old_eig.eigenvectors().allFinite()) {
@@ -725,8 +861,9 @@ private:
             diag.status = ObservabilityStatus::NON_FINITE;
             return diag;
         }
-        sys.H.bottomRightCorner<6, 6>() += H_penalty;
-        sys.b.tail<6>() += H_penalty * initial_residual;
+        const Eigen::Index tb = static_cast<Eigen::Index>(dof_) * static_cast<Eigen::Index>(K - 1);
+        sys.H.block<6, 6>(tb, tb) += H_penalty;
+        sys.b.segment<6>(tb) += H_penalty * initial_residual;
         diag.status = ObservabilityStatus::VALID;
 
         if (params_.verbose) {
@@ -747,10 +884,12 @@ private:
     LinearizedSystem assemble(SlidingWindow& window, float ladder_scale) {
         auto& nodes = window.active_nodes();
         const size_t K = nodes.size();
+        const int dof = dof_;
         LinearizedSystem sys;
-        sys.H = Eigen::MatrixXf::Zero(6 * K, 6 * K);
-        sys.b = Eigen::VectorXf::Zero(6 * K);
-        sys.H_lidar = Eigen::MatrixXf::Zero(6 * K, 6 * K);
+        const Eigen::Index n = static_cast<Eigen::Index>(dof * K);
+        sys.H = Eigen::MatrixXf::Zero(n, n);
+        sys.b = Eigen::VectorXf::Zero(n);
+        sys.H_lidar = Eigen::MatrixXf::Zero(n, n);
         std::unordered_map<NodeId, int> idx;
         for (int i = 0; i < static_cast<int>(K); ++i) {
             sys.node_ids.push_back(nodes[i]->id);
@@ -775,6 +914,10 @@ private:
             const bool lidar_observation = factor->contributes_lidar_observability();
             if (lidar_observation) sys.lidar_inliers += lin.inlier;
 
+            Eigen::MatrixXf H00, H01, H11;
+            Eigen::VectorXf b0, b1;
+            embed_linearization(lin, dof, H00, H01, H11, b0, b1);
+
             // Stale cached linearizations live in offset-from-linearization
             // coordinates o = Log(T_lin^-1 T). With right perturbations the
             // offset moves as o(delta) = o + Jr(o) delta (BCH; Jr = Jl(-o)^-1),
@@ -784,55 +927,63 @@ private:
             // Leaving H un-transported would keep the stale factor's curvature
             // expressed in the old coordinates and bend the GN step; without
             // the whole transport stale models make Gauss-Newton stall.
-            const Eigen::Isometry3f& src_lin = lin.source_linearization_pose;
+            const auto src_node = window.get_node(sid);
+            if (!src_node) throw std::logic_error("[GraphSolver] factor source node not found");
             const Eigen::Matrix<float, 6, 1> ds =
-                eigen_utils::lie::se3_log(src_lin.inverse() * window.get_node(sid)->pose);
-            const Eigen::Matrix<float, 6, 6> U_s = eigen_utils::lie::se3_right_jacobian(ds);
-            Eigen::Matrix<float, 6, 1> q0 = lin.b0;
-            Eigen::Matrix<float, 6, 1> q1 = lin.b1;
+                eigen_utils::lie::se3_log(lin.source_linearization_pose.inverse() * src_node->pose);
+            const Eigen::MatrixXf U_s = make_transport(dof, ds);
+            Eigen::VectorXf ds_full = Eigen::VectorXf::Zero(dof);
+            ds_full.head<6>() = ds;
+            Eigen::VectorXf q0 = b0;
+            Eigen::VectorXf q1 = b1;
             if (ds.norm() > 0.0f) {
-                q0 += lin.H00 * ds;
+                q0 += H00 * ds_full;
                 if (has_target) {
-                    q1 += lin.H01.transpose() * ds;
+                    q1 += H01.transpose() * ds_full;
                 }
             }
-            const Eigen::Matrix<float, 6, 6> H_ss = U_s.transpose() * lin.H00 * U_s;
-            sys.H.block<6, 6>(6 * si, 6 * si) += H_ss;
-            if (lidar_observation) sys.H_lidar.block<6, 6>(6 * si, 6 * si) += H_ss;
+            const Eigen::MatrixXf H_ss = U_s.transpose() * H00 * U_s;
+            const Eigen::Index bs = static_cast<Eigen::Index>(dof) * si;
+            sys.H.block(bs, bs, dof, dof) += H_ss;
+            if (lidar_observation) sys.H_lidar.block(bs, bs, dof, dof) += H_ss;
             if (has_target) {
                 int ti = idx.at(tid);
-                const Eigen::Matrix<float, 6, 1> dt =
-                    eigen_utils::lie::se3_log(lin.target_linearization_pose.inverse() *
-                                              window.get_node(tid)->pose);
-                const Eigen::Matrix<float, 6, 6> U_t = eigen_utils::lie::se3_right_jacobian(dt);
+                const auto tgt_node = window.get_node(tid);
+                if (!tgt_node) throw std::logic_error("[GraphSolver] factor target node not found");
+                const Eigen::Matrix<float, 6, 1> dt = eigen_utils::lie::se3_log(
+                    lin.target_linearization_pose.inverse() * tgt_node->pose);
+                const Eigen::MatrixXf U_t = make_transport(dof, dt);
+                Eigen::VectorXf dt_full = Eigen::VectorXf::Zero(dof);
+                dt_full.head<6>() = dt;
                 if (dt.norm() > 0.0f) {
-                    q0 += lin.H01 * dt;
-                    q1 += lin.H11 * dt;
+                    q0 += H01 * dt_full;
+                    q1 += H11 * dt_full;
                 }
                 // Transported cross block must stay symmetric: complete H_st
                 // first and add its transpose, NOT H01^T U_s U_t.
-                const Eigen::Matrix<float, 6, 6> H_st = U_s.transpose() * lin.H01 * U_t;
-                const Eigen::Matrix<float, 6, 6> H_tt = U_t.transpose() * lin.H11 * U_t;
-                sys.H.block<6, 6>(6 * ti, 6 * ti) += H_tt;
-                sys.H.block<6, 6>(6 * si, 6 * ti) += H_st;
-                sys.H.block<6, 6>(6 * ti, 6 * si) += H_st.transpose();
+                const Eigen::MatrixXf H_st = U_s.transpose() * H01 * U_t;
+                const Eigen::MatrixXf H_tt = U_t.transpose() * H11 * U_t;
+                const Eigen::Index bt = static_cast<Eigen::Index>(dof) * ti;
+                sys.H.block(bt, bt, dof, dof) += H_tt;
+                sys.H.block(bs, bt, dof, dof) += H_st;
+                sys.H.block(bt, bs, dof, dof) += H_st.transpose();
                 if (lidar_observation) {
-                    sys.H_lidar.block<6, 6>(6 * ti, 6 * ti) += H_tt;
-                    sys.H_lidar.block<6, 6>(6 * si, 6 * ti) += H_st;
-                    sys.H_lidar.block<6, 6>(6 * ti, 6 * si) += H_st.transpose();
+                    sys.H_lidar.block(bt, bt, dof, dof) += H_tt;
+                    sys.H_lidar.block(bs, bt, dof, dof) += H_st;
+                    sys.H_lidar.block(bt, bs, dof, dof) += H_st.transpose();
                 }
-                sys.b.segment<6>(6 * ti) += U_t.transpose() * q1;
+                sys.b.segment(bt, dof) += U_t.transpose() * q1;
             }
-            sys.b.segment<6>(6 * si) += U_s.transpose() * q0;
+            sys.b.segment(bs, dof) += U_s.transpose() * q0;
         }
 
         const auto& prior = window.prior();
-        if (prior.is_valid()) {
+        if (prior.is_valid() && prior.dof == dof) {
             bool all_present = true;
             std::vector<int> prior_indices;
-            std::vector<Eigen::Isometry3f> poses;
+            std::vector<NodeState, Eigen::aligned_allocator<NodeState>> states;
             prior_indices.reserve(prior.node_ids.size());
-            poses.reserve(prior.node_ids.size());
+            states.reserve(prior.node_ids.size());
             for (const NodeId id : prior.node_ids) {
                 const auto it = idx.find(id);
                 if (it == idx.end()) {
@@ -840,16 +991,18 @@ private:
                     break;
                 }
                 prior_indices.push_back(it->second);
-                poses.push_back(window.get_node(id)->pose);
+                states.push_back(window.get_node(id)->state());
             }
             if (all_present) {
-                const auto c = prior.evaluate(poses);
+                const auto c = prior.evaluate_states(states);
                 for (size_t i = 0; i < prior_indices.size(); ++i) {
-                    const int pi = prior_indices[i];
-                    sys.b.segment<6>(6 * pi) += c.b.segment<6>(6 * i);
+                    const Eigen::Index pi = static_cast<Eigen::Index>(dof) * prior_indices[i];
+                    sys.b.segment(pi, dof) += c.b.segment(static_cast<Eigen::Index>(dof) * i, dof);
                     for (size_t j = 0; j < prior_indices.size(); ++j) {
-                        const int pj = prior_indices[j];
-                        sys.H.block<6, 6>(6 * pi, 6 * pj) += c.H.block<6, 6>(6 * i, 6 * j);
+                        const Eigen::Index pj = static_cast<Eigen::Index>(dof) * prior_indices[j];
+                        sys.H.block(pi, pj, dof, dof) +=
+                            c.H.block(static_cast<Eigen::Index>(dof) * i,
+                                      static_cast<Eigen::Index>(dof) * j, dof, dof);
                     }
                 }
                 sys.error += c.error;
@@ -861,6 +1014,7 @@ private:
 
     sycl_utils::DeviceQueue queue_;
     GraphSolverParams params_;
+    int dof_ = kPoseDof;
 };
 
 }  // namespace graph

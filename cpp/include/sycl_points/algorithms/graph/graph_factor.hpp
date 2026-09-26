@@ -78,6 +78,20 @@ public:
         return {sycl_utils::events{}, [result]() { return result; }};
     }
 
+    /// @brief State-aware objective evaluation. Pose-only factors inherit the
+    ///        default, which forwards to the pose-based virtuals above; state
+    ///        factors (IMU preintegration) override this to consume velocity and
+    ///        biases. The solver always evaluates this form.
+    virtual std::pair<float, uint32_t> compute_error_state(const NodeState& src_state,
+                                                           const NodeState& tgt_state) const {
+        return compute_error(src_state.pose, tgt_state.pose);
+    }
+
+    virtual FactorErrorEvaluation compute_error_state_async(const NodeState& src_state,
+                                                            const NodeState& tgt_state) const {
+        return compute_error_async(src_state.pose, tgt_state.pose);
+    }
+
     /// @brief IDs of the two connected nodes. For a unary factor the target
     ///        id is INVALID_NODE_ID (fixed target).
     virtual std::pair<NodeId, NodeId> node_ids() const = 0;
@@ -90,6 +104,13 @@ public:
     ///        sparse-chain topology prunes/converts exactly these; host-only
     ///        factors (chain relatives) are always kept.
     virtual bool is_point_cloud_binary() const { return false; }
+
+    /// @brief True when the factor constrains the full 15-DOF node state
+    ///        (pose + velocity + biases) instead of only the pose sub-block.
+    ///        The solver selects its 15-DOF layout when any submitted factor
+    ///        reports true, and otherwise keeps the legacy 6-DOF pose-only
+    ///        layout (so pose-only graphs are numerically unchanged).
+    virtual bool uses_full_state() const { return false; }
 
     /// @brief True only for LiDAR measurement factors whose transported
     ///        Hessian contributes to geometric observability. Motion-chain

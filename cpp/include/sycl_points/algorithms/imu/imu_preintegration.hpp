@@ -342,6 +342,9 @@ public:
     double get_dt_total() const { return result_.dt_total; }
     bool has_measurements() const { return num_measurements_ > 0; }
     const IMUPreintegrationParams& get_params() const { return params_; }
+    /// @brief Bias linearization point used by the accumulated measurement
+    ///        (set by reset()); first-order corrections are relative to it.
+    const IMUBias& linearization_bias() const { return bias_lin_; }
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 

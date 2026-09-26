@@ -96,13 +96,22 @@ public:
 
     NodeId add_node(const Eigen::Isometry3f& initial_pose, double timestamp,
                     std::shared_ptr<PointCloudShared> cloud = nullptr,
-                    std::shared_ptr<knn::KNNBase> knn = nullptr) {
+                    std::shared_ptr<knn::KNNBase> knn = nullptr,
+                    const Eigen::Vector3f& velocity = Eigen::Vector3f::Zero(),
+                    const Eigen::Vector3f& accel_bias = Eigen::Vector3f::Zero(),
+                    const Eigen::Vector3f& gyro_bias = Eigen::Vector3f::Zero()) {
         auto node = std::make_shared<PoseNode>();
         node->id = next_id_++;
         node->timestamp = timestamp;
         node->initial_pose = initial_pose;
         node->pose = initial_pose;
         node->linearization_pose = initial_pose;
+        node->velocity = velocity;
+        node->accel_bias = accel_bias;
+        node->gyro_bias = gyro_bias;
+        node->linearization_velocity = velocity;
+        node->linearization_accel_bias = accel_bias;
+        node->linearization_gyro_bias = gyro_bias;
         node->cloud = std::move(cloud);
         node->knn = std::move(knn);
         node->type = (nodes_.empty()) ? PoseNode::Type::CURRENT : PoseNode::Type::ACTIVE_WINDOW;
@@ -264,8 +273,11 @@ public:
         }
 
         const size_t K = local_ids.size();
-        Eigen::MatrixXf H_all = Eigen::MatrixXf::Zero(6 * K, 6 * K);
-        Eigen::VectorXf b_all = Eigen::VectorXf::Zero(6 * K);
+        const int dof = select_dof();
+        const Eigen::Index step = static_cast<Eigen::Index>(dof);
+        Eigen::MatrixXf H_all = Eigen::MatrixXf::Zero(step * static_cast<Eigen::Index>(K),
+                                                      step * static_cast<Eigen::Index>(K));
+        Eigen::VectorXf b_all = Eigen::VectorXf::Zero(step * static_cast<Eigen::Index>(K));
         std::unordered_map<NodeId, int> id_to_idx;
         for (int i = 0; i < static_cast<int>(K); ++i) id_to_idx[local_ids[i]] = i;
 
@@ -280,29 +292,39 @@ public:
             // factor last actually used, not the nominal floor.
             auto lin = f->linearize(queue, f->scale_now(marginalization_scale_));
             int si = id_to_idx[sid];
-            H_all.block<6, 6>(6 * si, 6 * si) += lin.H00;
-            b_all.segment<6>(6 * si) += lin.b0;
+            Eigen::MatrixXf H00, H01, H11;
+            Eigen::VectorXf b0, b1;
+            expand_linearization(lin, dof, H00, H01, H11, b0, b1);
+            const Eigen::Index bs = step * static_cast<Eigen::Index>(si);
+            H_all.block(bs, bs, dof, dof) += H00;
+            b_all.segment(bs, dof) += b0;
             if (tid != INVALID_NODE_ID) {
                 int ti = id_to_idx[tid];
-                H_all.block<6, 6>(6 * ti, 6 * ti) += lin.H11;
-                H_all.block<6, 6>(6 * si, 6 * ti) += lin.H01;
-                H_all.block<6, 6>(6 * ti, 6 * si) += lin.H01.transpose();
-                b_all.segment<6>(6 * ti) += lin.b1;
+                const Eigen::Index bt = step * static_cast<Eigen::Index>(ti);
+                H_all.block(bt, bt, dof, dof) += H11;
+                H_all.block(bs, bt, dof, dof) += H01;
+                H_all.block(bt, bs, dof, dof) += H01.transpose();
+                b_all.segment(bt, dof) += b1;
             }
         }
 
-        // Step 2: carry the existing prior exactly once.
-        if (prior_.is_valid()) {
-            std::vector<Eigen::Isometry3f> poses;
-            poses.reserve(prior_.node_ids.size());
-            for (const NodeId id : prior_.node_ids) poses.push_back(get_node(id)->pose);
-            const auto c = prior_.evaluate(poses);
+        // Step 2: carry the existing prior exactly once (only when it lives in
+        // the same state dimension as the current local system).
+        if (prior_.is_valid() && prior_.dof == dof) {
+            StateVector states;
+            states.reserve(prior_.node_ids.size());
+            for (const NodeId id : prior_.node_ids) states.push_back(get_node(id)->state());
+            const auto c = prior_.evaluate_states(states);
             for (size_t i = 0; i < prior_.node_ids.size(); ++i) {
                 const int pi = id_to_idx[prior_.node_ids[i]];
-                b_all.segment<6>(6 * pi) += c.b.segment<6>(6 * i);
+                const Eigen::Index pib = step * static_cast<Eigen::Index>(pi);
+                b_all.segment(pib, dof) +=
+                    c.b.segment(step * static_cast<Eigen::Index>(i), dof);
                 for (size_t j = 0; j < prior_.node_ids.size(); ++j) {
                     const int pj = id_to_idx[prior_.node_ids[j]];
-                    H_all.block<6, 6>(6 * pi, 6 * pj) += c.H.block<6, 6>(6 * i, 6 * j);
+                    H_all.block(pib, step * static_cast<Eigen::Index>(pj), dof, dof) +=
+                        c.H.block(step * static_cast<Eigen::Index>(i),
+                                  step * static_cast<Eigen::Index>(j), dof, dof);
                 }
             }
         }
@@ -318,26 +340,27 @@ public:
             result.status = MarginalizationStatus::NonFiniteSystem;
             return result;
         }
-        const Eigen::Matrix<float, 6, 6> H_mm = H_all.block<6, 6>(0, 0);
+        const Eigen::MatrixXf H_mm = H_all.block(0, 0, dof, dof);
 
         // Eigen LDLT reports Success even on numerically singular input, so gate
         // on the eigenvalue conditioning as well and escalate lambda until the
         // Schur complement reads a stable H_mm (per-frame retry, never robust
         // weight removal).
-        Eigen::LDLT<Eigen::Matrix<float, 6, 6>> ldlt_mm;
+        Eigen::LDLT<Eigen::MatrixXf> ldlt_mm;
         float lambda_used = marginalization_lambda_;
         bool usable = false;
         for (int escalation = 0; escalation <= kMaxLambdaEscalations; ++escalation) {
             const float attempted = lambda_used;
-            const Eigen::Matrix<float, 6, 6> H_mm_reg =
-                H_mm + attempted * Eigen::Matrix<float, 6, 6>::Identity();
+            const Eigen::MatrixXf H_mm_reg =
+                H_mm + attempted * Eigen::MatrixXf::Identity(dof, dof);
             if (!H_mm_reg.allFinite()) {
                 ++marg_diag_.non_finite_system;
                 result.status = MarginalizationStatus::NonFiniteSystem;
                 return result;
             }
             bool conditioned = false;
-            if (const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> eig(H_mm_reg); eig.info() == Eigen::Success) {
+            if (const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> eig(H_mm_reg);
+                eig.info() == Eigen::Success) {
                 const auto ev = eig.eigenvalues();
                 // H is PSD up to noise; a non-positive or badly conditioned span is
                 // treated the same as a decomposition failure.
@@ -375,11 +398,11 @@ public:
             return result;
         }
 
-        const int r_size = static_cast<int>(6 * (K - 1));
-        Eigen::MatrixXf H_mr = H_all.block(0, 6, 6, r_size);
-        Eigen::Matrix<float, 6, 1> b_m = b_all.head<6>();
-        Eigen::MatrixXf H_rr = H_all.block(6, 6, r_size, r_size);
-        Eigen::VectorXf b_r = b_all.segment(6, r_size);
+        const int r_size = static_cast<int>(step * static_cast<Eigen::Index>(K - 1));
+        Eigen::MatrixXf H_mr = H_all.block(0, dof, dof, r_size);
+        Eigen::VectorXf b_m = b_all.head(dof);
+        Eigen::MatrixXf H_rr = H_all.block(dof, dof, r_size, r_size);
+        Eigen::VectorXf b_r = b_all.segment(dof, r_size);
 
         Eigen::MatrixXf H_prior_new = H_rr - H_mr.transpose() * ldlt_mm.solve(H_mr);
         Eigen::VectorXf b_prior_new = b_r - H_mr.transpose() * ldlt_mm.solve(b_m);
@@ -397,9 +420,12 @@ public:
 
         // Step 4: retain the complete reduced system over the Markov blanket.
         MarginalizationPrior new_prior;
+        new_prior.dof = dof;
         new_prior.node_ids.assign(local_ids.begin() + 1, local_ids.end());
         for (const NodeId id : new_prior.node_ids) {
-            new_prior.linearization_poses.push_back(get_node(id)->pose);
+            const auto node = get_node(id);
+            new_prior.linearization_poses.push_back(node->pose);
+            if (dof == kNodeDof) new_prior.linearization_states.push_back(node->state());
         }
         new_prior.H_prior = 0.5f * (H_prior_new + H_prior_new.transpose());
         new_prior.b_prior = b_prior_new;
@@ -450,6 +476,19 @@ public:
 private:
     static constexpr int kMaxLambdaEscalations = 3;     ///< lambda *= 10 retries per frame
     static constexpr float kMinConditionRatio = 1e-6f;  ///< required lambda_min/lambda_max of H_mm_reg
+
+    using StateVector = std::vector<NodeState, Eigen::aligned_allocator<NodeState>>;
+
+    /// @brief State dimension of the local marginalization system: 15 when any
+    ///        factor (or the live prior) constrains the full navigation state,
+    ///        else the legacy 6-DOF pose-only layout.
+    int select_dof() const {
+        for (const auto& f : factors_) {
+            if (f->uses_full_state()) return kNodeDof;
+        }
+        if (prior_.is_valid() && prior_.dof == kNodeDof) return kNodeDof;
+        return kPoseDof;
+    }
 
     /// @brief Verbose diagnostics gate (escalation / failure logs). Enabled with
     ///        the SYCL_POINTS_VERBOSE environment variable.

@@ -9,8 +9,11 @@
 
 #include "sycl_points/algorithms/graph/gicp_factor.hpp"
 #include "sycl_points/algorithms/graph/graph_solver.hpp"
+#include "sycl_points/algorithms/graph/imu_preintegration_factor.hpp"
+#include "sycl_points/algorithms/graph/nav_state_prior_factor.hpp"
 #include "sycl_points/algorithms/graph/sliding_window.hpp"
 #include "sycl_points/algorithms/graph/velocity_update.hpp"
+#include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
@@ -74,6 +77,31 @@ public:
         ///        the tip's own kNN is only needed once it becomes a binary
         ///        target (built at promotion, see process_frame).
         std::shared_ptr<const PointCloudShared> raw_source = nullptr;
+    };
+
+    /// @brief Tight-coupling IMU edge context. The preintegration accumulates
+    ///        from the source keyframe node and is added as a full 15-DOF binary
+    ///        factor against the current tip. Scale-free, host-only: it never
+    ///        participates in the robust ladder or LiDAR observability.
+    struct ImuEdgeContext {
+        bool enable = false;
+        NodeId source_id = INVALID_NODE_ID;
+        std::shared_ptr<const imu::IMUPreintegration> preintegration = nullptr;
+        Eigen::Isometry3f T_imu_to_lidar = Eigen::Isometry3f::Identity();
+        Eigen::Vector3f gravity = Eigen::Vector3f(0.0f, 0.0f, -9.80665f);
+        /// @brief Initial navigation state for the new tip node. The unary pose
+        ///        factor alone cannot observe velocity/bias, so the tip is seeded
+        ///        from the source keyframe (or the pipeline's current estimate).
+        Eigen::Vector3f tip_velocity = Eigen::Vector3f::Zero();
+        Eigen::Vector3f tip_accel_bias = Eigen::Vector3f::Zero();
+        Eigen::Vector3f tip_gyro_bias = Eigen::Vector3f::Zero();
+        /// @brief Add a weak navigation-state prior (velocity/bias only) to the
+        ///        tip. Fixes the preintegration gauge so single-edge frames stay
+        ///        solvable; the sigmas are loose by design.
+        bool add_nav_prior = false;
+        float nav_prior_sigma_velocity = 1.0f;     ///< [m/s]
+        float nav_prior_sigma_accel_bias = 0.5f;   ///< [m/s^2]
+        float nav_prior_sigma_gyro_bias = 0.1f;    ///< [rad/s]
     };
 
     GraphOptimization(const sycl_utils::DeviceQueue& queue,
@@ -227,6 +255,18 @@ public:
                               const Eigen::Isometry3f& initial_pose, double timestamp,
                               const registration::RegistrationParams& reg_params,
                               const VelocityUpdateContext& vu) {
+        return this->process_frame(source_cloud, submap_cloud, submap_knn, source_knn, initial_pose, timestamp,
+                                   reg_params, vu, ImuEdgeContext());
+    }
+
+    FrameResult process_frame(std::shared_ptr<PointCloudShared> source_cloud,
+                              std::shared_ptr<const PointCloudShared> submap_cloud,
+                              std::shared_ptr<const knn::KNNBase> submap_knn,
+                              std::shared_ptr<knn::KNNBase> source_knn,
+                              const Eigen::Isometry3f& initial_pose, double timestamp,
+                              const registration::RegistrationParams& reg_params,
+                              const VelocityUpdateContext& vu,
+                              const ImuEdgeContext& imu) {
         submap_ = std::move(submap_cloud);
         submap_knn_ = std::move(submap_knn);
 
@@ -247,6 +287,12 @@ public:
 
         // 2a. Unary GICP factor: current <-> fixed submap.
         auto current_node = window_.get_node(current_id);
+        current_node->velocity = imu.tip_velocity;
+        current_node->accel_bias = imu.tip_accel_bias;
+        current_node->gyro_bias = imu.tip_gyro_bias;
+        current_node->linearization_velocity = imu.tip_velocity;
+        current_node->linearization_accel_bias = imu.tip_accel_bias;
+        current_node->linearization_gyro_bias = imu.tip_gyro_bias;
         auto unary_factor = std::make_shared<UnaryGicpFactor>(
             queue_, current_id, current_node, submap_, submap_knn_, reg_params);
         window_.add_factor(unary_factor);
@@ -257,6 +303,33 @@ public:
             if (!node->knn) continue;  // need a kNN on the target node's cloud
             window_.add_factor(std::make_shared<BinaryGicpFactor>(
                 queue_, current_id, current_node, node->id, node, reg_params));
+        }
+
+        // 2c. IMU preintegration edge (tight coupling): full 15-DOF binary factor
+        //     between the source keyframe and the current tip. Host-only and
+        //     scale-free, so it is deliberately excluded from the robust ladder
+        //     and from LiDAR observability.
+        if (imu.enable && imu.preintegration && imu.source_id != INVALID_NODE_ID) {
+            auto src_node = window_.get_node(imu.source_id);
+            if (src_node && src_node->id != current_id && imu.preintegration->get_dt_total() > 0.0) {
+                window_.add_factor(std::make_shared<ImuPreintegrationFactor>(
+                    src_node, current_node, *imu.preintegration, imu.T_imu_to_lidar, imu.gravity));
+            }
+        }
+
+        // 2d. Weak navigation-state prior on the tip (velocity/bias only). This
+        //     fixes the preintegration gauge (a single edge leaves a
+        //     constant-velocity/bias trade-off) without constraining the
+        //     LiDAR-observed geometry. Host-only and scale-free.
+        if (imu.add_nav_prior) {
+            NodeState ref;
+            ref.pose = current_node->pose;
+            ref.velocity = imu.tip_velocity;
+            ref.accel_bias = imu.tip_accel_bias;
+            ref.gyro_bias = imu.tip_gyro_bias;
+            window_.add_factor(std::make_shared<NavStatePriorFactor>(
+                current_node, ref, imu.nav_prior_sigma_velocity, imu.nav_prior_sigma_accel_bias,
+                imu.nav_prior_sigma_gyro_bias));
         }
 
         // 3. Local BA. The frame-level schedule mirrors the align path
@@ -281,14 +354,10 @@ public:
             bool deskew_stopped = false;
             bool frame_valid = true;
             // Snapshots for failure recovery: a failed system may have already
-            // applied partial Gauss-Newton updates to every node pose.
-            const std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>>
-                pre_solve_poses = [&] {
-                    std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> poses;
-                    poses.reserve(window_.active_nodes().size());
-                    for (const auto& n : window_.active_nodes()) poses.push_back(n->pose);
-                    return poses;
-                }();
+            // applied partial Gauss-Newton updates to every node's full state.
+            std::vector<NodeState, Eigen::aligned_allocator<NodeState>> pre_solve_states;
+            pre_solve_states.reserve(window_.active_nodes().size());
+            for (const auto& n : window_.active_nodes()) pre_solve_states.push_back(n->state());
             for (size_t rung = 0; rung < rungs && !deskew_stopped; ++rung) {
                 const float rung_scale = robust.enable ? robust_ladder_scale_at_level(robust, rung) : 0.0f;
                 for (size_t v = 0; v < vu_rounds; ++v) {
@@ -342,8 +411,11 @@ public:
                 //   nodes (prune_point_cloud_binaries ran before the solve; the
                 //   chain conversion reflects the committed pre-solve estimates)
                 const auto& nodes = window_.active_nodes();
-                for (size_t i = 0; i < nodes.size() && i < pre_solve_poses.size(); ++i) {
-                    nodes[i]->pose = pre_solve_poses[i];
+                for (size_t i = 0; i < nodes.size() && i < pre_solve_states.size(); ++i) {
+                    nodes[i]->pose = pre_solve_states[i].pose;
+                    nodes[i]->velocity = pre_solve_states[i].velocity;
+                    nodes[i]->accel_bias = pre_solve_states[i].accel_bias;
+                    nodes[i]->gyro_bias = pre_solve_states[i].gyro_bias;
                 }
                 window_.remove_node(current_id);
                 fr.current_node_id = INVALID_NODE_ID;

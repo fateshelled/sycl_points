@@ -53,9 +53,10 @@ graph_odometry_node:
     T_imu_to_lidar/qz: 0.0
     T_imu_to_lidar/qw: 1.0
 
-    # IMU is OPTIONAL for graph odometry. imu/enable defaults to false (LiDAR-only).
-    # Set imu/enable: true only when an IMU topic is provided and IMU coupling is desired.
-    imu/enable: false
+    # IMU is REQUIRED for graph odometry: the graph pipeline is tightly-coupled
+    # LIO. The LiDAR-only graph mode was removed; a node started with
+    # imu/enable=false fails fast.
+    imu/enable: true
     imu/accel_unit: "m_s2"              # IMU acceleration unit: "m_s2" (m/s^2) or "G" (1G = 9.80665 m/s^2). Use "G" for Livox built-in IMU.
     imu/buffer_duration_sec: 2.0        # IMU buffering duration
     imu/deskew/enable: true             # IMU-based pre-processing deskew
@@ -82,7 +83,7 @@ graph_odometry_node:
     # Assumes the robot is stationary for at least required_duration_sec at startup.
     # Yaw is preserved from initial_base_link_pose; gravity does not constrain it.
     # The first few scans before alignment converges are dropped (waiting_initial_alignment).
-    imu/initial_alignment/enable: false
+    imu/initial_alignment/enable: true
     imu/initial_alignment/required_duration_sec: 1.0  # IMU window length [s]; must be <= imu/buffer_duration_sec
     imu/initial_alignment/max_gyro_std: 0.05          # [rad/s] per-axis stationarity threshold
     imu/initial_alignment/max_accel_std: 0.2          # [m/s^2] per-axis stationarity threshold
@@ -191,6 +192,10 @@ graph_odometry_node:
     graph/solver_iterations: 8               # outer iterations when robust ladder is disabled
     graph/convergence/translation: 1.0e-4    # [m]
     graph/convergence/rotation: 1.0e-4       # [rad]
+    graph/convergence/velocity: 1.0e-4       # [m/s] (15-DOF LIO nodes)
+    graph/convergence/bias: 1.0e-5           # (15-DOF LIO nodes)
+    graph/solver/max_step_velocity: 10.0     # [m/s] per-iteration instability bound
+    graph/solver/max_step_bias: 10.0         # per-iteration instability bound
     # Delayed relinearization thresholds: cached factor linearizations are
     # reused while node poses stay within these bounds of the linearization
     # point (gradients are refreshed at the current pose; correspondences are

@@ -22,6 +22,16 @@ GraphOdometryBaseNode::~GraphOdometryBaseNode() {
 void GraphOdometryBaseNode::initialize_processing() {
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
 
+    // Tightly-coupled graph LIO requires an IMU. The LiDAR-only graph mode has
+    // been removed, so a graph node started without an IMU must fail fast
+    // instead of silently running an unobservable pose graph.
+    if (!this->params_.imu.enable) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "graph_odometry requires 'imu/enable: true' (tightly-coupled graph LIO); "
+                     "the LiDAR-only graph mode was removed.");
+        throw std::invalid_argument("graph_odometry: imu/enable must be true");
+    }
+
     // Graph factor registration / linearization settings (graph/factor/*), decoupled from the
     // single-frame align path's registration/* keys used by lidar_odometry / lidar_inertial_odometry.
     declare_graph_registration_parameters(this, this->params_);
@@ -60,6 +70,14 @@ void GraphOdometryBaseNode::initialize_processing() {
             "graph/convergence/translation", graph.convergence_translation));
         graph.convergence_rotation = static_cast<float>(
             this->declare_parameter<double>("graph/convergence/rotation", graph.convergence_rotation));
+        graph.convergence_velocity = static_cast<float>(this->declare_parameter<double>(
+            "graph/convergence/velocity", graph.convergence_velocity));
+        graph.convergence_bias = static_cast<float>(
+            this->declare_parameter<double>("graph/convergence/bias", graph.convergence_bias));
+        graph.max_step_velocity = static_cast<float>(this->declare_parameter<double>(
+            "graph/solver/max_step_velocity", graph.max_step_velocity));
+        graph.max_step_bias = static_cast<float>(this->declare_parameter<double>(
+            "graph/solver/max_step_bias", graph.max_step_bias));
         graph.relinearize_translation_thresh = static_cast<float>(this->declare_parameter<double>(
             "graph/relinearize/translation_threshold", graph.relinearize_translation_thresh));
         graph.relinearize_rotation_thresh = static_cast<float>(this->declare_parameter<double>(

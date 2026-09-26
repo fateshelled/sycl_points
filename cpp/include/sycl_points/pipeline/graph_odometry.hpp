@@ -54,7 +54,14 @@ public:
 
     explicit GraphOdometryPipeline(const GraphOdometryParams& params) {
         this->params_ = params;
-        if (this->params_.imu.enable && this->params_.imu.initial_alignment.enable) {
+        // Tightly-coupled graph LIO: IMU is mandatory. The LiDAR-only graph mode
+        // is intentionally removed (every keyframe node carries velocity and
+        // biases and every keyframe pair carries a preintegration edge).
+        if (!this->params_.imu.enable) {
+            throw std::invalid_argument(
+                "[Graph Odometry] tightly-coupled graph LIO requires imu/enable=true");
+        }
+        if (this->params_.imu.initial_alignment.enable) {
             const double need = static_cast<double>(this->params_.imu.initial_alignment.required_duration_sec) + 0.2;
             if (this->params_.imu.buffer_duration_sec < need) {
                 this->params_.imu.buffer_duration_sec = need;
@@ -217,6 +224,30 @@ public:
             this->imu_preintegration_->integrate_batch(this->imu_batch_);
         }
 
+        // Keyframe-to-keyframe preintegration edge: accumulate the newly elapsed
+        // interval [imu_edge_last_timestamp_, timestamp]. Boundary interpolation
+        // keeps the integrated span aligned with the LiDAR keyframe timestamps;
+        // a missing bracket skips the IMU edge for this frame.
+        bool imu_edge_window_complete = false;
+        if (this->imu_edge_source_id_ != algorithms::graph::INVALID_NODE_ID &&
+            this->imu_edge_last_timestamp_ > 0.0) {
+            std::vector<imu::IMUMeasurement> edge_batch;
+            {
+                std::lock_guard<std::mutex> lock(imu_mutex_);
+                imu::build_measurement_window(this->imu_buffer_, this->imu_edge_last_timestamp_, timestamp,
+                                              edge_batch);
+            }
+            constexpr double kTimestampToleranceSec = 1e-6;
+            imu_edge_window_complete =
+                edge_batch.size() >= 2 &&
+                std::abs(edge_batch.front().timestamp - this->imu_edge_last_timestamp_) <=
+                    kTimestampToleranceSec &&
+                std::abs(edge_batch.back().timestamp - timestamp) <= kTimestampToleranceSec;
+            if (imu_edge_window_complete) {
+                this->imu_edge_preintegration_->integrate_batch(edge_batch);
+            }
+        }
+
         // Graph optimization (local BA)
         algorithms::graph::GraphOptimization::FrameResult frame_result;
         {
@@ -309,9 +340,31 @@ public:
                             this->submap_dirty_ = false;
                         }
 
+                        algorithms::graph::GraphOptimization::ImuEdgeContext imu_edge;
+                        imu_edge.enable = imu_edge_window_complete &&
+                                          this->imu_edge_source_id_ != algorithms::graph::INVALID_NODE_ID;
+                        imu_edge.source_id = this->imu_edge_source_id_;
+                        imu_edge.preintegration = this->imu_edge_preintegration_;
+                        imu_edge.T_imu_to_lidar = this->params_.imu.T_imu_to_lidar;
+                        imu_edge.gravity = this->params_.imu.preintegration.gravity;
+                        Eigen::Vector3f tip_v = Eigen::Vector3f::Zero();
+                        Eigen::Vector3f tip_ba = this->imu_bias_.accel_bias;
+                        Eigen::Vector3f tip_bg = this->imu_bias_.gyro_bias;
+                        if (imu_edge.source_id != algorithms::graph::INVALID_NODE_ID) {
+                            if (auto src = this->graph_opt_->window().get_node(imu_edge.source_id)) {
+                                tip_v = src->velocity;
+                                tip_ba = src->accel_bias;
+                                tip_bg = src->gyro_bias;
+                            }
+                        }
+                        imu_edge.tip_velocity = tip_v;
+                        imu_edge.tip_accel_bias = tip_ba;
+                        imu_edge.tip_gyro_bias = tip_bg;
+                        imu_edge.add_nav_prior = true;
+
                         auto result = this->graph_opt_->process_frame(
                             source_cloud, this->submap_gen_cloud_, this->submap_gen_knn_, source_knn,
-                            init_T, timestamp, this->reg_params_, vu);
+                            init_T, timestamp, this->reg_params_, vu, imu_edge);
 
                         // The IMU preintegration basis must only advance on a
                         // usable pose; a failed solve keeps the previous basis
@@ -350,9 +403,33 @@ public:
             // Consume the scan's timestamp so the next frame's dt stays honest,
             // while the last good odometry / map / registration state is kept.
             this->last_frame_time_ = timestamp;
+            // The interval was integrated into the edge preintegrator (if its
+            // window was bracketed); keep accumulating from this boundary.
+            if (imu_edge_window_complete) this->imu_edge_last_timestamp_ = timestamp;
             return ResultType::error;
         }
         this->last_imu_reset_timestamp_ = timestamp;
+
+        // Tight-coupling lifecycle: the optimized tip carries the new velocity
+        // and bias estimate; a promoted keyframe becomes the next preintegration
+        // source, while a dropped tip keeps the source and accumulates onward.
+        if (auto tip = this->graph_opt_->window().get_node(frame_result.current_node_id)) {
+            this->imu_bias_.accel_bias = tip->accel_bias;
+            this->imu_bias_.gyro_bias = tip->gyro_bias;
+        }
+        if (frame_result.keyframe) {
+            auto tip = this->graph_opt_->window().get_node(frame_result.current_node_id);
+            if (tip) {
+                this->imu_edge_R_world_imu_ =
+                    tip->pose.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+                this->imu_edge_preintegration_->reset(
+                    this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), this->imu_edge_R_world_imu_);
+                this->imu_edge_source_id_ = tip->id;
+                this->imu_edge_last_timestamp_ = timestamp;
+            }
+        } else if (imu_edge_window_complete) {
+            this->imu_edge_last_timestamp_ = timestamp;
+        }
 
         // Submapping (mirrors lidar_odometry; uses the graph estimate as the pose)
         {
@@ -459,6 +536,14 @@ private:
     std::vector<imu::IMUMeasurement> imu_batch_;
     bool imu_window_complete_ = false;
 
+    // Keyframe-to-keyframe preintegration for the graph IMU edge. Reset when a
+    // node is promoted to a persistent keyframe; accumulates across dropped
+    // tips so the edge always spans the last kept keyframe -> current tip.
+    imu::IMUPreintegration::Ptr imu_edge_preintegration_ = nullptr;
+    algorithms::graph::NodeId imu_edge_source_id_ = algorithms::graph::INVALID_NODE_ID;
+    double imu_edge_last_timestamp_ = -1.0;
+    Eigen::Matrix3f imu_edge_R_world_imu_ = Eigen::Matrix3f::Identity();
+
     std::string error_message_;
     enum class ProcessName { preprocessing = 0, compute_covariances, refine_filter, graph_optimization, build_submap, velocity_deskew };
     const std::map<ProcessName, std::string> pn_map_ = {
@@ -524,6 +609,10 @@ private:
         solver_params.max_iterations = this->params_.graph.solver_iterations;
         solver_params.convergence_translation = this->params_.graph.convergence_translation;
         solver_params.convergence_rotation = this->params_.graph.convergence_rotation;
+        solver_params.convergence_velocity = this->params_.graph.convergence_velocity;
+        solver_params.convergence_bias = this->params_.graph.convergence_bias;
+        solver_params.max_step_velocity = this->params_.graph.max_step_velocity;
+        solver_params.max_step_bias = this->params_.graph.max_step_bias;
         solver_params.relinearize_translation_thresh = this->params_.graph.relinearize_translation_thresh;
         solver_params.relinearize_rotation_thresh = this->params_.graph.relinearize_rotation_thresh;
         solver_params.solver_damping_lambda = this->params_.graph.solver_damping_lambda;
@@ -569,30 +658,30 @@ private:
         this->clear_total_processing_times();
         this->motion_predictor_ = std::make_shared<lidar_odometry::MotionPredictor>(this->params_.motion_prediction);
         this->imu_bias_ = this->params_.imu.bias;
-        if (this->params_.imu.enable && this->params_.motion_prediction.mode != lidar_odometry::MotionPredictionMode::LIDAR_CV) {
-            this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
-            const Eigen::Matrix3f R_world_imu =
-                this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-            this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
-            this->imu_R_world_at_reset_ = R_world_imu;
-            this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
-        }
-        if (this->params_.imu.enable) {
-            this->alignment_estimator_ = std::make_shared<imu::InitialAlignmentEstimator>(
-                this->params_.imu.initial_alignment, this->params_.imu.preintegration.gravity,
-                this->params_.imu.T_imu_to_lidar);
-        }
+        const Eigen::Matrix3f R_world_imu =
+            this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+        // Prediction / deskew preintegration: re-seeded every usable frame (the
+        // existing behavior), keeping the motion predictor's relative-transform
+        // basis at the previous frame.
+        this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
+        this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
+        this->imu_R_world_at_reset_ = R_world_imu;
+        this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
+        // Edge preintegration: spans the last promoted keyframe -> current tip,
+        // resisting across dropped tips. Reset on keyframe promotion.
+        this->imu_edge_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
+        this->imu_edge_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
+        this->imu_edge_R_world_imu_ = R_world_imu;
+        this->imu_edge_source_id_ = algorithms::graph::INVALID_NODE_ID;
+        this->imu_edge_last_timestamp_ = -1.0;
+        this->alignment_estimator_ = std::make_shared<imu::InitialAlignmentEstimator>(
+            this->params_.imu.initial_alignment, this->params_.imu.preintegration.gravity,
+            this->params_.imu.T_imu_to_lidar);
         this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
 
-        // Tip-only velocity update (constant-velocity deskew + re-solve) is
-        // mutually exclusive with IMU deskew: both map the raw scan into the
-        // scan-reference body frame, so applying both would double-correct.
-        // Same guard as the LO pipeline (lidar_odometry.hpp).
-        this->graph_velocity_update_active_ = this->params_.graph.velocity_update.enable;
-        if (this->graph_velocity_update_active_ && this->is_imu_deskew_enabled()) {
-            std::cerr << "[Graph Odometry] VelocityUpdate is disabled because IMU deskew is enabled." << std::endl;
-            this->graph_velocity_update_active_ = false;
-        }
+        // The graph LIO path is IMU-driven: the constant-velocity tip update is
+        // removed (it is mutually exclusive with IMU deskew, which is mandatory).
+        this->graph_velocity_update_active_ = false;
     }
 
     void apply_initial_alignment(const imu::InitialAlignmentEstimator::Output& out) {
