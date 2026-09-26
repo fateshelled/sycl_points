@@ -8,6 +8,7 @@
 #include <Eigen/Geometry>
 
 #include "sycl_points/algorithms/graph/gicp_factor.hpp"
+#include "sycl_points/algorithms/graph/bootstrap_state_prior_factor.hpp"
 #include "sycl_points/algorithms/graph/graph_solver.hpp"
 #include "sycl_points/algorithms/graph/imu_preintegration_factor.hpp"
 #include "sycl_points/algorithms/graph/nav_state_prior_factor.hpp"
@@ -102,6 +103,7 @@ public:
         float nav_prior_sigma_velocity = 1.0f;     ///< [m/s]
         float nav_prior_sigma_accel_bias = 0.5f;   ///< [m/s^2]
         float nav_prior_sigma_gyro_bias = 0.1f;    ///< [rad/s]
+        float root_prior_sigma_pose = 1e-4f;
     };
 
     GraphOptimization(const sycl_utils::DeviceQueue& queue,
@@ -120,6 +122,8 @@ public:
     struct FrameResult {
         NodeId current_node_id = INVALID_NODE_ID;
         Eigen::Isometry3f current_pose;
+        NodeState current_state;
+        bool has_current_state = false;
         bool converged = false;
         size_t iterations = 0;
         float error = 0.0f;
@@ -175,6 +179,24 @@ public:
         std::shared_ptr<PointCloudShared> frozen_cloud = nullptr;
         double frozen_timestamp = 0.0;
     };
+
+    struct Checkpoint {
+        SlidingWindow::Checkpoint window;
+        Eigen::Isometry3f last_keyframe_pose = Eigen::Isometry3f::Identity();
+        double last_keyframe_time = -1.0;
+        bool has_keyframe = false;
+    };
+
+    Checkpoint checkpoint() const {
+        return {window_.checkpoint(), last_keyframe_pose_, last_keyframe_time_, has_keyframe_};
+    }
+
+    void restore(const Checkpoint& checkpoint) {
+        window_.restore(checkpoint.window);
+        last_keyframe_pose_ = checkpoint.last_keyframe_pose;
+        last_keyframe_time_ = checkpoint.last_keyframe_time;
+        has_keyframe_ = checkpoint.has_keyframe;
+    }
 
     /// @brief Apply the authoritative keyframe decision for the current tip.
     ///
@@ -265,10 +287,47 @@ public:
                               std::shared_ptr<knn::KNNBase> source_knn,
                               const Eigen::Isometry3f& initial_pose, double timestamp,
                               const registration::RegistrationParams& reg_params,
-                              const VelocityUpdateContext& vu,
-                              const ImuEdgeContext& imu) {
-        submap_ = std::move(submap_cloud);
-        submap_knn_ = std::move(submap_knn);
+                               const VelocityUpdateContext& vu,
+                               const ImuEdgeContext& imu) {
+        const auto checkpoint = this->checkpoint();
+        try {
+            return process_frame_impl(std::move(source_cloud), std::move(submap_cloud),
+                                      std::move(submap_knn), std::move(source_knn), initial_pose,
+                                      timestamp, reg_params, vu, imu, checkpoint);
+        } catch (...) {
+            this->restore(checkpoint);
+            throw;
+        }
+    }
+
+    NodeId add_bootstrap_node(const Eigen::Isometry3f& pose, double timestamp,
+                              std::shared_ptr<PointCloudShared> cloud,
+                              std::shared_ptr<knn::KNNBase> knn,
+                              const NodeState& state,
+                              const ImuEdgeContext& prior) {
+        const NodeId id = window_.add_node(pose, timestamp, std::move(cloud), std::move(knn),
+                                           state.velocity, state.accel_bias, state.gyro_bias);
+        auto node = window_.get_node(id);
+        NodeState reference = state;
+        reference.pose = pose;
+        window_.add_factor(std::make_shared<BootstrapStatePriorFactor>(
+            node, reference, prior.root_prior_sigma_pose, prior.nav_prior_sigma_velocity,
+            prior.nav_prior_sigma_accel_bias, prior.nav_prior_sigma_gyro_bias));
+        last_keyframe_pose_ = pose;
+        last_keyframe_time_ = timestamp;
+        has_keyframe_ = true;
+        return id;
+    }
+
+private:
+    FrameResult process_frame_impl(std::shared_ptr<PointCloudShared> source_cloud,
+                                   std::shared_ptr<const PointCloudShared> submap_cloud,
+                                   std::shared_ptr<const knn::KNNBase> submap_knn,
+                                   std::shared_ptr<knn::KNNBase> source_knn,
+                                   const Eigen::Isometry3f& initial_pose, double timestamp,
+                                   const registration::RegistrationParams& reg_params,
+                                   const VelocityUpdateContext& vu, const ImuEdgeContext& imu,
+                                   const Checkpoint& checkpoint) {
 
         // 1. Add the new scan as a node (with its own kNN for future binary factors).
         NodeId current_id = window_.add_node(initial_pose, timestamp, source_cloud, std::move(source_knn));
@@ -294,7 +353,7 @@ public:
         current_node->linearization_accel_bias = imu.tip_accel_bias;
         current_node->linearization_gyro_bias = imu.tip_gyro_bias;
         auto unary_factor = std::make_shared<UnaryGicpFactor>(
-            queue_, current_id, current_node, submap_, submap_knn_, reg_params);
+            queue_, current_id, current_node, submap_cloud, submap_knn, reg_params);
         window_.add_factor(unary_factor);
 
         // 2b. Binary GICP factors: current <-> each existing active window node.
@@ -353,11 +412,6 @@ public:
             bool first_pass = true;
             bool deskew_stopped = false;
             bool frame_valid = true;
-            // Snapshots for failure recovery: a failed system may have already
-            // applied partial Gauss-Newton updates to every node's full state.
-            std::vector<NodeState, Eigen::aligned_allocator<NodeState>> pre_solve_states;
-            pre_solve_states.reserve(window_.active_nodes().size());
-            for (const auto& n : window_.active_nodes()) pre_solve_states.push_back(n->state());
             for (size_t rung = 0; rung < rungs && !deskew_stopped; ++rung) {
                 const float rung_scale = robust.enable ? robust_ladder_scale_at_level(robust, rung) : 0.0f;
                 for (size_t v = 0; v < vu_rounds; ++v) {
@@ -402,22 +456,7 @@ public:
             if (!frame_valid) {
                 // End-of-frame robust bookkeeping still applies to the surviving
                 // factors (they lock their last used scale either way).
-                window_.finalize_robust();
-                // Frame-local rollback contract on solver failure:
-                // - restored: poses of the surviving nodes (the failed solve may
-                //   have applied partial Gauss-Newton updates to them)
-                // - discarded: the failed tip node and every factor incident to it
-                // - retained: sparse-chain bookkeeping already committed for older
-                //   nodes (prune_point_cloud_binaries ran before the solve; the
-                //   chain conversion reflects the committed pre-solve estimates)
-                const auto& nodes = window_.active_nodes();
-                for (size_t i = 0; i < nodes.size() && i < pre_solve_states.size(); ++i) {
-                    nodes[i]->pose = pre_solve_states[i].pose;
-                    nodes[i]->velocity = pre_solve_states[i].velocity;
-                    nodes[i]->accel_bias = pre_solve_states[i].accel_bias;
-                    nodes[i]->gyro_bias = pre_solve_states[i].gyro_bias;
-                }
-                window_.remove_node(current_id);
+                this->restore(checkpoint);
                 fr.current_node_id = INVALID_NODE_ID;
                 fr.current_pose = initial_pose;
                 fr.tip_cloud = nullptr;
@@ -437,6 +476,10 @@ public:
         // 4. Keyframe gate: keep the solved tip pose, then decide persistence.
         auto cur = window_.get_node(current_id);
         fr.current_pose = cur ? cur->pose : initial_pose;
+        if (cur) {
+            fr.current_state = cur->state();
+            fr.has_current_state = true;
+        }
         fr.tip_cloud = cur ? cur->cloud : nullptr;
 
         // Tip inlier ratio from the last linearization of the tip's unary submap
@@ -498,6 +541,7 @@ public:
         return fr;
     }
 
+public:
     SlidingWindow& window() { return window_; }
     const SlidingWindow& window() const { return window_; }
 
@@ -514,9 +558,6 @@ private:
     GraphSolver solver_;
     SlidingWindow window_;
     Options opts_;
-
-    std::shared_ptr<const PointCloudShared> submap_;
-    std::shared_ptr<const knn::KNNBase> submap_knn_;
 
     Eigen::Isometry3f last_keyframe_pose_ = Eigen::Isometry3f::Identity();
     double last_keyframe_time_ = -1.0;

@@ -173,6 +173,31 @@ protected:
     sycl_utils::DeviceQueue queue = make_queue();
 };
 
+TEST_F(GraphLioTest, BootstrapNodeHasOneFullStateAnchor) {
+    std::mt19937 gen(5);
+    auto cloud = make_cube_cloud(queue, 200, 0.5f, gen);
+    auto cloud_knn = knn::KDTree::build(queue, *cloud);
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
+
+    graph::NodeState state;
+    state.pose.translation() = Eigen::Vector3f(1.0f, -2.0f, 0.5f);
+    state.velocity = Eigen::Vector3f(0.2f, 0.1f, -0.1f);
+    state.accel_bias = Eigen::Vector3f(0.01f, 0.0f, -0.02f);
+    state.gyro_bias = Eigen::Vector3f(0.001f, -0.002f, 0.0f);
+
+    graph::GraphOptimization::ImuEdgeContext prior;
+    const graph::NodeId root = opt.add_bootstrap_node(
+        state.pose, 1.0, cloud, cloud_knn, state, prior);
+
+    ASSERT_NE(root, graph::INVALID_NODE_ID);
+    ASSERT_EQ(opt.window().window_size(), 1u);
+    ASSERT_EQ(opt.window().factors().size(), 1u);
+    EXPECT_TRUE(opt.window().factors().front()->uses_full_state());
+    const auto linearization = opt.window().factors().front()->linearize(queue);
+    EXPECT_GT((linearization.H00_full.topLeftCorner<6, 6>().trace()), 0.0f);
+    EXPECT_GT((linearization.H00_full.bottomRightCorner<9, 9>().trace()), 0.0f);
+}
+
 // The solver selects the 15-DOF layout when a full-state factor is present and
 // converges to a consistent set of states.
 TEST_F(GraphLioTest, SolverConvergesWithFullStateFactors) {
@@ -322,6 +347,7 @@ TEST_F(GraphLioTest, GraphOptimizationAttachesImuEdgeAndSeedsNavState) {
     auto fr2 = opt.process_frame(cloud, submap, submap_knn, knn2, Eigen::Isometry3f::Identity(), 0.3,
                                  gicp_params(), graph::GraphOptimization::VelocityUpdateContext(), imu_edge);
     EXPECT_TRUE(fr2.solver_valid());
+    ASSERT_TRUE(fr2.has_current_state);
 
     bool has_full_state_factor = false;
     for (const auto& f : opt.window().factors()) {
@@ -333,6 +359,8 @@ TEST_F(GraphLioTest, GraphOptimizationAttachesImuEdgeAndSeedsNavState) {
     EXPECT_TRUE(tip->velocity.allFinite());
     EXPECT_TRUE(tip->accel_bias.allFinite());
     EXPECT_TRUE(tip->gyro_bias.allFinite());
+    EXPECT_TRUE(fr2.current_state.pose.matrix().isApprox(tip->pose.matrix(), 1e-6f));
+    EXPECT_TRUE(fr2.current_state.velocity.isApprox(tip->velocity, 1e-6f));
 }
 
 }  // namespace

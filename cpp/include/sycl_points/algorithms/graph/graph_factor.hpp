@@ -57,6 +57,17 @@ class GraphFactorBase {
 public:
     using Ptr = std::shared_ptr<GraphFactorBase>;
 
+    struct RuntimeState {
+        std::optional<FactorLinearization> cached_linearization;
+        bool annealing = false;
+        bool force_relinearize_on_scale = false;
+        bool last_get_relinearized = false;
+        float last_scale = 0.0f;
+        float frozen_scale = 0.0f;
+
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    };
+
     virtual ~GraphFactorBase() = default;
 
     /// @brief Linearize the factor at the current node estimates.
@@ -187,6 +198,20 @@ public:
     ///        cached weights sleep until the pose threshold trips. Only affects
     ///        the per-frame tip group; frozen factors are untouched.
     void set_robust_force_mode(bool on) { force_relin_on_scale_ = on; }
+
+    RuntimeState runtime_state() const {
+        return {cached_lin_, annealing_, force_relin_on_scale_, last_get_relinearized_, last_scale_,
+                frozen_scale_};
+    }
+
+    void restore_runtime_state(const RuntimeState& state) {
+        cached_lin_ = state.cached_linearization;
+        annealing_ = state.annealing;
+        force_relin_on_scale_ = state.force_relinearize_on_scale;
+        last_get_relinearized_ = state.last_get_relinearized;
+        last_scale_ = state.last_scale;
+        frozen_scale_ = state.frozen_scale;
+    }
 
 protected:
     /// @brief Mark this factor as participating in the robust ladder (called by

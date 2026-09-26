@@ -2526,13 +2526,9 @@ TEST_F(GraphTopologyTest, CliqueModeKeepsLegacyStructure) {
     }
 }
 
-// A solver failure (non-finite system) must abort the frame: remaining
-// ladder/velocity rounds stop, the failed tip is discarded and the surviving
-// poses are restored (frame-local rollback), and the FrameResult reports the
-// invalid status so the pipeline can discard the frame instead of updating the
-// map / odometry. Sparse-chain bookkeeping committed before the solve is
-// intentionally retained.
-TEST_F(GraphTopologyTest, ProcessFrameDiscardsFailedTipAndRestoresPoses) {
+// A solver failure must restore the entire pre-frame graph transaction,
+// including sparse-chain topology, node IDs, and factor runtime state.
+TEST_F(GraphTopologyTest, ProcessFrameInvalidSolveRollsBackEntireTransaction) {
     std::mt19937 gen(7);
     std::shared_ptr<knn::KNNBase> submap_knn;
     auto submap = make_submap(gen, submap_knn);
@@ -2555,35 +2551,23 @@ TEST_F(GraphTopologyTest, ProcessFrameDiscardsFailedTipAndRestoresPoses) {
     // This frame's prune (n=3) first converts the (node0, node1) adjacent pair
     // into a chain RelativePoseFactor; that bookkeeping predates the solve.
     opt.window().add_factor(std::make_shared<NonFiniteHessianFactor>(opt.window().get_node(node0)));
+    const auto factors_before = opt.window().factors();
     auto fr = feed_frame(opt, submap, submap_knn, step, 0.2);
 
     EXPECT_FALSE(fr.solver_valid());
     EXPECT_EQ(fr.solver_status, graph::GraphSolver::Status::NON_FINITE_SYSTEM);
     EXPECT_EQ(fr.current_node_id, graph::INVALID_NODE_ID);
+    EXPECT_FALSE(fr.has_current_state);
     EXPECT_EQ(fr.tip_cloud, nullptr);
 
-    // Frame-local rollback: the failed tip is gone, the surviving nodes keep
-    // their pre-frame poses, and the injected factor remains. The sparse-chain
-    // conversion committed before the solve (the (node0, node1) chain
-    // RelativePoseFactor) is retained on purpose.
     auto& w = opt.window();
     EXPECT_EQ(w.window_size(), nodes_before);
     EXPECT_EQ(w.get_node(node0)->id, node0);
     EXPECT_TRUE(w.get_node(node0)->pose.matrix().isApprox(pose0_before.matrix(), 1e-6f));
-    size_t chain_factors = 0;
-    for (const auto& f : w.factors()) {
-        if (auto chain = std::dynamic_pointer_cast<const graph::RelativePoseFactor>(f)) {
-            ++chain_factors;
-            // The conversion inherits the GICP-derived anisotropic information
-            // from the binary's cached linearization (cache existed here), not
-            // the isotropic sigma model.
-            EXPECT_TRUE(chain->information().allFinite());
-            EXPECT_GT(chain->information().trace(), 0.0f);
-            EXPECT_FALSE(chain->information().isApprox(
-                graph::RelativePoseFactor::make_information(graph::RelativePoseParams()), 1e-3f));
-        }
+    ASSERT_EQ(w.factors().size(), factors_before.size());
+    for (size_t i = 0; i < factors_before.size(); ++i) {
+        EXPECT_EQ(w.factors()[i].get(), factors_before[i].get());
     }
-    EXPECT_EQ(chain_factors, 1u);
 
     // Recovery: dropping the offending node (and the injected factor with it)
     // makes the next frame solve normally again.
@@ -2591,6 +2575,7 @@ TEST_F(GraphTopologyTest, ProcessFrameDiscardsFailedTipAndRestoresPoses) {
     auto fr2 = feed_frame(opt, submap, submap_knn, step, 0.3);
     EXPECT_TRUE(fr2.converged);
     EXPECT_EQ(fr2.solver_status, graph::GraphSolver::Status::CONVERGED);
+    EXPECT_EQ(fr2.current_node_id, 2u);
 }
 
 // Keyframe gate: with small steps and a gate that fires only on accumulated

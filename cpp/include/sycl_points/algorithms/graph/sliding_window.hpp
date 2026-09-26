@@ -73,7 +73,49 @@ public:
         float max_lambda_used = 0.0f;  ///< largest lambda actually attempted
     };
 
+    struct Checkpoint {
+        NodeId next_id = 0;
+        std::vector<std::shared_ptr<PoseNode>> nodes;
+        std::vector<PoseNode, Eigen::aligned_allocator<PoseNode>> node_values;
+        std::vector<std::shared_ptr<GraphFactorBase>> factors;
+        std::vector<GraphFactorBase::RuntimeState,
+                    Eigen::aligned_allocator<GraphFactorBase::RuntimeState>> factor_runtime;
+        MarginalizationPrior prior;
+        MarginalizationDiagnostics diagnostics;
+    };
+
     const MarginalizationDiagnostics& marginalization_diagnostics() const { return marg_diag_; }
+
+    Checkpoint checkpoint() const {
+        Checkpoint result;
+        result.next_id = next_id_;
+        result.nodes = nodes_;
+        result.node_values.reserve(nodes_.size());
+        for (const auto& node : nodes_) result.node_values.push_back(*node);
+        result.factors = factors_;
+        result.factor_runtime.reserve(factors_.size());
+        for (const auto& factor : factors_) result.factor_runtime.push_back(factor->runtime_state());
+        result.prior = prior_;
+        result.diagnostics = marg_diag_;
+        return result;
+    }
+
+    void restore(const Checkpoint& checkpoint) {
+        next_id_ = checkpoint.next_id;
+        nodes_ = checkpoint.nodes;
+        for (size_t i = 0; i < nodes_.size(); ++i) *nodes_[i] = checkpoint.node_values[i];
+        factors_ = checkpoint.factors;
+        for (size_t i = 0; i < factors_.size(); ++i) {
+            factors_[i]->restore_runtime_state(checkpoint.factor_runtime[i]);
+            // Device-side correspondence buffers are factor-specific scratch and
+            // cannot be snapshotted cheaply. Invalidate the restored host model
+            // so the next solve rebuilds a matching cache deterministically.
+            factors_[i]->clear_cache();
+        }
+        prior_ = checkpoint.prior;
+        marg_diag_ = checkpoint.diagnostics;
+        nodes_by_id_.clear();
+    }
 
     /// @brief Frozen robust scale marginalization linearizes with. Should be the
     ///        final robust ladder rung's scale (GraphSolverParams::RobustSchedule

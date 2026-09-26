@@ -47,9 +47,17 @@ public:
         success = 0,
         first_frame,
         waiting_initial_alignment,
+        imu_only,
         error = 100,
         old_timestamp,
-        small_number_of_points
+        small_number_of_points,
+        insufficient_imu_coverage
+    };
+
+    enum class IMUCoverage : std::int8_t {
+        ready,
+        waiting_for_future,
+        start_expired,
     };
 
     explicit GraphOdometryPipeline(const GraphOdometryParams& params) {
@@ -60,6 +68,30 @@ public:
         if (!this->params_.imu.enable) {
             throw std::invalid_argument(
                 "[Graph Odometry] tightly-coupled graph LIO requires imu/enable=true");
+        }
+        if (!this->params_.imu.initial_alignment.enable || !this->params_.imu.deskew.enable ||
+            this->params_.motion_prediction.mode != lidar_odometry::MotionPredictionMode::IMU_SE3) {
+            throw std::invalid_argument(
+                "[Graph Odometry] graph LIO requires initial alignment, IMU deskew, and IMU_SE3 prediction");
+        }
+        const auto& p = this->params_.imu.preintegration;
+        if (!std::isfinite(p.gyro_noise_density) || p.gyro_noise_density <= 0.0f ||
+            !std::isfinite(p.accel_noise_density) || p.accel_noise_density <= 0.0f ||
+            !std::isfinite(p.gyro_bias_rw_density) || p.gyro_bias_rw_density <= 0.0f ||
+            !std::isfinite(p.accel_bias_rw_density) || p.accel_bias_rw_density <= 0.0f) {
+            throw std::invalid_argument("[Graph Odometry] IMU noise densities must be finite and positive");
+        }
+        const auto& lio = this->params_.graph.lio;
+        if (!std::isfinite(lio.timestamp_tolerance_sec) || lio.timestamp_tolerance_sec <= 0.0 ||
+            !std::isfinite(lio.max_edge_duration_sec) || lio.max_edge_duration_sec <= 0.0 ||
+            lio.max_edge_samples == 0 || !std::isfinite(lio.root_prior_sigma_velocity) ||
+            !std::isfinite(lio.root_prior_sigma_pose) || lio.root_prior_sigma_pose <= 0.0f ||
+            lio.root_prior_sigma_velocity <= 0.0f ||
+            !std::isfinite(lio.root_prior_sigma_accel_bias) ||
+            lio.root_prior_sigma_accel_bias <= 0.0f ||
+            !std::isfinite(lio.root_prior_sigma_gyro_bias) ||
+            lio.root_prior_sigma_gyro_bias <= 0.0f) {
+            throw std::invalid_argument("[Graph Odometry] graph LIO limits and prior sigmas must be positive");
         }
         if (this->params_.imu.initial_alignment.enable) {
             const double need = static_cast<double>(this->params_.imu.initial_alignment.required_duration_sec) + 0.2;
@@ -112,6 +144,30 @@ public:
         return this->imu_buffer_;
     }
 
+    IMUCoverage get_imu_coverage(double start_timestamp, double end_timestamp) const {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+        return classify_imu_coverage_locked(start_timestamp, end_timestamp);
+    }
+
+    IMUCoverage get_frame_imu_coverage(double frame_timestamp) const {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+        if (is_first_frame_) return IMUCoverage::ready;
+        IMUCoverage coverage = classify_imu_coverage_locked(state_timestamp_, frame_timestamp);
+        coverage = combine_imu_coverage(
+            coverage, classify_imu_coverage_locked(imu_edge_last_timestamp_, frame_timestamp));
+        return coverage;
+    }
+
+    static IMUCoverage combine_imu_coverage(IMUCoverage lhs, IMUCoverage rhs) {
+        if (lhs == IMUCoverage::start_expired || rhs == IMUCoverage::start_expired) {
+            return IMUCoverage::start_expired;
+        }
+        if (lhs == IMUCoverage::waiting_for_future || rhs == IMUCoverage::waiting_for_future) {
+            return IMUCoverage::waiting_for_future;
+        }
+        return IMUCoverage::ready;
+    }
+
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
         this->error_message_.clear();
 
@@ -133,6 +189,10 @@ public:
                 this->error_message_ = "old timestamp";
                 return ResultType::old_timestamp;
             }
+        }
+        if (!this->is_first_frame_ && this->get_frame_imu_coverage(timestamp) != IMUCoverage::ready) {
+            this->error_message_ = "IMU measurements do not bracket the graph LIO frame interval";
+            return ResultType::insufficient_imu_coverage;
         }
         this->clear_current_processing_time();
 
@@ -175,7 +235,9 @@ public:
             this->add_delta_time(ProcessName::refine_filter, dt);
         }
 
-        if (this->preprocessed_pc_->size() <= this->params_.graph.registration.min_num_points) {
+        const bool insufficient_points =
+            this->preprocessed_pc_->size() <= this->params_.graph.registration.min_num_points;
+        if (this->is_first_frame_ && insufficient_points) {
             this->error_message_ = "point cloud size is too small";
             return ResultType::small_number_of_points;
         }
@@ -184,9 +246,25 @@ public:
         if (this->is_first_frame_) {
             try {
                 this->submap_->add_first_frame(*this->preprocessed_pc_, timestamp, this->odom_);
-                // The first frame lives in the Submap only. The next optimized
-                // frame is judged relative to this state by Submap::add_frame,
-                // which is also the authoritative graph retention decision.
+                auto root_cloud = std::make_shared<PointCloudShared>(*this->preprocessed_pc_);
+                auto root_knn = algorithms::knn::KDTree::build(*this->queue_ptr_, *root_cloud);
+                algorithms::graph::NodeState root_state;
+                root_state.pose = this->odom_;
+                root_state.velocity = Eigen::Vector3f::Zero();
+                root_state.accel_bias = this->imu_bias_.accel_bias;
+                root_state.gyro_bias = this->imu_bias_.gyro_bias;
+                algorithms::graph::GraphOptimization::ImuEdgeContext root_prior;
+                root_prior.root_prior_sigma_pose = this->params_.graph.lio.root_prior_sigma_pose;
+                root_prior.nav_prior_sigma_velocity = this->params_.graph.lio.root_prior_sigma_velocity;
+                root_prior.nav_prior_sigma_accel_bias =
+                    this->params_.graph.lio.root_prior_sigma_accel_bias;
+                root_prior.nav_prior_sigma_gyro_bias =
+                    this->params_.graph.lio.root_prior_sigma_gyro_bias;
+                this->imu_edge_source_id_ = this->graph_opt_->add_bootstrap_node(
+                    this->odom_, timestamp, root_cloud, root_knn, root_state, root_prior);
+                this->nav_state_ = root_state;
+                this->state_timestamp_ = timestamp;
+                this->imu_edge_last_timestamp_ = timestamp;
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
@@ -206,23 +284,20 @@ public:
             return ResultType::first_frame;
         }
 
-        // IMU preintegration for the current window
-        if (this->imu_preintegration_) {
-            this->imu_batch_.clear();
-            {
-                std::lock_guard<std::mutex> lock(imu_mutex_);
-                this->imu_batch_.reserve(this->imu_buffer_.size());
-                imu::build_measurement_window(this->imu_buffer_, this->last_imu_reset_timestamp_, timestamp,
-                                              this->imu_batch_);
-            }
-            constexpr double kTimestampToleranceSec = 1e-6;
-            this->imu_window_complete_ =
-                this->imu_batch_.size() >= 2 &&
-                std::abs(this->imu_batch_.front().timestamp - this->last_imu_reset_timestamp_) <=
-                    kTimestampToleranceSec &&
-                std::abs(this->imu_batch_.back().timestamp - timestamp) <= kTimestampToleranceSec;
-            this->imu_preintegration_->integrate_batch(this->imu_batch_);
+        // Candidate integrations are rebuilt from committed boundaries for every
+        // attempted frame. A failed frame therefore cannot leave samples in a
+        // persistent accumulator and cannot cause duplicate integration later.
+        this->imu_preintegration_->reset(
+            this->current_bias(), Eigen::Matrix<float, 15, 15>::Zero(),
+            this->nav_state_.pose.rotation() * this->params_.imu.T_imu_to_lidar.rotation());
+        this->imu_batch_.clear();
+        {
+            std::lock_guard<std::mutex> lock(imu_mutex_);
+            imu::build_measurement_window(this->imu_buffer_, this->state_timestamp_, timestamp,
+                                          this->imu_batch_);
         }
+        this->imu_preintegration_->integrate_batch(this->imu_batch_);
+        this->imu_window_complete_ = this->imu_preintegration_->get_dt_total() > 0.0;
 
         // Keyframe-to-keyframe preintegration edge: accumulate the newly elapsed
         // interval [imu_edge_last_timestamp_, timestamp]. Boundary interpolation
@@ -237,51 +312,42 @@ public:
                 imu::build_measurement_window(this->imu_buffer_, this->imu_edge_last_timestamp_, timestamp,
                                               edge_batch);
             }
-            constexpr double kTimestampToleranceSec = 1e-6;
             imu_edge_window_complete =
                 edge_batch.size() >= 2 &&
                 std::abs(edge_batch.front().timestamp - this->imu_edge_last_timestamp_) <=
-                    kTimestampToleranceSec &&
-                std::abs(edge_batch.back().timestamp - timestamp) <= kTimestampToleranceSec;
-            if (imu_edge_window_complete) {
+                    this->params_.graph.lio.timestamp_tolerance_sec &&
+                std::abs(edge_batch.back().timestamp - timestamp) <=
+                    this->params_.graph.lio.timestamp_tolerance_sec;
+            auto source = this->graph_opt_->window().get_node(this->imu_edge_source_id_);
+            if (imu_edge_window_complete && source) {
+                imu::IMUBias source_bias;
+                source_bias.accel_bias = source->accel_bias;
+                source_bias.gyro_bias = source->gyro_bias;
+                const Eigen::Matrix3f R_world_imu =
+                    source->pose.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
+                this->imu_edge_preintegration_->reset(
+                    source_bias, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
                 this->imu_edge_preintegration_->integrate_batch(edge_batch);
             }
         }
 
+        if (!imu_edge_window_complete || !this->imu_window_complete_) {
+            this->error_message_ = "IMU measurements do not bracket the graph LIO frame interval";
+            return ResultType::insufficient_imu_coverage;
+        }
+
+        const algorithms::graph::NodeState predicted_state = this->predict_nav_state();
+        if (insufficient_points) return this->process_imu_only(predicted_state, timestamp);
+
         // Graph optimization (local BA)
         algorithms::graph::GraphOptimization::FrameResult frame_result;
+        const auto graph_checkpoint = this->graph_opt_->checkpoint();
         {
             double dt = 0.0;
             try {
                 frame_result = time_utils::measure_execution(
                     [&]() {
-                        Eigen::Vector3f v_reset = Eigen::Vector3f::Zero();
-                        const bool has_imu_prediction = this->imu_preintegration_ && this->imu_window_complete_ &&
-                                                        this->imu_preintegration_->get_dt_total() > 0.0;
-
-                        lidar_odometry::MotionPredictionCandidates candidates;
-                        if (has_imu_prediction) {
-                            const Eigen::Matrix3f delta_R_imu =
-                                this->imu_preintegration_->get_corrected(this->imu_bias_).Delta_R;
-                            const Eigen::Matrix3f& R_i2l = this->params_.imu.T_imu_to_lidar.rotation();
-                            candidates.gyro_delta_rotation_lidar = R_i2l * delta_R_imu * R_i2l.transpose();
-                            if (this->params_.motion_prediction.mode ==
-                                lidar_odometry::MotionPredictionMode::IMU_SE3) {
-                                candidates.imu_se3_pose = this->imu_motion_prediction();
-                            }
-                        }
-
-                        const Eigen::Isometry3f init_T = this->motion_predictor_->predict(
-                            this->linear_velocity_, this->angular_velocity_, this->odom_, this->dt_,
-                            this->reg_result_, this->registrated_, candidates);
-
-                        if (this->imu_preintegration_ &&
-                            this->params_.motion_prediction.mode ==
-                                lidar_odometry::MotionPredictionMode::IMU_SE3) {
-                            v_reset = this->imu_velocity_corrector_.get_reset_velocity(
-                                *this->imu_preintegration_, this->imu_bias_,
-                                this->prev_odom_.rotation() * this->linear_velocity_);
-                        }
+                        const Eigen::Isometry3f init_T = predicted_state.pose;
 
                         // Deep-copy and sample the raw source once. As in the LO
                         // RegistrationPipeline, velocity-update rounds must deskew the
@@ -347,36 +413,15 @@ public:
                         imu_edge.preintegration = this->imu_edge_preintegration_;
                         imu_edge.T_imu_to_lidar = this->params_.imu.T_imu_to_lidar;
                         imu_edge.gravity = this->params_.imu.preintegration.gravity;
-                        Eigen::Vector3f tip_v = Eigen::Vector3f::Zero();
-                        Eigen::Vector3f tip_ba = this->imu_bias_.accel_bias;
-                        Eigen::Vector3f tip_bg = this->imu_bias_.gyro_bias;
-                        if (imu_edge.source_id != algorithms::graph::INVALID_NODE_ID) {
-                            if (auto src = this->graph_opt_->window().get_node(imu_edge.source_id)) {
-                                tip_v = src->velocity;
-                                tip_ba = src->accel_bias;
-                                tip_bg = src->gyro_bias;
-                            }
-                        }
-                        imu_edge.tip_velocity = tip_v;
-                        imu_edge.tip_accel_bias = tip_ba;
-                        imu_edge.tip_gyro_bias = tip_bg;
-                        imu_edge.add_nav_prior = true;
+                        imu_edge.tip_velocity = predicted_state.velocity;
+                        imu_edge.tip_accel_bias = predicted_state.accel_bias;
+                        imu_edge.tip_gyro_bias = predicted_state.gyro_bias;
+                        imu_edge.add_nav_prior = false;
 
                         auto result = this->graph_opt_->process_frame(
                             source_cloud, this->submap_gen_cloud_, this->submap_gen_knn_, source_knn,
                             init_T, timestamp, this->reg_params_, vu, imu_edge);
 
-                        // The IMU preintegration basis must only advance on a
-                        // usable pose; a failed solve keeps the previous basis
-                        // so the next frame can retry from the last good state.
-                        if (result.solver_valid() && this->imu_preintegration_) {
-                            this->imu_R_world_at_reset_ =
-                                result.current_pose.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-                            this->imu_v_world_at_reset_ = v_reset;
-                            this->imu_preintegration_->reset(this->imu_bias_,
-                                                             Eigen::Matrix<float, 15, 15>::Zero(),
-                                                             this->imu_R_world_at_reset_);
-                        }
                         return result;
                     },
                     dt);
@@ -400,43 +445,24 @@ public:
             this->error_message_ =
                 "graph_optimize: solver returned an invalid state; frame discarded";
             std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
-            // Consume the scan's timestamp so the next frame's dt stays honest,
-            // while the last good odometry / map / registration state is kept.
-            this->last_frame_time_ = timestamp;
-            // The interval was integrated into the edge preintegrator (if its
-            // window was bracketed); keep accumulating from this boundary.
-            if (imu_edge_window_complete) this->imu_edge_last_timestamp_ = timestamp;
             return ResultType::error;
         }
-        this->last_imu_reset_timestamp_ = timestamp;
 
         // Tight-coupling lifecycle: the optimized tip carries the new velocity
         // and bias estimate; a promoted keyframe becomes the next preintegration
         // source, while a dropped tip keeps the source and accumulates onward.
-        if (auto tip = this->graph_opt_->window().get_node(frame_result.current_node_id)) {
-            this->imu_bias_.accel_bias = tip->accel_bias;
-            this->imu_bias_.gyro_bias = tip->gyro_bias;
+        if (!frame_result.has_current_state) {
+            this->error_message_ = "graph_optimize: valid solve did not return an optimized tip state";
+            return ResultType::error;
         }
-        if (frame_result.keyframe) {
-            auto tip = this->graph_opt_->window().get_node(frame_result.current_node_id);
-            if (tip) {
-                this->imu_edge_R_world_imu_ =
-                    tip->pose.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-                this->imu_edge_preintegration_->reset(
-                    this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), this->imu_edge_R_world_imu_);
-                this->imu_edge_source_id_ = tip->id;
-                this->imu_edge_last_timestamp_ = timestamp;
-            }
-        } else if (imu_edge_window_complete) {
-            this->imu_edge_last_timestamp_ = timestamp;
-        }
-
+        const algorithms::graph::NodeState optimized_state = frame_result.current_state;
         // Submapping (mirrors lidar_odometry; uses the graph estimate as the pose)
         {
             double dt = 0.0;
             try {
                 time_utils::measure_execution([&]() { return this->submapping(frame_result, timestamp); }, dt);
             } catch (const std::exception& e) {
+                this->graph_opt_->restore(graph_checkpoint);
                 this->error_message_ = std::string("submapping: ") + e.what();
                 std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
                 return ResultType::error;
@@ -446,8 +472,18 @@ public:
 
         // update odometry / velocity
         {
+            this->nav_state_ = optimized_state;
+            this->state_timestamp_ = timestamp;
+            this->imu_bias_.accel_bias = this->nav_state_.accel_bias;
+            this->imu_bias_.gyro_bias = this->nav_state_.gyro_bias;
+            if (frame_result.keyframe) {
+                if (auto tip = this->graph_opt_->window().get_node(frame_result.current_node_id)) {
+                    this->imu_edge_source_id_ = tip->id;
+                    this->imu_edge_last_timestamp_ = timestamp;
+                }
+            }
             this->prev_odom_ = this->odom_;
-            this->odom_ = frame_result.current_pose;
+            this->odom_ = this->nav_state_.pose;
             this->last_frame_time_ = timestamp;
 
             const auto delta_pose = this->prev_odom_.inverse() * this->odom_;
@@ -455,12 +491,6 @@ public:
             this->linear_velocity_ = delta_pose.translation() / this->dt_;
             this->angular_velocity_ = Eigen::AngleAxisf(delta_angle_axis.angle() / this->dt_, delta_angle_axis.axis());
 
-            if (this->imu_preintegration_ && this->params_.motion_prediction.mode == lidar_odometry::MotionPredictionMode::IMU_SE3) {
-                const Eigen::Matrix3f R_world_imu_prev =
-                    this->prev_odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-                this->imu_velocity_corrector_.update(this->odom_.translation() - this->prev_odom_.translation(),
-                                                     R_world_imu_prev, this->params_.imu.preintegration.gravity);
-            }
             this->registrated_ = true;
         }
 
@@ -525,8 +555,9 @@ private:
     bool graph_velocity_update_active_ = false;
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
-    imu::IMUVelocityCorrector imu_velocity_corrector_;
     imu::IMUBias imu_bias_;
+    algorithms::graph::NodeState nav_state_;
+    double state_timestamp_ = -1.0;
     imu::InitialAlignmentEstimator::Ptr alignment_estimator_ = nullptr;
     std::deque<imu::IMUMeasurement> imu_buffer_;
     mutable std::mutex imu_mutex_;
@@ -573,6 +604,56 @@ private:
     }
 
     bool is_imu_deskew_enabled() const { return this->params_.imu.enable && this->params_.imu.deskew.enable; }
+
+    IMUCoverage classify_imu_coverage_locked(double start_timestamp, double end_timestamp) const {
+        if (start_timestamp < 0.0 || end_timestamp <= start_timestamp || this->imu_buffer_.empty()) {
+            return IMUCoverage::waiting_for_future;
+        }
+        if (this->imu_buffer_.front().timestamp > start_timestamp) return IMUCoverage::start_expired;
+        if (this->imu_buffer_.back().timestamp < end_timestamp) return IMUCoverage::waiting_for_future;
+        return IMUCoverage::ready;
+    }
+
+    imu::IMUBias current_bias() const {
+        imu::IMUBias bias;
+        bias.accel_bias = this->nav_state_.accel_bias;
+        bias.gyro_bias = this->nav_state_.gyro_bias;
+        return bias;
+    }
+
+    algorithms::graph::NodeState predict_nav_state() const {
+        const imu::IMUBias bias = this->current_bias();
+        const Eigen::Isometry3f T_world_imu_i =
+            this->nav_state_.pose * this->params_.imu.T_imu_to_lidar;
+        const TransformMatrix predicted_imu = this->imu_preintegration_->predict_transform(
+            T_world_imu_i.matrix(), this->nav_state_.velocity, bias);
+        Eigen::Isometry3f T_world_imu_j = Eigen::Isometry3f::Identity();
+        T_world_imu_j.matrix() = predicted_imu;
+
+        algorithms::graph::NodeState predicted = this->nav_state_;
+        predicted.pose = T_world_imu_j * this->params_.imu.T_imu_to_lidar.inverse();
+        const auto corrected = this->imu_preintegration_->get_corrected(bias);
+        predicted.velocity = this->nav_state_.velocity +
+                             this->params_.imu.preintegration.gravity *
+                                 static_cast<float>(corrected.dt_total) +
+                             T_world_imu_i.rotation() * corrected.Delta_v;
+        return predicted;
+    }
+
+    ResultType process_imu_only(const algorithms::graph::NodeState& predicted, double timestamp) {
+        if (!predicted.pose.matrix().allFinite() || !predicted.velocity.allFinite()) {
+            this->error_message_ = "IMU-only propagation produced a non-finite state";
+            return ResultType::error;
+        }
+        this->prev_odom_ = this->odom_;
+        this->nav_state_ = predicted;
+        this->state_timestamp_ = timestamp;
+        this->odom_ = predicted.pose;
+        this->last_frame_time_ = timestamp;
+        this->last_imu_reset_timestamp_ = timestamp;
+        this->error_message_ = "point cloud size is too small; propagated with IMU only";
+        return ResultType::imu_only;
+    }
 
     void initialize() {
         {
@@ -696,7 +777,14 @@ private:
     void preprocess(const PointCloudShared::Ptr scan) {
         if (this->is_imu_deskew_enabled()) {
             auto imu_buf_snapshot = this->get_imu_buffer();
-            this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf_snapshot, this->odom_);
+            algorithms::deskew::IMUDeskewStatus status;
+            const imu::IMUBias bias = this->is_first_frame_ ? this->imu_bias_ : this->current_bias();
+            const Eigen::Vector3f velocity =
+                this->is_first_frame_ ? Eigen::Vector3f::Zero() : this->nav_state_.velocity;
+            if (!this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf_snapshot, this->odom_,
+                                                       bias, velocity, &status)) {
+                throw std::runtime_error("IMU deskew requires complete timestamped IMU coverage");
+            }
         }
         this->pc_processor_->prefilter(*scan, *this->preprocessed_pc_);
     }
