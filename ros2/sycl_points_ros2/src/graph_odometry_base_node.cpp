@@ -121,15 +121,6 @@ void GraphOdometryBaseNode::initialize_processing() {
         graph.robust_default_scale = static_cast<float>(
             this->declare_parameter<double>("graph/robust/default_scale", graph.robust_default_scale));
         auto& lio = graph.lio;
-        lio.reintegrate_accel_bias_threshold = static_cast<float>(this->declare_parameter<double>(
-            "graph/lio/reintegration/accel_bias_threshold", lio.reintegrate_accel_bias_threshold));
-        lio.reintegrate_gyro_bias_threshold = static_cast<float>(this->declare_parameter<double>(
-            "graph/lio/reintegration/gyro_bias_threshold", lio.reintegrate_gyro_bias_threshold));
-        lio.source_rotation_rebase_threshold = static_cast<float>(this->declare_parameter<double>(
-            "graph/lio/reintegration/source_rotation_threshold", lio.source_rotation_rebase_threshold));
-        lio.max_edge_duration_sec = this->declare_parameter<double>(
-            "graph/lio/raw_imu/max_duration_sec", lio.max_edge_duration_sec);
-        lio.max_edge_samples = positive_size("graph/lio/raw_imu/max_samples", lio.max_edge_samples);
         lio.timestamp_tolerance_sec = this->declare_parameter<double>(
             "graph/lio/coverage/timestamp_tolerance_sec", lio.timestamp_tolerance_sec);
         lio.root_prior_sigma_pose = static_cast<float>(this->declare_parameter<double>(

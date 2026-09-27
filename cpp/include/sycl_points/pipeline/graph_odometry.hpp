@@ -80,8 +80,7 @@ public:
         }
         const auto& lio = this->params_.graph.lio;
         if (!std::isfinite(lio.timestamp_tolerance_sec) || lio.timestamp_tolerance_sec <= 0.0 ||
-            !std::isfinite(lio.max_edge_duration_sec) || lio.max_edge_duration_sec <= 0.0 ||
-            lio.max_edge_samples == 0 || !std::isfinite(lio.root_prior_sigma_velocity) ||
+            !std::isfinite(lio.root_prior_sigma_velocity) ||
             !std::isfinite(lio.root_prior_sigma_pose) || lio.root_prior_sigma_pose <= 0.0f ||
             lio.root_prior_sigma_velocity <= 0.0f ||
             !std::isfinite(lio.root_prior_sigma_accel_bias) ||

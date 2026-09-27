@@ -88,11 +88,6 @@ struct Parameters : public odometry::CommonParameters {
         Registration registration;
 
         struct LIO {
-            float reintegrate_accel_bias_threshold = 0.05f;
-            float reintegrate_gyro_bias_threshold = 0.01f;
-            float source_rotation_rebase_threshold = 0.02f;
-            double max_edge_duration_sec = 2.0;
-            size_t max_edge_samples = 4000;
             double timestamp_tolerance_sec = 1e-6;
             float root_prior_sigma_pose = 1e-4f;
             float root_prior_sigma_velocity = 0.1f;
