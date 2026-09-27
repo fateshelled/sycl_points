@@ -9,16 +9,13 @@
 #include <stdexcept>
 #include <vector>
 
-#include "sycl_points/algorithms/deskew/relative_pose_deskew.hpp"
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/graph/graph_optimization.hpp"
 #include "sycl_points/algorithms/imu/imu_initial_alignment.hpp"
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
-#include "sycl_points/algorithms/imu/imu_velocity_corrector.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
-#include "sycl_points/pipeline/motion_predictor.hpp"
 #include "sycl_points/pipeline/pointcloud_processing.hpp"
 #include "sycl_points/pipeline/submapping.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -183,9 +180,7 @@ public:
 
         if (this->last_frame_time_ > 0.0) {
             const float dt = static_cast<float>(timestamp - this->last_frame_time_);
-            if (dt > 0.0f) {
-                this->dt_ = dt;
-            } else {
+            if (dt <= 0.0f) {
                 this->error_message_ = "old timestamp";
                 return ResultType::old_timestamp;
             }
@@ -277,9 +272,6 @@ public:
                     this->odom_.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
                 std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
-                this->imu_R_world_at_reset_ = R_world_imu;
-                this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
-                this->last_imu_reset_timestamp_ = timestamp;
             }
             return ResultType::first_frame;
         }
@@ -349,10 +341,7 @@ public:
                     [&]() {
                         const Eigen::Isometry3f init_T = predicted_state.pose;
 
-                        // Deep-copy and sample the raw source once. As in the LO
-                        // RegistrationPipeline, velocity-update rounds must deskew the
-                        // same sampled point set; changing membership mid-optimization
-                        // changes both factor size and correspondences.
+                        // Deep-copy and sample the graph factor input once.
                         auto source_cloud = std::make_shared<PointCloudShared>(*this->preprocessed_pc_);
                         const auto& rs = this->params_.graph.registration.random_sampling;
                         if (rs.enable && source_cloud->size() > rs.num) {
@@ -371,30 +360,7 @@ public:
                             source_cloud = sampled;
                         }
 
-                        // VelocityUpdate iter 0: constant-velocity deskew of the tip scan
-                        // with the predicted pose (LO analog: VelocityUpdateAligner's first
-                        // deskew). Basis = (previous frame pose, predicted pose) over the
-                        // inter-scan duration.
-                        algorithms::graph::GraphOptimization::VelocityUpdateContext vu;
-                        vu.enable = this->graph_velocity_update_active_;
-                        vu.iterations = std::max<size_t>(1, this->params_.graph.velocity_update.iter);
-                        vu.prev_pose = this->prev_odom_;
-                        vu.dt = this->dt_;
-                        bool vu_active = false;
-                        if (vu.enable && source_cloud->has_timestamps() && this->dt_ > 0.0f) {
-                            vu.raw_source = source_cloud;
-                            auto deskewed = std::make_shared<PointCloudShared>(source_cloud->queue);
-                            if (algorithms::deskew::deskew_point_cloud_constant_velocity(
-                                    *source_cloud, *deskewed, this->prev_odom_, init_T, this->dt_)) {
-                                source_cloud = deskewed;
-                                vu_active = true;
-                            }
-                        }
-                        // With the velocity update the tip kNN is deferred: the tip's own
-                        // kNN is never read within its own frame, so process_frame builds
-                        // it once at keyframe promotion on the final deskewed cloud.
-                        std::shared_ptr<algorithms::knn::KNNBase> source_knn =
-                            vu_active ? nullptr : algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
+                        auto source_knn = algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
 
                         // Submap generations are immutable snapshots handed to the graph.
                         // In voxel mode the submap only changes when a keyframe is merged,
@@ -420,7 +386,8 @@ public:
 
                         auto result = this->graph_opt_->process_frame(
                             source_cloud, this->submap_gen_cloud_, this->submap_gen_knn_, source_knn,
-                            init_T, timestamp, this->reg_params_, vu, imu_edge);
+                            init_T, timestamp, this->reg_params_,
+                            algorithms::graph::GraphOptimization::VelocityUpdateContext(), imu_edge);
 
                         return result;
                     },
@@ -437,10 +404,8 @@ public:
         this->last_factor_input_ = frame_result.tip_cloud;
 
         // A solver failure (non-finite system / decomposition / unstable step)
-        // must not reach the map or odometry: the frame is discarded here, and
-        // the graph window has already restored its surviving poses and dropped
-        // the failed tip (frame-local rollback; committed sparse-chain
-        // bookkeeping is intentionally retained).
+        // must not reach the map or odometry. GraphOptimization restores the
+        // complete pre-frame topology, node state, factor runtime, and ID state.
         if (!frame_result.solver_valid()) {
             this->error_message_ =
                 "graph_optimize: solver returned an invalid state; frame discarded";
@@ -486,34 +451,6 @@ public:
             this->odom_ = this->nav_state_.pose;
             this->last_frame_time_ = timestamp;
 
-            const auto delta_pose = this->prev_odom_.inverse() * this->odom_;
-            const Eigen::AngleAxisf delta_angle_axis(delta_pose.rotation());
-            this->linear_velocity_ = delta_pose.translation() / this->dt_;
-            this->angular_velocity_ = Eigen::AngleAxisf(delta_angle_axis.angle() / this->dt_, delta_angle_axis.axis());
-
-            this->registrated_ = true;
-        }
-
-        // Velocity deskew of the published full-resolution cloud with the final
-        // pose (LO analog: lidar_odometry.hpp deskews preprocessed_pc_ in place
-        // after registration). The submap uses the tip node's deskewed snapshot;
-        // this keeps get_preprocessed_point_cloud() on the same basis.
-        if (this->graph_velocity_update_active_ && this->dt_ > 0.0f) {
-            double dt = 0.0;
-            try {
-                time_utils::measure_execution(
-                    [&]() {
-                        algorithms::deskew::deskew_point_cloud_constant_velocity(
-                            *this->preprocessed_pc_, *this->preprocessed_pc_, this->prev_odom_, this->odom_,
-                            this->dt_);
-                    },
-                    dt);
-            } catch (const std::exception& e) {
-                this->error_message_ = std::string("velocity deskew: ") + e.what();
-                std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
-                return ResultType::error;
-            }
-            this->add_delta_time(ProcessName::velocity_deskew, dt);
         }
         return ResultType::success;
     }
@@ -540,19 +477,11 @@ private:
     bool submap_dirty_ = true;
     algorithms::registration::RegistrationParams reg_params_;
 
-    bool registrated_ = false;
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
-    Eigen::Vector3f linear_velocity_;
-    Eigen::AngleAxisf angular_velocity_;
     Eigen::Isometry3f prev_odom_;
     Eigen::Isometry3f odom_;
     double last_frame_time_ = -1.0;
-    float dt_ = -1.0f;
     GraphOdometryParams params_;
-    lidar_odometry::MotionPredictor::Ptr motion_predictor_ = nullptr;
-    /// @brief Effective tip-only velocity update switch (graph.velocity_update.enable
-    /// AND not imu deskew). Set in initialize(); params_ itself is not mutated.
-    bool graph_velocity_update_active_ = false;
 
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     imu::IMUBias imu_bias_;
@@ -561,9 +490,6 @@ private:
     imu::InitialAlignmentEstimator::Ptr alignment_estimator_ = nullptr;
     std::deque<imu::IMUMeasurement> imu_buffer_;
     mutable std::mutex imu_mutex_;
-    double last_imu_reset_timestamp_ = -1.0;
-    Eigen::Matrix3f imu_R_world_at_reset_ = Eigen::Matrix3f::Identity();
-    Eigen::Vector3f imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
     std::vector<imu::IMUMeasurement> imu_batch_;
     bool imu_window_complete_ = false;
 
@@ -573,17 +499,15 @@ private:
     imu::IMUPreintegration::Ptr imu_edge_preintegration_ = nullptr;
     algorithms::graph::NodeId imu_edge_source_id_ = algorithms::graph::INVALID_NODE_ID;
     double imu_edge_last_timestamp_ = -1.0;
-    Eigen::Matrix3f imu_edge_R_world_imu_ = Eigen::Matrix3f::Identity();
 
     std::string error_message_;
-    enum class ProcessName { preprocessing = 0, compute_covariances, refine_filter, graph_optimization, build_submap, velocity_deskew };
+    enum class ProcessName { preprocessing = 0, compute_covariances, refine_filter, graph_optimization, build_submap };
     const std::map<ProcessName, std::string> pn_map_ = {
         {ProcessName::preprocessing, "1. preprocessing"},
         {ProcessName::compute_covariances, "2. compute covariances"},
         {ProcessName::refine_filter, "3. refine filter"},
         {ProcessName::graph_optimization, "4. graph optimization"},
         {ProcessName::build_submap, "5. build submap"},
-        {ProcessName::velocity_deskew, "6. velocity deskew"},
     };
     std::map<std::string, double> current_processing_time_;
     std::map<std::string, std::vector<double>> total_processing_times_;
@@ -650,7 +574,6 @@ private:
         this->state_timestamp_ = timestamp;
         this->odom_ = predicted.pose;
         this->last_frame_time_ = timestamp;
-        this->last_imu_reset_timestamp_ = timestamp;
         this->error_message_ = "point cloud size is too small; propagated with IMU only";
         return ResultType::imu_only;
     }
@@ -664,8 +587,6 @@ private:
         this->preprocessed_pc_ = std::make_shared<PointCloudShared>(*this->queue_ptr_);
         this->odom_ = this->params_.pose.initial;
         this->prev_odom_ = this->params_.pose.initial;
-        this->linear_velocity_ = Eigen::Vector3f::Zero();
-        this->angular_velocity_ = Eigen::AngleAxisf::Identity();
 
         this->pc_processor_ = std::make_shared<pointcloud_processing::PCProcessor>(
             *this->queue_ptr_, this->params_.scan, this->params_.covariance_estimation, this->params_.imu);
@@ -737,22 +658,17 @@ private:
             *this->queue_ptr_, solver_params, this->params_.graph.window_size, gopts);
 
         this->clear_total_processing_times();
-        this->motion_predictor_ = std::make_shared<lidar_odometry::MotionPredictor>(this->params_.motion_prediction);
         this->imu_bias_ = this->params_.imu.bias;
         const Eigen::Matrix3f R_world_imu =
             this->params_.pose.initial.rotation() * this->params_.imu.T_imu_to_lidar.rotation();
-        // Prediction / deskew preintegration: re-seeded every usable frame (the
-        // existing behavior), keeping the motion predictor's relative-transform
-        // basis at the previous frame.
+        // Prediction preintegration is rebuilt from the committed navigation
+        // state for every attempted frame.
         this->imu_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
         this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
-        this->imu_R_world_at_reset_ = R_world_imu;
-        this->imu_v_world_at_reset_ = Eigen::Vector3f::Zero();
-        // Edge preintegration: spans the last promoted keyframe -> current tip,
-        // resisting across dropped tips. Reset on keyframe promotion.
+        // Edge preintegration is rebuilt over the retained keyframe -> tip
+        // interval for each attempted frame.
         this->imu_edge_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
         this->imu_edge_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
-        this->imu_edge_R_world_imu_ = R_world_imu;
         this->imu_edge_source_id_ = algorithms::graph::INVALID_NODE_ID;
         this->imu_edge_last_timestamp_ = -1.0;
         this->alignment_estimator_ = std::make_shared<imu::InitialAlignmentEstimator>(
@@ -760,9 +676,6 @@ private:
             this->params_.imu.T_imu_to_lidar);
         this->reg_result_ = std::make_shared<algorithms::registration::RegistrationResult>();
 
-        // The graph LIO path is IMU-driven: the constant-velocity tip update is
-        // removed (it is mutually exclusive with IMU deskew, which is mandatory).
-        this->graph_velocity_update_active_ = false;
     }
 
     void apply_initial_alignment(const imu::InitialAlignmentEstimator::Output& out) {
@@ -819,19 +732,8 @@ private:
         this->pc_processor_->compute_covariances(*this->preprocessed_pc_, this->processing_ctx_);
     }
 
-    Eigen::Isometry3f imu_motion_prediction() {
-        const TransformMatrix T_imu_rel = this->imu_preintegration_->predict_relative_transform(
-            this->imu_R_world_at_reset_, this->imu_v_world_at_reset_, this->imu_bias_);
-        const Eigen::Isometry3f& T_i2l = this->params_.imu.T_imu_to_lidar;
-        Eigen::Isometry3f T_imu_rel_iso = Eigen::Isometry3f::Identity();
-        T_imu_rel_iso.linear() = T_imu_rel.block<3, 3>(0, 0);
-        T_imu_rel_iso.translation() = T_imu_rel.block<3, 1>(0, 3);
-        const Eigen::Isometry3f T_lidar_rel = T_i2l * T_imu_rel_iso * T_i2l.inverse();
-        return this->odom_ * T_lidar_rel;
-    }
-
     void submapping(algorithms::graph::GraphOptimization::FrameResult& frame_result, double timestamp) {
-        // graph/reg statistics for the adaptive motion predictor (unchanged).
+        // Keep registration statistics for diagnostics and ROS publication.
         *this->reg_result_ = frame_result.tip_registration;
         this->reg_result_->T = frame_result.current_pose;
         this->reg_result_->converged = frame_result.converged;
