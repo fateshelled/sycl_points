@@ -51,18 +51,20 @@ GraphOdometryNode::GraphOdometryNode(const rclcpp::NodeOptions& options)
 
 void GraphOdometryNode::point_cloud_callback(sensor_msgs::msg::PointCloud2::UniquePtr msg) {
     std::lock_guard<std::mutex> lock(pending_mutex_);
+    if (pipeline_->has_fatal_submap_error()) return;
     if (pending_point_clouds_.size() >= max_pending_point_clouds_) {
         pending_point_clouds_.pop_front();
         ++dropped_pending_point_clouds_;
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                             "Graph LIO backlog reached %zu frames; dropping oldest pending frame",
-                             max_pending_point_clouds_);
+                             "Graph LIO backlog reached %zu frames; dropping oldest pending frame (total dropped=%zu)",
+                             max_pending_point_clouds_, dropped_pending_point_clouds_);
     }
     pending_point_clouds_.push_back(std::move(msg));
     processing_timer_->reset();
 }
 
 void GraphOdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
+    if (pipeline_->has_fatal_submap_error()) return;
     imu::IMUMeasurement meas;
     meas.timestamp = rclcpp::Time(msg->header.stamp).seconds();
     meas.gyro =
@@ -76,6 +78,11 @@ void GraphOdometryNode::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg)
 
 void GraphOdometryNode::processing_timer_callback() {
     using IMUCoverage = pipeline::graph_odometry::GraphOdometryPipeline::IMUCoverage;
+    if (pipeline_->has_fatal_submap_error()) {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        processing_timer_->cancel();
+        return;
+    }
     if (active_point_cloud_ == nullptr) {
         {
             std::lock_guard<std::mutex> lock(pending_mutex_);
@@ -113,6 +120,14 @@ void GraphOdometryNode::processing_timer_callback() {
     }
 
     this->process_prepared_point_cloud_message(timestamp, active_frame_);
+    if (pipeline_->has_fatal_submap_error()) {
+        RCLCPP_FATAL(this->get_logger(), "%s", pipeline_->get_error_message().c_str());
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        processing_timer_->cancel();
+        pending_point_clouds_.clear();
+        active_point_cloud_.reset();
+        return;
+    }
     if (active_frame_.result == ResultType::success || active_frame_.result == ResultType::first_frame ||
         active_frame_.result == ResultType::imu_only) {
         this->publish_processed_frame(active_point_cloud_->header, active_frame_);

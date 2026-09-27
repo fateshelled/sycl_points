@@ -18,6 +18,7 @@
 #include "sycl_points/algorithms/imu/imu_preintegration.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/pipeline/graph_odometry.hpp"
 #include "sycl_points/utils/eigen_utils.hpp"
 #include "sycl_points/utils/sycl_utils.hpp"
 
@@ -172,6 +173,43 @@ class GraphLioTest : public ::testing::Test {
 protected:
     sycl_utils::DeviceQueue queue = make_queue();
 };
+
+pipeline::graph_odometry::GraphOdometryParams graph_pipeline_params() {
+    pipeline::graph_odometry::GraphOdometryParams params;
+    params.device.vendor = "default";
+    params.device.type = "";
+    params.imu.enable = true;
+    params.imu.deskew.enable = true;
+    params.imu.initial_alignment.enable = true;
+    params.motion_prediction.mode = pipeline::lidar_odometry::MotionPredictionMode::IMU_SE3;
+    params.imu.preintegration.gyro_noise_density = 1e-2f;
+    params.imu.preintegration.accel_noise_density = 1e-3f;
+    params.imu.preintegration.gyro_bias_rw_density = 1e-5f;
+    params.imu.preintegration.accel_bias_rw_density = 1e-4f;
+    return params;
+}
+
+TEST(GraphPipelineImu, RejectsUnsupportedLeverArm) {
+    auto params = graph_pipeline_params();
+    params.imu.T_imu_to_lidar.translation().x() = 0.1f;
+    EXPECT_THROW(pipeline::graph_odometry::GraphOdometryPipeline pipeline(params), std::invalid_argument);
+}
+
+TEST(GraphPipelineImu, BootstrapWaitsForImuBoundary) {
+    pipeline::graph_odometry::GraphOdometryPipeline pipeline(graph_pipeline_params());
+    using Coverage = pipeline::graph_odometry::GraphOdometryPipeline::IMUCoverage;
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(10.0), Coverage::waiting_for_future);
+
+    imu::IMUMeasurement measurement;
+    measurement.timestamp = 9.9;
+    pipeline.add_imu_measurement(measurement);
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(10.0), Coverage::waiting_for_future);
+
+    measurement.timestamp = 10.1;
+    pipeline.add_imu_measurement(measurement);
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(10.0), Coverage::ready);
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(9.8), Coverage::start_expired);
+}
 
 TEST_F(GraphLioTest, BootstrapNodeHasOneFullStateAnchor) {
     std::mt19937 gen(5);

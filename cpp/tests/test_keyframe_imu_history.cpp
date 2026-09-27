@@ -75,7 +75,8 @@ TEST(KeyframeImuHistory, HardLimitsRequireRecoveryAndKeepBoundedStorage) {
     ASSERT_TRUE(by_duration.reset(0.0, raw));
     by_duration.append(measurement(0.4));
     EXPECT_TRUE(by_duration.overflowed());
-    EXPECT_LE(by_duration.size(), 4u);
+    EXPECT_LT(by_duration.size(), raw.size() + 1);
+    EXPECT_EQ(by_duration.coverage(0.4), History::Coverage::recovery_required);
 }
 
 TEST(KeyframeImuHistory, ForceWatermarkTriggersBeforeHardLimit) {

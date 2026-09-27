@@ -128,7 +128,7 @@ public:
     [[nodiscard]] PreparedFreeze prepare_first_frame(
         const PointCloudShared& cloud, double timestamp,
         const Eigen::Isometry3f& current_pose) const {
-        auto prepared = this->prepare_freeze(cloud, current_pose, nullptr, true);
+        auto prepared = this->prepare_freeze(cloud, current_pose);
         prepared.update_keyframe_metadata = true;
         prepared.last_keyframe_time = timestamp;
         prepared.last_keyframe_pose = current_pose;
@@ -168,36 +168,15 @@ public:
         return false;
     }
 
-    /// @brief Insert an already-evicted graph keyframe's geometry at its FINAL
-    ///        optimized pose, without keyframe gating and without consulting
-    ///        the Submap's own keyframe thresholds: the graph pipeline owns the
-    ///        promotion/retention lifecycle and calls this exactly when the
-    ///        node left the active sliding window (its graph state is gone).
-    ///        This keeps ActiveKeyframeScans and FixedSubmapScans disjoint.
-    ///        The returned state is complete but remains unpublished until commit.
-    /// @throws Any host allocation, map integration, SYCL, KD-tree, or covariance error.
-    [[nodiscard]] PreparedFreeze prepare_freeze_keyframe_to_submap(
-        const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose,
-        shared_vector_ptr<float> random_sampling_weights = nullptr) const {
-        return this->prepare_freeze(cloud, optimized_pose, random_sampling_weights, false);
-    }
-
 private:
     [[nodiscard]] PreparedFreeze prepare_freeze(
-        const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose,
-        shared_vector_ptr<float> random_sampling_weights, bool first_frame) const {
+        const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose) const {
         PreparedFreeze prepared;
         prepared.last_keyframe_pc = std::make_shared<PointCloudShared>(this->queue_);
         prepared.submap_pc_tmp = std::make_shared<PointCloudShared>(this->queue_);
 
-        if (random_sampling_weights && random_sampling_weights->size() == cloud.size()) {
-            this->preprocess_filter_->mixed_random_sampling(
-                cloud, *prepared.last_keyframe_pc, *random_sampling_weights,
-                this->submap_params_.point_random_sampling_num, this->submap_params_.weighted_sampling_ratio);
-        } else {
-            this->preprocess_filter_->random_sampling(cloud, *prepared.last_keyframe_pc,
-                                                      this->submap_params_.point_random_sampling_num);
-        }
+        this->preprocess_filter_->random_sampling(cloud, *prepared.last_keyframe_pc,
+                                                  this->submap_params_.point_random_sampling_num);
 
         if (this->submap_params_.map_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
             prepared.occupancy_grid = this->occupancy_grid_->clone();
@@ -211,15 +190,8 @@ private:
                                                 this->submap_params_.max_distance_range);
         }
 
-        if (first_frame) {
-            prepared.submap_pc = std::make_shared<PointCloudShared>(
-                sycl_points::algorithms::transform::transform_copy(cloud, optimized_pose.matrix()));
-        } else if (prepared.submap_pc_tmp->size() >= this->reg_params_.min_num_points) {
-            prepared.submap_pc = prepared.submap_pc_tmp;
-            prepared.submap_pc_tmp = std::make_shared<PointCloudShared>(this->queue_);
-        } else {
-            prepared.submap_pc = std::make_shared<PointCloudShared>(*this->submap_pc_ptr_);
-        }
+        prepared.submap_pc = std::make_shared<PointCloudShared>(
+            sycl_points::algorithms::transform::transform_copy(cloud, optimized_pose.matrix()));
 
         prepared.submap_tree = algorithms::knn::KDTree::build(this->queue_, *prepared.submap_pc);
         this->compute_covariances(*prepared.submap_pc, *prepared.submap_tree, prepared.knn_result);
@@ -247,11 +219,12 @@ public:
         }
     }
 
-    /// @brief Prepare and immediately commit a frozen graph keyframe.
+    /// @brief Insert an evicted graph keyframe at its final optimized pose.
+    ///        Like LO/LIO, this updates the map in place; callers must stop
+    ///        processing if an exception leaves the map partially updated.
     void freeze_keyframe_to_submap(const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose,
-                                   shared_vector_ptr<float> random_sampling_weights = nullptr) {
-        auto prepared = this->prepare_freeze_keyframe_to_submap(cloud, optimized_pose, random_sampling_weights);
-        this->commit_freeze_keyframe_to_submap(std::move(prepared));
+                                    shared_vector_ptr<float> random_sampling_weights = nullptr) {
+        this->build_submap(cloud, optimized_pose, false, random_sampling_weights);
     }
 
 private:

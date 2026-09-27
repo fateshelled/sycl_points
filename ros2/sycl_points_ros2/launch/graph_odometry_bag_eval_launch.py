@@ -34,7 +34,7 @@ def generate_launch_description():
     package_name = "sycl_points_ros2"
     package_dir = get_package_share_directory(package_name)
     param_yaml = os.path.join(package_dir, "config", "graph_odometry.yaml")
-    launch_args, node_args = declare_params_from_yaml(param_yaml, "graph_odometry_node")
+    launch_args, node_args = declare_params_from_yaml(param_yaml, "graph_odometry_bag_eval")
 
     launch_args.extend(
         [

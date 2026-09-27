@@ -75,6 +75,11 @@ public:
             throw std::invalid_argument(
                 "[Graph Odometry] graph LIO requires initial alignment, IMU deskew, and IMU_SE3 prediction");
         }
+        const auto& lever_arm = this->params_.imu.T_imu_to_lidar.translation();
+        if (!lever_arm.allFinite() || lever_arm.norm() > 1e-5f) {
+            throw std::invalid_argument(
+                "[Graph Odometry] T_imu_to_lidar translation must be zero: the IMU graph factor ignores the lever arm");
+        }
         const auto& p = this->params_.imu.preintegration;
         if (!std::isfinite(p.gyro_noise_density) || p.gyro_noise_density <= 0.0f ||
             !std::isfinite(p.accel_noise_density) || p.accel_noise_density <= 0.0f ||
@@ -108,6 +113,7 @@ public:
 
     auto get_device_queue() const { return this->queue_ptr_; }
     const auto& get_error_message() const { return this->error_message_; }
+    bool has_fatal_submap_error() const { return this->fatal_submap_error_.load(); }
     const auto& get_odom() const { return this->odom_; }
     const auto& get_prev_odom() const { return this->prev_odom_; }
     const auto& get_last_keyframe_pose() const { return this->last_keyframe_pose_; }
@@ -162,7 +168,12 @@ public:
 
     IMUCoverage get_frame_imu_coverage(double frame_timestamp) const {
         std::lock_guard<std::mutex> lock(imu_mutex_);
-        if (is_first_frame_) return IMUCoverage::ready;
+        if (is_first_frame_) {
+            if (this->imu_buffer_.empty()) return IMUCoverage::waiting_for_future;
+            if (this->imu_buffer_.front().timestamp > frame_timestamp) return IMUCoverage::start_expired;
+            return this->imu_buffer_.back().timestamp < frame_timestamp
+                       ? IMUCoverage::waiting_for_future : IMUCoverage::ready;
+        }
         IMUCoverage coverage = classify_imu_coverage_locked(state_timestamp_, frame_timestamp);
         const auto edge_coverage = this->keyframe_imu_history_.coverage(frame_timestamp);
         if (edge_coverage == detail::KeyframeImuHistory::Coverage::waiting_for_future) {
@@ -187,6 +198,7 @@ public:
     }
 
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
+        if (this->fatal_submap_error_.load()) return ResultType::error;
         this->error_message_.clear();
 
         if (this->is_first_frame_ && this->alignment_estimator_ && this->alignment_estimator_->enabled() &&
@@ -214,7 +226,7 @@ public:
         ImuBufferPin pin(this->imu_buffer_pin_start_, pin_start);
 
         const IMUCoverage frame_coverage = this->get_frame_imu_coverage(timestamp);
-        if (!this->is_first_frame_ && frame_coverage != IMUCoverage::ready &&
+        if (frame_coverage != IMUCoverage::ready &&
             frame_coverage != IMUCoverage::recovery_required) {
             this->error_message_ = "IMU measurements do not bracket the graph LIO frame interval";
             return ResultType::insufficient_imu_coverage;
@@ -271,9 +283,10 @@ public:
 
         // first frame
         if (this->is_first_frame_) {
+            auto bootstrap_imu_history = this->keyframe_imu_history_;
             {
                 std::lock_guard<std::mutex> lock(imu_mutex_);
-                if (!this->keyframe_imu_history_.reset(timestamp, this->imu_buffer_)) {
+                if (!bootstrap_imu_history.reset(timestamp, this->imu_buffer_)) {
                     this->error_message_ = "cannot establish bootstrap IMU history boundary";
                     return ResultType::insufficient_imu_coverage;
                 }
@@ -297,6 +310,15 @@ public:
                     this->params_.graph.lio.root_prior_sigma_gyro_bias;
                 this->imu_edge_source_id_ = this->graph_opt_->add_bootstrap_node(
                     this->odom_, timestamp, root_cloud, root_knn, root_state, root_prior);
+                {
+                    std::lock_guard<std::mutex> lock(imu_mutex_);
+                    for (const auto& measurement : this->imu_buffer_) {
+                        if (measurement.timestamp > bootstrap_imu_history.latest_timestamp()) {
+                            bootstrap_imu_history.append(measurement);
+                        }
+                    }
+                    this->keyframe_imu_history_ = std::move(bootstrap_imu_history);
+                }
                 this->submap_->commit_freeze_keyframe_to_submap(std::move(prepared_first));
                 this->nav_state_ = root_state;
                 this->state_timestamp_ = timestamp;
@@ -482,26 +504,28 @@ public:
             }
             rebased_imu_history = std::move(candidate);
         }
-        // Prepare every throwing submap operation before publishing either the
-        // graph or map transition. An abandoned preparation has no side effects.
-        std::optional<submapping::Submap::PreparedFreeze> prepared_freeze;
+        // Once marginalized, an evicted scan must enter the fixed submap.
+        // An in-place insertion cannot be rolled back after a partial failure.
         {
             double dt = 0.0;
             try {
-                time_utils::measure_execution(
-                    [&]() { prepared_freeze = this->prepare_submapping(frame_result); }, dt);
+                time_utils::measure_execution([&]() {
+                    if (frame_result.freeze_ready && frame_result.frozen_cloud &&
+                        frame_result.frozen_cloud->size() > 0) {
+                        // The frozen scan uses uniform sampling, not the robust
+                        // weights from its earlier registration.
+                        this->submap_->freeze_keyframe_to_submap(
+                            *frame_result.frozen_cloud, frame_result.frozen_pose);
+                        this->submap_dirty_ = true;
+                    }
+                }, dt);
             } catch (const std::exception& e) {
-                this->graph_opt_->restore(graph_checkpoint);
-                this->error_message_ = std::string("submapping: ") + e.what();
+                this->error_message_ = std::string("fatal submapping failure; restart required: ") + e.what();
+                this->fatal_submap_error_.store(true);
                 std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
                 return ResultType::error;
             }
             this->add_delta_time(ProcessName::build_submap, dt);
-        }
-
-        if (prepared_freeze) {
-            this->submap_->commit_freeze_keyframe_to_submap(std::move(*prepared_freeze));
-            this->submap_dirty_ = true;
         }
         this->last_factor_input_ = frame_result.tip_cloud;
         *this->reg_result_ = frame_result.tip_registration;
@@ -528,6 +552,9 @@ public:
                     if (recover_imu_edge) ++this->imu_edge_recovery_count_;
                     this->last_keyframe_pose_ = optimized_state.pose;
                     this->keyframe_poses_.push_back(optimized_state.pose);
+                    if (this->keyframe_poses_.size() > this->params_.graph.window_size) {
+                        this->keyframe_poses_.erase(this->keyframe_poses_.begin());
+                    }
                 }
             }
             this->prev_odom_ = this->odom_;
@@ -585,10 +612,11 @@ private:
     // tips so the edge always spans the last kept keyframe -> current tip.
     imu::IMUPreintegration::Ptr imu_edge_preintegration_ = nullptr;
     algorithms::graph::NodeId imu_edge_source_id_ = algorithms::graph::INVALID_NODE_ID;
-    detail::KeyframeImuHistory keyframe_imu_history_{{5.0, 4096}};
+    detail::KeyframeImuHistory keyframe_imu_history_{{}};
     uint64_t imu_edge_recovery_count_ = 0;
 
     std::string error_message_;
+    std::atomic<bool> fatal_submap_error_{false};
     enum class ProcessName { preprocessing = 0, compute_covariances, refine_filter, graph_optimization, build_submap };
     const std::map<ProcessName, std::string> pn_map_ = {
         {ProcessName::preprocessing, "1. preprocessing"},
@@ -853,28 +881,6 @@ private:
         this->pc_processor_->compute_covariances(*this->preprocessed_pc_, this->processing_ctx_);
     }
 
-    std::optional<submapping::Submap::PreparedFreeze> prepare_submapping(
-        algorithms::graph::GraphOptimization::FrameResult& frame_result) {
-        // Keyframe/submap lifecycle: retention is decided by the graph keyframe
-        // gate (process_frame); map insertion is a SEPARATE transition done on
-        // eviction. The scan is inserted at its FINAL optimized pose exactly
-        // when its graph state is removed, so a scan is never both a variable
-        // graph state and fixed submap geometry (the initial seed frame from
-        // add_first_frame is the only map-only scan).
-        if (frame_result.freeze_ready && frame_result.frozen_cloud &&
-            frame_result.frozen_cloud->size() > 0) {
-            // Weighted sampling is intentionally NOT re-computed: that scan's
-            // ICP robust weights were meaningful for its own registration run,
-            // not for its move into the (current) fixed submap. The frozen
-            // scan uses the uniform random sampling budget instead.
-            return this->submap_->prepare_freeze_keyframe_to_submap(
-                *frame_result.frozen_cloud, frame_result.frozen_pose);
-        }
-        // Deferred / force-dropped marginalization keeps the scan OUT of the
-        // fixed submap this frame (retry next frame on Success; after a
-        // force-drop the map simply misses that scan).
-        return std::nullopt;
-    }
 };
 
 }  // namespace graph_odometry

@@ -20,10 +20,6 @@
     imu_qos/depth: 100
     imu_qos/reliability: "best_effort"
 
-    processing/max_pending_point_clouds: 3
-    processing/timer_period_ms: 5
-    eval/max_pending_point_clouds: 10000
-
     odom_frame_id: odom
     base_link_id: base_link
     lidar_frame_id: os_sensor
@@ -278,3 +274,18 @@
 
     # (vis/* and other lidar_inertial-only blocks were removed: they are not
     # declared by graph_odometry_node and would be ignored with an unused-parameter warning)
+
+graph_odometry_node:
+  ros__parameters:
+    processing/max_pending_point_clouds: 3
+    processing/timer_period_ms: 5
+
+# The standalone component executable uses the constructor's default node name.
+graph_odometry:
+  ros__parameters:
+    processing/max_pending_point_clouds: 3
+    processing/timer_period_ms: 5
+
+graph_odometry_bag_eval:
+  ros__parameters:
+    eval/max_pending_point_clouds: 10000

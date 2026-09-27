@@ -33,43 +33,22 @@ sp::pipeline::odometry::CommonParameters MakeParams(sp::pipeline::odometry::Subm
 
 class StagedSubmapTest : public testing::TestWithParam<sp::pipeline::odometry::SubmapMapType> {};
 
-TEST_P(StagedSubmapTest, PrepareDoesNotPublishUntilNoexceptCommit) {
+TEST_P(StagedSubmapTest, EvictedKeyframesUpdateMapInPlace) {
     sp::sycl_utils::DeviceQueue queue{sycl::device(sp::sycl_utils::device_selector::default_selector_v)};
     sp::pipeline::submapping::Submap submap(queue, MakeParams(GetParam()));
-    const auto cloud = MakeCloud(queue);
-
-    using PreparedFreeze = sp::pipeline::submapping::Submap::PreparedFreeze;
-    static_assert(noexcept(submap.commit_freeze_keyframe_to_submap(std::declval<PreparedFreeze&&>())));
-
-    auto prepared = submap.prepare_freeze_keyframe_to_submap(cloud, Eigen::Isometry3f::Identity());
     EXPECT_EQ(submap.get_submap_point_cloud().size(), 0U);
-    EXPECT_EQ(submap.get_last_keyframe_point_cloud().size(), 0U);
 
-    submap.commit_freeze_keyframe_to_submap(std::move(prepared));
+    submap.freeze_keyframe_to_submap(MakeCloud(queue), Eigen::Isometry3f::Identity());
     EXPECT_EQ(submap.get_submap_point_cloud().size(), 3U);
     EXPECT_EQ(submap.get_last_keyframe_point_cloud().size(), 3U);
 
-    auto second_prepared = submap.prepare_freeze_keyframe_to_submap(MakeCloud(queue, 1.0f),
-                                                                    Eigen::Isometry3f::Identity());
-    EXPECT_EQ(submap.get_submap_point_cloud().size(), 3U);
-
-    submap.commit_freeze_keyframe_to_submap(std::move(second_prepared));
+    submap.freeze_keyframe_to_submap(MakeCloud(queue, 1.0f), Eigen::Isometry3f::Identity());
     EXPECT_EQ(submap.get_submap_point_cloud().size(), 6U);
 }
 
 INSTANTIATE_TEST_SUITE_P(AllMapBackends, StagedSubmapTest,
                          testing::Values(sp::pipeline::odometry::SubmapMapType::VOXEL_HASH_MAP,
                                          sp::pipeline::odometry::SubmapMapType::OCCUPANCY_GRID_MAP));
-
-TEST(SubmapTest, OneShotFreezeWrapperCommitsPreparedUpdate) {
-    sp::sycl_utils::DeviceQueue queue{sycl::device(sp::sycl_utils::device_selector::default_selector_v)};
-    sp::pipeline::submapping::Submap submap(
-        queue, MakeParams(sp::pipeline::odometry::SubmapMapType::VOXEL_HASH_MAP));
-
-    submap.freeze_keyframe_to_submap(MakeCloud(queue), Eigen::Isometry3f::Identity());
-
-    EXPECT_EQ(submap.get_submap_point_cloud().size(), 3U);
-}
 
 TEST(SubmapTest, PreparedFirstFramePublishesCloudAndMetadataOnlyOnCommit) {
     sp::sycl_utils::DeviceQueue queue{sycl::device(sp::sycl_utils::device_selector::default_selector_v)};
@@ -79,6 +58,8 @@ TEST(SubmapTest, PreparedFirstFramePublishesCloudAndMetadataOnlyOnCommit) {
     pose.translation() = Eigen::Vector3f(1.0f, 2.0f, 3.0f);
 
     auto prepared = submap.prepare_first_frame(MakeCloud(queue), 2.5, pose);
+    using PreparedFreeze = sp::pipeline::submapping::Submap::PreparedFreeze;
+    static_assert(noexcept(submap.commit_freeze_keyframe_to_submap(std::declval<PreparedFreeze&&>())));
     EXPECT_EQ(submap.get_submap_point_cloud().size(), 0u);
     EXPECT_TRUE(submap.get_last_keyframe_pose().isApprox(params.pose.initial));
 

@@ -127,6 +127,9 @@ void GraphOdometryBagEvalNode::run() {
 
                 this->process_prepared_point_cloud_message(timestamp, active_frame);
                 this->record_processing_times(active_frame);
+                if (this->pipeline_->has_fatal_submap_error()) {
+                    throw std::runtime_error(this->pipeline_->get_error_message());
+                }
                 const bool should_write_tum = active_frame.result == ResultType::success ||
                                               active_frame.result == ResultType::imu_only ||
                                               (active_frame.result == ResultType::first_frame &&
@@ -170,18 +173,24 @@ void GraphOdometryBagEvalNode::run() {
             pc_serializer.deserialize_message(&serialized_msg, &msg);
 
             if (pending_clouds.size() >= this->max_pending_point_clouds_) {
-                throw std::runtime_error(
-                    "pending point-cloud limit reached while waiting for IMU; check imu_topic and bag coverage");
+                if (incomplete_frames == 0) {
+                    RCLCPP_ERROR(this->get_logger(),
+                                 "Pending point-cloud limit reached while waiting for IMU; dropping oldest frames (check imu_topic and bag coverage). Output is partial");
+                }
+                pending_clouds.pop_front();
+                active_prepared = false;
+                ++incomplete_frames;
+                ++handled_frames;
             }
             pending_clouds.push_back(std::move(msg));
             drain_ready_clouds();
         }
 
         drain_ready_clouds();
-        incomplete_frames = static_cast<int64_t>(pending_clouds.size());
+        incomplete_frames += static_cast<int64_t>(pending_clouds.size());
         if (incomplete_frames > 0) {
             RCLCPP_ERROR(this->get_logger(),
-                         "Bag ended before IMU coverage completed for %ld point clouds; output is partial",
+                         "IMU coverage incomplete for %ld point clouds (overflow or bag end); output is partial",
                          incomplete_frames);
         }
 
