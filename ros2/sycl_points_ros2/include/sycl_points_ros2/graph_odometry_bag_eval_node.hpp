@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <deque>
 #include <fstream>
 #include <sensor_msgs/msg/imu.hpp>
@@ -29,6 +30,7 @@ private:
     double start_offset_sec_ = 0.0;
     bool write_first_frame_ = true;
     bool exit_on_end_ = true;
+    std::size_t max_pending_point_clouds_ = 10000;
 };
 
 }  // namespace ros2

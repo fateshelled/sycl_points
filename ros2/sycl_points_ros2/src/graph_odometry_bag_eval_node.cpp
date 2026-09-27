@@ -23,6 +23,11 @@ GraphOdometryBagEvalNode::GraphOdometryBagEvalNode(const rclcpp::NodeOptions& op
     this->output_tum_ = this->declare_parameter<std::string>("eval/output_tum", "sycl_go_odom.tum");
     this->write_first_frame_ = this->declare_parameter<bool>("eval/write_first_frame", true);
     this->exit_on_end_ = this->declare_parameter<bool>("eval/exit_on_end", true);
+    const auto max_pending = this->declare_parameter<int64_t>("eval/max_pending_point_clouds", 10000);
+    if (max_pending <= 0) {
+        throw std::invalid_argument("eval/max_pending_point_clouds must be positive");
+    }
+    this->max_pending_point_clouds_ = static_cast<std::size_t>(max_pending);
 
     this->initialize_processing();
 
@@ -164,12 +169,21 @@ void GraphOdometryBagEvalNode::run() {
             rclcpp::SerializedMessage serialized_msg(*bag_message->serialized_data);
             pc_serializer.deserialize_message(&serialized_msg, &msg);
 
+            if (pending_clouds.size() >= this->max_pending_point_clouds_) {
+                throw std::runtime_error(
+                    "pending point-cloud limit reached while waiting for IMU; check imu_topic and bag coverage");
+            }
             pending_clouds.push_back(std::move(msg));
             drain_ready_clouds();
         }
 
         drain_ready_clouds();
         incomplete_frames = static_cast<int64_t>(pending_clouds.size());
+        if (incomplete_frames > 0) {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Bag ended before IMU coverage completed for %ld point clouds; output is partial",
+                         incomplete_frames);
+        }
 
         this->tum_stream_.flush();
         this->tum_stream_.close();

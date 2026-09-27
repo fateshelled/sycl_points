@@ -121,8 +121,12 @@ void GraphOdometryBaseNode::initialize_processing() {
         graph.robust_default_scale = static_cast<float>(
             this->declare_parameter<double>("graph/robust/default_scale", graph.robust_default_scale));
         auto& lio = graph.lio;
-        lio.timestamp_tolerance_sec = this->declare_parameter<double>(
-            "graph/lio/coverage/timestamp_tolerance_sec", lio.timestamp_tolerance_sec);
+        lio.keyframe_imu_history_duration_sec = this->declare_parameter<double>(
+            "graph/lio/keyframe_imu_history/duration_sec",
+            lio.keyframe_imu_history_duration_sec);
+        lio.keyframe_imu_history_max_samples = positive_size(
+            "graph/lio/keyframe_imu_history/max_samples",
+            lio.keyframe_imu_history_max_samples);
         lio.root_prior_sigma_pose = static_cast<float>(this->declare_parameter<double>(
             "graph/lio/root_prior/pose_sigma", lio.root_prior_sigma_pose));
         lio.root_prior_sigma_velocity = static_cast<float>(this->declare_parameter<double>(

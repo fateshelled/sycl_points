@@ -18,19 +18,19 @@ def declare_params_from_yaml(yaml_path: str, target_node="graph_odometry_node"):
     with open(yaml_path, "r") as f:
         all_params = yaml.safe_load(f)
 
-    for node_name in all_params.keys():
-        if node_name == target_node or node_name == "/**":
-            node_params: dict = all_params[node_name]["ros__parameters"]
-            for name, value in node_params.items():
-                if isinstance(value, float):
-                    value_str = format(value, "f")
-                else:
-                    value_str = str(value)
-                launch_args.append(
-                    DeclareLaunchArgument(name, default_value=value_str, description="")
-                )
-                node_args[name] = LaunchConfiguration(name)
-            break
+    node_params = {}
+    for node_name in ("/**", target_node):
+        section = all_params.get(node_name)
+        if section is not None:
+            node_params.update(section.get("ros__parameters", {}))
+    if not node_params:
+        raise ValueError(f"No parameters found for {target_node} or /** in {yaml_path}")
+    for name, value in node_params.items():
+        value_str = repr(value) if isinstance(value, float) else str(value)
+        launch_args.append(
+            DeclareLaunchArgument(name, default_value=value_str, description="")
+        )
+        node_args[name] = LaunchConfiguration(name)
     return launch_args, node_args
 
 
