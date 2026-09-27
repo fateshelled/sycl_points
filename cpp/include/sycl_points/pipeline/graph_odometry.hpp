@@ -9,6 +9,7 @@
 #include <numbers>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
@@ -283,14 +284,6 @@ public:
 
         // first frame
         if (this->is_first_frame_) {
-            auto bootstrap_imu_history = this->keyframe_imu_history_;
-            {
-                std::lock_guard<std::mutex> lock(imu_mutex_);
-                if (!bootstrap_imu_history.reset(timestamp, this->imu_buffer_)) {
-                    this->error_message_ = "cannot establish bootstrap IMU history boundary";
-                    return ResultType::insufficient_imu_coverage;
-                }
-            }
             try {
                 auto prepared_first = this->submap_->prepare_first_frame(
                     *this->preprocessed_pc_, timestamp, this->odom_);
@@ -308,23 +301,30 @@ public:
                     this->params_.graph.lio.root_prior_sigma_accel_bias;
                 root_prior.nav_prior_sigma_gyro_bias =
                     this->params_.graph.lio.root_prior_sigma_gyro_bias;
-                this->imu_edge_source_id_ = this->graph_opt_->add_bootstrap_node(
-                    this->odom_, timestamp, root_cloud, root_knn, root_state, root_prior);
+
+                decltype(keyframe_poses_) bootstrap_poses;
+                bootstrap_poses.push_back(root_state.pose);
+                const auto& lio = this->params_.graph.lio;
+                detail::KeyframeImuHistory bootstrap_imu_history(
+                    {lio.keyframe_imu_history_duration_sec, lio.keyframe_imu_history_max_samples});
+                static_assert(std::is_nothrow_move_assignable_v<detail::KeyframeImuHistory>);
+                // Hold the IMU lock through publication so no samples arrive
+                // between building the candidate and installing it.
                 {
                     std::lock_guard<std::mutex> lock(imu_mutex_);
-                    for (const auto& measurement : this->imu_buffer_) {
-                        if (measurement.timestamp > bootstrap_imu_history.latest_timestamp()) {
-                            bootstrap_imu_history.append(measurement);
-                        }
+                    if (!bootstrap_imu_history.reset(timestamp, this->imu_buffer_)) {
+                        this->error_message_ = "cannot establish bootstrap IMU history boundary";
+                        return ResultType::insufficient_imu_coverage;
                     }
+                    this->imu_edge_source_id_ = this->graph_opt_->add_bootstrap_node(
+                        this->odom_, timestamp, root_cloud, root_knn, root_state, root_prior);
                     this->keyframe_imu_history_ = std::move(bootstrap_imu_history);
                 }
                 this->submap_->commit_freeze_keyframe_to_submap(std::move(prepared_first));
                 this->nav_state_ = root_state;
                 this->state_timestamp_ = timestamp;
                 this->last_keyframe_pose_ = root_state.pose;
-                this->keyframe_poses_.clear();
-                this->keyframe_poses_.push_back(root_state.pose);
+                this->keyframe_poses_.swap(bootstrap_poses);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;

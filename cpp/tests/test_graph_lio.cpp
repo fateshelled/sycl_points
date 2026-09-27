@@ -211,6 +211,48 @@ TEST(GraphPipelineImu, BootstrapWaitsForImuBoundary) {
     EXPECT_EQ(pipeline.get_frame_imu_coverage(9.8), Coverage::start_expired);
 }
 
+TEST(GraphPipelineImu, BootstrapAfterRejectedFrameCommitsOneRoot) {
+    auto params = graph_pipeline_params();
+    params.graph.registration.min_num_points = 3;
+    params.graph.registration.factor.reg_type = registration::RegType::POINT_TO_POINT;
+    params.submap.point_random_sampling_num = 32;
+    params.scan.preprocess.box_filter.enable = false;
+    params.scan.preprocess.angle_incidence_filter.enable = false;
+    params.scan.downsampling.polar.enable = false;
+    params.scan.downsampling.random.enable = false;
+    params.scan.intensity_correction.enable = false;
+    params.covariance_estimation.m_estimation.enable = false;
+    pipeline::graph_odometry::GraphOdometryPipeline pipeline(params);
+
+    imu::IMUMeasurement measurement;
+    measurement.accel = Eigen::Vector3f(0.0f, 0.0f, 9.80665f);
+    for (int i = 0; i <= 12; ++i) {
+        measurement.timestamp = i * 0.1;
+        pipeline.add_imu_measurement(measurement);
+    }
+
+    std::mt19937 gen(42);
+    auto small_cloud = make_cube_cloud(*pipeline.get_device_queue(), 2, 1.0f, gen);
+    auto set_scan_times = [](const PointCloudShared::Ptr& scan) {
+        scan->resize_timestamps(scan->size());
+        std::fill(scan->timestamp_offsets->begin(), scan->timestamp_offsets->end(), 100);
+        (*scan->timestamp_offsets)[0] = 0;
+        scan->start_time_ms = 900.0;
+        scan->end_time_ms = 1000.0;
+    };
+    set_scan_times(small_cloud);
+    EXPECT_EQ(pipeline.process(small_cloud, 1.0),
+              pipeline::graph_odometry::GraphOdometryPipeline::ResultType::small_number_of_points);
+    EXPECT_EQ(pipeline.get_graph_window().window_size(), 0u);
+
+    auto cloud = make_cube_cloud(*pipeline.get_device_queue(), 100, 1.0f, gen);
+    set_scan_times(cloud);
+    EXPECT_EQ(pipeline.process(cloud, 1.0),
+              pipeline::graph_odometry::GraphOdometryPipeline::ResultType::first_frame);
+    EXPECT_EQ(pipeline.get_graph_window().window_size(), 1u);
+    EXPECT_EQ(pipeline.get_keyframe_poses().size(), 1u);
+}
+
 TEST_F(GraphLioTest, BootstrapNodeHasOneFullStateAnchor) {
     std::mt19937 gen(5);
     auto cloud = make_cube_cloud(queue, 200, 0.5f, gen);
