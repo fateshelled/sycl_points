@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <deque>
+#include <iterator>
 #include <stdexcept>
 #include <vector>
 
@@ -60,6 +61,27 @@ public:
         }
         enforce_limits();
         return !overflowed_;
+    }
+
+    // Establish a valid source boundary even if already-received future
+    // samples exceed the edge history limit. They then request edge recovery
+    // instead of making the new keyframe itself impossible to commit.
+    bool reset_allowing_future_overflow(double source_timestamp,
+                                        const std::deque<imu::IMUMeasurement>& measurements) {
+        const auto after = std::lower_bound(
+            measurements.begin(), measurements.end(), source_timestamp,
+            [](const imu::IMUMeasurement& measurement, double timestamp) {
+                return measurement.timestamp < timestamp;
+            });
+        if (after == measurements.end() ||
+            (after == measurements.begin() && after->timestamp != source_timestamp)) {
+            return false;
+        }
+        const auto start = after->timestamp == source_timestamp ? after : std::prev(after);
+        const std::deque<imu::IMUMeasurement> boundary(start, std::next(after));
+        if (!reset(source_timestamp, boundary)) return false;
+        for (auto next = std::next(after); next != measurements.end(); ++next) append(*next);
+        return true;
     }
 
     Coverage coverage(double end_timestamp) const {

@@ -100,6 +100,20 @@ TEST(KeyframeImuHistory, ResetAfterRecoveryClearsOverflow) {
     EXPECT_EQ(history.coverage(0.8), History::Coverage::ready);
 }
 
+TEST(KeyframeImuHistory, FutureOverflowDoesNotRejectInterpolatedRebase) {
+    History history({1.0, 2});
+    std::deque<sycl_points::imu::IMUMeasurement> raw = {
+        measurement(0.0), measurement(0.1), measurement(0.2), measurement(0.3)};
+    ASSERT_TRUE(history.reset_allowing_future_overflow(0.05, raw));
+    EXPECT_TRUE(history.overflowed());
+    EXPECT_EQ(history.coverage(0.2), History::Coverage::recovery_required);
+
+    raw = {measurement(0.15), measurement(0.2)};
+    ASSERT_TRUE(history.reset_allowing_future_overflow(0.175, raw));
+    EXPECT_FALSE(history.overflowed());
+    EXPECT_EQ(history.coverage(0.2), History::Coverage::ready);
+}
+
 TEST(KeyframeImuHistory, DistinguishesFutureWaitFromRecovery) {
     History history({2.0, 20});
     auto raw = measurements(0.0, 0.5, 0.1);

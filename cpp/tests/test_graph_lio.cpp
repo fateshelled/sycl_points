@@ -242,13 +242,13 @@ TEST(GraphPipelineImu, BootstrapAfterRejectedFrameCommitsOneRoot) {
         scan->end_time_ms = 1000.0;
     };
     set_scan_times(small_cloud);
-    EXPECT_EQ(pipeline.process(small_cloud, 1.0),
+    EXPECT_EQ(pipeline.process(small_cloud, 1.05),
               pipeline::graph_odometry::GraphOdometryPipeline::ResultType::small_number_of_points);
     EXPECT_EQ(pipeline.get_graph_window().window_size(), 0u);
 
     auto cloud = make_cube_cloud(*pipeline.get_device_queue(), 100, 1.0f, gen);
     set_scan_times(cloud);
-    EXPECT_EQ(pipeline.process(cloud, 1.0),
+    EXPECT_EQ(pipeline.process(cloud, 1.05),
               pipeline::graph_odometry::GraphOdometryPipeline::ResultType::first_frame);
     EXPECT_EQ(pipeline.get_graph_window().window_size(), 1u);
     EXPECT_EQ(pipeline.get_keyframe_poses().size(), 1u);
