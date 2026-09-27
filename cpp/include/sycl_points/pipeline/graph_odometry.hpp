@@ -110,8 +110,8 @@ public:
     const auto& get_error_message() const { return this->error_message_; }
     const auto& get_odom() const { return this->odom_; }
     const auto& get_prev_odom() const { return this->prev_odom_; }
-    const auto& get_last_keyframe_pose() const { return this->submap_->get_last_keyframe_pose(); }
-    const auto& get_keyframe_poses() const { return this->submap_->get_keyframe_poses(); }
+    const auto& get_last_keyframe_pose() const { return this->last_keyframe_pose_; }
+    const auto& get_keyframe_poses() const { return this->keyframe_poses_; }
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
     /// @brief The exact point cloud the latest frame's tip factor consumed
@@ -300,6 +300,9 @@ public:
                 this->submap_->commit_freeze_keyframe_to_submap(std::move(prepared_first));
                 this->nav_state_ = root_state;
                 this->state_timestamp_ = timestamp;
+                this->last_keyframe_pose_ = root_state.pose;
+                this->keyframe_poses_.clear();
+                this->keyframe_poses_.push_back(root_state.pose);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
@@ -369,7 +372,11 @@ public:
         }
 
         const algorithms::graph::NodeState predicted_state = this->predict_nav_state();
-        if (insufficient_points) return this->process_imu_only(predicted_state, timestamp);
+        if (insufficient_points) {
+            const ResultType result = this->process_imu_only(predicted_state, timestamp);
+            if (result == ResultType::imu_only) output_cloud.commit();
+            return result;
+        }
 
         // Graph optimization (local BA)
         algorithms::graph::GraphOptimization::FrameResult frame_result;
@@ -466,8 +473,8 @@ public:
         const algorithms::graph::NodeState optimized_state = frame_result.current_state;
         std::optional<detail::KeyframeImuHistory> rebased_imu_history;
         if (frame_result.keyframe) {
-            auto candidate = this->keyframe_imu_history_;
             std::lock_guard<std::mutex> lock(imu_mutex_);
+            auto candidate = this->keyframe_imu_history_;
             if (!candidate.reset(timestamp, this->imu_buffer_)) {
                 this->graph_opt_->restore(graph_checkpoint);
                 this->error_message_ = "cannot rebase keyframe IMU history";
@@ -519,6 +526,8 @@ public:
                     }
                     this->keyframe_imu_history_ = std::move(*rebased_imu_history);
                     if (recover_imu_edge) ++this->imu_edge_recovery_count_;
+                    this->last_keyframe_pose_ = optimized_state.pose;
+                    this->keyframe_poses_.push_back(optimized_state.pose);
                 }
             }
             this->prev_odom_ = this->odom_;
@@ -555,6 +564,8 @@ private:
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
     Eigen::Isometry3f prev_odom_;
     Eigen::Isometry3f odom_;
+    Eigen::Isometry3f last_keyframe_pose_ = Eigen::Isometry3f::Identity();
+    std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> keyframe_poses_;
     double last_frame_time_ = -1.0;
     GraphOdometryParams params_;
 
