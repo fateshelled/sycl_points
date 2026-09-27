@@ -213,6 +213,7 @@ TEST(GraphPipelineImu, BootstrapWaitsForImuBoundary) {
 
 TEST(GraphPipelineImu, BootstrapAfterRejectedFrameCommitsOneRoot) {
     auto params = graph_pipeline_params();
+    params.graph.lio.keyframe_imu_history_max_samples = 2;
     params.graph.registration.min_num_points = 3;
     params.graph.registration.factor.reg_type = registration::RegType::POINT_TO_POINT;
     params.submap.point_random_sampling_num = 32;
@@ -251,6 +252,8 @@ TEST(GraphPipelineImu, BootstrapAfterRejectedFrameCommitsOneRoot) {
               pipeline::graph_odometry::GraphOdometryPipeline::ResultType::first_frame);
     EXPECT_EQ(pipeline.get_graph_window().window_size(), 1u);
     EXPECT_EQ(pipeline.get_keyframe_poses().size(), 1u);
+    EXPECT_EQ(pipeline.get_frame_imu_coverage(1.1),
+              pipeline::graph_odometry::GraphOdometryPipeline::IMUCoverage::recovery_required);
 }
 
 TEST_F(GraphLioTest, BootstrapNodeHasOneFullStateAnchor) {

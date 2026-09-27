@@ -1,8 +1,10 @@
 #pragma once
+#include <algorithm>
 #include <atomic>
 
 #include <cmath>
 #include <deque>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -312,9 +314,27 @@ public:
                 // between building the candidate and installing it.
                 {
                     std::lock_guard<std::mutex> lock(imu_mutex_);
-                    if (!bootstrap_imu_history.reset(timestamp, this->imu_buffer_)) {
+                    const auto after = std::lower_bound(
+                        this->imu_buffer_.begin(), this->imu_buffer_.end(), timestamp,
+                        [](const imu::IMUMeasurement& measurement, double time) {
+                            return measurement.timestamp < time;
+                        });
+                    if (after == this->imu_buffer_.end() ||
+                        (after == this->imu_buffer_.begin() && after->timestamp != timestamp)) {
                         this->error_message_ = "cannot establish bootstrap IMU history boundary";
                         return ResultType::insufficient_imu_coverage;
+                    }
+                    // Only the boundary belongs to reset's hard-limit check.
+                    // Future samples may overflow history and trigger normal
+                    // IMU-edge recovery, but must not reject a valid first frame.
+                    const auto start = after->timestamp == timestamp ? after : std::prev(after);
+                    const std::deque<imu::IMUMeasurement> boundary(start, std::next(after));
+                    if (!bootstrap_imu_history.reset(timestamp, boundary)) {
+                        this->error_message_ = "cannot establish bootstrap IMU history boundary";
+                        return ResultType::insufficient_imu_coverage;
+                    }
+                    for (auto next = std::next(after); next != this->imu_buffer_.end(); ++next) {
+                        bootstrap_imu_history.append(*next);
                     }
                     this->imu_edge_source_id_ = this->graph_opt_->add_bootstrap_node(
                         this->odom_, timestamp, root_cloud, root_knn, root_state, root_prior);
