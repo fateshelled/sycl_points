@@ -22,6 +22,31 @@ public:
     using OdometryCommonParams = odometry::CommonParameters;
     using SubmapMapType = odometry::SubmapMapType;
 
+    class PreparedFreeze {
+    public:
+        PreparedFreeze(PreparedFreeze&&) noexcept = default;
+        PreparedFreeze& operator=(PreparedFreeze&&) noexcept = default;
+
+        PreparedFreeze(const PreparedFreeze&) = delete;
+        PreparedFreeze& operator=(const PreparedFreeze&) = delete;
+
+    private:
+        friend class Submap;
+        PreparedFreeze() = default;
+
+        algorithms::mapping::VoxelHashMap::Ptr submap_voxel;
+        algorithms::mapping::OccupancyGridMap::Ptr occupancy_grid;
+        algorithms::knn::KDTree::Ptr submap_tree;
+        PointCloudShared::Ptr last_keyframe_pc;
+        PointCloudShared::Ptr submap_pc;
+        PointCloudShared::Ptr submap_pc_tmp;
+        algorithms::knn::KNNResult knn_result;
+        bool update_keyframe_metadata = false;
+        double last_keyframe_time = -1.0;
+        Eigen::Isometry3f last_keyframe_pose = Eigen::Isometry3f::Identity();
+        std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> keyframe_poses;
+    };
+
     const auto& get_last_keyframe_pose() const { return this->last_keyframe_pose_; }
     const auto& get_keyframe_poses() const { return this->keyframe_poses_; }
     const auto& get_submap_kdtree() const { return *this->submap_tree_; }
@@ -96,14 +121,24 @@ public:
     ///                      frame, this is the gravity-corrected pose, not the
     ///                      constructor-time default.
     void add_first_frame(const PointCloudShared& cloud, double timestamp, const Eigen::Isometry3f& current_pose) {
-        this->last_keyframe_pose_ = current_pose;
-        if (this->keyframe_poses_.empty()) {
-            this->keyframe_poses_.push_back(current_pose);
+        auto prepared = this->prepare_first_frame(cloud, timestamp, current_pose);
+        this->commit_freeze_keyframe_to_submap(std::move(prepared));
+    }
+
+    [[nodiscard]] PreparedFreeze prepare_first_frame(
+        const PointCloudShared& cloud, double timestamp,
+        const Eigen::Isometry3f& current_pose) const {
+        auto prepared = this->prepare_freeze(cloud, current_pose, nullptr, true);
+        prepared.update_keyframe_metadata = true;
+        prepared.last_keyframe_time = timestamp;
+        prepared.last_keyframe_pose = current_pose;
+        prepared.keyframe_poses = this->keyframe_poses_;
+        if (prepared.keyframe_poses.empty()) {
+            prepared.keyframe_poses.push_back(current_pose);
         } else {
-            this->keyframe_poses_.front() = current_pose;
+            prepared.keyframe_poses.front() = current_pose;
         }
-        this->build_submap(cloud, current_pose, true);
-        this->last_keyframe_time_ = timestamp;
+        return prepared;
     }
 
     bool add_frame(const PointCloudShared& preprocessed_cloud,
@@ -139,10 +174,84 @@ public:
     ///        promotion/retention lifecycle and calls this exactly when the
     ///        node left the active sliding window (its graph state is gone).
     ///        This keeps ActiveKeyframeScans and FixedSubmapScans disjoint.
-    void freeze_keyframe_to_submap(const PointCloudShared& cloud,
-                                   const Eigen::Isometry3f& optimized_pose,
+    ///        The returned state is complete but remains unpublished until commit.
+    /// @throws Any host allocation, map integration, SYCL, KD-tree, or covariance error.
+    [[nodiscard]] PreparedFreeze prepare_freeze_keyframe_to_submap(
+        const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose,
+        shared_vector_ptr<float> random_sampling_weights = nullptr) const {
+        return this->prepare_freeze(cloud, optimized_pose, random_sampling_weights, false);
+    }
+
+private:
+    [[nodiscard]] PreparedFreeze prepare_freeze(
+        const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose,
+        shared_vector_ptr<float> random_sampling_weights, bool first_frame) const {
+        PreparedFreeze prepared;
+        prepared.last_keyframe_pc = std::make_shared<PointCloudShared>(this->queue_);
+        prepared.submap_pc_tmp = std::make_shared<PointCloudShared>(this->queue_);
+
+        if (random_sampling_weights && random_sampling_weights->size() == cloud.size()) {
+            this->preprocess_filter_->mixed_random_sampling(
+                cloud, *prepared.last_keyframe_pc, *random_sampling_weights,
+                this->submap_params_.point_random_sampling_num, this->submap_params_.weighted_sampling_ratio);
+        } else {
+            this->preprocess_filter_->random_sampling(cloud, *prepared.last_keyframe_pc,
+                                                      this->submap_params_.point_random_sampling_num);
+        }
+
+        if (this->submap_params_.map_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
+            prepared.occupancy_grid = this->occupancy_grid_->clone();
+            prepared.occupancy_grid->add_point_cloud(*prepared.last_keyframe_pc, optimized_pose);
+            prepared.occupancy_grid->extract_occupied_points(*prepared.submap_pc_tmp, optimized_pose,
+                                                             this->submap_params_.max_distance_range);
+        } else {
+            prepared.submap_voxel = this->submap_voxel_->clone();
+            prepared.submap_voxel->add_point_cloud(*prepared.last_keyframe_pc, optimized_pose);
+            prepared.submap_voxel->downsampling(*prepared.submap_pc_tmp, optimized_pose.translation(),
+                                                this->submap_params_.max_distance_range);
+        }
+
+        if (first_frame) {
+            prepared.submap_pc = std::make_shared<PointCloudShared>(
+                sycl_points::algorithms::transform::transform_copy(cloud, optimized_pose.matrix()));
+        } else if (prepared.submap_pc_tmp->size() >= this->reg_params_.min_num_points) {
+            prepared.submap_pc = prepared.submap_pc_tmp;
+            prepared.submap_pc_tmp = std::make_shared<PointCloudShared>(this->queue_);
+        } else {
+            prepared.submap_pc = std::make_shared<PointCloudShared>(*this->submap_pc_ptr_);
+        }
+
+        prepared.submap_tree = algorithms::knn::KDTree::build(this->queue_, *prepared.submap_pc);
+        this->compute_covariances(*prepared.submap_pc, *prepared.submap_tree, prepared.knn_result);
+        return prepared;
+    }
+
+public:
+
+    /// @brief Atomically publish a prepared replacement state using only non-throwing swaps.
+    void commit_freeze_keyframe_to_submap(PreparedFreeze prepared) noexcept {
+        this->submap_voxel_.swap(prepared.submap_voxel);
+        this->occupancy_grid_.swap(prepared.occupancy_grid);
+        this->submap_tree_.swap(prepared.submap_tree);
+        this->last_keyframe_pc_.swap(prepared.last_keyframe_pc);
+        this->submap_pc_ptr_.swap(prepared.submap_pc);
+        this->submap_pc_tmp_.swap(prepared.submap_pc_tmp);
+        this->knn_result_.indices.swap(prepared.knn_result.indices);
+        this->knn_result_.distances.swap(prepared.knn_result.distances);
+        std::swap(this->knn_result_.query_size, prepared.knn_result.query_size);
+        std::swap(this->knn_result_.k, prepared.knn_result.k);
+        if (prepared.update_keyframe_metadata) {
+            std::swap(this->last_keyframe_pose_, prepared.last_keyframe_pose);
+            std::swap(this->last_keyframe_time_, prepared.last_keyframe_time);
+            this->keyframe_poses_.swap(prepared.keyframe_poses);
+        }
+    }
+
+    /// @brief Prepare and immediately commit a frozen graph keyframe.
+    void freeze_keyframe_to_submap(const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose,
                                    shared_vector_ptr<float> random_sampling_weights = nullptr) {
-        this->build_submap(cloud, optimized_pose, false, random_sampling_weights);
+        auto prepared = this->prepare_freeze_keyframe_to_submap(cloud, optimized_pose, random_sampling_weights);
+        this->commit_freeze_keyframe_to_submap(std::move(prepared));
     }
 
 private:
@@ -221,16 +330,16 @@ private:
         this->submap_tree_ = algorithms::knn::KDTree::build(this->queue_, *this->submap_pc_ptr_);
 
         // compute covariances
-        compute_covariances();
+        compute_covariances(*this->submap_pc_ptr_, *this->submap_tree_, this->knn_result_);
     }
 
-    void compute_covariances() {
+    void compute_covariances(PointCloudShared& submap_pc, algorithms::knn::KDTree& submap_tree,
+                             algorithms::knn::KNNResult& knn_result) const {
         bool knn_ready = false;
         sycl_utils::events knn_events;
         auto ensure_knn = [&]() {
             if (!knn_ready) {
-                knn_events = this->submap_tree_->knn_search_async(*this->submap_pc_ptr_, this->cov_params_.neighbor_num,
-                                                                  this->knn_result_);
+                knn_events = submap_tree.knn_search_async(submap_pc, this->cov_params_.neighbor_num, knn_result);
                 knn_ready = true;
             }
         };
@@ -246,25 +355,24 @@ private:
             const bool need_normals = (reg_type == algorithms::registration::RegType::POINT_TO_PLANE ||
                                        reg_type == algorithms::registration::RegType::GENZ);
 
-            const bool submap_has_cov = this->submap_pc_ptr_->has_cov();
+            const bool submap_has_cov = submap_pc.has_cov();
             bool normals_are_ready = false;
             bool covariances_are_ready = submap_has_cov;
             if (need_normals) {
                 normals_are_ready = true;
                 if (submap_has_cov) {
                     ensure_knn();
-                    cov_events += algorithms::covariance::extract_normals_async(*this->submap_pc_ptr_, knn_events.evs);
+                    cov_events += algorithms::covariance::extract_normals_async(submap_pc, knn_events.evs);
                 } else {
                     ensure_knn();
-                    cov_events += algorithms::covariance::estimate_normals_async(this->knn_result_,
-                                                                                 *this->submap_pc_ptr_, knn_events.evs);
+                    cov_events += algorithms::covariance::estimate_normals_async(knn_result, submap_pc, knn_events.evs);
                 }
             }
             if (need_covariances && !submap_has_cov) {
                 covariances_are_ready = true;
                 ensure_knn();
                 cov_events +=
-                    algorithms::covariance::estimate_async(this->knn_result_, *this->submap_pc_ptr_, knn_events.evs);
+                    algorithms::covariance::estimate_async(knn_result, submap_pc, knn_events.evs);
             }
         }
         cov_events.wait_and_throw();

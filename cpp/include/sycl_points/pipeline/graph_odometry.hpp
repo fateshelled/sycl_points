@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 
 #include <cmath>
 #include <deque>
@@ -6,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <numbers>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/registration/registration_params.hpp"
 #include "sycl_points/pipeline/lidar_odometry_params.hpp"
+#include "sycl_points/pipeline/detail/keyframe_imu_history.hpp"
 #include "sycl_points/pipeline/pointcloud_processing.hpp"
 #include "sycl_points/pipeline/submapping.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -53,6 +56,7 @@ public:
 
     enum class IMUCoverage : std::int8_t {
         ready,
+        recovery_required,
         waiting_for_future,
         start_expired,
     };
@@ -79,7 +83,9 @@ public:
             throw std::invalid_argument("[Graph Odometry] IMU noise densities must be finite and positive");
         }
         const auto& lio = this->params_.graph.lio;
-        if (!std::isfinite(lio.timestamp_tolerance_sec) || lio.timestamp_tolerance_sec <= 0.0 ||
+        if (!std::isfinite(lio.keyframe_imu_history_duration_sec) ||
+            lio.keyframe_imu_history_duration_sec <= 0.0 ||
+            lio.keyframe_imu_history_max_samples < 2 ||
             !std::isfinite(lio.root_prior_sigma_velocity) ||
             !std::isfinite(lio.root_prior_sigma_pose) || lio.root_prior_sigma_pose <= 0.0f ||
             lio.root_prior_sigma_velocity <= 0.0f ||
@@ -89,6 +95,8 @@ public:
             lio.root_prior_sigma_gyro_bias <= 0.0f) {
             throw std::invalid_argument("[Graph Odometry] graph LIO limits and prior sigmas must be positive");
         }
+        this->keyframe_imu_history_ = detail::KeyframeImuHistory(
+            {lio.keyframe_imu_history_duration_sec, lio.keyframe_imu_history_max_samples});
         if (this->params_.imu.initial_alignment.enable) {
             const double need = static_cast<double>(this->params_.imu.initial_alignment.required_duration_sec) + 0.2;
             if (this->params_.imu.buffer_duration_sec < need) {
@@ -108,8 +116,8 @@ public:
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
     /// @brief The exact point cloud the latest frame's tip factor consumed
     ///        (sampled / final-deskewed, i.e. FrameResult::tip_cloud). Null
-    ///        before the first frame and after a discarded (solver-failed)
-    ///        frame. Callers must handle the null return.
+    ///        before the first successful graph frame. Discarded frames leave
+    ///        the latest committed factor input unchanged.
     const PointCloudShared* get_registration_input_point_cloud() const {
         return this->last_factor_input_.get();
     }
@@ -130,9 +138,16 @@ public:
         if (!meas.accel.allFinite() || !meas.gyro.allFinite()) return;
         if (!this->imu_buffer_.empty() && meas.timestamp <= this->imu_buffer_.back().timestamp) return;
         this->imu_buffer_.push_back(meas);
-        while (meas.timestamp - this->imu_buffer_.front().timestamp > this->params_.imu.buffer_duration_sec) {
+        while (meas.timestamp - this->imu_buffer_.front().timestamp >
+               this->params_.imu.buffer_duration_sec) {
+            const double pinned_start = this->imu_buffer_pin_start_.load();
+            if (pinned_start >= 0.0 && this->imu_buffer_.size() >= 2 &&
+                this->imu_buffer_[1].timestamp > pinned_start) {
+                break;
+            }
             this->imu_buffer_.pop_front();
         }
+        this->keyframe_imu_history_.append(meas);
     }
 
     std::deque<imu::IMUMeasurement> get_imu_buffer() const {
@@ -149,8 +164,12 @@ public:
         std::lock_guard<std::mutex> lock(imu_mutex_);
         if (is_first_frame_) return IMUCoverage::ready;
         IMUCoverage coverage = classify_imu_coverage_locked(state_timestamp_, frame_timestamp);
-        coverage = combine_imu_coverage(
-            coverage, classify_imu_coverage_locked(imu_edge_last_timestamp_, frame_timestamp));
+        const auto edge_coverage = this->keyframe_imu_history_.coverage(frame_timestamp);
+        if (edge_coverage == detail::KeyframeImuHistory::Coverage::waiting_for_future) {
+            coverage = combine_imu_coverage(coverage, IMUCoverage::waiting_for_future);
+        } else if (edge_coverage == detail::KeyframeImuHistory::Coverage::recovery_required) {
+            coverage = combine_imu_coverage(coverage, IMUCoverage::recovery_required);
+        }
         return coverage;
     }
 
@@ -160,6 +179,9 @@ public:
         }
         if (lhs == IMUCoverage::waiting_for_future || rhs == IMUCoverage::waiting_for_future) {
             return IMUCoverage::waiting_for_future;
+        }
+        if (lhs == IMUCoverage::recovery_required || rhs == IMUCoverage::recovery_required) {
+            return IMUCoverage::recovery_required;
         }
         return IMUCoverage::ready;
     }
@@ -177,24 +199,35 @@ public:
             this->apply_initial_alignment(out);
         }
 
-        if (this->last_frame_time_ > 0.0) {
+        if (this->last_frame_time_ >= 0.0) {
             const float dt = static_cast<float>(timestamp - this->last_frame_time_);
             if (dt <= 0.0f) {
                 this->error_message_ = "old timestamp";
                 return ResultType::old_timestamp;
             }
         }
-        if (!this->is_first_frame_ && this->get_frame_imu_coverage(timestamp) != IMUCoverage::ready) {
+        double pin_start = this->is_first_frame_ ? timestamp : this->state_timestamp_.load();
+        if (scan && scan->has_timestamps()) {
+            const double scan_start = scan->start_time_ms * 1e-3;
+            pin_start = pin_start < 0.0 ? scan_start : std::min(pin_start, scan_start);
+        }
+        ImuBufferPin pin(this->imu_buffer_pin_start_, pin_start);
+
+        const IMUCoverage frame_coverage = this->get_frame_imu_coverage(timestamp);
+        if (!this->is_first_frame_ && frame_coverage != IMUCoverage::ready &&
+            frame_coverage != IMUCoverage::recovery_required) {
             this->error_message_ = "IMU measurements do not bracket the graph LIO frame interval";
             return ResultType::insufficient_imu_coverage;
         }
+        OutputCloudTransaction output_cloud(this->preprocessed_pc_, *this->queue_ptr_);
+        auto working_scan = std::make_shared<PointCloudShared>(*scan);
         this->clear_current_processing_time();
 
         // preprocess
         {
             double dt = 0.0;
             try {
-                time_utils::measure_execution([&]() { this->preprocess(scan); }, dt);
+                time_utils::measure_execution([&]() { this->preprocess(working_scan); }, dt);
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("preprocess: ") + e.what();
                 std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
@@ -238,8 +271,16 @@ public:
 
         // first frame
         if (this->is_first_frame_) {
+            {
+                std::lock_guard<std::mutex> lock(imu_mutex_);
+                if (!this->keyframe_imu_history_.reset(timestamp, this->imu_buffer_)) {
+                    this->error_message_ = "cannot establish bootstrap IMU history boundary";
+                    return ResultType::insufficient_imu_coverage;
+                }
+            }
             try {
-                this->submap_->add_first_frame(*this->preprocessed_pc_, timestamp, this->odom_);
+                auto prepared_first = this->submap_->prepare_first_frame(
+                    *this->preprocessed_pc_, timestamp, this->odom_);
                 auto root_cloud = std::make_shared<PointCloudShared>(*this->preprocessed_pc_);
                 auto root_knn = algorithms::knn::KDTree::build(*this->queue_ptr_, *root_cloud);
                 algorithms::graph::NodeState root_state;
@@ -256,9 +297,9 @@ public:
                     this->params_.graph.lio.root_prior_sigma_gyro_bias;
                 this->imu_edge_source_id_ = this->graph_opt_->add_bootstrap_node(
                     this->odom_, timestamp, root_cloud, root_knn, root_state, root_prior);
+                this->submap_->commit_freeze_keyframe_to_submap(std::move(prepared_first));
                 this->nav_state_ = root_state;
                 this->state_timestamp_ = timestamp;
-                this->imu_edge_last_timestamp_ = timestamp;
             } catch (const std::exception& e) {
                 this->error_message_ = std::string("build_submap (first frame): ") + e.what();
                 std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
@@ -272,6 +313,7 @@ public:
                 std::lock_guard<std::mutex> lock(imu_mutex_);
                 this->imu_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
             }
+            output_cloud.commit();
             return ResultType::first_frame;
         }
 
@@ -290,25 +332,24 @@ public:
         this->imu_preintegration_->integrate_batch(this->imu_batch_);
         this->imu_window_complete_ = this->imu_preintegration_->get_dt_total() > 0.0;
 
-        // Keyframe-to-keyframe preintegration edge: accumulate the newly elapsed
-        // interval [imu_edge_last_timestamp_, timestamp]. Boundary interpolation
-        // keeps the integrated span aligned with the LiDAR keyframe timestamps;
-        // a missing bracket skips the IMU edge for this frame.
+        // The keyframe edge owns raw IMU history independently from the shorter
+        // prediction/deskew buffer, so dropped tips and IMU-only frames cannot
+        // expire its source boundary.
+        bool recover_imu_edge = false;
+        bool force_keyframe_for_history = false;
         bool imu_edge_window_complete = false;
-        if (this->imu_edge_source_id_ != algorithms::graph::INVALID_NODE_ID &&
-            this->imu_edge_last_timestamp_ > 0.0) {
-            std::vector<imu::IMUMeasurement> edge_batch;
+        std::vector<imu::IMUMeasurement> edge_batch;
+        if (this->imu_edge_source_id_ != algorithms::graph::INVALID_NODE_ID) {
             {
                 std::lock_guard<std::mutex> lock(imu_mutex_);
-                imu::build_measurement_window(this->imu_buffer_, this->imu_edge_last_timestamp_, timestamp,
-                                              edge_batch);
+                recover_imu_edge = this->keyframe_imu_history_.overflowed();
+                if (!recover_imu_edge) {
+                    imu_edge_window_complete =
+                        this->keyframe_imu_history_.build_window(timestamp, edge_batch);
+                    force_keyframe_for_history = imu_edge_window_complete &&
+                                                 this->keyframe_imu_history_.should_force_keyframe(timestamp);
+                }
             }
-            imu_edge_window_complete =
-                edge_batch.size() >= 2 &&
-                std::abs(edge_batch.front().timestamp - this->imu_edge_last_timestamp_) <=
-                    this->params_.graph.lio.timestamp_tolerance_sec &&
-                std::abs(edge_batch.back().timestamp - timestamp) <=
-                    this->params_.graph.lio.timestamp_tolerance_sec;
             auto source = this->graph_opt_->window().get_node(this->imu_edge_source_id_);
             if (imu_edge_window_complete && source) {
                 imu::IMUBias source_bias;
@@ -322,7 +363,7 @@ public:
             }
         }
 
-        if (!imu_edge_window_complete || !this->imu_window_complete_) {
+        if (!this->imu_window_complete_ || (!recover_imu_edge && !imu_edge_window_complete)) {
             this->error_message_ = "IMU measurements do not bracket the graph LIO frame interval";
             return ResultType::insufficient_imu_coverage;
         }
@@ -381,7 +422,14 @@ public:
                         imu_edge.tip_velocity = predicted_state.velocity;
                         imu_edge.tip_accel_bias = predicted_state.accel_bias;
                         imu_edge.tip_gyro_bias = predicted_state.gyro_bias;
-                        imu_edge.add_nav_prior = false;
+                        imu_edge.add_nav_prior = recover_imu_edge;
+                        imu_edge.force_keyframe = recover_imu_edge || force_keyframe_for_history;
+                        imu_edge.nav_prior_sigma_velocity =
+                            this->params_.graph.lio.root_prior_sigma_velocity;
+                        imu_edge.nav_prior_sigma_accel_bias =
+                            this->params_.graph.lio.root_prior_sigma_accel_bias;
+                        imu_edge.nav_prior_sigma_gyro_bias =
+                            this->params_.graph.lio.root_prior_sigma_gyro_bias;
 
                         auto result = this->graph_opt_->process_frame(
                             source_cloud, this->submap_gen_cloud_, this->submap_gen_knn_, source_knn,
@@ -398,10 +446,6 @@ public:
             }
             this->add_delta_time(ProcessName::graph_optimization, dt);
         }
-        // Publish the exact factor input of this frame (null when the solver
-        // failed and the frame is being discarded below).
-        this->last_factor_input_ = frame_result.tip_cloud;
-
         // A solver failure (non-finite system / decomposition / unstable step)
         // must not reach the map or odometry. GraphOptimization restores the
         // complete pre-frame topology, node state, factor runtime, and ID state.
@@ -420,11 +464,25 @@ public:
             return ResultType::error;
         }
         const algorithms::graph::NodeState optimized_state = frame_result.current_state;
-        // Submapping (mirrors lidar_odometry; uses the graph estimate as the pose)
+        std::optional<detail::KeyframeImuHistory> rebased_imu_history;
+        if (frame_result.keyframe) {
+            auto candidate = this->keyframe_imu_history_;
+            std::lock_guard<std::mutex> lock(imu_mutex_);
+            if (!candidate.reset(timestamp, this->imu_buffer_)) {
+                this->graph_opt_->restore(graph_checkpoint);
+                this->error_message_ = "cannot rebase keyframe IMU history";
+                return ResultType::insufficient_imu_coverage;
+            }
+            rebased_imu_history = std::move(candidate);
+        }
+        // Prepare every throwing submap operation before publishing either the
+        // graph or map transition. An abandoned preparation has no side effects.
+        std::optional<submapping::Submap::PreparedFreeze> prepared_freeze;
         {
             double dt = 0.0;
             try {
-                time_utils::measure_execution([&]() { return this->submapping(frame_result, timestamp); }, dt);
+                time_utils::measure_execution(
+                    [&]() { prepared_freeze = this->prepare_submapping(frame_result); }, dt);
             } catch (const std::exception& e) {
                 this->graph_opt_->restore(graph_checkpoint);
                 this->error_message_ = std::string("submapping: ") + e.what();
@@ -433,6 +491,16 @@ public:
             }
             this->add_delta_time(ProcessName::build_submap, dt);
         }
+
+        if (prepared_freeze) {
+            this->submap_->commit_freeze_keyframe_to_submap(std::move(*prepared_freeze));
+            this->submap_dirty_ = true;
+        }
+        this->last_factor_input_ = frame_result.tip_cloud;
+        *this->reg_result_ = frame_result.tip_registration;
+        this->reg_result_->T = frame_result.current_pose;
+        this->reg_result_->converged = frame_result.converged;
+        this->reg_result_->iterations = frame_result.iterations;
 
         // update odometry / velocity
         {
@@ -443,7 +511,14 @@ public:
             if (frame_result.keyframe) {
                 if (auto tip = this->graph_opt_->window().get_node(frame_result.current_node_id)) {
                     this->imu_edge_source_id_ = tip->id;
-                    this->imu_edge_last_timestamp_ = timestamp;
+                    std::lock_guard<std::mutex> lock(imu_mutex_);
+                    for (const auto& measurement : this->imu_buffer_) {
+                        if (measurement.timestamp > rebased_imu_history->latest_timestamp()) {
+                            rebased_imu_history->append(measurement);
+                        }
+                    }
+                    this->keyframe_imu_history_ = std::move(*rebased_imu_history);
+                    if (recover_imu_edge) ++this->imu_edge_recovery_count_;
                 }
             }
             this->prev_odom_ = this->odom_;
@@ -451,6 +526,7 @@ public:
             this->last_frame_time_ = timestamp;
 
         }
+        output_cloud.commit();
         return ResultType::success;
     }
 
@@ -485,7 +561,8 @@ private:
     imu::IMUPreintegration::Ptr imu_preintegration_ = nullptr;
     imu::IMUBias imu_bias_;
     algorithms::graph::NodeState nav_state_;
-    double state_timestamp_ = -1.0;
+    std::atomic<double> state_timestamp_{-1.0};
+    std::atomic<double> imu_buffer_pin_start_{-1.0};
     imu::InitialAlignmentEstimator::Ptr alignment_estimator_ = nullptr;
     std::deque<imu::IMUMeasurement> imu_buffer_;
     mutable std::mutex imu_mutex_;
@@ -497,7 +574,8 @@ private:
     // tips so the edge always spans the last kept keyframe -> current tip.
     imu::IMUPreintegration::Ptr imu_edge_preintegration_ = nullptr;
     algorithms::graph::NodeId imu_edge_source_id_ = algorithms::graph::INVALID_NODE_ID;
-    double imu_edge_last_timestamp_ = -1.0;
+    detail::KeyframeImuHistory keyframe_imu_history_{{5.0, 4096}};
+    uint64_t imu_edge_recovery_count_ = 0;
 
     std::string error_message_;
     enum class ProcessName { preprocessing = 0, compute_covariances, refine_filter, graph_optimization, build_submap };
@@ -528,10 +606,44 @@ private:
 
     bool is_imu_deskew_enabled() const { return this->params_.imu.enable && this->params_.imu.deskew.enable; }
 
+    class ImuBufferPin {
+    public:
+        ImuBufferPin(std::atomic<double>& pin, double timestamp) : pin_(pin) { pin_.store(timestamp); }
+        ~ImuBufferPin() { pin_.store(-1.0); }
+
+        ImuBufferPin(const ImuBufferPin&) = delete;
+        ImuBufferPin& operator=(const ImuBufferPin&) = delete;
+
+    private:
+        std::atomic<double>& pin_;
+    };
+
+    class OutputCloudTransaction {
+    public:
+        OutputCloudTransaction(PointCloudShared::Ptr& output,
+                               const sycl_utils::DeviceQueue& queue)
+            : output_(output), previous_(output) {
+            output_ = std::make_shared<PointCloudShared>(queue);
+        }
+        ~OutputCloudTransaction() {
+            if (!committed_) output_ = previous_;
+        }
+
+        void commit() noexcept { committed_ = true; }
+        OutputCloudTransaction(const OutputCloudTransaction&) = delete;
+        OutputCloudTransaction& operator=(const OutputCloudTransaction&) = delete;
+
+    private:
+        PointCloudShared::Ptr& output_;
+        PointCloudShared::Ptr previous_;
+        bool committed_ = false;
+    };
+
     IMUCoverage classify_imu_coverage_locked(double start_timestamp, double end_timestamp) const {
-        if (start_timestamp < 0.0 || end_timestamp <= start_timestamp || this->imu_buffer_.empty()) {
+        if (start_timestamp < 0.0 || this->imu_buffer_.empty()) {
             return IMUCoverage::waiting_for_future;
         }
+        if (end_timestamp <= start_timestamp) return IMUCoverage::start_expired;
         if (this->imu_buffer_.front().timestamp > start_timestamp) return IMUCoverage::start_expired;
         if (this->imu_buffer_.back().timestamp < end_timestamp) return IMUCoverage::waiting_for_future;
         return IMUCoverage::ready;
@@ -669,7 +781,6 @@ private:
         this->imu_edge_preintegration_ = std::make_shared<imu::IMUPreintegration>(this->params_.imu.preintegration);
         this->imu_edge_preintegration_->reset(this->imu_bias_, Eigen::Matrix<float, 15, 15>::Zero(), R_world_imu);
         this->imu_edge_source_id_ = algorithms::graph::INVALID_NODE_ID;
-        this->imu_edge_last_timestamp_ = -1.0;
         this->alignment_estimator_ = std::make_shared<imu::InitialAlignmentEstimator>(
             this->params_.imu.initial_alignment, this->params_.imu.preintegration.gravity,
             this->params_.imu.T_imu_to_lidar);
@@ -731,13 +842,8 @@ private:
         this->pc_processor_->compute_covariances(*this->preprocessed_pc_, this->processing_ctx_);
     }
 
-    void submapping(algorithms::graph::GraphOptimization::FrameResult& frame_result, double timestamp) {
-        // Keep registration statistics for diagnostics and ROS publication.
-        *this->reg_result_ = frame_result.tip_registration;
-        this->reg_result_->T = frame_result.current_pose;
-        this->reg_result_->converged = frame_result.converged;
-        this->reg_result_->iterations = frame_result.iterations;
-
+    std::optional<submapping::Submap::PreparedFreeze> prepare_submapping(
+        algorithms::graph::GraphOptimization::FrameResult& frame_result) {
         // Keyframe/submap lifecycle: retention is decided by the graph keyframe
         // gate (process_frame); map insertion is a SEPARATE transition done on
         // eviction. The scan is inserted at its FINAL optimized pose exactly
@@ -750,13 +856,13 @@ private:
             // ICP robust weights were meaningful for its own registration run,
             // not for its move into the (current) fixed submap. The frozen
             // scan uses the uniform random sampling budget instead.
-            this->submap_->freeze_keyframe_to_submap(*frame_result.frozen_cloud,
-                                                     frame_result.frozen_pose);
-            this->submap_dirty_ = true;
+            return this->submap_->prepare_freeze_keyframe_to_submap(
+                *frame_result.frozen_cloud, frame_result.frozen_pose);
         }
         // Deferred / force-dropped marginalization keeps the scan OUT of the
         // fixed submap this frame (retry next frame on Success; after a
         // force-drop the map simply misses that scan).
+        return std::nullopt;
     }
 };
 

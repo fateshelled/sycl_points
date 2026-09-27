@@ -2407,11 +2407,13 @@ protected:
     graph::GraphOptimization::FrameResult feed_frame(graph::GraphOptimization& opt,
                                                      const PointCloudShared::Ptr& submap,
                                                      const std::shared_ptr<knn::KNNBase>& submap_knn,
-                                                     const Eigen::Isometry3f& T_gt, double t) {
+                                                     const Eigen::Isometry3f& T_gt, double t,
+                                                     const graph::GraphOptimization::ImuEdgeContext& imu = {}) {
         auto scan = transform_cloud(queue, *submap, T_gt.inverse());
         auto knn = knn::KDTree::build(queue, *scan);
         estimate_covariances(*knn, *scan);
-        return opt.process_frame(scan, submap, submap_knn, knn, T_gt, t, gicp_params());
+        return opt.process_frame(scan, submap, submap_knn, knn, T_gt, t, gicp_params(),
+                                 graph::GraphOptimization::VelocityUpdateContext(), imu);
     }
 
     struct TopoCounts {
@@ -2613,6 +2615,29 @@ TEST_F(GraphTopologyTest, KeyframeGateThinsPersistentNodes) {
     // left after a transient tip is dropped): binaries <= nodes-1.
     const auto c = count_factors(opt.window());
     EXPECT_LE(c.pc_binary + c.chain, opt.window().window_size() * (opt.window().window_size() - 1) / 2);
+}
+
+TEST_F(GraphTopologyTest, ForcedKeyframeBypassesThresholdAndInlierGate) {
+    std::mt19937 gen(71);
+    std::shared_ptr<knn::KNNBase> submap_knn;
+    auto submap = make_submap(gen, submap_knn);
+
+    graph::GraphOptimization::Options opts;
+    opts.gate.enabled = true;
+    opts.gate.min_translation = 100.0f;
+    opts.gate.min_rotation = 3.0f;
+    opts.gate.min_inlier_ratio = 2.0f;
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4, opts);
+
+    graph::GraphOptimization::ImuEdgeContext imu;
+    imu.force_keyframe = true;
+    const auto result = feed_frame(opt, submap, submap_knn,
+                                   Eigen::Isometry3f::Identity(), 0.0, imu);
+
+    ASSERT_TRUE(result.solver_valid());
+    EXPECT_TRUE(result.keyframe);
+    EXPECT_TRUE(result.finalized);
+    EXPECT_EQ(opt.window().window_size(), 1u);
 }
 
 // ---------------------------------------------------------------------------

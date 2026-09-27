@@ -100,6 +100,7 @@ public:
         ///        tip. Fixes the preintegration gauge so single-edge frames stay
         ///        solvable; the sigmas are loose by design.
         bool add_nav_prior = false;
+        bool force_keyframe = false;
         float nav_prior_sigma_velocity = 1.0f;     ///< [m/s]
         float nav_prior_sigma_accel_bias = 0.5f;   ///< [m/s^2]
         float nav_prior_sigma_gyro_bias = 0.1f;    ///< [rad/s]
@@ -305,18 +306,24 @@ public:
                               std::shared_ptr<knn::KNNBase> knn,
                               const NodeState& state,
                               const ImuEdgeContext& prior) {
-        const NodeId id = window_.add_node(pose, timestamp, std::move(cloud), std::move(knn),
-                                           state.velocity, state.accel_bias, state.gyro_bias);
-        auto node = window_.get_node(id);
-        NodeState reference = state;
-        reference.pose = pose;
-        window_.add_factor(std::make_shared<BootstrapStatePriorFactor>(
-            node, reference, prior.root_prior_sigma_pose, prior.nav_prior_sigma_velocity,
-            prior.nav_prior_sigma_accel_bias, prior.nav_prior_sigma_gyro_bias));
-        last_keyframe_pose_ = pose;
-        last_keyframe_time_ = timestamp;
-        has_keyframe_ = true;
-        return id;
+        const auto checkpoint = this->checkpoint();
+        try {
+            const NodeId id = window_.add_node(pose, timestamp, std::move(cloud), std::move(knn),
+                                               state.velocity, state.accel_bias, state.gyro_bias);
+            auto node = window_.get_node(id);
+            NodeState reference = state;
+            reference.pose = pose;
+            window_.add_factor(std::make_shared<BootstrapStatePriorFactor>(
+                node, reference, prior.root_prior_sigma_pose, prior.nav_prior_sigma_velocity,
+                prior.nav_prior_sigma_accel_bias, prior.nav_prior_sigma_gyro_bias));
+            last_keyframe_pose_ = pose;
+            last_keyframe_time_ = timestamp;
+            has_keyframe_ = true;
+            return id;
+        } catch (...) {
+            this->restore(checkpoint);
+            throw;
+        }
     }
 
 private:
@@ -520,11 +527,11 @@ private:
                                   timestamp - last_keyframe_time_ >= opts_.gate.min_time_seconds;
             const bool inlier_ok = opts_.gate.min_inlier_ratio <= 0.0f ||
                                    fr.inlier_ratio > opts_.gate.min_inlier_ratio;
-            const bool is_keyframe = inlier_ok &&
-                                     (!has_keyframe_ ||
-                                      d.translation().norm() >= opts_.gate.min_translation ||
-                                      Eigen::AngleAxisf(d.rotation()).angle() >= opts_.gate.min_rotation ||
-                                      time_hit);
+            const bool threshold_keyframe =
+                inlier_ok && (!has_keyframe_ ||
+                              d.translation().norm() >= opts_.gate.min_translation ||
+                              Eigen::AngleAxisf(d.rotation()).angle() >= opts_.gate.min_rotation || time_hit);
+            const bool is_keyframe = imu.force_keyframe || threshold_keyframe;
             if (is_keyframe) {
                 last_keyframe_pose_ = fr.current_pose;
                 last_keyframe_time_ = timestamp;

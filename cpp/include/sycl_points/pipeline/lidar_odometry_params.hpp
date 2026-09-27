@@ -88,7 +88,8 @@ struct Parameters : public odometry::CommonParameters {
         Registration registration;
 
         struct LIO {
-            double timestamp_tolerance_sec = 1e-6;
+            double keyframe_imu_history_duration_sec = 5.0;
+            size_t keyframe_imu_history_max_samples = 4096;
             float root_prior_sigma_pose = 1e-4f;
             float root_prior_sigma_velocity = 0.1f;
             float root_prior_sigma_accel_bias = 0.1f;
