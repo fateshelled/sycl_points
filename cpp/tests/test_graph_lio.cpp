@@ -189,10 +189,10 @@ pipeline::graph_odometry::GraphOdometryParams graph_pipeline_params() {
     return params;
 }
 
-TEST(GraphPipelineImu, RejectsUnsupportedLeverArm) {
+TEST(GraphPipelineImu, AcceptsFiniteLeverArm) {
     auto params = graph_pipeline_params();
     params.imu.T_imu_to_lidar.translation().x() = 0.1f;
-    EXPECT_THROW(pipeline::graph_odometry::GraphOdometryPipeline pipeline(params), std::invalid_argument);
+    EXPECT_NO_THROW(pipeline::graph_odometry::GraphOdometryPipeline pipeline(params));
 }
 
 TEST(GraphPipelineImu, BootstrapWaitsForImuBoundary) {

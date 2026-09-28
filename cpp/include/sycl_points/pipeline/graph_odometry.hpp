@@ -78,9 +78,8 @@ public:
                 "[Graph Odometry] graph LIO requires initial alignment, IMU deskew, and IMU_SE3 prediction");
         }
         const auto& lever_arm = this->params_.imu.T_imu_to_lidar.translation();
-        if (!lever_arm.allFinite() || lever_arm.norm() > 1e-5f) {
-            throw std::invalid_argument(
-                "[Graph Odometry] T_imu_to_lidar translation must be zero: the IMU graph factor ignores the lever arm");
+        if (!lever_arm.allFinite()) {
+            throw std::invalid_argument("[Graph Odometry] T_imu_to_lidar translation must be finite");
         }
         const auto& p = this->params_.imu.preintegration;
         if (!std::isfinite(p.gyro_noise_density) || p.gyro_noise_density <= 0.0f ||

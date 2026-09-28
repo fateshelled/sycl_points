@@ -20,13 +20,13 @@ namespace graph {
 ///
 /// Residual (15-dim, ordered to match the preintegration covariance
 /// [p, rot, v, accel-bias, gyro-bias]):
-///   r_p  = R_iw^T (p_j - p_i - v_i·dt - ½ g·dt²) - Δp
+///   r_p  = R_iw^T (p_j + R_j t - p_i - R_i t - v_i·dt - ½ g·dt²) - Δp
 ///   r_R  = Log( ΔR^T R_iw^T R_jw )
 ///   r_v  = R_iw^T (v_j - v_i - g·dt) - Δv
 ///   r_ba = ba_j - ba_i
 ///   r_bg = bg_j - bg_i
-/// where R_iw = R_i · R_lidar_imu (T_imu_to_lidar.rotation(); the IMU/LiDAR
-/// lever arm is deliberately ignored, matching the IEKF LIO convention) and
+/// where R_iw = R_i · R_lidar_imu, t = T_imu_to_lidar.translation()
+/// (IMU origin in LiDAR coordinates), p_i/j are LiDAR origins, and
 /// (ΔR, Δv, Δp) are the bias-corrected preintegrated measurements.
 ///
 /// Node tangent convention (matches the solver):
@@ -47,6 +47,7 @@ public:
           target_node_(std::move(target_node)),
           preint_(std::move(preintegration)),
           R_lidar_imu_(T_imu_to_lidar.rotation()),
+          t_imu_in_lidar_(T_imu_to_lidar.translation()),
           gravity_(gravity) {
         const auto& cov = preint_.get_raw().covariance;
         if (!cov.allFinite() || !imu::compute_imu_information(cov, information_)) {
@@ -77,7 +78,8 @@ public:
         const Eigen::Matrix3f R_imu_j = R_j * R_lidar_imu_;
         const Eigen::Matrix3f R_imu_i_t = R_imu_i.transpose();
 
-        const Eigen::Vector3f u = p_j - p_i - si.velocity * dt - 0.5f * gravity_ * dt * dt;
+        const Eigen::Vector3f u = p_j + R_j * t_imu_in_lidar_ - p_i - R_i * t_imu_in_lidar_ -
+                                  si.velocity * dt - 0.5f * gravity_ * dt * dt;
         const Eigen::Vector3f w_p = R_imu_i_t * u;
         const Eigen::Vector3f w_v = R_imu_i_t * (sj.velocity - si.velocity - gravity_ * dt);
 
@@ -100,11 +102,12 @@ public:
         Ji.setZero();
         Jj.setZero();
         // position residual rows
-        Ji.block<3, 3>(0, 0) = skew_p * R_i2l_t;
+        Ji.block<3, 3>(0, 0) = skew_p * R_i2l_t + R_i2l_t * eigen_utils::lie::skew(t_imu_in_lidar_);
         Ji.block<3, 3>(0, 3) = -R_i2l_t;
         Ji.block<3, 3>(0, 6) = -R_imu_i_t * dt;
         Ji.block<3, 3>(0, 9) = -c.J.J_p_ba;
         Ji.block<3, 3>(0, 12) = -c.J.J_p_bg;
+        Jj.block<3, 3>(0, 0) = -R_imu_i_t * R_j * eigen_utils::lie::skew(t_imu_in_lidar_);
         Jj.block<3, 3>(0, 3) = R_imu_i_t * R_j;
         // rotation residual rows
         Ji.block<3, 3>(3, 0) = -Jl_inv * c.Delta_R.transpose() * R_i2l_t;
@@ -198,6 +201,7 @@ private:
     imu::IMUPreintegration preint_;
     Eigen::Matrix<float, 15, 15> information_ = Eigen::Matrix<float, 15, 15>::Zero();
     Eigen::Matrix3f R_lidar_imu_ = Eigen::Matrix3f::Identity();
+    Eigen::Vector3f t_imu_in_lidar_ = Eigen::Vector3f::Zero();
     Eigen::Vector3f gravity_ = Eigen::Vector3f(0.0f, 0.0f, -9.80665f);
 };
 

@@ -95,6 +95,7 @@ TEST_F(GraphImuFactorTest, AnalyticJacobiansMatchFiniteDifferences) {
     tgt->id = 1;
     Eigen::Isometry3f T_il = Eigen::Isometry3f::Identity();
     T_il.linear() = exp_so3(Eigen::Vector3f(0.2f, -0.1f, 0.3f));
+    T_il.translation() = Eigen::Vector3f(0.35f, -0.22f, 0.14f);
     graph::ImuPreintegrationFactor factor(src, tgt, preint, T_il, make_params().gravity);
 
     std::mt19937 gen(42);
@@ -175,6 +176,39 @@ TEST_F(GraphImuFactorTest, ConsistentStatesHaveZeroResidual) {
     graph::ImuPreintegrationFactor factor(src, tgt, preint, Eigen::Isometry3f::Identity(), g);
     const Eigen::Matrix<float, 15, 1> r = factor.residual(si, sj);
     EXPECT_LT(r.norm(), 1e-3f) << "r = " << r.transpose();
+}
+
+TEST_F(GraphImuFactorTest, RotatingLeverArmHasZeroPositionResidual) {
+    auto preint = imu::IMUPreintegration(make_params());
+    preint.reset(imu::IMUBias{}, Eigen::Matrix<float, 15, 15>::Zero());
+    preint.integrate_batch(make_constant_imu(0.0, 0.25, 25, Eigen::Vector3f(0.0f, 0.0f, 0.8f),
+                                              Eigen::Vector3f(0.0f, 0.0f, 9.80665f)));
+
+    Eigen::Isometry3f T_il = Eigen::Isometry3f::Identity();
+    T_il.linear() = exp_so3(Eigen::Vector3f(0.2f, -0.1f, 0.3f));
+    T_il.translation() = Eigen::Vector3f(0.3f, -0.2f, 0.1f);
+    const auto& c = preint.get_raw();
+    const float dt = static_cast<float>(c.dt_total);
+    const Eigen::Vector3f g = make_params().gravity;
+    graph::NodeState si;
+    si.pose.linear() = exp_so3(Eigen::Vector3f(-0.1f, 0.15f, 0.2f));
+    si.velocity = Eigen::Vector3f(0.4f, -0.1f, 0.2f);
+    graph::NodeState sj = si;
+    const Eigen::Matrix3f R_imu_i = si.pose.rotation() * T_il.rotation();
+    sj.pose.linear() = R_imu_i * c.Delta_R * T_il.rotation().transpose();
+    sj.pose.translation() = si.pose.translation() + si.pose.rotation() * T_il.translation() +
+                            si.velocity * dt + 0.5f * g * dt * dt + R_imu_i * c.Delta_p -
+                            sj.pose.rotation() * T_il.translation();
+    sj.velocity = si.velocity + g * dt + R_imu_i * c.Delta_v;
+
+    auto src = std::make_shared<graph::PoseNode>();
+    auto tgt = std::make_shared<graph::PoseNode>();
+    graph::ImuPreintegrationFactor factor(src, tgt, preint, T_il, g);
+    EXPECT_LT(factor.residual(si, sj).norm(), 1e-3f);
+    Eigen::Isometry3f rotation_only = Eigen::Isometry3f::Identity();
+    rotation_only.linear() = T_il.rotation();
+    graph::ImuPreintegrationFactor without_arm(src, tgt, preint, rotation_only, g);
+    EXPECT_GT(without_arm.residual(si, sj).head<3>().norm(), 1e-2f);
 }
 
 // The factor advertises full-state usage so the solver picks the 15-DOF layout,
