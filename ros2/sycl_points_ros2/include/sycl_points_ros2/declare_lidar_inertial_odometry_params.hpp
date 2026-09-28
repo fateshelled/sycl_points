@@ -15,16 +15,6 @@ inline pipeline::lidar_inertial_odometry::Parameters declare_lidar_inertial_odom
     pipeline::lidar_inertial_odometry::Parameters params;
     static_cast<pipeline::odometry::CommonParameters&>(params) = declare_odometry_common_parameters(node);
 
-    // IMU noise densities for 15×15 covariance propagation (not in base declaration)
-    params.imu.preintegration.gyro_noise_density = static_cast<float>(node->declare_parameter<double>(
-        "imu/preintegration/gyro_noise_density", params.imu.preintegration.gyro_noise_density));
-    params.imu.preintegration.accel_noise_density = static_cast<float>(node->declare_parameter<double>(
-        "imu/preintegration/accel_noise_density", params.imu.preintegration.accel_noise_density));
-    params.imu.preintegration.gyro_bias_rw_density = static_cast<float>(node->declare_parameter<double>(
-        "imu/preintegration/gyro_bias_rw_density", params.imu.preintegration.gyro_bias_rw_density));
-    params.imu.preintegration.accel_bias_rw_density = static_cast<float>(node->declare_parameter<double>(
-        "imu/preintegration/accel_bias_rw_density", params.imu.preintegration.accel_bias_rw_density));
-
     // LIO-specific optimization parameters
     auto& registration = params.lio.registration;
     declare_registration_optimization_parameters(node, registration.optimization);
