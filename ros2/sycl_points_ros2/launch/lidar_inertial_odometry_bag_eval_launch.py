@@ -8,7 +8,9 @@ import os
 import yaml
 
 
-def declare_params_from_yaml(yaml_path: str, target_node="lidar_inertial_odometry_node"):
+def declare_params_from_yaml(
+    yaml_path: str, target_node="lidar_inertial_odometry_node"
+):
     launch_args = []
     node_args = {}
     with open(yaml_path, "r") as f:
@@ -25,7 +27,11 @@ def declare_params_from_yaml(yaml_path: str, target_node="lidar_inertial_odometr
                 launch_args.append(
                     DeclareLaunchArgument(name, default_value=value_str, description="")
                 )
-                node_args[name] = LaunchConfiguration(name)
+                node_args[name] = (
+                    ParameterValue(LaunchConfiguration(name), value_type=float)
+                    if isinstance(value, float)
+                    else LaunchConfiguration(name)
+                )
             break
     return launch_args, node_args
 
@@ -34,7 +40,9 @@ def generate_launch_description():
     package_name = "sycl_points_ros2"
     package_dir = get_package_share_directory(package_name)
     param_yaml = os.path.join(package_dir, "config", "lidar_inertial_odometry.yaml")
-    launch_args, node_args = declare_params_from_yaml(param_yaml, "lidar_inertial_odometry_node")
+    launch_args, node_args = declare_params_from_yaml(
+        param_yaml, "lidar_inertial_odometry_node"
+    )
 
     launch_args.extend(
         [

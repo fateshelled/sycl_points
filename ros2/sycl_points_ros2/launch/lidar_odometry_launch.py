@@ -7,6 +7,7 @@ from launch.conditions import IfCondition
 from launch.actions import TimerAction
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
+from launch_ros.parameter_descriptions import ParameterValue
 import os
 import yaml
 
@@ -28,7 +29,11 @@ def declare_params_from_yaml(yaml_path: str, target_node="lidar_odometry_node"):
                 launch_args.append(
                     DeclareLaunchArgument(name, default_value=value_str, description="")
                 )
-                node_args[name] = LaunchConfiguration(name)
+                node_args[name] = (
+                    ParameterValue(LaunchConfiguration(name), value_type=float)
+                    if isinstance(value, float)
+                    else LaunchConfiguration(name)
+                )
             break
     return launch_args, node_args
 
@@ -87,7 +92,9 @@ def generate_launch_description():
             )
         except ValueError:
             start_offset_sec = 0
-        sim_time = LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+        sim_time = (
+            LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+        )
 
         player_params = {
             "play.read_ahead_queue_size": 1000,
@@ -182,4 +189,6 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("rviz2")),
     )
 
-    return LaunchDescription(launch_args + [rviz, OpaqueFunction(function=launch_setup)])
+    return LaunchDescription(
+        launch_args + [rviz, OpaqueFunction(function=launch_setup)]
+    )
