@@ -53,68 +53,64 @@ void GraphOdometryBaseNode::initialize_processing() {
         };
         graph.window_size = positive_size("graph/window_size", graph.window_size);
         graph.solver_iterations = positive_size("graph/solver_iterations", graph.solver_iterations);
-        const std::string optimization_method = this->declare_parameter<std::string>(
-            "graph/solver/optimization_method", "GN");
-        graph.optimization_method =
-            algorithms::registration::OptimizationMethod_from_string(optimization_method);
-        graph.lm.max_inner_iterations = positive_size(
-            "graph/solver/lm/max_inner_iterations", graph.lm.max_inner_iterations);
-        graph.lm.lambda_factor = static_cast<float>(this->declare_parameter<double>(
-            "graph/solver/lm/lambda_factor", graph.lm.lambda_factor));
-        graph.lm.init_lambda = static_cast<float>(this->declare_parameter<double>(
-            "graph/solver/lm/init_lambda", graph.lm.init_lambda));
-        graph.lm.max_lambda = static_cast<float>(this->declare_parameter<double>(
-            "graph/solver/lm/max_lambda", graph.lm.max_lambda));
-        graph.lm.min_lambda = static_cast<float>(this->declare_parameter<double>(
-            "graph/solver/lm/min_lambda", graph.lm.min_lambda));
-        graph.convergence_translation = static_cast<float>(this->declare_parameter<double>(
-            "graph/convergence/translation", graph.convergence_translation));
+        const std::string optimization_method =
+            this->declare_parameter<std::string>("graph/solver/optimization_method", "GN");
+        graph.optimization_method = algorithms::registration::OptimizationMethod_from_string(optimization_method);
+        graph.lm.max_inner_iterations =
+            positive_size("graph/solver/lm/max_inner_iterations", graph.lm.max_inner_iterations);
+        graph.lm.lambda_factor = static_cast<float>(
+            this->declare_parameter<double>("graph/solver/lm/lambda_factor", graph.lm.lambda_factor));
+        graph.lm.init_lambda =
+            static_cast<float>(this->declare_parameter<double>("graph/solver/lm/init_lambda", graph.lm.init_lambda));
+        graph.lm.max_lambda =
+            static_cast<float>(this->declare_parameter<double>("graph/solver/lm/max_lambda", graph.lm.max_lambda));
+        graph.lm.min_lambda =
+            static_cast<float>(this->declare_parameter<double>("graph/solver/lm/min_lambda", graph.lm.min_lambda));
+        graph.convergence_translation = static_cast<float>(
+            this->declare_parameter<double>("graph/convergence/translation", graph.convergence_translation));
         graph.convergence_rotation = static_cast<float>(
             this->declare_parameter<double>("graph/convergence/rotation", graph.convergence_rotation));
-        graph.convergence_velocity = static_cast<float>(this->declare_parameter<double>(
-            "graph/convergence/velocity", graph.convergence_velocity));
-        graph.convergence_bias = static_cast<float>(
-            this->declare_parameter<double>("graph/convergence/bias", graph.convergence_bias));
-        graph.max_step_velocity = static_cast<float>(this->declare_parameter<double>(
-            "graph/solver/max_step_velocity", graph.max_step_velocity));
-        graph.max_step_bias = static_cast<float>(this->declare_parameter<double>(
-            "graph/solver/max_step_bias", graph.max_step_bias));
+        graph.convergence_velocity = static_cast<float>(
+            this->declare_parameter<double>("graph/convergence/velocity", graph.convergence_velocity));
+        graph.convergence_bias =
+            static_cast<float>(this->declare_parameter<double>("graph/convergence/bias", graph.convergence_bias));
+        graph.max_step_velocity = static_cast<float>(
+            this->declare_parameter<double>("graph/solver/max_step_velocity", graph.max_step_velocity));
+        graph.max_step_bias =
+            static_cast<float>(this->declare_parameter<double>("graph/solver/max_step_bias", graph.max_step_bias));
         graph.relinearize_translation_thresh = static_cast<float>(this->declare_parameter<double>(
             "graph/relinearize/translation_threshold", graph.relinearize_translation_thresh));
-        graph.relinearize_rotation_thresh = static_cast<float>(this->declare_parameter<double>(
-            "graph/relinearize/rotation_threshold", graph.relinearize_rotation_thresh));
-        graph.solver_damping_lambda = static_cast<float>(this->declare_parameter<double>(
-            "graph/solver/damping_lambda", graph.solver_damping_lambda));
+        graph.relinearize_rotation_thresh = static_cast<float>(
+            this->declare_parameter<double>("graph/relinearize/rotation_threshold", graph.relinearize_rotation_thresh));
+        graph.solver_damping_lambda = static_cast<float>(
+            this->declare_parameter<double>("graph/solver/damping_lambda", graph.solver_damping_lambda));
         graph.marginalization_lambda = static_cast<float>(
             this->declare_parameter<double>("graph/marginalization_lambda", graph.marginalization_lambda));
         auto& deg = graph.degenerate_regularization;
         deg.enable = this->declare_parameter<bool>("graph/degenerate_regularization/enable", deg.enable);
         deg.eigenvalue_threshold = static_cast<float>(this->declare_parameter<double>(
             "graph/degenerate_regularization/eigenvalue_threshold", deg.eigenvalue_threshold));
-        deg.strength = static_cast<float>(this->declare_parameter<double>(
-            "graph/degenerate_regularization/strength", deg.strength));
+        deg.strength = static_cast<float>(
+            this->declare_parameter<double>("graph/degenerate_regularization/strength", deg.strength));
         deg.representative_length = static_cast<float>(this->declare_parameter<double>(
             "graph/degenerate_regularization/representative_length", deg.representative_length));
         deg.pseudo_inverse_relative_cutoff = static_cast<float>(this->declare_parameter<double>(
-            "graph/degenerate_regularization/pseudo_inverse_relative_cutoff",
-            deg.pseudo_inverse_relative_cutoff));
+            "graph/degenerate_regularization/pseudo_inverse_relative_cutoff", deg.pseudo_inverse_relative_cutoff));
         deg.pseudo_inverse_absolute_cutoff = static_cast<float>(this->declare_parameter<double>(
-            "graph/degenerate_regularization/pseudo_inverse_absolute_cutoff",
-            deg.pseudo_inverse_absolute_cutoff));
+            "graph/degenerate_regularization/pseudo_inverse_absolute_cutoff", deg.pseudo_inverse_absolute_cutoff));
         graph.chain_sigma_rotation = static_cast<float>(
             this->declare_parameter<double>("graph/chain/sigma_rotation", graph.chain_sigma_rotation));
         graph.chain_sigma_translation = static_cast<float>(
             this->declare_parameter<double>("graph/chain/sigma_translation", graph.chain_sigma_translation));
         graph.robust_enable = this->declare_parameter<bool>("graph/robust/enable", graph.robust_enable);
-        graph.robust_init_scale = static_cast<float>(
-            this->declare_parameter<double>("graph/robust/init_scale", graph.robust_init_scale));
-        graph.robust_min_scale = static_cast<float>(
-            this->declare_parameter<double>("graph/robust/min_scale", graph.robust_min_scale));
+        graph.robust_init_scale =
+            static_cast<float>(this->declare_parameter<double>("graph/robust/init_scale", graph.robust_init_scale));
+        graph.robust_min_scale =
+            static_cast<float>(this->declare_parameter<double>("graph/robust/min_scale", graph.robust_min_scale));
         graph.robust_levels = positive_size("graph/robust/levels", graph.robust_levels);
-        graph.robust_iters_per_level =
-            positive_size("graph/robust/iterations_per_level", graph.robust_iters_per_level);
-        graph.robust_relinearize_per_rung = static_cast<bool>(this->declare_parameter<bool>(
-            "graph/robust/relinearize_per_rung", graph.robust_relinearize_per_rung));
+        graph.robust_iters_per_level = positive_size("graph/robust/iterations_per_level", graph.robust_iters_per_level);
+        graph.robust_relinearize_per_rung = static_cast<bool>(
+            this->declare_parameter<bool>("graph/robust/relinearize_per_rung", graph.robust_relinearize_per_rung));
         const std::string graph_robust_type =
             this->declare_parameter<std::string>("graph/robust/type", "GEMAN_MCCLURE");
         graph.robust_type = algorithms::robust::RobustLossType_from_string(graph_robust_type);
@@ -122,19 +118,17 @@ void GraphOdometryBaseNode::initialize_processing() {
             this->declare_parameter<double>("graph/robust/default_scale", graph.robust_default_scale));
         auto& lio = graph.lio;
         lio.keyframe_imu_history_duration_sec = this->declare_parameter<double>(
-            "graph/lio/keyframe_imu_history/duration_sec",
-            lio.keyframe_imu_history_duration_sec);
-        lio.keyframe_imu_history_max_samples = positive_size(
-            "graph/lio/keyframe_imu_history/max_samples",
-            lio.keyframe_imu_history_max_samples);
-        lio.root_prior_sigma_pose = static_cast<float>(this->declare_parameter<double>(
-            "graph/lio/root_prior/pose_sigma", lio.root_prior_sigma_pose));
-        lio.root_prior_sigma_velocity = static_cast<float>(this->declare_parameter<double>(
-            "graph/lio/root_prior/velocity_sigma", lio.root_prior_sigma_velocity));
-        lio.root_prior_sigma_accel_bias = static_cast<float>(this->declare_parameter<double>(
-            "graph/lio/root_prior/accel_bias_sigma", lio.root_prior_sigma_accel_bias));
-        lio.root_prior_sigma_gyro_bias = static_cast<float>(this->declare_parameter<double>(
-            "graph/lio/root_prior/gyro_bias_sigma", lio.root_prior_sigma_gyro_bias));
+            "graph/lio/keyframe_imu_history/duration_sec", lio.keyframe_imu_history_duration_sec);
+        lio.keyframe_imu_history_max_samples =
+            positive_size("graph/lio/keyframe_imu_history/max_samples", lio.keyframe_imu_history_max_samples);
+        lio.root_prior_sigma_pose = static_cast<float>(
+            this->declare_parameter<double>("graph/lio/root_prior/pose_sigma", lio.root_prior_sigma_pose));
+        lio.root_prior_sigma_velocity = static_cast<float>(
+            this->declare_parameter<double>("graph/lio/root_prior/velocity_sigma", lio.root_prior_sigma_velocity));
+        lio.root_prior_sigma_accel_bias = static_cast<float>(
+            this->declare_parameter<double>("graph/lio/root_prior/accel_bias_sigma", lio.root_prior_sigma_accel_bias));
+        lio.root_prior_sigma_gyro_bias = static_cast<float>(
+            this->declare_parameter<double>("graph/lio/root_prior/gyro_bias_sigma", lio.root_prior_sigma_gyro_bias));
     }
 
     this->points_topic_ = this->declare_parameter<std::string>("points_topic", this->points_topic_);
@@ -296,8 +290,7 @@ bool GraphOdometryBaseNode::prepare_point_cloud_message(const sensor_msgs::msg::
     return true;
 }
 
-void GraphOdometryBaseNode::process_prepared_point_cloud_message(double timestamp,
-                                                                 ProcessedFrame& frame) {
+void GraphOdometryBaseNode::process_prepared_point_cloud_message(double timestamp, ProcessedFrame& frame) {
     frame.result = this->pipeline_->process(this->scan_pc_, timestamp);
     if (frame.result >= ResultType::error) {
         RCLCPP_WARN(this->get_logger(), "graph odometry failed: %s", this->pipeline_->get_error_message().c_str());
@@ -317,7 +310,6 @@ void GraphOdometryBaseNode::process_prepared_point_cloud_message(double timestam
     for (const auto& item : frame.pipeline_processing_times) {
         frame.processing_subtotal += item.second;
     }
-
 }
 
 GraphOdometryBaseNode::ProcessedFrame GraphOdometryBaseNode::process_point_cloud_message(
@@ -371,7 +363,7 @@ void GraphOdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
 }
 
 nav_msgs::msg::Odometry GraphOdometryBaseNode::make_odom_message(const std_msgs::msg::Header& header,
-                                                                const Eigen::Isometry3f& odom) const {
+                                                                 const Eigen::Isometry3f& odom) const {
     const Eigen::Isometry3f T = odom * this->T_lidar_to_base_link_;
     const Eigen::Quaternionf q(T.rotation());
 
@@ -390,7 +382,7 @@ nav_msgs::msg::Odometry GraphOdometryBaseNode::make_odom_message(const std_msgs:
 }
 
 geometry_msgs::msg::PoseStamped GraphOdometryBaseNode::make_pose_message(const std_msgs::msg::Header& header,
-                                                                        const Eigen::Isometry3f& odom) const {
+                                                                         const Eigen::Isometry3f& odom) const {
     const auto odom_msg = this->make_odom_message(header, odom);
     geometry_msgs::msg::PoseStamped pose;
     pose.header = odom_msg.header;
@@ -399,7 +391,7 @@ geometry_msgs::msg::PoseStamped GraphOdometryBaseNode::make_pose_message(const s
 }
 
 nav_msgs::msg::Odometry GraphOdometryBaseNode::make_keyframe_pose_message(const std_msgs::msg::Header& header,
-                                                                         const Eigen::Isometry3f& odom) const {
+                                                                          const Eigen::Isometry3f& odom) const {
     return this->make_odom_message(header, odom);
 }
 
@@ -463,8 +455,8 @@ void GraphOdometryBaseNode::log_processing_times() {
     RCLCPP_INFO(this->get_logger(), "");
     RCLCPP_INFO(this->get_logger(), "MAX processing time");
 
-    this->processing_times_.insert(this->pipeline_->get_total_processing_times().begin(),
-                                   this->pipeline_->get_total_processing_times().end());
+    const auto total_processing_times = this->pipeline_->get_total_processing_times();
+    this->processing_times_.insert(total_processing_times.begin(), total_processing_times.end());
 
     for (auto& item : this->processing_times_) {
         if (item.second.empty()) continue;
