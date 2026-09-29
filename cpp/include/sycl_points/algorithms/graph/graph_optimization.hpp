@@ -133,6 +133,7 @@ public:
         ///        MAX_ITERATIONS (default) means the loop simply ran out of
         ///        iterations; an invalid status means the estimate is unusable.
         GraphSolver::Status solver_status = GraphSolver::Status::MAX_ITERATIONS;
+        std::string solver_failure_detail;
         /// @brief LiDAR-only tip observability from the final solver pass.
         GraphSolver::ObservabilityDiagnostics observability;
         size_t solver_inner_iterations = 0;
@@ -439,6 +440,7 @@ private:
                             ? std::optional<size_t>(std::max<size_t>(1, robust.iters_per_level))
                             : std::nullopt);
                     fr.solver_status = result.status;
+                    fr.solver_failure_detail = result.failure_detail;
                     fr.observability = result.observability;
                     fr.solver_inner_iterations += result.inner_iterations;
                     fr.solver_accepted_steps += result.accepted_steps;

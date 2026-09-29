@@ -4,7 +4,9 @@
 #include <cmath>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -175,6 +177,7 @@ public:
         float final_tip_translation_step = 0.0f;
         float final_tip_rotation_step = 0.0f;
         Status status = Status::MAX_ITERATIONS;
+        std::string failure_detail;
         ObservabilityDiagnostics observability;
 
         bool valid() const { return valid_status(status); }
@@ -188,6 +191,20 @@ public:
         return status != Status::NON_FINITE_SYSTEM && status != Status::DECOMPOSITION_FAILED &&
                status != Status::NON_FINITE_STEP && status != Status::NON_FINITE_OBJECTIVE &&
                status != Status::UNSTABLE_STEP;
+    }
+
+    static const char* status_name(Status status) {
+        switch (status) {
+            case Status::MAX_ITERATIONS: return "MAX_ITERATIONS";
+            case Status::CONVERGED: return "CONVERGED";
+            case Status::NON_FINITE_SYSTEM: return "NON_FINITE_SYSTEM";
+            case Status::DECOMPOSITION_FAILED: return "DECOMPOSITION_FAILED";
+            case Status::NON_FINITE_STEP: return "NON_FINITE_STEP";
+            case Status::NON_FINITE_OBJECTIVE: return "NON_FINITE_OBJECTIVE";
+            case Status::UNSTABLE_STEP: return "UNSTABLE_STEP";
+            case Status::NO_PROGRESS: return "NO_PROGRESS";
+        }
+        return "UNKNOWN";
     }
 
     GraphSolver(const sycl_utils::DeviceQueue& queue,
@@ -251,6 +268,19 @@ public:
         dof_ = select_dof(window);
         const size_t max_iterations = max_iterations_override.value_or(params_.max_iterations);
         float lm_lambda = params_.lm.init_lambda;
+        auto describe_failure = [&](Status status, size_t iter, const LinearizedSystem& sys,
+                                    float lambda, const char* phase) {
+            std::ostringstream out;
+            out << status_name(status) << " at " << phase << " iteration=" << iter
+                << " nodes=" << sys.node_ids.size() << " factors=" << window.factors().size()
+                << " dof=" << dof_ << " inliers=" << sys.inliers
+                << " lidar_inliers=" << sys.lidar_inliers << " error=" << result.final_error
+                << " lambda=" << lambda << " H_finite=" << sys.H.allFinite()
+                << " b_finite=" << sys.b.allFinite();
+            if (sys.H.allFinite() && sys.H.size() > 0) out << " H_max_abs=" << sys.H.cwiseAbs().maxCoeff();
+            if (sys.b.allFinite() && sys.b.size() > 0) out << " b_norm=" << sys.b.norm();
+            result.failure_detail = out.str();
+        };
         result.final_lambda = params_.optimization_method == registration::OptimizationMethod::LEVENBERG_MARQUARDT
                                   ? lm_lambda
                                   : params_.solver_damping_lambda;
@@ -260,12 +290,14 @@ public:
             result.final_error = sys.error;
             if (!sys.H.allFinite() || !sys.b.allFinite() || !std::isfinite(sys.error)) {
                 result.status = Status::NON_FINITE_SYSTEM;
+                describe_failure(result.status, iter, sys, result.final_lambda, "assembly");
                 break;
             }
 
             result.observability = apply_degenerate_regularization(window, sys);
             if (!sys.H.allFinite() || !sys.b.allFinite()) {
                 result.status = Status::NON_FINITE_SYSTEM;
+                describe_failure(result.status, iter, sys, result.final_lambda, "regularization");
                 break;
             }
 
@@ -277,6 +309,7 @@ public:
                 result.final_error = current_eval.error;
                 if (!current_eval.finite) {
                     result.status = Status::NON_FINITE_OBJECTIVE;
+                    describe_failure(result.status, iter, sys, lm_lambda, "current objective");
                     break;
                 }
 
@@ -287,12 +320,14 @@ public:
                 float accepted_max_dt = 0.0f;
                 float accepted_max_dr = 0.0f;
                 Status failure = Status::DECOMPOSITION_FAILED;
+                std::ostringstream trials;
                 for (size_t inner = 0; inner < params_.lm.max_inner_iterations; ++inner) {
                     ++result.inner_iterations;
                     Eigen::VectorXf delta;
                     float max_dt = 0.0f;
                     float max_dr = 0.0f;
-                    if (!solve_damped(sys, lm_lambda, delta, max_dt, max_dr, failure)) {
+                    std::string rejection;
+                    if (!solve_damped(sys, lm_lambda, delta, max_dt, max_dr, failure, rejection)) {
                         ++result.rejected_steps;
                     } else {
                         auto trial_states = current_states;
@@ -325,11 +360,15 @@ public:
                             saw_converged_rejected_trial =
                                 saw_converged_rejected_trial ||
                                 step_converged(delta, sys.node_ids.size());
+                            rejection = "objective increased from " + std::to_string(current_eval.error) +
+                                        " to " + std::to_string(trial_eval.error);
                         } else {
                             failure = Status::NON_FINITE_OBJECTIVE;
+                            rejection = "non-finite trial objective";
                         }
                         ++result.rejected_steps;
                     }
+                    trials << " [lambda=" << lm_lambda << " " << rejection << "]";
                     lm_lambda = std::clamp(lm_lambda * params_.lm.lambda_factor,
                                            params_.lm.min_lambda, params_.lm.max_lambda);
                 }
@@ -351,6 +390,11 @@ public:
                         result.status = Status::CONVERGED;
                     } else {
                         result.status = saw_finite_trial ? Status::NO_PROGRESS : failure;
+                        if (!result.valid()) {
+                            describe_failure(result.status, iter, sys, lm_lambda, "LM trial");
+                            result.failure_detail += " rejected_steps=" + std::to_string(result.rejected_steps) +
+                                                     " trials:" + trials.str();
+                        }
                     }
                     break;
                 }
@@ -368,11 +412,8 @@ public:
                 continue;
             }
 
-            // Eigen LDLT reports Success even on numerically singular input, so a
-            // naive solve can emit a huge but finite step that silently moves
-            // every pose. Gate the direction on step magnitude and eigenvalue
-            // conditioning, escalating damping until it is usable (mirrors the
-            // marginalization ladder); give up when the system stays unusable.
+            // Eigen LDLT reports Success even on singular input. Reject non-positive
+            // pivots and oversized steps, escalating damping until the solve is usable.
             float lambda = params_.solver_damping_lambda;
             Status failure = Status::DECOMPOSITION_FAILED;
             Eigen::VectorXf delta;
@@ -385,7 +426,7 @@ public:
                 const Eigen::MatrixXf H_reg =
                     sys.H + lambda * Eigen::MatrixXf::Identity(sys.H.rows(), sys.H.cols());
                 Eigen::LDLT<Eigen::MatrixXf> ldlt(H_reg);
-                if (ldlt.info() != Eigen::Success) {
+                if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) {
                     failure = Status::DECOMPOSITION_FAILED;
                 } else {
                     delta = ldlt.solve(-sys.b);
@@ -402,8 +443,6 @@ public:
                         }
                         if (max_dt > params_.max_step_translation || max_dr > params_.max_step_rotation) {
                             failure = Status::UNSTABLE_STEP;
-                        } else if (!is_well_conditioned(H_reg)) {
-                            failure = Status::DECOMPOSITION_FAILED;
                         } else {
                             accepted = true;
                         }
@@ -413,6 +452,12 @@ public:
             }
             if (!accepted) {
                 result.status = failure;
+                describe_failure(result.status, iter, sys, lambda, "damped GN solve");
+                result.failure_detail += " damping_attempts=" + std::to_string(kMaxDampingEscalations + 1);
+                if (delta.size() > 0) {
+                    result.failure_detail += " step_finite=" + std::to_string(delta.allFinite());
+                    if (delta.allFinite()) result.failure_detail += " step_norm=" + std::to_string(delta.norm());
+                }
                 break;
             }
 
@@ -483,19 +528,6 @@ public:
 
 private:
     static constexpr int kMaxDampingEscalations = 3;    ///< solver lambda *= 10 retries per iteration
-    static constexpr float kMinConditionRatio = 1e-6f;  ///< required lambda_min/lambda_max of the damped H
-
-    /// @brief A PSD (up to noise) Hessian whose eigenvalue span is too small is
-    ///        treated the same as a decomposition failure even when LDLT itself
-    ///        reports Success.
-    static bool is_well_conditioned(const Eigen::MatrixXf& H) {
-        const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> eig(H);
-        if (eig.info() != Eigen::Success) return false;
-        const float ev_max = eig.eigenvalues().maxCoeff();
-        const float ev_min = eig.eigenvalues().minCoeff();
-        return ev_max > 0.0f && ev_min >= kMinConditionRatio * ev_max;
-    }
-
     struct LinearizedSystem {
         Eigen::MatrixXf H;
         Eigen::VectorXf b;
@@ -667,17 +699,19 @@ private:
     }
 
     bool solve_damped(const LinearizedSystem& sys, float lambda, Eigen::VectorXf& delta,
-                      float& max_dt, float& max_dr, Status& failure) const {
+                       float& max_dt, float& max_dr, Status& failure, std::string& rejection) const {
         const Eigen::MatrixXf H_reg =
             sys.H + lambda * Eigen::MatrixXf::Identity(sys.H.rows(), sys.H.cols());
         Eigen::LDLT<Eigen::MatrixXf> ldlt(H_reg);
-        if (ldlt.info() != Eigen::Success) {
+        if (ldlt.info() != Eigen::Success || ldlt.vectorD().minCoeff() <= 0.0f) {
             failure = Status::DECOMPOSITION_FAILED;
+            rejection = "LDLT failed or has a non-positive pivot";
             return false;
         }
         delta = ldlt.solve(-sys.b);
         if (!delta.allFinite()) {
             failure = Status::NON_FINITE_STEP;
+            rejection = "non-finite step";
             return false;
         }
         max_dt = 0.0f;
@@ -692,16 +726,15 @@ private:
                     delta.segment<3>(b + kAccBiasOffset).norm() > params_.max_step_bias ||
                     delta.segment<3>(b + kGyrBiasOffset).norm() > params_.max_step_bias) {
                     failure = Status::UNSTABLE_STEP;
+                    rejection = "velocity/bias step exceeds limit at node " + std::to_string(i);
                     return false;
                 }
             }
         }
         if (max_dt > params_.max_step_translation || max_dr > params_.max_step_rotation) {
             failure = Status::UNSTABLE_STEP;
-            return false;
-        }
-        if (!is_well_conditioned(H_reg)) {
-            failure = Status::DECOMPOSITION_FAILED;
+            rejection = "pose step exceeds limit: dt=" + std::to_string(max_dt) +
+                        " dr=" + std::to_string(max_dr);
             return false;
         }
         return true;

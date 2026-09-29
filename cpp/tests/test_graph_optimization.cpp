@@ -1042,6 +1042,8 @@ TEST_F(GraphSolverTest, RejectsNonFiniteSystemWithoutUpdatingPose) {
     EXPECT_FALSE(result.converged);
     EXPECT_FALSE(result.valid());
     EXPECT_EQ(result.status, graph::GraphSolver::Status::NON_FINITE_SYSTEM);
+    EXPECT_NE(result.failure_detail.find("NON_FINITE_SYSTEM at assembly iteration=0"), std::string::npos);
+    EXPECT_NE(result.failure_detail.find("H_finite=1 b_finite=1"), std::string::npos);
     EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
 }
 
@@ -1061,13 +1063,14 @@ TEST_F(GraphSolverTest, RejectsUnstableStepOnSingularSystemWithoutUpdatingPose) 
     EXPECT_FALSE(result.converged);
     EXPECT_FALSE(result.valid());
     EXPECT_EQ(result.status, graph::GraphSolver::Status::UNSTABLE_STEP);
+    EXPECT_NE(result.failure_detail.find("UNSTABLE_STEP at damped GN solve iteration=0"), std::string::npos);
+    EXPECT_NE(result.failure_detail.find("step_norm="), std::string::npos);
     EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
 }
 
-// An ill-conditioned (rank-one, near-null-space) system with a zero gradient
-// produces a stable but meaningless direction; the conditioning gate must fail
-// the solve instead of trusting the LDLT success.
-TEST_F(GraphSolverTest, RejectsIllConditionedSystemWithoutUpdatingPose) {
+// A weakly constrained system with a zero gradient needs no update; a fixed
+// eigenvalue-ratio gate must not reject an otherwise valid damped solve.
+TEST_F(GraphSolverTest, AcceptsWeaklyConstrainedSystemWithoutUpdatingPose) {
     graph::SlidingWindow window(5);
     Eigen::Isometry3f initial = Eigen::Isometry3f::Identity();
     initial.translate(Eigen::Vector3f(0.1f, 0.2f, -0.3f));
@@ -1077,10 +1080,25 @@ TEST_F(GraphSolverTest, RejectsIllConditionedSystemWithoutUpdatingPose) {
     graph::GraphSolver solver(queue);
     const auto result = solver.optimize(window);
 
-    EXPECT_FALSE(result.converged);
-    EXPECT_FALSE(result.valid());
-    EXPECT_EQ(result.status, graph::GraphSolver::Status::DECOMPOSITION_FAILED);
+    EXPECT_TRUE(result.converged);
+    EXPECT_TRUE(result.valid());
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::CONVERGED);
     EXPECT_TRUE(window.get_node(id)->pose.matrix().isApprox(initial.matrix()));
+}
+
+TEST_F(GraphSolverTest, LMAcceptsWeaklyConstrainedSystem) {
+    graph::SlidingWindow window(5);
+    const auto id = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    window.add_factor(std::make_shared<RankOneSingularFactor>(window.get_node(id), 1e12f, 0.0f));
+
+    graph::GraphSolverParams params;
+    params.optimization_method = registration::OptimizationMethod::LEVENBERG_MARQUARDT;
+    params.lm.max_inner_iterations = 3;
+    const auto result = graph::GraphSolver(queue, params).optimize(window);
+
+    EXPECT_TRUE(result.valid());
+    EXPECT_EQ(result.status, graph::GraphSolver::Status::CONVERGED);
+    EXPECT_EQ(result.rejected_steps, 0u);
 }
 
 TEST_F(GraphSolverTest, SolvesDenseMarginalizationPrior) {

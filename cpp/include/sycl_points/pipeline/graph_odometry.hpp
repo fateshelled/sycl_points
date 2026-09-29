@@ -9,6 +9,7 @@
 #include <mutex>
 #include <numbers>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -479,8 +480,18 @@ public:
         // must not reach the map or odometry. GraphOptimization restores the
         // complete pre-frame topology, node state, factor runtime, and ID state.
         if (!frame_result.solver_valid()) {
-            this->error_message_ =
-                "graph_optimize: solver returned an invalid state; frame discarded";
+            std::ostringstream detail;
+            detail << "graph_optimize: solver returned an invalid state; frame discarded: "
+                   << frame_result.solver_failure_detail
+                   << " timestamp=" << timestamp
+                   << " scan_points=" << this->preprocessed_pc_->size()
+                   << " imu_dt=" << this->imu_preintegration_->get_dt_total()
+                   << " edge_imu_dt=" << (imu_edge_window_complete
+                       ? this->imu_edge_preintegration_->get_dt_total() : 0.0)
+                   << " edge_source_id=" << this->imu_edge_source_id_
+                   << " predicted_pose_finite=" << predicted_state.pose.matrix().allFinite()
+                   << " predicted_velocity_finite=" << predicted_state.velocity.allFinite();
+            this->error_message_ = detail.str();
             std::cerr << "[Graph Odometry] " << this->error_message_ << std::endl;
             return ResultType::error;
         }
