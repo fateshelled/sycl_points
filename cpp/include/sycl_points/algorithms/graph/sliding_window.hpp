@@ -288,8 +288,7 @@ public:
     /// adopted) is what gets baked into the prior. Numerical stability is provided
     /// by lambda escalation on H_mm, never by dropping robust weights:
     /// - non-finite H/b -> NonFiniteSystem immediately (regularization cannot fix NaN)
-    /// - LDLT info failure or poor eigenvalue conditioning
-    ///   (lambda_min < kMinConditionRatio * lambda_max) -> retry with lambda *= 10
+    /// - LDLT info failure -> retry with lambda *= 10
     MarginalizationResult marginalize_oldest(const sycl_utils::DeviceQueue& queue) {
         MarginalizationResult result;
         if (nodes_.size() <= max_window_size_) {
@@ -416,11 +415,9 @@ public:
             last_eigenvalues.resize(0);
             if (last_eigen_info == Eigen::Success) {
                 last_eigenvalues = eig.eigenvalues();
-                // H is PSD up to noise; a non-positive or badly conditioned span is
-                // treated the same as a decomposition failure.
+                // H is PSD up to noise; a non-positive is treated the same as a decomposition failure.
                 const float ev_max = last_eigenvalues.maxCoeff();
-                const float ev_min = last_eigenvalues.minCoeff();
-                conditioned = ev_max > 0.0f && ev_min >= kMinConditionRatio * ev_max;
+                conditioned = ev_max > 0.0f;
             }
             ldlt_mm.compute(H_mm_reg);
             if (ldlt_mm.info() == Eigen::Success && conditioned) {
@@ -442,15 +439,6 @@ public:
             }
         }
         if (!usable) {
-            const float eigen_min = last_eigenvalues.size() > 0
-                                        ? last_eigenvalues.minCoeff()
-                                        : std::numeric_limits<float>::quiet_NaN();
-            const float eigen_max = last_eigenvalues.size() > 0
-                                        ? last_eigenvalues.maxCoeff()
-                                        : std::numeric_limits<float>::quiet_NaN();
-            const float condition_ratio = eigen_max > 0.0f
-                                              ? eigen_min / eigen_max
-                                              : std::numeric_limits<float>::quiet_NaN();
             std::cerr << "[SlidingWindow] marginalization decomposition failed"
                       << " (node=" << marginalize_id << ", dof=" << dof
                       << ", local_nodes=" << K << ", touching_factors=" << touching_factor_count
@@ -465,8 +453,6 @@ public:
                       << ", lambda_attempts=" << lambda_attempts
                       << ", eigen_info=" << static_cast<int>(last_eigen_info)
                       << ", eigenvalues=[" << last_eigenvalues.transpose() << "]"
-                      << ", condition_ratio=" << condition_ratio
-                      << ", required_ratio=" << kMinConditionRatio
                       << ", ldlt_info=" << static_cast<int>(ldlt_mm.info()) << ")" << std::endl;
             ++marg_diag_.decomposition_failed;
             result.status = MarginalizationStatus::DecompositionFailed;
@@ -548,7 +534,6 @@ public:
 
 private:
     static constexpr int kMaxLambdaEscalations = 3;     ///< lambda *= 10 retries per frame
-    static constexpr float kMinConditionRatio = 1e-6f;  ///< required lambda_min/lambda_max of H_mm_reg
 
     using StateVector = std::vector<NodeState, Eigen::aligned_allocator<NodeState>>;
 
