@@ -25,7 +25,11 @@ def declare_params_from_yaml(yaml_path: str, target_node="lidar_odometry_node"):
                 launch_args.append(
                     DeclareLaunchArgument(name, default_value=value_str, description="")
                 )
-                node_args[name] = LaunchConfiguration(name)
+                node_args[name] = (
+                    ParameterValue(LaunchConfiguration(name), value_type=float)
+                    if isinstance(value, float)
+                    else LaunchConfiguration(name)
+                )
             break
     return launch_args, node_args
 

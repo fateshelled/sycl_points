@@ -61,11 +61,9 @@ inline KNNResult knn_search_bruteforce(const sycl_utils::DeviceQueue& queue, con
 
             // Calculate distances to all dataset points
             for (size_t j = 0; j < n; ++j) {
-                // Calculate 3D distance
                 const auto target = targets_ptr[j];
-                const sycl::float4 diff = {query.x() - target.x(), query.y() - target.y(), query.z() - target.z(),
-                                           0.0f};
-                const float dist = sycl::dot(diff, diff);
+                const PointType diff = eigen_utils::subtract<4, 1>(query, target);
+                const float dist = eigen_utils::dot<4>(diff, diff);
 
                 // Check if this point should be included in K nearest
                 if (dist < kDistances[k - 1]) {

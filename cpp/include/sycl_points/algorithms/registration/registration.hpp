@@ -350,12 +350,34 @@ public:
     std::tuple<float, uint32_t> compute_error_frozen(const PointCloudShared& source, const PointCloudShared& target,
                                                      const TransformMatrix& pose,
                                                      const ExecutionOptions& options = ExecutionOptions()) const {
+        auto error = std::make_shared<shared_vector<float>>(1, 0.0f, *this->queue_.ptr);
+        auto inlier = std::make_shared<shared_vector<uint32_t>>(1, 0, *this->queue_.ptr);
+        auto events = compute_error_frozen_async(source, target, pose, *error, *inlier, options);
+        events.keep_alive.push_back(error);
+        events.keep_alive.push_back(inlier);
+        events.wait_and_throw();
+        return {(*error)[0], (*inlier)[0]};
+    }
+
+    /// @brief Asynchronous form of compute_error_frozen(). The caller owns the
+    ///        one-element USM result buffers and must keep them alive until all
+    ///        returned events complete.
+    sycl_utils::events compute_error_frozen_async(
+        const PointCloudShared& source, const PointCloudShared& target, const TransformMatrix& pose,
+        shared_vector<float>& error, shared_vector<uint32_t>& inlier,
+        const ExecutionOptions& options = ExecutionOptions()) const {
         const float robust_scale =
             options.robust_scale > 0.0f ? options.robust_scale : this->params_.robust.default_scale;
         const float rotation_robust_scale = options.rotation_robust_scale > 0.0f
                                                 ? options.rotation_robust_scale
                                                 : this->params_.rotation_constraint.robust.default_scale;
-        return this->compute_error(source, target, this->neighbors_->at(0), pose, robust_scale, rotation_robust_scale);
+        error[0] = 0.0f;
+        inlier[0] = 0;
+        return this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
+            return this->compute_error_parallel_reduction_async<reg, loss>(
+                source, target, this->neighbors_->at(0), pose, robust_scale,
+                rotation_robust_scale, error, inlier);
+        });
     }
 
 private:
@@ -450,7 +472,7 @@ private:
                     const float squared_error = kernel::calculate_geometry_error<reg>(
                         cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
                         genz_alpha, genz_weight, genz_planarity_threshold);
-                    const float residual_norm = sycl::sqrt(squared_error);
+                    const float residual_norm = kernel::residual_norm_from_squared_error(squared_error);
 
                     weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
                 }
@@ -631,7 +653,8 @@ private:
                     if (rotation_constraint_enable) {
                         const LinearizedKernelResult linearized_rot =
                             kernel::linearize_rotation_constraint(source_cov, target_cov, cur_T);
-                        const float residual_norm_rot = sycl::sqrt(linearized_rot.squared_error);
+                        const float residual_norm_rot =
+                            kernel::residual_norm_from_squared_error(linearized_rot.squared_error);
                         const float robust_weight_rot =
                             robust::kernel::compute_weight<loss>(residual_norm_rot, rotation_constraint_robust_scale);
 
@@ -676,15 +699,13 @@ private:
     }
 
     template <RegType reg, robust::RobustLossType loss>
-    std::tuple<float, uint32_t> compute_error_parallel_reduction(const PointCloudShared& source,
-                                                                 const PointCloudShared& target,
-                                                                 const knn::KNNResult& knn_results,
-                                                                 const Eigen::Matrix4f transT, float robust_scale,
-                                                                 float rotation_robust_scale) const {
+    sycl_utils::events compute_error_parallel_reduction_async(
+        const PointCloudShared& source, const PointCloudShared& target,
+        const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
+        float robust_scale, float rotation_robust_scale, shared_vector<float>& error,
+        shared_vector<uint32_t>& inlier) const {
         // The robust_scale argument ensures error reduction uses the caller-provided loss scale.
-        shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
-        shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
-
+        sycl_utils::events events;
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t N = source.size();
 
@@ -744,7 +765,7 @@ private:
                             source_ptr[index], source_cov,                      // source
                             target_ptr[target_idx], target_cov, target_normal,  // target
                             genz_alpha, genz_weight, genz_planarity_threshold);
-                        const float residual_norm = sycl::sqrt(squared_error);
+                        const float residual_norm = kernel::residual_norm_from_squared_error(squared_error);
 
                         // Apply robust kernel
                         if constexpr (reg == RegType::GENZ) {
@@ -759,7 +780,8 @@ private:
                     if (rotation_constraint_enable) {
                         const float squared_error_rot =
                             kernel::calculate_rotation_constraint_error(source_cov, target_cov, cur_T);
-                        const float residual_norm_rot = sycl::sqrt(squared_error_rot);
+                        const float residual_norm_rot =
+                            kernel::residual_norm_from_squared_error(squared_error_rot);
                         total_error +=
                             rotation_constraint_weight *
                             robust::kernel::compute_error<loss>(residual_norm_rot, rotation_constraint_robust_scale);
@@ -772,19 +794,23 @@ private:
                     }
                 });
         });
-        event.wait_and_throw();
-        return {error[0], inlier[0]};
+        events += event;
+        return events;
     }
 
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
                                               const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
                                               float robust_scale, float rotation_robust_scale) const {
         std::tuple<float, uint32_t> result = {0.0f, 0};
-        this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
-            result = this->compute_error_parallel_reduction<reg, loss>(source, target, knn_results, transT,
-                                                                       robust_scale, rotation_robust_scale);
-            return sycl_utils::events{};
+        shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
+        shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
+        auto events = this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
+            return this->compute_error_parallel_reduction_async<reg, loss>(
+                source, target, knn_results, transT, robust_scale, rotation_robust_scale,
+                error, inlier);
         });
+        events.wait_and_throw();
+        result = {error[0], inlier[0]};
         return result;
     }
 

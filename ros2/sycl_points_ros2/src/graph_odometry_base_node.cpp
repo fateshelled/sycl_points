@@ -1,30 +1,139 @@
-#include "sycl_points_ros2/lidar_inertial_odometry_base_node.hpp"
+#include "sycl_points_ros2/graph_odometry_base_node.hpp"
 
 #include <memory>
 #include <sycl_points/ros2/convert.hpp>
 #include <sycl_points/utils/time_utils.hpp>
 
-#include "sycl_points_ros2/declare_lidar_inertial_odometry_params.hpp"
+#include "sycl_points_ros2/declare_lidar_odometry_params.hpp"
 
 namespace sycl_points {
 namespace ros2 {
 
-LidarInertialOdometryBaseNode::LidarInertialOdometryBaseNode(const std::string& node_name,
-                                                             const rclcpp::NodeOptions& options)
+GraphOdometryBaseNode::GraphOdometryBaseNode(const std::string& node_name, const rclcpp::NodeOptions& options)
     : rclcpp::Node(node_name, options) {}
 
-LidarInertialOdometryBaseNode::~LidarInertialOdometryBaseNode() {
+GraphOdometryBaseNode::~GraphOdometryBaseNode() {
     if (!this->processing_initialized_) {
         return;
     }
     this->log_processing_times();
 }
 
-void LidarInertialOdometryBaseNode::initialize_processing() {
-    this->params_ = ros2::declare_lidar_inertial_odometry_parameters(this);
+void GraphOdometryBaseNode::initialize_processing() {
+    this->params_ = ros2::declare_lidar_odometry_parameters(this);
+
+    // Tightly-coupled graph LIO requires an IMU. The LiDAR-only graph mode has
+    // been removed, so a graph node started without an IMU must fail fast
+    // instead of silently running an unobservable pose graph.
+    if (!this->params_.imu.enable) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "graph_odometry requires 'imu/enable: true' (tightly-coupled graph LIO); "
+                     "the LiDAR-only graph mode was removed.");
+        throw std::invalid_argument("graph_odometry: imu/enable must be true");
+    }
+    if (!this->params_.imu.initial_alignment.enable || !this->params_.imu.deskew.enable ||
+        this->params_.motion_prediction.mode != pipeline::lidar_odometry::MotionPredictionMode::IMU_SE3) {
+        throw std::invalid_argument(
+            "graph_odometry requires initial alignment, IMU deskew, and motion_prediction/mode=IMU_SE3");
+    }
+
+    // Graph factor registration / linearization settings (graph/factor/*), decoupled from the
+    // single-frame align path's registration/* keys used by lidar_odometry / lidar_inertial_odometry.
+    declare_graph_registration_parameters(this, this->params_);
+
+    // Sliding-window graph optimizer (local BA) parameters.
+    {
+        auto& graph = this->params_.graph;
+        // Count-type parameters must reject non-positive values: a negative
+        // int64_t cast to size_t would become a huge loop bound (virtual hang).
+        auto positive_size = [this](const char* name, size_t default_value) {
+            const int64_t value = this->declare_parameter<int64_t>(name, static_cast<int64_t>(default_value));
+            if (value <= 0) throw std::invalid_argument(std::string(name) + " must be >= 1");
+            return static_cast<size_t>(value);
+        };
+        graph.window_size = positive_size("graph/window_size", graph.window_size);
+        graph.solver_iterations = positive_size("graph/solver_iterations", graph.solver_iterations);
+        const std::string optimization_method =
+            this->declare_parameter<std::string>("graph/solver/optimization_method", "GN");
+        graph.optimization_method = algorithms::registration::OptimizationMethod_from_string(optimization_method);
+        graph.lm.max_inner_iterations =
+            positive_size("graph/solver/lm/max_inner_iterations", graph.lm.max_inner_iterations);
+        graph.lm.lambda_factor = static_cast<float>(
+            this->declare_parameter<double>("graph/solver/lm/lambda_factor", graph.lm.lambda_factor));
+        graph.lm.init_lambda =
+            static_cast<float>(this->declare_parameter<double>("graph/solver/lm/init_lambda", graph.lm.init_lambda));
+        graph.lm.max_lambda =
+            static_cast<float>(this->declare_parameter<double>("graph/solver/lm/max_lambda", graph.lm.max_lambda));
+        graph.lm.min_lambda =
+            static_cast<float>(this->declare_parameter<double>("graph/solver/lm/min_lambda", graph.lm.min_lambda));
+        graph.convergence_translation = static_cast<float>(
+            this->declare_parameter<double>("graph/convergence/translation", graph.convergence_translation));
+        graph.convergence_rotation = static_cast<float>(
+            this->declare_parameter<double>("graph/convergence/rotation", graph.convergence_rotation));
+        graph.convergence_velocity = static_cast<float>(
+            this->declare_parameter<double>("graph/convergence/velocity", graph.convergence_velocity));
+        graph.convergence_bias =
+            static_cast<float>(this->declare_parameter<double>("graph/convergence/bias", graph.convergence_bias));
+        graph.max_step_velocity = static_cast<float>(
+            this->declare_parameter<double>("graph/solver/max_step_velocity", graph.max_step_velocity));
+        graph.max_step_bias =
+            static_cast<float>(this->declare_parameter<double>("graph/solver/max_step_bias", graph.max_step_bias));
+        graph.relinearize_translation_thresh = static_cast<float>(this->declare_parameter<double>(
+            "graph/relinearize/translation_threshold", graph.relinearize_translation_thresh));
+        graph.relinearize_rotation_thresh = static_cast<float>(
+            this->declare_parameter<double>("graph/relinearize/rotation_threshold", graph.relinearize_rotation_thresh));
+        graph.solver_damping_lambda = static_cast<float>(
+            this->declare_parameter<double>("graph/solver/damping_lambda", graph.solver_damping_lambda));
+        graph.marginalization_lambda = static_cast<float>(
+            this->declare_parameter<double>("graph/marginalization_lambda", graph.marginalization_lambda));
+        auto& deg = graph.degenerate_regularization;
+        deg.enable = this->declare_parameter<bool>("graph/degenerate_regularization/enable", deg.enable);
+        deg.eigenvalue_threshold = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/eigenvalue_threshold", deg.eigenvalue_threshold));
+        deg.strength = static_cast<float>(
+            this->declare_parameter<double>("graph/degenerate_regularization/strength", deg.strength));
+        deg.representative_length = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/representative_length", deg.representative_length));
+        deg.pseudo_inverse_relative_cutoff = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/pseudo_inverse_relative_cutoff", deg.pseudo_inverse_relative_cutoff));
+        deg.pseudo_inverse_absolute_cutoff = static_cast<float>(this->declare_parameter<double>(
+            "graph/degenerate_regularization/pseudo_inverse_absolute_cutoff", deg.pseudo_inverse_absolute_cutoff));
+        graph.chain_sigma_rotation = static_cast<float>(
+            this->declare_parameter<double>("graph/chain/sigma_rotation", graph.chain_sigma_rotation));
+        graph.chain_sigma_translation = static_cast<float>(
+            this->declare_parameter<double>("graph/chain/sigma_translation", graph.chain_sigma_translation));
+        graph.robust_enable = this->declare_parameter<bool>("graph/robust/enable", graph.robust_enable);
+        graph.robust_init_scale =
+            static_cast<float>(this->declare_parameter<double>("graph/robust/init_scale", graph.robust_init_scale));
+        graph.robust_min_scale =
+            static_cast<float>(this->declare_parameter<double>("graph/robust/min_scale", graph.robust_min_scale));
+        graph.robust_levels = positive_size("graph/robust/levels", graph.robust_levels);
+        graph.robust_iters_per_level = positive_size("graph/robust/iterations_per_level", graph.robust_iters_per_level);
+        graph.robust_relinearize_per_rung = static_cast<bool>(
+            this->declare_parameter<bool>("graph/robust/relinearize_per_rung", graph.robust_relinearize_per_rung));
+        const std::string graph_robust_type =
+            this->declare_parameter<std::string>("graph/robust/type", "GEMAN_MCCLURE");
+        graph.robust_type = algorithms::robust::RobustLossType_from_string(graph_robust_type);
+        graph.robust_default_scale = static_cast<float>(
+            this->declare_parameter<double>("graph/robust/default_scale", graph.robust_default_scale));
+        auto& lio = graph.lio;
+        lio.keyframe_imu_history_duration_sec = this->declare_parameter<double>(
+            "graph/lio/keyframe_imu_history/duration_sec", lio.keyframe_imu_history_duration_sec);
+        lio.keyframe_imu_history_max_samples =
+            positive_size("graph/lio/keyframe_imu_history/max_samples", lio.keyframe_imu_history_max_samples);
+        lio.root_prior_sigma_pose = static_cast<float>(
+            this->declare_parameter<double>("graph/lio/root_prior/pose_sigma", lio.root_prior_sigma_pose));
+        lio.root_prior_sigma_velocity = static_cast<float>(
+            this->declare_parameter<double>("graph/lio/root_prior/velocity_sigma", lio.root_prior_sigma_velocity));
+        lio.root_prior_sigma_accel_bias = static_cast<float>(
+            this->declare_parameter<double>("graph/lio/root_prior/accel_bias_sigma", lio.root_prior_sigma_accel_bias));
+        lio.root_prior_sigma_gyro_bias = static_cast<float>(
+            this->declare_parameter<double>("graph/lio/root_prior/gyro_bias_sigma", lio.root_prior_sigma_gyro_bias));
+    }
 
     this->points_topic_ = this->declare_parameter<std::string>("points_topic", this->points_topic_);
     this->imu_topic_ = this->declare_parameter<std::string>("imu_topic", this->imu_topic_);
+    if (this->imu_topic_.empty()) throw std::invalid_argument("imu_topic must not be empty");
     this->input_convert_rgb_ = this->declare_parameter<bool>("input/convert_rgb", true);
     this->input_convert_intensity_ = this->declare_parameter<bool>("input/convert_intensity", true);
     this->input_use_reflectivity_as_intensity =
@@ -77,7 +186,7 @@ void LidarInertialOdometryBaseNode::initialize_processing() {
         this->params_.pose.initial = init * this->T_base_link_to_lidar_;
     }
 
-    this->pipeline_ = std::make_unique<pipeline::lidar_inertial_odometry::LidarInertialOdometryPipeline>(this->params_);
+    this->pipeline_ = std::make_unique<pipeline::graph_odometry::GraphOdometryPipeline>(this->params_);
     this->pipeline_->get_device_queue()->print_device_info();
 
     this->msg_data_buffer_ = std::make_shared<shared_vector<uint8_t>>(*this->pipeline_->get_device_queue()->ptr);
@@ -86,8 +195,6 @@ void LidarInertialOdometryBaseNode::initialize_processing() {
 
     if (this->params_.scan.enhanced_reflectivity.enable && this->input_convert_intensity_ &&
         this->input_use_reflectivity_as_intensity) {
-        // Reflectivity is already range-compensated by the Ouster driver; multiplying by range^2
-        // again in EnhancedReflectivityCorrector yields a double compensation.
         RCLCPP_WARN(this->get_logger(),
                     "scan/enhanced_reflectivity.enable and input/use_reflectivity_as_intensity are both true. "
                     "Enhanced reflectivity expects raw intensity, so this causes double range compensation. "
@@ -105,20 +212,20 @@ void LidarInertialOdometryBaseNode::initialize_processing() {
     }
 }
 
-void LidarInertialOdometryBaseNode::initialize_publishers(const PublishOptions& options) {
+void GraphOdometryBaseNode::initialize_publishers(const PublishOptions& options) {
     this->publish_options_ = options;
 
     if (options.publish_debug_clouds) {
         this->pub_preprocessed_ =
-            this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lio/preprocessed", rclcpp::QoS(5));
-        this->pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lio/submap", rclcpp::QoS(5));
+            this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_go/preprocessed", rclcpp::QoS(5));
+        this->pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_go/submap", rclcpp::QoS(5));
     }
 
     if (options.publish_odom) {
-        this->pub_odom_ = this->create_publisher<nav_msgs::msg::Odometry>("sycl_lio/odom", rclcpp::QoS(5));
-        this->pub_pose_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("sycl_lio/pose", rclcpp::QoS(5));
+        this->pub_odom_ = this->create_publisher<nav_msgs::msg::Odometry>("sycl_go/odom", rclcpp::QoS(5));
+        this->pub_pose_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("sycl_go/pose", rclcpp::QoS(5));
         this->pub_keyframe_pose_ =
-            this->create_publisher<nav_msgs::msg::Odometry>("sycl_lio/keyframe/pose", rclcpp::QoS(5));
+            this->create_publisher<nav_msgs::msg::Odometry>("sycl_go/keyframe/pose", rclcpp::QoS(5));
     }
 
     if (options.publish_tf) {
@@ -144,8 +251,8 @@ void LidarInertialOdometryBaseNode::initialize_publishers(const PublishOptions& 
     }
 }
 
-bool LidarInertialOdometryBaseNode::prepare_point_cloud_message(const sensor_msgs::msg::PointCloud2& msg,
-                                                                ProcessedFrame& frame) {
+bool GraphOdometryBaseNode::prepare_point_cloud_message(const sensor_msgs::msg::PointCloud2& msg,
+                                                        ProcessedFrame& frame) {
     bool converted = false;
 
     double dt_from_ros2_msg = 0.0;
@@ -175,9 +282,7 @@ bool LidarInertialOdometryBaseNode::prepare_point_cloud_message(const sensor_msg
         if (!applied) {
             RCLCPP_WARN_ONCE(this->get_logger(),
                              "scan/enhanced_reflectivity is enabled but input message lacks ambient (UINT16) or "
-                             "ring (UINT8/UINT16) fields. Skipping enhanced reflectivity. "
-                             "Note: pipeline intensity_correction is also auto-skipped — no intensity correction "
-                             "will be applied.");
+                             "ring (UINT8/UINT16) fields. Skipping enhanced reflectivity.");
         }
     }
 
@@ -185,10 +290,10 @@ bool LidarInertialOdometryBaseNode::prepare_point_cloud_message(const sensor_msg
     return true;
 }
 
-void LidarInertialOdometryBaseNode::process_prepared_point_cloud_message(double timestamp, ProcessedFrame& frame) {
+void GraphOdometryBaseNode::process_prepared_point_cloud_message(double timestamp, ProcessedFrame& frame) {
     frame.result = this->pipeline_->process(this->scan_pc_, timestamp);
     if (frame.result >= ResultType::error) {
-        RCLCPP_WARN(this->get_logger(), "LIO failed: %s", this->pipeline_->get_error_message().c_str());
+        RCLCPP_WARN(this->get_logger(), "graph odometry failed: %s", this->pipeline_->get_error_message().c_str());
         return;
     }
     if (frame.result == ResultType::waiting_initial_alignment) {
@@ -207,25 +312,19 @@ void LidarInertialOdometryBaseNode::process_prepared_point_cloud_message(double 
     }
 }
 
-LidarInertialOdometryBaseNode::ProcessedFrame LidarInertialOdometryBaseNode::process_point_cloud_message(
+GraphOdometryBaseNode::ProcessedFrame GraphOdometryBaseNode::process_point_cloud_message(
     const sensor_msgs::msg::PointCloud2& msg) {
     ProcessedFrame frame;
-    if (!this->prepare_point_cloud_message(msg, frame)) {
-        return frame;
-    }
-
+    if (!this->prepare_point_cloud_message(msg, frame)) return frame;
     this->process_prepared_point_cloud_message(rclcpp::Time(msg.header.stamp).seconds(), frame);
     return frame;
 }
 
-void LidarInertialOdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header& header,
-                                                            ProcessedFrame& frame) {
+void GraphOdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header& header, ProcessedFrame& frame) {
     frame.publish_time = 0.0;
     time_utils::measure_execution(
         [&]() {
             if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
-                // Single dynamic transform odom → base_link (REP-105).  The static
-                // base_link → sensor extrinsic is published separately (launch).
                 this->tf_broadcaster_->sendTransform(this->make_transform_message(header, frame.odom));
             }
 
@@ -255,7 +354,6 @@ void LidarInertialOdometryBaseNode::publish_processed_frame(const std_msgs::msg:
             if (this->pub_submap_ != nullptr && this->pub_submap_->get_subscription_count() > 0) {
                 auto submap_msg = toROS2msg(this->pipeline_->get_submap_point_cloud(), header);
                 if (submap_msg != nullptr) {
-                    // The submap point cloud is stored in the odom (world) frame.
                     submap_msg->header.frame_id = this->odom_frame_id_;
                     this->pub_submap_->publish(*submap_msg);
                 }
@@ -264,12 +362,8 @@ void LidarInertialOdometryBaseNode::publish_processed_frame(const std_msgs::msg:
         frame.publish_time);
 }
 
-// ---------------------------------------------------------------------------
-// Message helpers (same logic as LidarInertialOdometryNode)
-// ---------------------------------------------------------------------------
-
-nav_msgs::msg::Odometry LidarInertialOdometryBaseNode::make_odom_message(const std_msgs::msg::Header& header,
-                                                                         const Eigen::Isometry3f& odom) const {
+nav_msgs::msg::Odometry GraphOdometryBaseNode::make_odom_message(const std_msgs::msg::Header& header,
+                                                                 const Eigen::Isometry3f& odom) const {
     const Eigen::Isometry3f T = odom * this->T_lidar_to_base_link_;
     const Eigen::Quaternionf q(T.rotation());
 
@@ -287,8 +381,8 @@ nav_msgs::msg::Odometry LidarInertialOdometryBaseNode::make_odom_message(const s
     return msg;
 }
 
-geometry_msgs::msg::PoseStamped LidarInertialOdometryBaseNode::make_pose_message(const std_msgs::msg::Header& header,
-                                                                                 const Eigen::Isometry3f& odom) const {
+geometry_msgs::msg::PoseStamped GraphOdometryBaseNode::make_pose_message(const std_msgs::msg::Header& header,
+                                                                         const Eigen::Isometry3f& odom) const {
     const auto odom_msg = this->make_odom_message(header, odom);
     geometry_msgs::msg::PoseStamped pose;
     pose.header = odom_msg.header;
@@ -296,12 +390,12 @@ geometry_msgs::msg::PoseStamped LidarInertialOdometryBaseNode::make_pose_message
     return pose;
 }
 
-nav_msgs::msg::Odometry LidarInertialOdometryBaseNode::make_keyframe_pose_message(const std_msgs::msg::Header& header,
-                                                                                  const Eigen::Isometry3f& odom) const {
+nav_msgs::msg::Odometry GraphOdometryBaseNode::make_keyframe_pose_message(const std_msgs::msg::Header& header,
+                                                                          const Eigen::Isometry3f& odom) const {
     return this->make_odom_message(header, odom);
 }
 
-geometry_msgs::msg::TransformStamped LidarInertialOdometryBaseNode::make_transform_message(
+geometry_msgs::msg::TransformStamped GraphOdometryBaseNode::make_transform_message(
     const std_msgs::msg::Header& header, const Eigen::Isometry3f& odom) const {
     const Eigen::Isometry3f T = odom * this->T_lidar_to_base_link_;
     const Eigen::Quaternionf q(T.rotation());
@@ -320,7 +414,7 @@ geometry_msgs::msg::TransformStamped LidarInertialOdometryBaseNode::make_transfo
     return tf;
 }
 
-void LidarInertialOdometryBaseNode::record_processing_times(const ProcessedFrame& frame) {
+void GraphOdometryBaseNode::record_processing_times(const ProcessedFrame& frame) {
     const double total_time = frame.processing_subtotal + frame.publish_time;
 
     this->add_delta_time("0. from ROS 2 msg", frame.dt_from_ros2_msg);
@@ -339,7 +433,7 @@ void LidarInertialOdometryBaseNode::record_processing_times(const ProcessedFrame
     RCLCPP_INFO(this->get_logger(), "");
 }
 
-void LidarInertialOdometryBaseNode::add_delta_time(const std::string& name, double dt) {
+void GraphOdometryBaseNode::add_delta_time(const std::string& name, double dt) {
     if (this->processing_times_.count(name) > 0) {
         this->processing_times_[name].push_back(dt);
     } else {
@@ -347,7 +441,7 @@ void LidarInertialOdometryBaseNode::add_delta_time(const std::string& name, doub
     }
 }
 
-void LidarInertialOdometryBaseNode::print_processing_times(const std::string& name, double dt) {
+void GraphOdometryBaseNode::print_processing_times(const std::string& name, double dt) {
     constexpr size_t LENGTH = 24;
     std::string log = name + ": ";
     if (name.length() < LENGTH) {
@@ -357,7 +451,7 @@ void LidarInertialOdometryBaseNode::print_processing_times(const std::string& na
     RCLCPP_INFO(this->get_logger(), log.c_str(), dt);
 }
 
-void LidarInertialOdometryBaseNode::log_processing_times() {
+void GraphOdometryBaseNode::log_processing_times() {
     RCLCPP_INFO(this->get_logger(), "");
     RCLCPP_INFO(this->get_logger(), "MAX processing time");
 

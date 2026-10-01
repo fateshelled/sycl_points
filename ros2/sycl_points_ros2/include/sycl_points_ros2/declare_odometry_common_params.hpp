@@ -291,6 +291,17 @@ inline pipeline::odometry::CommonParameters declare_odometry_common_parameters(r
             params.imu.preintegration.gravity << static_cast<float>(gx), static_cast<float>(gy), static_cast<float>(gz);
         }
 
+        // IMU noise densities for 15x15 covariance propagation (Kalibr convention).
+        // Declared so the YAML values are honored instead of falling back to 0.0.
+        params.imu.preintegration.gyro_noise_density = static_cast<float>(node->declare_parameter<double>(
+            "imu/preintegration/gyro_noise_density", params.imu.preintegration.gyro_noise_density));
+        params.imu.preintegration.accel_noise_density = static_cast<float>(node->declare_parameter<double>(
+            "imu/preintegration/accel_noise_density", params.imu.preintegration.accel_noise_density));
+        params.imu.preintegration.gyro_bias_rw_density = static_cast<float>(node->declare_parameter<double>(
+            "imu/preintegration/gyro_bias_rw_density", params.imu.preintegration.gyro_bias_rw_density));
+        params.imu.preintegration.accel_bias_rw_density = static_cast<float>(node->declare_parameter<double>(
+            "imu/preintegration/accel_bias_rw_density", params.imu.preintegration.accel_bias_rw_density));
+
         // Initial/fixed bias
         {
             const auto bgx = node->declare_parameter<double>("imu/bias/gyro/x", params.imu.bias.gyro_bias.x());

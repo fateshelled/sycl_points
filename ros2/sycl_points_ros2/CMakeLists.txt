@@ -34,6 +34,9 @@ ament_auto_add_library(lidar_odometry SHARED
   src/lidar_inertial_odometry_base_node.cpp
   src/lidar_inertial_odometry_bag_eval_node.cpp
   src/lidar_inertial_odometry_node.cpp
+  src/graph_odometry_base_node.cpp
+  src/graph_odometry_node.cpp
+  src/graph_odometry_bag_eval_node.cpp
 )
 
 target_include_directories(lidar_odometry PUBLIC
@@ -68,6 +71,18 @@ rclcpp_components_register_node(
   lidar_odometry
   PLUGIN "sycl_points::ros2::LidarInertialOdometryBagEvalNode"
   EXECUTABLE lidar_inertial_odometry_bag_eval_node
+)
+
+rclcpp_components_register_node(
+  lidar_odometry
+  PLUGIN "sycl_points::ros2::GraphOdometryNode"
+  EXECUTABLE graph_odometry_node
+)
+
+rclcpp_components_register_node(
+  lidar_odometry
+  PLUGIN "sycl_points::ros2::GraphOdometryBagEvalNode"
+  EXECUTABLE graph_odometry_bag_eval_node
 )
 
 if(BUILD_TESTING)
