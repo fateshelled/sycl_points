@@ -176,6 +176,24 @@ public:
     /// @brief Drop any cached linearization so the next get_linearization re-computes.
     virtual void clear_cache() { cached_lin_.reset(); }
 
+    /// @brief Retarget a fixed-target (unary) factor onto a new point cloud and
+    ///        its matching kNN as ONE generation, discarding the linearization
+    ///        cache while preserving the robust-scale state. Returns true when
+    ///        the factor owns such a target (UnaryGicpFactor); the default is a
+    ///        no-op for every other factor type (binary, chain, priors, mocks).
+    ///        The cloud and kNN must always be replaced together: pairing a
+    ///        cloud with a kNN built from a different generation yields
+    ///        correspondences against the wrong target.
+    virtual bool set_fixed_target(std::shared_ptr<const PointCloudShared>, std::shared_ptr<const knn::KNNBase>) {
+        return false;
+    }
+
+    /// @brief Current fixed-target generation of this factor (nullptr when the
+    ///        factor has no fixed target). Mirrors set_fixed_target so callers
+    ///        can verify that a retarget replaced the cloud and kNN together.
+    virtual std::shared_ptr<const PointCloudShared> fixed_target_cloud() const { return nullptr; }
+    virtual std::shared_ptr<const knn::KNNBase> fixed_target_knn() const { return nullptr; }
+
     /// @brief Pointer to the cached linearization, or nullptr when not cached.
     ///        Lets callers read the last-used statistics (error / inlier) without
     ///        triggering a re-linearization.

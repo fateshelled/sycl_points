@@ -22,17 +22,29 @@ public:
     using OdometryCommonParams = odometry::CommonParameters;
     using SubmapMapType = odometry::SubmapMapType;
 
-    class PreparedFreeze {
-    public:
-        PreparedFreeze(PreparedFreeze&&) noexcept = default;
-        PreparedFreeze& operator=(PreparedFreeze&&) noexcept = default;
+    /// @brief Current fixed registration target: the owned submap point cloud
+    ///        and the kNN search structure built on exactly that generation.
+    ///        Both handles always refer to the same generation; callers must
+    ///        replace them as a pair.
+    struct Target {
+        std::shared_ptr<const PointCloudShared> cloud = nullptr;
+        std::shared_ptr<const algorithms::knn::KNNBase> knn = nullptr;
+    };
 
-        PreparedFreeze(const PreparedFreeze&) = delete;
-        PreparedFreeze& operator=(const PreparedFreeze&) = delete;
+    /// @brief First-frame map candidate. Built from an empty map and published
+    ///        only by commit_first_frame() once graph bootstrap has succeeded,
+    ///        so a bootstrap failure never leaves a partially initialized map.
+    class PreparedFirstFrame {
+    public:
+        PreparedFirstFrame(PreparedFirstFrame&&) noexcept = default;
+        PreparedFirstFrame& operator=(PreparedFirstFrame&&) noexcept = default;
+
+        PreparedFirstFrame(const PreparedFirstFrame&) = delete;
+        PreparedFirstFrame& operator=(const PreparedFirstFrame&) = delete;
 
     private:
         friend class Submap;
-        PreparedFreeze() = default;
+        PreparedFirstFrame() = default;
 
         algorithms::mapping::VoxelHashMap::Ptr submap_voxel;
         algorithms::mapping::OccupancyGridMap::Ptr occupancy_grid;
@@ -41,7 +53,6 @@ public:
         PointCloudShared::Ptr submap_pc;
         PointCloudShared::Ptr submap_pc_tmp;
         algorithms::knn::KNNResult knn_result;
-        bool update_keyframe_metadata = false;
         double last_keyframe_time = -1.0;
         Eigen::Isometry3f last_keyframe_pose = Eigen::Isometry3f::Identity();
         std::vector<Eigen::Isometry3f, Eigen::aligned_allocator<Eigen::Isometry3f>> keyframe_poses;
@@ -53,6 +64,13 @@ public:
 
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
     const PointCloudShared& get_last_keyframe_point_cloud() const { return *this->last_keyframe_pc_; }
+
+    /// @brief Ownership-aware handle to the current fixed target generation.
+    ///        The returned cloud and kNN are guaranteed to match; factors must
+    ///        be retargeted with both at once (see GraphOptimization::
+    ///        update_unary_targets) so no factor ever pairs a cloud with a kNN
+    ///        built from a different generation.
+    Target get_target() const { return {this->submap_pc_ptr_, this->submap_tree_}; }
 
     Submap(const sycl_utils::DeviceQueue& queue, const OdometryCommonParams& params)
         : Submap(queue, params, params.registration.factor, params.registration.min_num_points) {}
@@ -88,29 +106,7 @@ public:
         this->preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(this->queue_);
 
         // initialize submap
-        {
-            const auto submap_type = this->submap_params_.map_type;
-            if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
-                this->occupancy_grid_ = std::make_shared<algorithms::mapping::OccupancyGridMap>(
-                    this->queue_, this->submap_params_.voxel_size);
-
-                this->occupancy_grid_->set_log_odds_hit(this->submap_params_.occupancy_grid_map.log_odds_hit);
-                this->occupancy_grid_->set_log_odds_miss(this->submap_params_.occupancy_grid_map.log_odds_miss);
-                this->occupancy_grid_->set_log_odds_limits(this->submap_params_.occupancy_grid_map.log_odds_limits_min,
-                                                           this->submap_params_.occupancy_grid_map.log_odds_limits_max);
-                this->occupancy_grid_->set_occupancy_threshold(
-                    this->submap_params_.occupancy_grid_map.occupied_threshold);
-                this->occupancy_grid_->set_free_space_updates_enabled(
-                    this->submap_params_.occupancy_grid_map.enable_free_space_updates);
-                this->occupancy_grid_->set_voxel_pruning_enabled(
-                    this->submap_params_.occupancy_grid_map.enable_pruning);
-                this->occupancy_grid_->set_stale_frame_threshold(
-                    this->submap_params_.occupancy_grid_map.stale_frame_threshold);
-            } else {
-                this->submap_voxel_ =
-                    std::make_shared<algorithms::mapping::VoxelHashMap>(this->queue_, this->submap_params_.voxel_size);
-            }
-        }
+        this->create_map(this->submap_voxel_, this->occupancy_grid_);
     }
 
     /// @brief Build the very first keyframe of the submap.
@@ -122,14 +118,38 @@ public:
     ///                      constructor-time default.
     void add_first_frame(const PointCloudShared& cloud, double timestamp, const Eigen::Isometry3f& current_pose) {
         auto prepared = this->prepare_first_frame(cloud, timestamp, current_pose);
-        this->commit_freeze_keyframe_to_submap(std::move(prepared));
+        this->commit_first_frame(std::move(prepared));
     }
 
-    [[nodiscard]] PreparedFreeze prepare_first_frame(
-        const PointCloudShared& cloud, double timestamp,
-        const Eigen::Isometry3f& current_pose) const {
-        auto prepared = this->prepare_freeze(cloud, current_pose);
-        prepared.update_keyframe_metadata = true;
+    /// @brief Build a candidate first-frame map state from an empty map without
+    ///        publishing it. Call commit_first_frame() only after the graph
+    ///        bootstrap succeeded.
+    [[nodiscard]] PreparedFirstFrame prepare_first_frame(
+        const PointCloudShared& cloud, double timestamp, const Eigen::Isometry3f& current_pose) const {
+        PreparedFirstFrame prepared;
+        this->create_map(prepared.submap_voxel, prepared.occupancy_grid);
+        prepared.last_keyframe_pc = std::make_shared<PointCloudShared>(this->queue_);
+        prepared.submap_pc_tmp = std::make_shared<PointCloudShared>(this->queue_);
+
+        this->preprocess_filter_->random_sampling(cloud, *prepared.last_keyframe_pc,
+                                                  this->submap_params_.point_random_sampling_num);
+
+        if (this->submap_params_.map_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
+            prepared.occupancy_grid->add_point_cloud(*prepared.last_keyframe_pc, current_pose);
+            prepared.occupancy_grid->extract_occupied_points(*prepared.submap_pc_tmp, current_pose,
+                                                             this->submap_params_.max_distance_range);
+        } else {
+            prepared.submap_voxel->add_point_cloud(*prepared.last_keyframe_pc, current_pose);
+            prepared.submap_voxel->downsampling(*prepared.submap_pc_tmp, current_pose.translation(),
+                                                this->submap_params_.max_distance_range);
+        }
+
+        prepared.submap_pc = std::make_shared<PointCloudShared>(
+            sycl_points::algorithms::transform::transform_copy(cloud, current_pose.matrix()));
+
+        prepared.submap_tree = algorithms::knn::KDTree::build(this->queue_, *prepared.submap_pc);
+        this->compute_covariances(*prepared.submap_pc, *prepared.submap_tree, prepared.knn_result);
+
         prepared.last_keyframe_time = timestamp;
         prepared.last_keyframe_pose = current_pose;
         prepared.keyframe_poses = this->keyframe_poses_;
@@ -153,7 +173,7 @@ public:
 
         const auto submap_type = this->submap_params_.map_type;
         if (submap_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
-            this->build_submap(preprocessed_cloud, reg_result.T, false, random_sampling_weights);
+            this->build_submap(preprocessed_cloud, reg_result.T, random_sampling_weights);
             return true;
         } else {
             if (this->is_keyframe(reg_result, timestamp)) {
@@ -161,47 +181,16 @@ public:
                 this->last_keyframe_time_ = timestamp;
                 this->keyframe_poses_.push_back(reg_result.T);
 
-                this->build_submap(preprocessed_cloud, reg_result.T, false, random_sampling_weights);
+                this->build_submap(preprocessed_cloud, reg_result.T, random_sampling_weights);
                 return true;
             }
         }
         return false;
     }
 
-private:
-    [[nodiscard]] PreparedFreeze prepare_freeze(
-        const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose) const {
-        PreparedFreeze prepared;
-        prepared.last_keyframe_pc = std::make_shared<PointCloudShared>(this->queue_);
-        prepared.submap_pc_tmp = std::make_shared<PointCloudShared>(this->queue_);
-
-        this->preprocess_filter_->random_sampling(cloud, *prepared.last_keyframe_pc,
-                                                  this->submap_params_.point_random_sampling_num);
-
-        if (this->submap_params_.map_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
-            prepared.occupancy_grid = this->occupancy_grid_->clone();
-            prepared.occupancy_grid->add_point_cloud(*prepared.last_keyframe_pc, optimized_pose);
-            prepared.occupancy_grid->extract_occupied_points(*prepared.submap_pc_tmp, optimized_pose,
-                                                             this->submap_params_.max_distance_range);
-        } else {
-            prepared.submap_voxel = this->submap_voxel_->clone();
-            prepared.submap_voxel->add_point_cloud(*prepared.last_keyframe_pc, optimized_pose);
-            prepared.submap_voxel->downsampling(*prepared.submap_pc_tmp, optimized_pose.translation(),
-                                                this->submap_params_.max_distance_range);
-        }
-
-        prepared.submap_pc = std::make_shared<PointCloudShared>(
-            sycl_points::algorithms::transform::transform_copy(cloud, optimized_pose.matrix()));
-
-        prepared.submap_tree = algorithms::knn::KDTree::build(this->queue_, *prepared.submap_pc);
-        this->compute_covariances(*prepared.submap_pc, *prepared.submap_tree, prepared.knn_result);
-        return prepared;
-    }
-
-public:
-
-    /// @brief Atomically publish a prepared replacement state using only non-throwing swaps.
-    void commit_freeze_keyframe_to_submap(PreparedFreeze prepared) noexcept {
+    /// @brief Atomically publish a prepared first-frame map state using only
+    ///        non-throwing swaps.
+    void commit_first_frame(PreparedFirstFrame prepared) noexcept {
         this->submap_voxel_.swap(prepared.submap_voxel);
         this->occupancy_grid_.swap(prepared.occupancy_grid);
         this->submap_tree_.swap(prepared.submap_tree);
@@ -212,19 +201,20 @@ public:
         this->knn_result_.distances.swap(prepared.knn_result.distances);
         std::swap(this->knn_result_.query_size, prepared.knn_result.query_size);
         std::swap(this->knn_result_.k, prepared.knn_result.k);
-        if (prepared.update_keyframe_metadata) {
-            std::swap(this->last_keyframe_pose_, prepared.last_keyframe_pose);
-            std::swap(this->last_keyframe_time_, prepared.last_keyframe_time);
-            this->keyframe_poses_.swap(prepared.keyframe_poses);
-        }
+        std::swap(this->last_keyframe_pose_, prepared.last_keyframe_pose);
+        std::swap(this->last_keyframe_time_, prepared.last_keyframe_time);
+        this->keyframe_poses_.swap(prepared.keyframe_poses);
     }
 
     /// @brief Insert an evicted graph keyframe at its final optimized pose.
     ///        Like LO/LIO, this updates the map in place; callers must stop
     ///        processing if an exception leaves the map partially updated.
-    void freeze_keyframe_to_submap(const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose,
-                                    shared_vector_ptr<float> random_sampling_weights = nullptr) {
-        this->build_submap(cloud, optimized_pose, false, random_sampling_weights);
+    ///        After a successful insertion callers must retarget every surviving
+    ///        unary factor with get_target(), since the current target generation
+    ///        (cloud + kNN) has changed.
+    void insert_evicted_keyframe(const PointCloudShared& cloud, const Eigen::Isometry3f& optimized_pose,
+                                 shared_vector_ptr<float> random_sampling_weights = nullptr) {
+        this->build_submap(cloud, optimized_pose, random_sampling_weights);
     }
 
 private:
@@ -248,6 +238,33 @@ private:
     PointCloudShared::Ptr submap_pc_ptr_ = nullptr;     // Odom/World coordinate
     PointCloudShared::Ptr submap_pc_tmp_ = nullptr;     // Odom/World coordinate
 
+    /// @brief Allocate and configure an empty map of the configured backend.
+    ///        Used both by the constructor and by prepare_first_frame() so the
+    ///        first-frame candidate is built from the same empty state without
+    ///        cloning the live map.
+    void create_map(algorithms::mapping::VoxelHashMap::Ptr& submap_voxel,
+                    algorithms::mapping::OccupancyGridMap::Ptr& occupancy_grid) const {
+        if (this->submap_params_.map_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
+            occupancy_grid = std::make_shared<algorithms::mapping::OccupancyGridMap>(
+                this->queue_, this->submap_params_.voxel_size);
+
+            occupancy_grid->set_log_odds_hit(this->submap_params_.occupancy_grid_map.log_odds_hit);
+            occupancy_grid->set_log_odds_miss(this->submap_params_.occupancy_grid_map.log_odds_miss);
+            occupancy_grid->set_log_odds_limits(this->submap_params_.occupancy_grid_map.log_odds_limits_min,
+                                                this->submap_params_.occupancy_grid_map.log_odds_limits_max);
+            occupancy_grid->set_occupancy_threshold(this->submap_params_.occupancy_grid_map.occupied_threshold);
+            occupancy_grid->set_free_space_updates_enabled(
+                this->submap_params_.occupancy_grid_map.enable_free_space_updates);
+            occupancy_grid->set_voxel_pruning_enabled(this->submap_params_.occupancy_grid_map.enable_pruning);
+            occupancy_grid->set_stale_frame_threshold(this->submap_params_.occupancy_grid_map.stale_frame_threshold);
+            submap_voxel = nullptr;
+        } else {
+            submap_voxel = std::make_shared<algorithms::mapping::VoxelHashMap>(
+                this->queue_, this->submap_params_.voxel_size);
+            occupancy_grid = nullptr;
+        }
+    }
+
     bool is_keyframe(const algorithms::registration::RegistrationResult& reg_result, double timestamp) {        // calculate delta pose
         const auto delta_pose = this->last_keyframe_pose_.inverse() * reg_result.T;
 
@@ -266,7 +283,7 @@ private:
         return is_keyframe;
     }
 
-    void build_submap(const PointCloudShared& cloud, const Eigen::Isometry3f& current_pose, bool is_first_frame,
+    void build_submap(const PointCloudShared& cloud, const Eigen::Isometry3f& current_pose,
                       shared_vector_ptr<float> random_sampling_weights = nullptr) {
         if (random_sampling_weights &&
             random_sampling_weights->size() == cloud.size()) {  // weighted/uniform mixed random sampling
@@ -291,10 +308,7 @@ private:
                                               this->submap_params_.max_distance_range);
         }
 
-        if (is_first_frame) {
-            // transform
-            *this->submap_pc_ptr_ = sycl_points::algorithms::transform::transform_copy(cloud, current_pose.matrix());
-        } else if (this->submap_pc_tmp_->size() >= this->reg_params_.min_num_points) {
+        if (this->submap_pc_tmp_->size() >= this->reg_params_.min_num_points) {
             // swap pointer
             std::swap(this->submap_pc_ptr_, this->submap_pc_tmp_);
         }

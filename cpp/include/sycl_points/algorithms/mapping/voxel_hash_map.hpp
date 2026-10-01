@@ -36,9 +36,6 @@ public:
         this->wg_size_add_point_cloud_ = this->compute_wg_size_add_point_cloud();
     }
 
-    /// @brief Create an independent copy suitable for transactional updates.
-    Ptr clone() const { return Ptr(new VoxelHashMap(*this, CloneTag{})); }
-
     /// @brief Set voxel size
     /// @param size voxel size
     void set_voxel_size(const float voxel_size) {
@@ -252,28 +249,6 @@ public:
     void remove_old_data() { this->remove_old_data_impl(); }
 
 private:
-    struct CloneTag {};
-
-    VoxelHashMap(const VoxelHashMap& other, CloneTag)
-        : queue_(other.queue_), voxel_size_(other.voxel_size_), voxel_size_inv_(other.voxel_size_inv_),
-          capacity_(other.capacity_), staleness_counter_(other.staleness_counter_),
-          max_staleness_(other.max_staleness_), remove_old_data_cycle_(other.remove_old_data_cycle_),
-          rehash_threshold_(other.rehash_threshold_), wg_size_add_point_cloud_(other.wg_size_add_point_cloud_),
-          voxel_num_(other.voxel_num_), has_cov_data_(other.has_cov_data_), has_rgb_data_(other.has_rgb_data_),
-          has_intensity_data_(other.has_intensity_data_), min_num_point_(other.min_num_point_) {
-        this->allocate_storage(this->capacity_);
-        std::copy(other.key_ptr_->begin(), other.key_ptr_->end(), this->key_ptr_->begin());
-        std::copy(other.core_data_ptr_->begin(), other.core_data_ptr_->end(), this->core_data_ptr_->begin());
-        std::copy(other.covariance_data_ptr_->begin(), other.covariance_data_ptr_->end(),
-                  this->covariance_data_ptr_->begin());
-        std::copy(other.color_data_ptr_->begin(), other.color_data_ptr_->end(), this->color_data_ptr_->begin());
-        std::copy(other.intensity_data_ptr_->begin(), other.intensity_data_ptr_->end(),
-                  this->intensity_data_ptr_->begin());
-        std::copy(other.last_update_ptr_->begin(), other.last_update_ptr_->end(), this->last_update_ptr_->begin());
-        this->prefix_sum_ = std::make_shared<common::PrefixSum>(this->queue_);
-        this->valid_flags_ptr_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
-    }
-
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint32_t = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;
     using atomic_ref_uint64_t = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device>;

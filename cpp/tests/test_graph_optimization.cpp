@@ -87,6 +87,13 @@ void expect_pose_near(const Eigen::Isometry3f& a, const Eigen::Isometry3f& b, fl
     EXPECT_LT(angle, tol_r);
 }
 
+// gtest EXPECT_EQ needs identical operand types; void* normalizes pointer
+// comparisons across const-qualified / derived-to-base handle types.
+template <typename T>
+const void* AsVoid(const T* p) {
+    return static_cast<const void*>(p);
+}
+
 // Synthetic factor: anchors a node to a known target pose.
 // Residual follows the same convention as GICP: r = log( T_target^{-1} * T ).
 class AnchorFactor : public graph::GraphFactorBase {
@@ -2039,14 +2046,14 @@ TEST(MarginalizationPriorTangentTest, GradientMatchesNumericalAtDisplacedPoses) 
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Keyframe/submap lifecycle: freeze-on-eviction first-class invariants
+// Keyframe/submap lifecycle: eviction-on-marginalization first-class invariants
 // ---------------------------------------------------------------------------
 
 // Invariant D/C: on window eviction the marginalized node's final optimized
-// pose and cloud are handed to the pipeline as freeze payload (inserted into
+// pose and cloud are handed to the pipeline as eviction payload (inserted into
 // the fixed submap), and the graph state disappears. A scan is therefore never
 // both an active PoseNode and fixed map geometry.
-TEST(GraphLifecycleFreezeTest, EvictedNodeFreezesAtOptimizedPose) {
+TEST(GraphLifecycleEvictionTest, EvictedNodeReportsEvictionAtOptimizedPose) {
     auto queue = make_queue();
     graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
     auto& w = opt.window();
@@ -2069,19 +2076,19 @@ TEST(GraphLifecycleFreezeTest, EvictedNodeFreezesAtOptimizedPose) {
     fr.current_node_id = ids[4];
     opt.finalize_frame(fr, /*keep*/ true);
 
-    EXPECT_TRUE(fr.freeze_ready);
+    EXPECT_TRUE(fr.evicted);
     EXPECT_EQ(fr.marginalization_action, graph::SlidingWindow::MarginalizationAction::None);
-    EXPECT_EQ(fr.frozen_cloud.get(), clouds[0].get());
-    expect_pose_near(fr.frozen_pose, poses[0], 1e-5f, 1e-5f);
-    EXPECT_NEAR(fr.frozen_timestamp, 1.0e6, 1e-3);
+    EXPECT_EQ(fr.evicted_cloud.get(), clouds[0].get());
+    expect_pose_near(fr.evicted_pose, poses[0], 1e-5f, 1e-5f);
+    EXPECT_NEAR(fr.evicted_timestamp, 1.0e6, 1e-3);
     EXPECT_EQ(w.get_node(ids[0]), nullptr);
     EXPECT_EQ(w.window_size(), 4U);
     EXPECT_TRUE(w.prior().is_valid());  // the state left behind a compressed prior
 }
 
 // Invariant (failure path): a deferred marginalization keeps the node in the
-// window WITHOUT freezing its geometry into the submap.
-TEST(GraphLifecycleFreezeTest, DeferredMarginalizationDoesNotFreeze) {
+// window WITHOUT reporting an eviction, so no geometry enters the submap.
+TEST(GraphLifecycleEvictionTest, DeferredMarginalizationDoesNotEvict) {
     auto queue = make_queue();
     graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
     auto& w = opt.window();
@@ -2100,13 +2107,14 @@ TEST(GraphLifecycleFreezeTest, DeferredMarginalizationDoesNotFreeze) {
     opt.finalize_frame(fr, /*keep*/ true);
 
     EXPECT_EQ(fr.marginalization_action, graph::SlidingWindow::MarginalizationAction::Deferred);
-    EXPECT_FALSE(fr.freeze_ready);
+    EXPECT_FALSE(fr.evicted);
+    EXPECT_EQ(fr.evicted_cloud, nullptr);
     EXPECT_NE(w.get_node(ids[0]), nullptr);  // kept for the next-frame retry
 }
 
 // Invariant E: the gate decision only changes graph retention; without an
-// eviction there is no freeze activity.
-TEST(GraphLifecycleFreezeTest, RejectedTipNeverFreezes) {
+// eviction there is no eviction activity.
+TEST(GraphLifecycleEvictionTest, RejectedTipNeverEvicts) {
     auto queue = make_queue();
     graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 4);
     auto& w = opt.window();
@@ -2121,10 +2129,135 @@ TEST(GraphLifecycleFreezeTest, RejectedTipNeverFreezes) {
     fr.current_node_id = ids[3];
     opt.finalize_frame(fr, /*keep*/ false);
 
-    EXPECT_FALSE(fr.freeze_ready);
+    EXPECT_FALSE(fr.evicted);
     EXPECT_EQ(w.get_node(ids[3]), nullptr);  // deviation: provisional tip discarded
     EXPECT_TRUE(w.prior().is_valid() == false);
 }
+
+// ForceDropped is the persistent-failure fallback: the node leaves the window
+// but no eviction payload is reported (its scan is simply missing from the map).
+TEST(GraphLifecycleEvictionTest, ForceDroppedNeverEvicts) {
+    auto queue = make_queue();
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 1);
+    auto& w = opt.window();
+
+    const graph::NodeId id0 = w.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    w.add_factor(std::make_shared<NonFiniteHessianFactor>(w.get_node(id0)));
+
+    auto finalize_with_new_frame = [&](graph::NodeId tip) {
+        graph::GraphOptimization::FrameResult fr;
+        fr.current_node_id = tip;
+        opt.finalize_frame(fr, /*keep=*/true);
+        return fr;
+    };
+
+    // Two deferred frames expose the +2 growth cap, then the third force-drops.
+    graph::NodeId tip = w.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    auto fr1 = finalize_with_new_frame(tip);
+    EXPECT_EQ(fr1.marginalization_action, graph::SlidingWindow::MarginalizationAction::Deferred);
+    EXPECT_FALSE(fr1.evicted);
+
+    tip = w.add_node(Eigen::Isometry3f::Identity(), 2.0);
+    auto fr2 = finalize_with_new_frame(tip);
+    EXPECT_EQ(fr2.marginalization_action, graph::SlidingWindow::MarginalizationAction::Deferred);
+    EXPECT_FALSE(fr2.evicted);
+
+    tip = w.add_node(Eigen::Isometry3f::Identity(), 3.0);
+    auto fr3 = finalize_with_new_frame(tip);
+    EXPECT_EQ(fr3.marginalization_action, graph::SlidingWindow::MarginalizationAction::ForceDropped);
+    EXPECT_FALSE(fr3.evicted);
+    EXPECT_EQ(fr3.evicted_cloud, nullptr);
+    EXPECT_EQ(w.get_node(id0), nullptr);
+}
+
+// Probe unary factor: records paired target replacement and drops its cache,
+// mirroring UnaryGicpFactor::set_fixed_target without GPU correspondence work.
+class RetargetableUnaryProbe : public graph::GraphFactorBase {
+public:
+    RetargetableUnaryProbe(std::shared_ptr<graph::PoseNode> node,
+                           std::shared_ptr<const PointCloudShared> cloud,
+                           std::shared_ptr<const knn::KNNBase> knn)
+        : node_(std::move(node)), cloud_(std::move(cloud)), knn_(std::move(knn)) {}
+
+    bool set_fixed_target(std::shared_ptr<const PointCloudShared> cloud,
+                          std::shared_ptr<const knn::KNNBase> knn) override {
+        cloud_ = std::move(cloud);
+        knn_ = std::move(knn);
+        ++retarget_count_;
+        this->clear_cache();
+        return true;
+    }
+
+    graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
+        graph::FactorLinearization lin;
+        lin.source_linearization_pose = node_->pose;
+        lin.H00 = 10.0f * Eigen::Matrix<float, 6, 6>::Identity();
+        lin.error = 0.0f;
+        lin.inlier = 1;
+        return lin;
+    }
+
+    std::pair<float, uint32_t> compute_error(const Eigen::Isometry3f&,
+                                             const Eigen::Isometry3f&) const override {
+        return {0.0f, 1};
+    }
+
+    std::pair<graph::NodeId, graph::NodeId> node_ids() const override {
+        return {node_->id, graph::INVALID_NODE_ID};
+    }
+
+    bool needs_relinearization(const Eigen::Isometry3f&, const Eigen::Isometry3f&, float,
+                               float) const override {
+        return false;
+    }
+
+    const std::shared_ptr<const PointCloudShared>& cloud() const { return cloud_; }
+    const std::shared_ptr<const knn::KNNBase>& knn() const { return knn_; }
+    size_t retarget_count() const { return retarget_count_; }
+
+private:
+    std::shared_ptr<graph::PoseNode> node_;
+    std::shared_ptr<const PointCloudShared> cloud_;
+    std::shared_ptr<const knn::KNNBase> knn_;
+    size_t retarget_count_ = 0;
+};
+
+// update_unary_targets replaces the whole (cloud, kNN) pair atomically on every
+// unary factor, discards its linearization cache, and ignores non-unary
+// factors. The next get_linearization therefore re-linearizes against the new
+// target instead of reusing stale correspondences.
+TEST_F(GraphSlidingWindowTest, UpdateUnaryTargetsReplacesPairAndDropsCache) {
+    std::mt19937 gen(11);
+    auto cloud_a = make_cube_cloud(queue, 50, 0.5f, gen);
+    auto knn_a = knn::KDTree::build(queue, *cloud_a);
+    auto cloud_b = make_cube_cloud(queue, 60, 0.5f, gen);
+    auto knn_b = knn::KDTree::build(queue, *cloud_b);
+
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), 5);
+    auto& w = opt.window();
+    const graph::NodeId id = w.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    auto probe = std::make_shared<RetargetableUnaryProbe>(w.get_node(id), cloud_a, knn_a);
+    w.add_factor(probe);
+    w.add_factor(std::make_shared<AnchorFactor>(w.get_node(id), Eigen::Isometry3f::Identity(), 1.0f));
+
+    // Prime the factor's cache so the retarget has something to discard.
+    probe->get_linearization(queue, 0.0f, 0.0f);
+    ASSERT_NE(probe->cached_linearization(), nullptr);
+    EXPECT_EQ(AsVoid(probe->cloud().get()), AsVoid(cloud_a.get()));
+
+    const size_t updated = opt.update_unary_targets(cloud_b, knn_b);
+    EXPECT_EQ(updated, 1u);  // only the unary probe, not the anchor
+    EXPECT_EQ(AsVoid(probe->cloud().get()), AsVoid(cloud_b.get()));
+    EXPECT_EQ(AsVoid(probe->knn().get()), AsVoid(knn_b.get()));
+    EXPECT_EQ(probe->retarget_count(), 1u);
+    EXPECT_EQ(probe->cached_linearization(), nullptr);
+
+    // With the cache gone the next linearization is a real re-linearization.
+    probe->get_linearization(queue, 0.0f, 0.0f);
+    EXPECT_TRUE(probe->last_get_relinearized());
+    EXPECT_NE(probe->cached_linearization(), nullptr);
+}
+
 
 // Binary-factor mock whose linearization NEVER changes: get_linearization()
 // caches this fixed model on the first call and every later call reuses it

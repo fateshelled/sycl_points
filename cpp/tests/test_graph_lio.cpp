@@ -75,6 +75,22 @@ void estimate_covariances(const knn::KNNBase& knn, PointCloudShared& cloud) {
     covariance::estimate_async(knn, cloud, 10).wait_and_throw();
 }
 
+template <typename T>
+const void* AsVoid(const T* p) {
+    return static_cast<const void*>(p);
+}
+
+PointCloudShared::Ptr transform_cloud(const sycl_utils::DeviceQueue& queue, const PointCloudShared& src,
+                                      const Eigen::Isometry3f& T) {
+    PointCloudCPU cpu;
+    cpu.points->resize(src.size());
+    for (size_t i = 0; i < src.size(); ++i) {
+        const Eigen::Vector4f p = T.matrix() * src.points->at(i);
+        (*cpu.points)[i] = PointType(p.x(), p.y(), p.z(), 1.0f);
+    }
+    return std::make_shared<PointCloudShared>(queue, cpu);
+}
+
 registration::RegistrationParams gicp_params(float max_corr = 2.0f) {
     registration::RegistrationFactorParams fp;
     fp.reg_type = registration::RegType::GICP;
@@ -444,6 +460,74 @@ TEST_F(GraphLioTest, GraphOptimizationAttachesImuEdgeAndSeedsNavState) {
     EXPECT_TRUE(tip->gyro_bias.allFinite());
     EXPECT_TRUE(fr2.current_state.pose.matrix().isApprox(tip->pose.matrix(), 1e-6f));
     EXPECT_TRUE(fr2.current_state.velocity.isApprox(tip->velocity, 1e-6f));
+}
+
+// End-to-end submap lifecycle: an evicted scan is inserted into the Submap at
+// its final optimized pose, and every surviving unary factor is retargeted to
+// the resulting (cloud, kNN) generation. Multiple evictions must keep working
+// and the next frame's factor must linearize against the latest generation.
+TEST_F(GraphLioTest, EvictedScansInsertAndRetargetUnaryFactorsToLatestSubmap) {
+    std::mt19937 gen(23);
+    pipeline::lidar_odometry::Parameters submap_params;
+    submap_params.submap.map_type = pipeline::odometry::SubmapMapType::VOXEL_HASH_MAP;
+    submap_params.submap.voxel_size = 0.4f;
+    submap_params.submap.max_distance_range = 50.0f;
+    submap_params.submap.point_random_sampling_num = 256;
+    submap_params.submap.keyframe.inlier_ratio_threshold = 0.0f;
+    submap_params.covariance_estimation.neighbor_num = 10;
+    submap_params.registration.factor.reg_type = registration::RegType::GICP;
+    submap_params.registration.factor.max_correspondence_distance = 2.0f;
+    submap_params.registration.min_num_points = 10;
+    pipeline::submapping::Submap submap(queue, submap_params);
+
+    auto world = make_cube_cloud(queue, 400, 0.6f, gen);
+    auto world_knn = knn::KDTree::build(queue, *world);
+    estimate_covariances(*world_knn, *world);
+
+    // First frame: publish the initial submap generation (all identity).
+    submap.add_first_frame(*world, 0.0, Eigen::Isometry3f::Identity());
+    const auto bootstrap_target = submap.get_target();
+    ASSERT_NE(bootstrap_target.cloud, nullptr);
+
+    graph::GraphOptimization opt(queue, graph::GraphSolverParams(), /*max_window_size*/ 2);
+
+    size_t evictions = 0;
+    const size_t num_frames = 6;
+    Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+    for (size_t f = 0; f < num_frames; ++f) {
+        if (f > 0) T.translation().x() += 0.01f;
+
+        auto scan = transform_cloud(queue, *world, T.inverse());
+        auto scan_knn = knn::KDTree::build(queue, *scan);
+        estimate_covariances(*scan_knn, *scan);
+
+        const auto target = submap.get_target();
+        const auto fr = opt.process_frame(scan, target.cloud, target.knn, scan_knn, T, 0.1 * f,
+                                          gicp_params());
+        ASSERT_TRUE(fr.solver_valid()) << "frame " << f;
+        if (!fr.evicted) continue;
+
+        ASSERT_NE(fr.evicted_cloud, nullptr);
+        submap.insert_evicted_keyframe(*fr.evicted_cloud, fr.evicted_pose);
+        const auto latest = submap.get_target();
+        ASSERT_NE(latest.cloud, nullptr);
+        ASSERT_NE(latest.knn, nullptr);
+        EXPECT_NE(AsVoid(latest.cloud.get()), AsVoid(target.cloud.get()));
+
+        const size_t retargeted = opt.update_unary_targets(latest.cloud, latest.knn);
+        EXPECT_GE(retargeted, 1u);
+
+        // No surviving unary factor may still point at the previous generation.
+        for (const auto& factor : opt.window().factors()) {
+            const auto cloud = factor->fixed_target_cloud();
+            const auto knn = factor->fixed_target_knn();
+            if (!cloud || !knn) continue;
+            EXPECT_EQ(AsVoid(cloud.get()), AsVoid(latest.cloud.get()));
+            EXPECT_EQ(AsVoid(knn.get()), AsVoid(latest.knn.get()));
+        }
+        ++evictions;
+    }
+    EXPECT_GE(evictions, 2u);  // multiple evictions across the run
 }
 
 }  // namespace

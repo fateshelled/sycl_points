@@ -153,8 +153,6 @@ TEST(GraphNaNRepro, PipelineLikeConfig) {
 
     Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
     bool first = true;
-    std::shared_ptr<PointCloudShared> submap_cloud;
-    std::shared_ptr<const knn::KNNBase> submap_knn;
 
     for (int k = 0; k < 24; ++k) {
         const Eigen::Isometry3f T_prev = T;
@@ -166,25 +164,25 @@ TEST(GraphNaNRepro, PipelineLikeConfig) {
 
         if (first) {
             submap.add_first_frame(*scan, 0.1 * k, T);
-            submap_cloud = std::make_shared<PointCloudShared>(submap.get_submap_point_cloud());
-            submap_knn = knn::KDTree::build(queue, *submap_cloud);
             first = false;
             continue;
         }
 
         const Eigen::Isometry3f init_T = advance(T_prev, delta);
-        auto fr = opt.process_frame(scan, submap_cloud, submap_knn, scan_knn, init_T, 0.1 * k, reg_params);
+        // The submap owns the current (cloud, kNN) generation; factors share the
+        // handle directly instead of a test-local copy + KDTree rebuild.
+        const auto target = submap.get_target();
+        auto fr = opt.process_frame(scan, target.cloud, target.knn, scan_knn, init_T, 0.1 * k, reg_params);
 
-        // Submap update (pipeline analog: add_frame with the solved pose).
-        algorithms::registration::RegistrationResult reg_result;
-        reg_result.T = fr.current_pose;
-        reg_result.converged = fr.converged;
-        reg_result.iterations = fr.iterations;
-        reg_result.error = fr.error;
-        const bool changed = submap.add_frame(*scan, reg_result, 1.0f, 0.1 * k, nullptr);
-        if (changed) {
-            submap_cloud = std::make_shared<PointCloudShared>(submap.get_submap_point_cloud());
-            submap_knn = knn::KDTree::build(queue, *submap_cloud);
+        // Submap update (pipeline analog): a normally marginalized scan is
+        // inserted at its final optimized pose, then every surviving unary
+        // factor is retargeted to the resulting generation.
+        bool submap_updated = false;
+        if (fr.evicted && fr.evicted_cloud && fr.evicted_cloud->size() > 0) {
+            submap.insert_evicted_keyframe(*fr.evicted_cloud, fr.evicted_pose);
+            const auto latest = submap.get_target();
+            opt.update_unary_targets(latest.cloud, latest.knn);
+            submap_updated = true;
         }
 
         const bool err_bad = !std::isfinite(fr.error);
@@ -193,7 +191,7 @@ TEST(GraphNaNRepro, PipelineLikeConfig) {
             "frame %2d: error=%12.4g iters=%2zu conv=%d kf=%d win=%2zu SUBMAP_UPDATED=%d prior_valid=%d "
             "prior_Htr=%g prior_bnorm=%g prior_finite=%d%s\n",  //
             k, fr.error, fr.iterations, fr.converged ? 1 : 0, fr.keyframe ? 1 : 0, opt.window().window_size(),
-            changed ? 1 : 0, prior.is_valid() ? 1 : 0,
+            submap_updated ? 1 : 0, prior.is_valid() ? 1 : 0,
             prior.is_valid() ? static_cast<double>(prior.H_prior.trace()) : 0.0,
             prior.is_valid() ? static_cast<double>(prior.b_prior.norm()) : 0.0,
             prior.is_valid() ? (prior.H_prior.allFinite() && prior.b_prior.allFinite() ? 1 : 0) : 1,

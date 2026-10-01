@@ -36,6 +36,21 @@ public:
         begin_annealing();
     }
 
+    /// @brief Replace the fixed target cloud and its kNN as one generation and
+    ///        drop the cached linearization so the next linearize() establishes
+    ///        fresh correspondences against the new target. The robust-scale
+    ///        state (annealing / frozen scale) is deliberately preserved.
+    bool set_fixed_target(std::shared_ptr<const PointCloudShared> target,
+                          std::shared_ptr<const knn::KNNBase> target_knn) override {
+        target_ = std::move(target);
+        target_knn_ = std::move(target_knn);
+        this->clear_cache();
+        return true;
+    }
+
+    std::shared_ptr<const PointCloudShared> fixed_target_cloud() const override { return target_; }
+    std::shared_ptr<const knn::KNNBase> fixed_target_knn() const override { return target_knn_; }
+
     FactorLinearization linearize(const sycl_utils::DeviceQueue&, float scale = 0.0f) override {
         source_node_->linearization_pose = source_node_->pose;
         registration::Registration::ExecutionOptions opts;

@@ -46,13 +46,14 @@ public:
         NodeId marginalized_node = INVALID_NODE_ID;
         /// @brief Last lambda actually attempted for the Schur regularization.
         float lambda_used = 0.0f;
-        /// @brief Freeze payload for the keyframe/submap lifecycle (valid on
+        /// @brief Eviction payload for the keyframe/submap lifecycle (valid on
         ///        Success only): the evicted node's final optimized pose
         ///        (map <- sensor), its sensor-frame cloud and its timestamp,
         ///        captured BEFORE the state is removed. The pipeline inserts
         ///        the geometry into the fixed submap exactly when the variable
         ///        graph state disappears, so a scan is never both an active
-        ///        PoseNode and fixed map geometry.
+        ///        PoseNode and fixed map geometry. Failed marginalization
+        ///        (Deferred / ForceDropped) leaves these fields default.
         Eigen::Isometry3f evicted_pose = Eigen::Isometry3f::Identity();
         std::shared_ptr<PointCloudShared> evicted_cloud = nullptr;
         double evicted_timestamp = 0.0;
@@ -487,7 +488,7 @@ public:
         result.status = MarginalizationStatus::Success;
         result.marginalized_node = marginalize_id;
         result.lambda_used = lambda_used;
-        // Freeze payload: the final optimized pose + sensor cloud of the evicted
+        // Eviction payload: the final optimized pose + sensor cloud of the evicted
         // state, taken before the node is erased (cloud shared_ptr keeps the
         // payload alive independently of the removed node).
         result.evicted_pose = oldest->pose;

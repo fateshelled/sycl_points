@@ -38,9 +38,6 @@ public:
         this->clear();
     }
 
-    /// @brief Create an independent copy suitable for transactional updates.
-    Ptr clone() const { return Ptr(new OccupancyGridMap(*this, CloneTag{})); }
-
     /// @brief Reset the map data.
     void clear() {
         this->capacity_ = kCapacityCandidates[0];
@@ -475,28 +472,6 @@ public:
     }
 
 private:
-    struct CloneTag {};
-
-    OccupancyGridMap(const OccupancyGridMap& other, CloneTag)
-        : queue_(other.queue_), voxel_size_(other.voxel_size_), inv_voxel_size_(other.inv_voxel_size_),
-          log_odds_hit_(other.log_odds_hit_), log_odds_miss_(other.log_odds_miss_),
-          min_log_odds_(other.min_log_odds_), max_log_odds_(other.max_log_odds_),
-          occupancy_threshold_log_odds_(other.occupancy_threshold_log_odds_),
-          free_space_updates_enabled_(other.free_space_updates_enabled_),
-          voxel_pruning_enabled_(other.voxel_pruning_enabled_), has_cov_data_(other.has_cov_data_),
-          has_rgb_data_(other.has_rgb_data_), has_intensity_data_(other.has_intensity_data_),
-          frame_index_(other.frame_index_), stale_frame_threshold_(other.stale_frame_threshold_),
-          capacity_(other.capacity_), voxel_num_(other.voxel_num_) {
-        this->allocate_storage(this->capacity_);
-        std::copy(other.key_ptr_->begin(), other.key_ptr_->end(), this->key_ptr_->begin());
-        std::copy(other.core_data_ptr_->begin(), other.core_data_ptr_->end(), this->core_data_ptr_->begin());
-        std::copy(other.covariance_data_ptr_->begin(), other.covariance_data_ptr_->end(),
-                  this->covariance_data_ptr_->begin());
-        std::copy(other.color_data_ptr_->begin(), other.color_data_ptr_->end(), this->color_data_ptr_->begin());
-        std::copy(other.intensity_data_ptr_->begin(), other.intensity_data_ptr_->end(),
-                  this->intensity_data_ptr_->begin());
-    }
-
     inline static constexpr float kPi = 3.1415927f;
     inline static constexpr float kFovTolerance = 1e-6f;
     inline static constexpr float kOcclusionEpsilon = 1e-6f;

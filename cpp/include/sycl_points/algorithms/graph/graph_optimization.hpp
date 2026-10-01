@@ -168,18 +168,19 @@ public:
         SlidingWindow::MarginalizationAction marginalization_action =
             SlidingWindow::MarginalizationAction::None;
         float marginalization_lambda = 0.0f;
-        /// @brief Keyframe/submap lifecycle freeze payload (freeze_ready only on a
-        ///        Successful eviction): the oldest node left the active window this
-        ///        frame, and the pipeline must insert its scan into the fixed
-        ///        submap at its final optimized pose. A scan is thereby never
-        ///        both an active PoseNode and fixed map geometry
+        /// @brief Keyframe/submap lifecycle eviction payload (evicted only on a
+        ///        Successful marginalization): the oldest node left the active
+        ///        window this frame, and the pipeline must insert its scan into
+        ///        the fixed submap at its final optimized pose. A scan is thereby
+        ///        never both an active PoseNode and fixed map geometry
         ///        (ActiveKeyframeScans ∩ FixedSubmapScans = empty). Force-dropped
-        ///        nodes are NOT frozen: emergency eviction drops the node without
-        ///        a prior and the map simply misses that scan.
-        bool freeze_ready = false;
-        Eigen::Isometry3f frozen_pose = Eigen::Isometry3f::Identity();
-        std::shared_ptr<PointCloudShared> frozen_cloud = nullptr;
-        double frozen_timestamp = 0.0;
+        ///        nodes are NOT evicted: emergency eviction drops the node without
+        ///        a prior and the map simply misses that scan. Deferred failures
+        ///        and rejected tips also leave `evicted` false.
+        bool evicted = false;
+        Eigen::Isometry3f evicted_pose = Eigen::Isometry3f::Identity();
+        std::shared_ptr<PointCloudShared> evicted_cloud = nullptr;
+        double evicted_timestamp = 0.0;
     };
 
     struct Checkpoint {
@@ -205,7 +206,7 @@ public:
     /// `keep` decides only graph retention: whether the tip stays an active
     /// PoseNode. Submap insertion is a SEPARATE event: on eviction the oldest
     /// node is marginalized and its final optimized pose + cloud are reported
-    /// in the FrameResult freeze payload for the pipeline to insert into the
+    /// in the FrameResult eviction payload for the pipeline to insert into the
     /// fixed submap.
     void finalize_frame(FrameResult& frame_result, bool keep) {
         if (frame_result.finalized || frame_result.current_node_id == INVALID_NODE_ID) return;
@@ -230,10 +231,10 @@ public:
                 // Graph/map lifecycle transition: the state is gone from the
                 // graph, its geometry becomes fixed map data. Inserted at the
                 // optimized pose the node had exactly at eviction time.
-                frame_result.freeze_ready = true;
-                frame_result.frozen_pose = m.evicted_pose;
-                frame_result.frozen_cloud = m.evicted_cloud;
-                frame_result.frozen_timestamp = m.evicted_timestamp;
+                frame_result.evicted = true;
+                frame_result.evicted_pose = m.evicted_pose;
+                frame_result.evicted_cloud = m.evicted_cloud;
+                frame_result.evicted_timestamp = m.evicted_timestamp;
             } else if (m.status == SlidingWindow::MarginalizationStatus::NotRequired) {
                 frame_result.marginalization_action = SlidingWindow::MarginalizationAction::None;
             } else {
@@ -553,6 +554,24 @@ private:
 public:
     SlidingWindow& window() { return window_; }
     const SlidingWindow& window() const { return window_; }
+
+    /// @brief Retarget every surviving unary factor onto the latest submap
+    ///        generation. The cloud and kNN must come from the same Submap
+    ///        target (Submap::get_target()); each factor replaces the pair at
+    ///        once and discards its linearization cache so its frozen
+    ///        correspondences are rebuilt against the new target on the next
+    ///        solve. Must be called after a successful map update and before
+    ///        the next solver pass (and before the next frame's factors are
+    ///        created). Frames with no map update need no call.
+    /// @return number of unary factors retargeted.
+    size_t update_unary_targets(std::shared_ptr<const PointCloudShared> cloud,
+                                std::shared_ptr<const knn::KNNBase> knn) {
+        size_t updated = 0;
+        for (auto& factor : window_.factors()) {
+            if (factor->set_fixed_target(cloud, knn)) ++updated;
+        }
+        return updated;
+    }
 
 private:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW

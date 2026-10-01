@@ -321,7 +321,7 @@ public:
                         this->odom_, timestamp, root_cloud, root_knn, root_state, root_prior);
                     this->keyframe_imu_history_ = std::move(bootstrap_imu_history);
                 }
-                this->submap_->commit_freeze_keyframe_to_submap(std::move(prepared_first));
+                this->submap_->commit_first_frame(std::move(prepared_first));
                 this->nav_state_ = root_state;
                 this->state_timestamp_ = timestamp;
                 this->last_keyframe_pose_ = root_state.pose;
@@ -404,6 +404,11 @@ public:
         // Graph optimization (local BA)
         algorithms::graph::GraphOptimization::FrameResult frame_result;
         const auto graph_checkpoint = this->graph_opt_->checkpoint();
+        // The submap owns one live target generation (point cloud + the kNN built
+        // on exactly that cloud). Its handle is stable until the eviction
+        // insertion below, so graph factors share it directly instead of a
+        // per-generation copy + independent KDTree rebuild.
+        const auto submap_target = this->submap_->get_target();
         {
             double dt = 0.0;
             try {
@@ -432,16 +437,6 @@ public:
 
                         auto source_knn = algorithms::knn::KDTree::build(*this->queue_ptr_, *source_cloud);
 
-                        // Submap generations are immutable snapshots handed to the graph.
-                        // In voxel mode the submap only changes when a keyframe is merged,
-                        // so the copy + KDTree rebuild runs at keyframe rate, not scan rate.
-                        if (this->submap_dirty_) {
-                            this->submap_gen_cloud_ = std::make_shared<PointCloudShared>(this->submap_->get_submap_point_cloud());
-                            this->submap_gen_knn_ =
-                                algorithms::knn::KDTree::build(*this->queue_ptr_, *this->submap_gen_cloud_);
-                            this->submap_dirty_ = false;
-                        }
-
                         algorithms::graph::GraphOptimization::ImuEdgeContext imu_edge;
                         imu_edge.enable = imu_edge_window_complete &&
                                           this->imu_edge_source_id_ != algorithms::graph::INVALID_NODE_ID;
@@ -462,7 +457,7 @@ public:
                             this->params_.graph.lio.root_prior_sigma_gyro_bias;
 
                         auto result = this->graph_opt_->process_frame(
-                            source_cloud, this->submap_gen_cloud_, this->submap_gen_knn_, source_knn,
+                            source_cloud, submap_target.cloud, submap_target.knn, source_knn,
                             init_T, timestamp, this->reg_params_,
                             algorithms::graph::GraphOptimization::VelocityUpdateContext(), imu_edge);
 
@@ -515,19 +510,26 @@ public:
             }
             rebased_imu_history = std::move(candidate);
         }
-        // Once marginalized, an evicted scan must enter the fixed submap.
-        // An in-place insertion cannot be rolled back after a partial failure.
+        // Once marginalized, an evicted scan must enter the fixed submap at its
+        // final optimized pose. This is an in-place map update and cannot be
+        // rolled back after a partial failure, so an insertion failure stops the
+        // pipeline instead of resuming on a partially updated map. After a
+        // successful insertion the target generation changed, so every
+        // surviving unary factor is retargeted (cloud + kNN replaced together)
+        // before the next solver pass. Frames without an eviction leave the
+        // submap and the factors untouched.
         {
             double dt = 0.0;
             try {
                 time_utils::measure_execution([&]() {
-                    if (frame_result.freeze_ready && frame_result.frozen_cloud &&
-                        frame_result.frozen_cloud->size() > 0) {
-                        // The frozen scan uses uniform sampling, not the robust
+                    if (frame_result.evicted && frame_result.evicted_cloud &&
+                        frame_result.evicted_cloud->size() > 0) {
+                        // The evicted scan uses uniform sampling, not the robust
                         // weights from its earlier registration.
-                        this->submap_->freeze_keyframe_to_submap(
-                            *frame_result.frozen_cloud, frame_result.frozen_pose);
-                        this->submap_dirty_ = true;
+                        this->submap_->insert_evicted_keyframe(*frame_result.evicted_cloud,
+                                                               frame_result.evicted_pose);
+                        const auto target = this->submap_->get_target();
+                        this->graph_opt_->update_unary_targets(target.cloud, target.knn);
                     }
                 }, dt);
             } catch (const std::exception& e) {
@@ -593,10 +595,6 @@ private:
     ///        RegistrationPipeline's internal filter).
     algorithms::filter::PreprocessFilter::Ptr factor_input_filter_ = nullptr;
     std::shared_ptr<algorithms::graph::GraphOptimization> graph_opt_ = nullptr;
-    // Current immutable submap generation (cloud + kNN) shared by the whole graph.
-    std::shared_ptr<PointCloudShared> submap_gen_cloud_ = nullptr;
-    std::shared_ptr<const algorithms::knn::KNNBase> submap_gen_knn_ = nullptr;
-    bool submap_dirty_ = true;
     algorithms::registration::RegistrationParams reg_params_;
 
     algorithms::registration::RegistrationResult::Ptr reg_result_ = nullptr;
@@ -764,8 +762,9 @@ private:
             *this->queue_ptr_, this->params_, this->params_.graph.registration.factor,
             this->params_.graph.registration.min_num_points);
         // Graph optimizer (sliding window local BA). The internal keyframe gate
-        // reuses the Submap keyframe thresholds for retention; map insertion is a
-        // separate lifecycle event done on eviction (see submapping()).
+        // reuses the Submap keyframe thresholds for retention; map insertion is
+        // a separate lifecycle event done on eviction (Submap::insert_evicted_keyframe)
+        // followed by a retarget of every surviving unary factor.
         algorithms::graph::GraphSolverParams solver_params;
         solver_params.optimization_method = this->params_.graph.optimization_method;
         solver_params.lm = this->params_.graph.lm;
