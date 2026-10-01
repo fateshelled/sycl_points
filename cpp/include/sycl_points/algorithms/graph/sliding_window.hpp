@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -321,12 +322,14 @@ public:
         Eigen::MatrixXf H_all = Eigen::MatrixXf::Zero(step * static_cast<Eigen::Index>(K),
                                                       step * static_cast<Eigen::Index>(K));
         Eigen::VectorXf b_all = Eigen::VectorXf::Zero(step * static_cast<Eigen::Index>(K));
+        size_t touching_factor_count = 0;
         std::unordered_map<NodeId, int> id_to_idx;
         for (int i = 0; i < static_cast<int>(K); ++i) id_to_idx[local_ids[i]] = i;
 
         for (auto& f : factors_) {
             const auto [sid, tid] = f->node_ids();
             if (sid != marginalize_id && tid != marginalize_id) continue;
+            ++touching_factor_count;
             f->clear_cache();
             // Keep the robust weights the optimizer actually adopted. Each factor is
             // re-linearized with its own frozen scale (scale_now falls back to the
@@ -392,8 +395,14 @@ public:
         Eigen::LDLT<Eigen::MatrixXf> ldlt_mm;
         float lambda_used = marginalization_lambda_;
         bool usable = false;
+        int lambda_attempts = 0;
+        Eigen::ComputationInfo last_eigen_info = Eigen::InvalidInput;
+        Eigen::VectorXf last_eigenvalues;
         for (int escalation = 0; escalation <= kMaxLambdaEscalations; ++escalation) {
             const float attempted = lambda_used;
+            ++lambda_attempts;
+            result.lambda_used = attempted;
+            marg_diag_.max_lambda_used = std::max(marg_diag_.max_lambda_used, attempted);
             const Eigen::MatrixXf H_mm_reg =
                 H_mm + attempted * Eigen::MatrixXf::Identity(dof, dof);
             if (!H_mm_reg.allFinite()) {
@@ -402,13 +411,15 @@ public:
                 return result;
             }
             bool conditioned = false;
-            if (const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> eig(H_mm_reg);
-                eig.info() == Eigen::Success) {
-                const auto ev = eig.eigenvalues();
+            const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> eig(H_mm_reg);
+            last_eigen_info = eig.info();
+            last_eigenvalues.resize(0);
+            if (last_eigen_info == Eigen::Success) {
+                last_eigenvalues = eig.eigenvalues();
                 // H is PSD up to noise; a non-positive or badly conditioned span is
                 // treated the same as a decomposition failure.
-                const float ev_max = ev.maxCoeff();
-                const float ev_min = ev.minCoeff();
+                const float ev_max = last_eigenvalues.maxCoeff();
+                const float ev_min = last_eigenvalues.minCoeff();
                 conditioned = ev_max > 0.0f && ev_min >= kMinConditionRatio * ev_max;
             }
             ldlt_mm.compute(H_mm_reg);
@@ -431,11 +442,32 @@ public:
             }
         }
         if (!usable) {
-            if (verbose()) {
-                std::cerr << "[SlidingWindow] marginalization decomposition failed"
-                          << " (node " << marginalize_id << ", lambda up to " << lambda_used << ")"
-                          << std::endl;
-            }
+            const float eigen_min = last_eigenvalues.size() > 0
+                                        ? last_eigenvalues.minCoeff()
+                                        : std::numeric_limits<float>::quiet_NaN();
+            const float eigen_max = last_eigenvalues.size() > 0
+                                        ? last_eigenvalues.maxCoeff()
+                                        : std::numeric_limits<float>::quiet_NaN();
+            const float condition_ratio = eigen_max > 0.0f
+                                              ? eigen_min / eigen_max
+                                              : std::numeric_limits<float>::quiet_NaN();
+            std::cerr << "[SlidingWindow] marginalization decomposition failed"
+                      << " (node=" << marginalize_id << ", dof=" << dof
+                      << ", local_nodes=" << K << ", touching_factors=" << touching_factor_count
+                      << ", prior_nodes=" << prior_.node_ids.size()
+                      << ", H_norm=" << H_all.norm()
+                      << ", H_max_abs=" << H_all.cwiseAbs().maxCoeff()
+                      << ", b_norm=" << b_all.norm()
+                      << ", H_mm_norm=" << H_mm.norm()
+                      << ", H_mm_diag=[" << H_mm.diagonal().transpose() << "]"
+                      << ", lambda_initial=" << marginalization_lambda_
+                      << ", lambda_last=" << lambda_used
+                      << ", lambda_attempts=" << lambda_attempts
+                      << ", eigen_info=" << static_cast<int>(last_eigen_info)
+                      << ", eigenvalues=[" << last_eigenvalues.transpose() << "]"
+                      << ", condition_ratio=" << condition_ratio
+                      << ", required_ratio=" << kMinConditionRatio
+                      << ", ldlt_info=" << static_cast<int>(ldlt_mm.info()) << ")" << std::endl;
             ++marg_diag_.decomposition_failed;
             result.status = MarginalizationStatus::DecompositionFailed;
             return result;
@@ -487,7 +519,6 @@ public:
 
         result.status = MarginalizationStatus::Success;
         result.marginalized_node = marginalize_id;
-        result.lambda_used = lambda_used;
         // Eviction payload: the final optimized pose + sensor cloud of the evicted
         // state, taken before the node is erased (cloud shared_ptr keeps the
         // payload alive independently of the removed node).
@@ -495,7 +526,6 @@ public:
         result.evicted_cloud = oldest->cloud;
         result.evicted_timestamp = oldest->timestamp;
         ++marg_diag_.success;
-        marg_diag_.max_lambda_used = std::max(marg_diag_.max_lambda_used, lambda_used);
         return result;
     }
 

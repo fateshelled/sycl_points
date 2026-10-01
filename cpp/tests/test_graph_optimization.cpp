@@ -211,14 +211,15 @@ private:
 // conditioning and escalate lambda instead.
 class WeakRankFactor : public graph::GraphFactorBase {
 public:
-    WeakRankFactor(std::shared_ptr<graph::PoseNode> src, std::shared_ptr<graph::PoseNode> tgt)
-        : src_(std::move(src)), tgt_(std::move(tgt)) {}
+    WeakRankFactor(std::shared_ptr<graph::PoseNode> src, std::shared_ptr<graph::PoseNode> tgt,
+                   float scale = 1.0f)
+        : src_(std::move(src)), tgt_(std::move(tgt)), scale_(scale) {}
 
     graph::FactorLinearization linearize(const sycl_utils::DeviceQueue&, float) override {
         graph::FactorLinearization lin;
         lin.source_linearization_pose = src_->pose;
         lin.target_linearization_pose = tgt_->pose;
-        lin.H00 = Eigen::Matrix<float, 6, 6>::Identity();
+        lin.H00 = scale_ * Eigen::Matrix<float, 6, 6>::Identity();
         lin.H00(5, 5) = 0.0f;  // singular in rotation-z
         lin.b0.setZero();
         lin.H11 = Eigen::Matrix<float, 6, 6>::Identity();
@@ -245,6 +246,7 @@ public:
 private:
     std::shared_ptr<graph::PoseNode> src_;
     std::shared_ptr<graph::PoseNode> tgt_;
+    float scale_;
 };
 
 // Non-finite Hessian mock: a finite b but a NaN information block. Marginalization
@@ -648,6 +650,29 @@ TEST_F(GraphSlidingWindowTest, MarginalizationEscalatesLambdaOnPoorConditioning)
     EXPECT_EQ(window.window_size(), 2U);
     EXPECT_TRUE(window.prior().is_valid());
     EXPECT_EQ(window.prior().node_ids[0], id1);
+}
+
+TEST_F(GraphSlidingWindowTest, MarginalizationFailureReportsNumericalDiagnostics) {
+    graph::SlidingWindow window(1, 1e-6f);
+    const graph::NodeId id0 = window.add_node(Eigen::Isometry3f::Identity(), 0.0);
+    const graph::NodeId id1 = window.add_node(Eigen::Isometry3f::Identity(), 1.0);
+    // The zero eigenvalue remains poorly conditioned relative to this large
+    // observed direction even after all four lambda attempts.
+    window.add_factor(
+        std::make_shared<WeakRankFactor>(window.get_node(id0), window.get_node(id1), 1e12f));
+
+    testing::internal::CaptureStderr();
+    const auto m = window.marginalize_oldest(queue);
+    const std::string log = testing::internal::GetCapturedStderr();
+
+    EXPECT_EQ(m.status, graph::SlidingWindow::MarginalizationStatus::DecompositionFailed);
+    EXPECT_FLOAT_EQ(m.lambda_used, 1e-3f);
+    EXPECT_NE(log.find("marginalization decomposition failed (node=0"), std::string::npos);
+    EXPECT_NE(log.find("touching_factors=1"), std::string::npos);
+    EXPECT_NE(log.find("lambda_last=0.001"), std::string::npos);
+    EXPECT_NE(log.find("lambda_attempts=4"), std::string::npos);
+    EXPECT_NE(log.find("eigenvalues=["), std::string::npos);
+    EXPECT_NE(log.find("condition_ratio="), std::string::npos);
 }
 
 TEST_F(GraphSlidingWindowTest, MarginalizationRejectsNonFiniteSystem) {
