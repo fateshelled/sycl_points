@@ -91,16 +91,6 @@
     # Initial-pose motion prediction (graph odometry uses it for the per-frame
     # initial guess; IMU_SE3 mode requires imu/enable=true).
     motion_prediction/mode: IMU_SE3
-    motion_prediction/verbose: false
-    motion_prediction/velocity/ema_alpha: 1.0
-    motion_prediction/adaptive/rotation/factor/min: 0.2
-    motion_prediction/adaptive/rotation/factor/max: 1.0
-    motion_prediction/adaptive/rotation/min_eigenvalue/low: 5.0
-    motion_prediction/adaptive/rotation/min_eigenvalue/high: 10.0
-    motion_prediction/adaptive/translation/factor/min: 0.2
-    motion_prediction/adaptive/translation/factor/max: 1.0
-    motion_prediction/adaptive/translation/min_eigenvalue/low: 1.0
-    motion_prediction/adaptive/translation/min_eigenvalue/high: 10.0
 
     # Select whether additional point attributes are copied from input PointCloud2.
     input/convert_rgb: true
@@ -187,32 +177,34 @@
     # itself reuses the submap/keyframe/* thresholds above.
     graph/window_size: 5
     graph/solver_iterations: 8               # outer iterations when robust ladder is disabled
-    graph/convergence/translation: 1.0e-4    # [m]
+    graph/convergence/translation: 1.0e-3    # [m]
     graph/convergence/rotation: 1.0e-4       # [rad]
-    graph/convergence/velocity: 1.0e-4       # [m/s] (15-DOF LIO nodes)
-    graph/convergence/bias: 1.0e-5           # (15-DOF LIO nodes)
-    graph/solver/max_step_velocity: 10.0     # [m/s] per-iteration instability bound
-    graph/solver/max_step_bias: 10.0         # per-iteration instability bound
+    graph/convergence/velocity: 1.0e-3       # [m/s] (15-DOF LIO nodes)
+    graph/convergence/bias: 1.0e-4           # (15-DOF LIO nodes)
+    graph/solver/max_step_translation: 10.0  # [m] per-iteration translation bound   
+    graph/solver/max_step_rotation: 0.2      # [rad] per-iteration rotation bound
+    graph/solver/max_step_velocity: 10.0     # [m/s] per-iteration velocity bound
+    graph/solver/max_step_bias: 10.0         # per-iteration bias bound
     graph/lio/keyframe_imu_history/duration_sec: 5.0
     graph/lio/keyframe_imu_history/max_samples: 4096
     graph/lio/root_prior/pose_sigma: 1.0e-4
-    graph/lio/root_prior/velocity_sigma: 0.1
-    graph/lio/root_prior/accel_bias_sigma: 0.1
-    graph/lio/root_prior/gyro_bias_sigma: 0.01
+    graph/lio/root_prior/velocity_sigma: 1.0e-1
+    graph/lio/root_prior/accel_bias_sigma: 1.0e-1
+    graph/lio/root_prior/gyro_bias_sigma: 1.0e-2
     # Delayed relinearization thresholds: cached factor linearizations are
     # reused while node poses stay within these bounds of the linearization
     # point (gradients are refreshed at the current pose; correspondences are
     # only re-searched when the threshold is crossed).
-    graph/relinearize/translation_threshold: 0.05  # [m]
+    graph/relinearize/translation_threshold: 0.1  # [m]
     graph/relinearize/rotation_threshold: 0.02     # [rad]
-    graph/solver/optimization_method: LM           # GN, LM
-    graph/solver/damping_lambda: 1.0e-6            # GN-only LDLT fallback regularization
+    graph/solver/optimization_method: GN           # GN, LM
+    graph/solver/damping_lambda: 1.0e+3            # GN-only LDLT fallback regularization
     graph/solver/lm/max_inner_iterations: 5
     graph/solver/lm/lambda_factor: 2.0
-    graph/solver/lm/init_lambda: 1.0
+    graph/solver/lm/init_lambda: 1.0e+2
     graph/solver/lm/max_lambda: 1.0e+3
     graph/solver/lm/min_lambda: 1.0e-3
-    graph/marginalization_lambda: 1.0e-3           # Schur-complement H_mm regularization
+    graph/marginalization_lambda: 1.0e+2           # Schur-complement H_mm regularization
     # LiDAR-only observability regularization. Weak tip modes are anchored to
     # the frame's initial prediction after eliminating older nodes by a
     # cutoff pseudo-inverse. This numerical penalty is excluded from both the
@@ -241,13 +233,13 @@
     graph/robust/enable: true
     graph/robust/init_scale: 10.0
     graph/robust/min_scale: 1.25
-    graph/robust/levels: 3
-    graph/robust/iterations_per_level: 2
-    graph/robust/relinearize_per_rung: true   # LO-compatible: apply every scale rung with fresh weights/KNN
+    graph/robust/levels: 4
+    graph/robust/iterations_per_level: 1
+    graph/robust/relinearize_per_rung: false   # LO-compatible: apply every scale rung with fresh weights/KNN
     # Robust loss type + fixed default scale for graph factors. Used whenever
     # graph/robust/enable=false; when enabled, the ladder overrides the scale but the
     # loss type (graph/robust/type) still applies.
-    graph/robust/type: HUBER # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    graph/robust/type: GEMAN_MCCLURE # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     graph/robust/default_scale: 10.0
 
     # Registration / linearization settings for graph factors (unary/binary GICP).
@@ -264,10 +256,8 @@
     graph/factor/random_sampling/use_intensities: false
     graph/factor/random_sampling/weighted_ratio: 0.8  # Fraction of samples from the weighted distribution [0.0, 1.0]
     graph/factor/max_correspondence_distance: 2.0
-    graph/factor/rotation_constraint/enable:
-      true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
-    graph/factor/rotation_constraint/weight: 1.0
-    # rotation_constraint/robust/default_scale is used by graph factors.
+    graph/factor/rotation_constraint/enable: true # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
+    graph/factor/rotation_constraint/weight: 1.0  # rotation_constraint/robust/default_scale is used by graph factors.
     graph/factor/rotation_constraint/robust/default_scale: 5.0
 
     graph/factor/verbose: false
