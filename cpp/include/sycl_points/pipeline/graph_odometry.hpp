@@ -773,6 +773,8 @@ private:
         solver_params.convergence_rotation = this->params_.graph.convergence_rotation;
         solver_params.convergence_velocity = this->params_.graph.convergence_velocity;
         solver_params.convergence_bias = this->params_.graph.convergence_bias;
+        solver_params.max_step_translation = this->params_.graph.max_step_translation;
+        solver_params.max_step_rotation = this->params_.graph.max_step_rotation;
         solver_params.max_step_velocity = this->params_.graph.max_step_velocity;
         solver_params.max_step_bias = this->params_.graph.max_step_bias;
         solver_params.relinearize_translation_thresh = this->params_.graph.relinearize_translation_thresh;

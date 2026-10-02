@@ -74,6 +74,10 @@ void GraphOdometryBaseNode::initialize_processing() {
             this->declare_parameter<double>("graph/convergence/velocity", graph.convergence_velocity));
         graph.convergence_bias =
             static_cast<float>(this->declare_parameter<double>("graph/convergence/bias", graph.convergence_bias));
+        graph.max_step_translation = static_cast<float>(
+            this->declare_parameter<double>("graph/solver/max_step_translation", graph.max_step_translation));
+        graph.max_step_rotation = static_cast<float>(
+            this->declare_parameter<double>("graph/solver/max_step_rotation", graph.max_step_rotation));
         graph.max_step_velocity = static_cast<float>(
             this->declare_parameter<double>("graph/solver/max_step_velocity", graph.max_step_velocity));
         graph.max_step_bias =

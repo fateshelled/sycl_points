@@ -45,6 +45,8 @@ struct Parameters : public odometry::CommonParameters {
         ///        (tightly-coupled graph LIO). Ignored by pose-only graphs.
         float convergence_velocity = 1e-4f;      ///< [m/s]
         float convergence_bias = 1e-5f;
+        float max_step_translation = 10.0f;      ///< [m] per-iteration translation bound
+        float max_step_rotation = 1.0f;          ///< [rad] per-iteration rotation bound
         float max_step_velocity = 10.0f;         ///< [m/s] per-iteration bound
         float max_step_bias = 10.0f;             ///< per-iteration bound
         float relinearize_translation_thresh = 0.05f;  ///< [m] delayed relinearization
