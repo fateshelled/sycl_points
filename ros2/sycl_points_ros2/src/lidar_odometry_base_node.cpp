@@ -415,8 +415,8 @@ void LiDAROdometryBaseNode::log_processing_times() {
     RCLCPP_INFO(this->get_logger(), "");
     RCLCPP_INFO(this->get_logger(), "MAX processing time");
 
-    this->processing_times_.insert(this->pipeline_->get_total_processing_times().begin(),
-                                   this->pipeline_->get_total_processing_times().end());
+    const auto total_processing_times = this->pipeline_->get_total_processing_times();
+    this->processing_times_.insert(total_processing_times.begin(), total_processing_times.end());
 
     for (auto& item : this->processing_times_) {
         if (item.second.empty()) {

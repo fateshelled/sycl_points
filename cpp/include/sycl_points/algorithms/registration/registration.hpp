@@ -450,7 +450,7 @@ private:
                     const float squared_error = kernel::calculate_geometry_error<reg>(
                         cur_T, source_ptr[index], source_cov, target_ptr[target_idx], target_cov, target_normal,
                         genz_alpha, genz_weight, genz_planarity_threshold);
-                    const float residual_norm = sycl::sqrt(squared_error);
+                    const float residual_norm = kernel::residual_norm_from_squared_error(squared_error);
 
                     weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
                 }
@@ -631,7 +631,8 @@ private:
                     if (rotation_constraint_enable) {
                         const LinearizedKernelResult linearized_rot =
                             kernel::linearize_rotation_constraint(source_cov, target_cov, cur_T);
-                        const float residual_norm_rot = sycl::sqrt(linearized_rot.squared_error);
+                        const float residual_norm_rot =
+                            kernel::residual_norm_from_squared_error(linearized_rot.squared_error);
                         const float robust_weight_rot =
                             robust::kernel::compute_weight<loss>(residual_norm_rot, rotation_constraint_robust_scale);
 
@@ -744,7 +745,7 @@ private:
                             source_ptr[index], source_cov,                      // source
                             target_ptr[target_idx], target_cov, target_normal,  // target
                             genz_alpha, genz_weight, genz_planarity_threshold);
-                        const float residual_norm = sycl::sqrt(squared_error);
+                        const float residual_norm = kernel::residual_norm_from_squared_error(squared_error);
 
                         // Apply robust kernel
                         if constexpr (reg == RegType::GENZ) {
@@ -759,7 +760,8 @@ private:
                     if (rotation_constraint_enable) {
                         const float squared_error_rot =
                             kernel::calculate_rotation_constraint_error(source_cov, target_cov, cur_T);
-                        const float residual_norm_rot = sycl::sqrt(squared_error_rot);
+                        const float residual_norm_rot =
+                            kernel::residual_norm_from_squared_error(squared_error_rot);
                         total_error +=
                             rotation_constraint_weight *
                             robust::kernel::compute_error<loss>(residual_norm_rot, rotation_constraint_robust_scale);
