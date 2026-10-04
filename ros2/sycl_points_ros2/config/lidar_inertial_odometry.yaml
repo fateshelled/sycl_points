@@ -302,7 +302,7 @@ lidar_inertial_odometry_node:
     registration/verbose: false
 
     # Visualization
-    vis/covariance_markers/scan/topic_name: "sycl_lo/scan_covariance_markers"
+    vis/covariance_markers/scan/topic_name: "sycl_lio/scan_covariance_markers"
     vis/covariance_markers/scan/marker_ns: "covariance_ellipsoids"
     vis/covariance_markers/scan/scale_factor: 0.5
     vis/covariance_markers/scan/min_scale: 0.0

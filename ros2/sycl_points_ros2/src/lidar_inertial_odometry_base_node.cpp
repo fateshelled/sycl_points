@@ -110,15 +110,15 @@ void LidarInertialOdometryBaseNode::initialize_publishers(const PublishOptions& 
 
     if (options.publish_debug_clouds) {
         this->pub_preprocessed_ =
-            this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lo/preprocessed", rclcpp::QoS(5));
-        this->pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lo/submap", rclcpp::QoS(5));
+            this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lio/preprocessed", rclcpp::QoS(5));
+        this->pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("sycl_lio/submap", rclcpp::QoS(5));
     }
 
     if (options.publish_odom) {
-        this->pub_odom_ = this->create_publisher<nav_msgs::msg::Odometry>("sycl_lo/odom", rclcpp::QoS(5));
-        this->pub_pose_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("sycl_lo/pose", rclcpp::QoS(5));
+        this->pub_odom_ = this->create_publisher<nav_msgs::msg::Odometry>("sycl_lio/odom", rclcpp::QoS(5));
+        this->pub_pose_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("sycl_lio/pose", rclcpp::QoS(5));
         this->pub_keyframe_pose_ =
-            this->create_publisher<nav_msgs::msg::Odometry>("sycl_lo/keyframe/pose", rclcpp::QoS(5));
+            this->create_publisher<nav_msgs::msg::Odometry>("sycl_lio/keyframe/pose", rclcpp::QoS(5));
     }
 
     if (options.publish_tf) {
@@ -362,8 +362,8 @@ void LidarInertialOdometryBaseNode::log_processing_times() {
     RCLCPP_INFO(this->get_logger(), "");
     RCLCPP_INFO(this->get_logger(), "MAX processing time");
 
-    this->processing_times_.insert(this->pipeline_->get_total_processing_times().begin(),
-                                   this->pipeline_->get_total_processing_times().end());
+    const auto total_processing_times = this->pipeline_->get_total_processing_times();
+    this->processing_times_.insert(total_processing_times.begin(), total_processing_times.end());
 
     for (auto& item : this->processing_times_) {
         if (item.second.empty()) continue;
