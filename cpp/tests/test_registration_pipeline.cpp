@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 
 #include "sycl_points/algorithms/knn/knn.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
@@ -97,6 +98,32 @@ PointCloudShared make_registration_target(const sycl_utils::DeviceQueue& queue) 
     cloud.points->at(0) = PointType(0.0f, 0.0f, 0.0f, 1.0f);
     cloud.points->at(1) = PointType(1.0f, 0.0f, 0.0f, 1.0f);
     return cloud;
+}
+
+TEST(RegistrationPipelineTest, ResidualNormClampsRoundoffAndPreservesNonFiniteValuesOnDevice) {
+    sycl::device device(sycl_utils::device_selector::default_selector_v);
+    sycl_utils::DeviceQueue queue(device);
+    shared_vector<float> squared_errors(6, 0.0f, *queue.ptr);
+    shared_vector<float> norms(6, 0.0f, *queue.ptr);
+    squared_errors[0] = 4.0f;
+    squared_errors[1] = 0.0f;
+    squared_errors[2] = -1e-6f;
+    squared_errors[3] = std::numeric_limits<float>::quiet_NaN();
+    squared_errors[4] = std::numeric_limits<float>::infinity();
+    squared_errors[5] = -std::numeric_limits<float>::infinity();
+
+    const float* input = squared_errors.data();
+    float* output = norms.data();
+    queue.ptr->parallel_for(sycl::range<1>(squared_errors.size()), [=](sycl::id<1> index) {
+        output[index[0]] = kernel::residual_norm_from_squared_error(input[index[0]]);
+    }).wait_and_throw();
+
+    EXPECT_FLOAT_EQ(norms[0], 2.0f);
+    EXPECT_FLOAT_EQ(norms[1], 0.0f);
+    EXPECT_FLOAT_EQ(norms[2], 0.0f);
+    EXPECT_TRUE(std::isnan(norms[3]));
+    EXPECT_EQ(norms[4], std::numeric_limits<float>::infinity());
+    EXPECT_EQ(norms[5], -std::numeric_limits<float>::infinity());
 }
 
 TEST(RegistrationPipelineTest, RandomSamplingLimitsRegistrationInputSize) {
