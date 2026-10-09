@@ -8,40 +8,38 @@ import os
 import yaml
 
 
-def declare_params_from_yaml(
-    yaml_path: str, target_node="lidar_inertial_odometry_node"
-):
+def declare_params_from_yaml(yaml_path: str, target_node="graph_odometry_node"):
     launch_args = []
     node_args = {}
     with open(yaml_path, "r") as f:
         all_params = yaml.safe_load(f)
 
-    for node_name in all_params.keys():
-        if node_name == target_node:
-            node_params: dict = all_params[node_name]["ros__parameters"]
-            for name, value in node_params.items():
-                if isinstance(value, float):
-                    value_str = format(value, "f")
-                else:
-                    value_str = str(value)
-                launch_args.append(
-                    DeclareLaunchArgument(name, default_value=value_str, description="")
-                )
-                node_args[name] = (
-                    ParameterValue(LaunchConfiguration(name), value_type=float)
-                    if isinstance(value, float)
-                    else LaunchConfiguration(name)
-                )
-            break
+    node_params = {}
+    for node_name in ("/**", target_node):
+        section = all_params.get(node_name)
+        if section is not None:
+            node_params.update(section.get("ros__parameters", {}))
+    if not node_params:
+        raise ValueError(f"No parameters found for {target_node} or /** in {yaml_path}")
+    for name, value in node_params.items():
+        value_str = repr(value) if isinstance(value, float) else str(value)
+        launch_args.append(
+            DeclareLaunchArgument(name, default_value=value_str, description="")
+        )
+        node_args[name] = (
+            ParameterValue(LaunchConfiguration(name), value_type=float)
+            if isinstance(value, float)
+            else LaunchConfiguration(name)
+        )
     return launch_args, node_args
 
 
 def generate_launch_description():
     package_name = "sycl_points_ros2"
     package_dir = get_package_share_directory(package_name)
-    param_yaml = os.path.join(package_dir, "config", "lidar_inertial_odometry.yaml")
+    param_yaml = os.path.join(package_dir, "config", "graph_odometry.yaml")
     launch_args, node_args = declare_params_from_yaml(
-        param_yaml, "lidar_inertial_odometry_node"
+        param_yaml, "graph_odometry_bag_eval"
     )
 
     launch_args.extend(
@@ -56,7 +54,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "eval/output_tum",
-                default_value="sycl_lio_odom.tum",
+                default_value="sycl_go_odom.tum",
                 description="output tum filepath",
             ),
             DeclareLaunchArgument(
@@ -77,7 +75,7 @@ def generate_launch_description():
     nodes = [
         Node(
             package=package_name,
-            executable="lidar_inertial_odometry_bag_eval_node",
+            executable="graph_odometry_bag_eval_node",
             output="screen",
             emulate_tty=True,
             parameters=[

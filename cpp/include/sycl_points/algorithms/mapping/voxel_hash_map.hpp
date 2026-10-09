@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <algorithm>
 #include <array>
 #include <iostream>
 #include <stdexcept>
