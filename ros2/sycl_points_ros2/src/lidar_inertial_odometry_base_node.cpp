@@ -320,7 +320,6 @@ geometry_msgs::msg::TransformStamped LidarInertialOdometryBaseNode::make_transfo
     return tf;
 }
 
-
 void LidarInertialOdometryBaseNode::record_processing_times(const ProcessedFrame& frame) {
     const double total_time = frame.processing_subtotal + frame.publish_time;
 

@@ -92,7 +92,9 @@ def generate_launch_description():
             )
         except ValueError:
             start_offset_sec = 0
-        sim_time = LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+        sim_time = (
+            LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+        )
 
         player_params = {
             "play.read_ahead_queue_size": 1000,
@@ -187,4 +189,6 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("rviz2")),
     )
 
-    return LaunchDescription(launch_args + [rviz, OpaqueFunction(function=launch_setup)])
+    return LaunchDescription(
+        launch_args + [rviz, OpaqueFunction(function=launch_setup)]
+    )

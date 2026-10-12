@@ -1,0 +1,618 @@
+#pragma once
+
+#include <algorithm>
+#include <memory>
+#include <tuple>
+
+#include "sycl_points/algorithms/common/transform.hpp"
+#include "sycl_points/algorithms/feature/covariance.hpp"
+#include "sycl_points/algorithms/knn/knn.hpp"
+#include "sycl_points/algorithms/registration/factor.hpp"
+#include "sycl_points/algorithms/registration/registration_params.hpp"
+#include "sycl_points/algorithms/registration/rotation_constraint.hpp"
+#include "sycl_points/algorithms/robust/robust.hpp"
+#include "sycl_points/algorithms/graph/pose_node.hpp"
+#include "sycl_points/points/point_cloud.hpp"
+#include "sycl_points/utils/eigen_utils.hpp"
+
+namespace sycl_points {
+namespace algorithms {
+namespace graph {
+
+/// @brief Per-point binary GICP linearization result (both nodes variable).
+struct BinaryLinearizedKernelResult {
+    Eigen::Matrix<float, 6, 6> H00 = Eigen::Matrix<float, 6, 6>::Zero();  // source-source
+    Eigen::Matrix<float, 6, 6> H01 = Eigen::Matrix<float, 6, 6>::Zero();  // source-target
+    Eigen::Matrix<float, 6, 6> H11 = Eigen::Matrix<float, 6, 6>::Zero();  // target-target
+    Eigen::Matrix<float, 6, 1> b0 = Eigen::Matrix<float, 6, 1>::Zero();   // source
+    Eigen::Matrix<float, 6, 1> b1 = Eigen::Matrix<float, 6, 1>::Zero();   // target
+    float squared_error = 0.0f;
+    uint32_t inlier = 0;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};
+
+/// @brief Per-point binary factor linearization, parameterized by RegType.
+///
+/// Residual:  r = T_tgt * tgt - T_src * src   (world frame, 4D with w=0)
+/// Jacobian:  J0 = d(T_src*src)/dδ_src,  J1 = d(T_tgt*tgt)/dδ_tgt
+/// Because ∂r/∂δ_src = -J0 and ∂r/∂δ_tgt = +J1, the binary blocks accumulate as:
+///   H00 = J0ᵀ Ω J0,  H11 = J1ᵀ Ω J1,  H01 = -J0ᵀ Ω J1
+///   b0  = +J0ᵀ Ω r,  b1  = -J1ᵀ Ω r      (so the solver solves H δ = -b)
+/// Per-correspondence information matrix Ω by type:
+///   POINT_TO_POINT        I3
+///   POINT_TO_PLANE        n_w n_wᵀ   (n_w = R_tgt * normal_tgt)
+///   POINT_TO_DISTRIBUTION (C_tgt,w)⁻¹
+///   GICP                  (C_src,w + C_tgt,w)⁻¹
+template <registration::RegType reg = registration::RegType::GICP>
+SYCL_EXTERNAL inline BinaryLinearizedKernelResult linearize_binary(
+    const std::array<sycl::float4, 4>& T_src, const std::array<sycl::float4, 4>& T_tgt,
+    const PointType& src_pt, const Covariance& src_cov, const PointType& tgt_pt, const Covariance& tgt_cov,
+    const Normal& tgt_normal) {
+    PointType src_world;
+    transform::kernel::transform_point(src_pt, src_world, T_src);
+    PointType tgt_world;
+    transform::kernel::transform_point(tgt_pt, tgt_world, T_tgt);
+
+    const PointType residual(tgt_world.x() - src_world.x(), tgt_world.y() - src_world.y(),
+                             tgt_world.z() - src_world.z(), 0.0f);
+
+    Covariance omega = Covariance::Zero();
+    if constexpr (reg == registration::RegType::POINT_TO_POINT) {
+        omega.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity();
+    } else if constexpr (reg == registration::RegType::POINT_TO_PLANE) {
+        Normal normal_w;
+        transform::kernel::transform_normal(tgt_normal, normal_w, T_tgt);
+        const Eigen::Vector3f n = normal_w.head<3>();
+        omega.block<3, 3>(0, 0) = eigen_utils::multiply<3, 1, 3>(n, eigen_utils::transpose<3, 1>(n));
+    } else if constexpr (reg == registration::RegType::POINT_TO_DISTRIBUTION) {
+        Covariance tgt_cov_w;
+        transform::kernel::transform_covs(tgt_cov, tgt_cov_w, T_tgt);
+        omega = covariance::kernel::inverse(tgt_cov_w);
+    } else {  // GICP
+        // Mirror linearize_gicp (registration/factor.hpp): plane-normalize both
+        // covariances before the Mahalanobis sum. Raw PCA covariances get
+        // near-singular on planar surfaces; the unnormalized inverse then
+        // amplifies rounding noise and the quadratic form r^T Omega r can go
+        // (slightly) negative, whose sqrt poisons the robust error with NaN
+        // (while the Hessian blocks stay finite).
+        Covariance normalized_src_cov = src_cov;
+        covariance::kernel::update_covariance_plane(normalized_src_cov);
+        Covariance normalized_tgt_cov = tgt_cov;
+        covariance::kernel::update_covariance_plane(normalized_tgt_cov);
+
+        Covariance src_cov_w;
+        transform::kernel::transform_covs(normalized_src_cov, src_cov_w, T_src);
+        Covariance tgt_cov_w;
+        transform::kernel::transform_covs(normalized_tgt_cov, tgt_cov_w, T_tgt);
+        Covariance mahalanobis = Covariance::Zero();
+        mahalanobis.block<3, 3>(0, 0) =
+            eigen_utils::add<3, 3>(src_cov_w.block<3, 3>(0, 0), tgt_cov_w.block<3, 3>(0, 0));
+        omega = covariance::kernel::inverse(mahalanobis);
+    }
+
+    const Eigen::Matrix<float, 4, 6> J0 = registration::kernel::compute_se3_jacobian(T_src, src_pt);
+    const Eigen::Matrix<float, 4, 6> J1 = registration::kernel::compute_se3_jacobian(T_tgt, tgt_pt);
+
+    const Eigen::Matrix<float, 4, 6> J0w = registration::kernel::apply_weight_to_jacobian(J0, omega);
+    const Eigen::Matrix<float, 4, 6> J1w = registration::kernel::apply_weight_to_jacobian(J1, omega);
+
+    BinaryLinearizedKernelResult ret;
+    // H00 = J0ᵀ Ω J0
+    ret.H00 = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(eigen_utils::transpose<4, 6>(J0w), J0));
+    // H11 = J1ᵀ Ω J1
+    ret.H11 = eigen_utils::ensure_symmetric<6>(eigen_utils::multiply<6, 4, 6>(eigen_utils::transpose<4, 6>(J1w), J1));
+    // H01 = -J0ᵀ Ω J1  (avoid native unary minus on fixed-size matrices in device code)
+    ret.H01 = eigen_utils::multiply<6, 6>(
+        eigen_utils::multiply<6, 4, 6>(eigen_utils::transpose<4, 6>(J0w), J1), -1.0f);
+    // b0 = +J0ᵀ Ω r
+    ret.b0 = eigen_utils::multiply<6, 4>(eigen_utils::transpose<4, 6>(J0w), residual);
+    // b1 = -J1ᵀ Ω r  (avoid native unary minus on fixed-size matrices in device code)
+    ret.b1 = eigen_utils::multiply<6>(
+        eigen_utils::multiply<6, 4>(eigen_utils::transpose<4, 6>(J1w), residual), -1.0f);
+
+    const float squared_norm = eigen_utils::dot<4>(residual, eigen_utils::multiply<4, 4>(omega, residual));
+    ret.squared_error = squared_norm;
+    ret.inlier = 1;
+    return ret;
+}
+
+/// @brief Device accumulation buffers for the binary linearization reduction.
+namespace {
+struct BinaryLinearizedDevice {
+    sycl::float16* H00_0 = nullptr;
+    sycl::float16* H00_1 = nullptr;
+    sycl::float4* H00_2 = nullptr;
+    sycl::float16* H01_0 = nullptr;
+    sycl::float16* H01_1 = nullptr;
+    sycl::float4* H01_2 = nullptr;
+    sycl::float16* H11_0 = nullptr;
+    sycl::float16* H11_1 = nullptr;
+    sycl::float4* H11_2 = nullptr;
+    sycl::float3* b0_0 = nullptr;
+    sycl::float3* b0_1 = nullptr;
+    sycl::float3* b1_0 = nullptr;
+    sycl::float3* b1_1 = nullptr;
+    float* error = nullptr;
+    uint32_t* inlier = nullptr;
+    size_t size;
+    sycl_utils::DeviceQueue queue;
+
+    BinaryLinearizedDevice(const sycl_utils::DeviceQueue& q, size_t N = 1) : size(N), queue(q) {
+        auto alloc_f16 = [&](sycl::float16*& p) { p = sycl::malloc_shared<sycl::float16>(size, *queue.ptr); };
+        auto alloc_f4 = [&](sycl::float4*& p) { p = sycl::malloc_shared<sycl::float4>(size, *queue.ptr); };
+        auto alloc_f3 = [&](sycl::float3*& p) { p = sycl::malloc_shared<sycl::float3>(size, *queue.ptr); };
+        alloc_f16(H00_0); alloc_f16(H00_1); alloc_f4(H00_2);
+        alloc_f16(H01_0); alloc_f16(H01_1); alloc_f4(H01_2);
+        alloc_f16(H11_0); alloc_f16(H11_1); alloc_f4(H11_2);
+        alloc_f3(b0_0); alloc_f3(b0_1); alloc_f3(b1_0); alloc_f3(b1_1);
+        error = sycl::malloc_shared<float>(size, *queue.ptr);
+        inlier = sycl::malloc_shared<uint32_t>(size, *queue.ptr);
+    }
+    ~BinaryLinearizedDevice() {
+        auto free_f16 = [&](sycl::float16* p) { sycl_utils::free(p, *queue.ptr); };
+        auto free_f4 = [&](sycl::float4* p) { sycl_utils::free(p, *queue.ptr); };
+        auto free_f3 = [&](sycl::float3* p) { sycl_utils::free(p, *queue.ptr); };
+        free_f16(H00_0); free_f16(H00_1); free_f4(H00_2);
+        free_f16(H01_0); free_f16(H01_1); free_f4(H01_2);
+        free_f16(H11_0); free_f16(H11_1); free_f4(H11_2);
+        free_f3(b0_0); free_f3(b0_1); free_f3(b1_0); free_f3(b1_1);
+        sycl_utils::free(error, *queue.ptr);
+        sycl_utils::free(inlier, *queue.ptr);
+    }
+    void setZero() {
+        for (size_t n = 0; n < size; ++n) {
+            H00_0[n] = H00_1[n] = H01_0[n] = H01_1[n] = H11_0[n] = H11_1[n] = sycl::float16();
+            H00_2[n] = H01_2[n] = H11_2[n] = sycl::float4();
+            b0_0[n] = b0_1[n] = b1_0[n] = b1_1[n] = sycl::float3();
+            error[n] = 0.0f;
+            inlier[n] = 0;
+        }
+    }
+    FactorLinearization toCPU(size_t i = 0) const {
+        FactorLinearization ret;
+        ret.H00 = eigen_utils::from_sycl_vec({H00_0[i], H00_1[i], H00_2[i]});
+        ret.H01 = eigen_utils::from_sycl_vec({H01_0[i], H01_1[i], H01_2[i]});
+        ret.H11 = eigen_utils::from_sycl_vec({H11_0[i], H11_1[i], H11_2[i]});
+        ret.b0 = eigen_utils::from_sycl_vec({b0_0[i], b0_1[i]});
+        ret.b1 = eigen_utils::from_sycl_vec({b1_0[i], b1_1[i]});
+        ret.error = error[i];
+        ret.inlier = inlier[i];
+        return ret;
+    }
+};
+}  // namespace
+
+/// @brief Computes the binary registration factor linearization (both endpoints
+///        variable) via a SYCL parallel reduction, mirroring Registration's reduction.
+///        Honors params_.reg_type: GICP / POINT_TO_POINT / POINT_TO_PLANE /
+///        POINT_TO_DISTRIBUTION (GENZ rejected). When
+///        params_.rotation_constraint.enable is set, each correspondence also
+///        contributes a Jensen-Bregman LogDet Divergence term on the relative
+///        rotation (same formulation as the unary registration kernel), using
+///        rotation_constraint.weight and rotation_constraint.robust.default_scale.
+class BinaryGicpLinearizer {
+public:
+    BinaryGicpLinearizer(const sycl_utils::DeviceQueue& queue,
+                         const registration::RegistrationParams& params = registration::RegistrationParams())
+        : queue_(queue), params_(params) {
+        this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(1, knn::KNNResult(), *this->queue_.ptr);
+        this->neighbors_->at(0).allocate(this->queue_, 1, 1);
+        this->device_ = std::make_shared<BinaryLinearizedDevice>(this->queue_);
+    }
+
+    /// @param scale robust loss scale override; <=0 falls back to
+    ///        registration/robust/default_scale (current behavior).
+    FactorLinearization linearize(const PointCloudShared& source, const knn::KNNBase& target_knn,
+                                  const Eigen::Matrix4f& T_src, const PointCloudShared& target,
+                                  const Eigen::Matrix4f& T_tgt, float scale = 0.0f) const {
+        validate_params(source, target);
+        const float robust_scale = scale > 0.0f ? scale : this->params_.robust.default_scale;
+        const auto T_search_mat = Eigen::Isometry3f(Eigen::Isometry3f(Eigen::Matrix4f(T_tgt).inverse()) *
+                                                     Eigen::Matrix4f(T_src))
+                                      .matrix();
+        const auto T_search = eigen_utils::to_sycl_vec(T_search_mat);
+
+        auto knn_event = target_knn.nearest_neighbor_search_async(source, (*this->neighbors_)[0], {}, T_search_mat);
+
+        auto events = this->dispatch([&]<registration::RegType reg, robust::RobustLossType loss>() {
+            return this->linearize_async<reg, loss>(source, target, T_src, T_tgt, T_search, robust_scale,
+                                                    knn_event.evs);
+        });
+        events.wait_and_throw();
+        has_cached_correspondences_ = true;
+        return this->device_->toCPU(0);
+    }
+
+    /// @brief Evaluate a trial relative pose with the correspondences cached by
+    ///        the most recent linearize() call. This deliberately skips KNN so
+    ///        LM compares current and trial costs on the same objective.
+    std::pair<float, uint32_t> compute_error_frozen(const PointCloudShared& source,
+                                                    const Eigen::Matrix4f& T_src,
+                                                    const PointCloudShared& target,
+                                                    const Eigen::Matrix4f& T_tgt,
+                                                    float scale = 0.0f) const {
+        shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
+        shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
+        auto events = compute_error_frozen_async(source, T_src, target, T_tgt, error, inlier, scale);
+        events.wait_and_throw();
+        return {error[0], inlier[0]};
+    }
+
+    /// @brief Submit the frozen-correspondence objective-only reduction. Unlike
+    ///        linearize_async(), this computes no Jacobians, Hessian blocks, or
+    ///        gradients. The caller keeps the result buffers alive and waits.
+    sycl_utils::events compute_error_frozen_async(
+        const PointCloudShared& source, const Eigen::Matrix4f& T_src,
+        const PointCloudShared& target, const Eigen::Matrix4f& T_tgt,
+        shared_vector<float>& error, shared_vector<uint32_t>& inlier,
+        float scale = 0.0f) const {
+        if (!has_cached_correspondences_) {
+            throw std::logic_error(
+                "[BinaryGicpLinearizer::compute_error_frozen] linearize must be called first");
+        }
+        validate_params(source, target);
+        const float robust_scale = scale > 0.0f ? scale : this->params_.robust.default_scale;
+        const auto T_rel = eigen_utils::to_sycl_vec(
+            Eigen::Isometry3f(Eigen::Isometry3f(Eigen::Matrix4f(T_tgt).inverse()) *
+                              Eigen::Matrix4f(T_src))
+                .matrix());
+        error[0] = 0.0f;
+        inlier[0] = 0;
+        return this->compute_error_async(source, target, T_rel, robust_scale, error, inlier);
+    }
+
+private:
+    sycl_utils::events compute_error_async(
+        const PointCloudShared& source, const PointCloudShared& target,
+        const std::array<sycl::float4, 4>& T_rel_v, float robust_scale,
+        shared_vector<float>& error, shared_vector<uint32_t>& inlier) const {
+        sycl_utils::events events;
+        events += this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = source.size();
+            const size_t work_group_size =
+                std::min(this->queue_.get_work_group_size_for_parallel_reduction(), size_t{64});
+            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+
+            const auto source_ptr = source.points_ptr();
+            const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
+            const auto target_ptr = target.points_ptr();
+            const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
+            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+            const float max_corr_dist_squared =
+                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+            const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
+            const float rotation_constraint_weight = this->params_.rotation_constraint.weight;
+            const float rotation_robust_scale =
+                this->params_.rotation_constraint.robust.default_scale;
+            const auto reg_type = this->params_.reg_type;
+            const auto loss_type = this->params_.robust.type;
+
+            auto sum_error = sycl::reduction(error.data(), sycl::plus<float>());
+            auto sum_inlier = sycl::reduction(inlier.data(), sycl::plus<uint32_t>());
+            h.parallel_for(
+                sycl::nd_range<1>(global_size, work_group_size), sum_error, sum_inlier,
+                [=](sycl::nd_item<1> item, auto& aerror, auto& ainlier) {
+                    const size_t index = item.get_global_id(0);
+                    if (index >= N || neighbors_distances_ptr[index] > max_corr_dist_squared) return;
+
+                    const auto target_idx = neighbors_index_ptr[index];
+                    const auto source_cov =
+                        source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
+                    const auto target_cov =
+                        target_cov_ptr ? target_cov_ptr[target_idx] : Covariance::Identity();
+                    const auto target_normal =
+                        target_normal_ptr ? target_normal_ptr[target_idx] : Normal::Zero();
+                    float unused_genz_weight = 1.0f;
+                    float squared_error = 0.0f;
+                    switch (reg_type) {
+                        case registration::RegType::GICP:
+                            squared_error = registration::kernel::calculate_geometry_error<
+                                registration::RegType::GICP>(
+                                T_rel_v, source_ptr[index], source_cov, target_ptr[target_idx],
+                                target_cov, target_normal, 1.0f, unused_genz_weight);
+                            break;
+                        case registration::RegType::POINT_TO_POINT:
+                            squared_error = registration::kernel::calculate_geometry_error<
+                                registration::RegType::POINT_TO_POINT>(
+                                T_rel_v, source_ptr[index], source_cov, target_ptr[target_idx],
+                                target_cov, target_normal, 1.0f, unused_genz_weight);
+                            break;
+                        case registration::RegType::POINT_TO_PLANE:
+                            squared_error = registration::kernel::calculate_geometry_error<
+                                registration::RegType::POINT_TO_PLANE>(
+                                T_rel_v, source_ptr[index], source_cov, target_ptr[target_idx],
+                                target_cov, target_normal, 1.0f, unused_genz_weight);
+                            break;
+                        case registration::RegType::POINT_TO_DISTRIBUTION:
+                            squared_error = registration::kernel::calculate_geometry_error<
+                                registration::RegType::POINT_TO_DISTRIBUTION>(
+                                T_rel_v, source_ptr[index], source_cov, target_ptr[target_idx],
+                                target_cov, target_normal, 1.0f, unused_genz_weight);
+                            break;
+                        case registration::RegType::GENZ:
+                            break;  // rejected by validate_params() before submission
+                    }
+                    const float residual_norm =
+                        registration::kernel::residual_norm_from_squared_error(squared_error);
+                    auto robust_error = [](robust::RobustLossType type, float residual, float scale) {
+                        switch (type) {
+                            case robust::RobustLossType::NONE:
+                                return robust::kernel::compute_error<robust::RobustLossType::NONE>(residual, scale);
+                            case robust::RobustLossType::HUBER:
+                                return robust::kernel::compute_error<robust::RobustLossType::HUBER>(residual, scale);
+                            case robust::RobustLossType::TUKEY:
+                                return robust::kernel::compute_error<robust::RobustLossType::TUKEY>(residual, scale);
+                            case robust::RobustLossType::CAUCHY:
+                                return robust::kernel::compute_error<robust::RobustLossType::CAUCHY>(residual, scale);
+                            case robust::RobustLossType::GEMAN_MCCLURE:
+                                return robust::kernel::compute_error<robust::RobustLossType::GEMAN_MCCLURE>(residual,
+                                                                                                           scale);
+                        }
+                        return robust::kernel::compute_error<robust::RobustLossType::NONE>(residual, scale);
+                    };
+                    float total_error = robust_error(loss_type, residual_norm, robust_scale);
+
+                    if (rotation_constraint_enable) {
+                        const float squared_error_rot =
+                            registration::kernel::calculate_rotation_constraint_error(
+                                source_cov, target_cov, T_rel_v);
+                        const float residual_norm_rot =
+                            registration::kernel::residual_norm_from_squared_error(squared_error_rot);
+                        total_error += rotation_constraint_weight *
+                                       robust_error(loss_type, residual_norm_rot,
+                                                    rotation_robust_scale);
+                    }
+                    aerror += total_error;
+                    ++ainlier;
+                });
+        });
+        return events;
+    }
+
+    template <registration::RegType reg, robust::RobustLossType loss>
+    sycl_utils::events linearize_async(const PointCloudShared& source, const PointCloudShared& target,
+                                       const Eigen::Matrix4f& T_src, const Eigen::Matrix4f& T_tgt,
+                                       const std::array<sycl::float4, 4>& T_rel_v, float robust_scale,
+                                       const std::vector<sycl::event>& depends) const {
+        sycl_utils::events events;
+        events += this->queue_.ptr->submit([&](sycl::handler& h) {
+            const size_t N = source.size();
+            // SYCL parallel_reduction requires a work-group size <= 64 on the
+            // CPU OpenCL backend; clamp for portability (64 is valid everywhere).
+            const size_t work_group_size =
+                std::min(this->queue_.get_work_group_size_for_parallel_reduction(), size_t{64});
+            const size_t global_size = ((N + work_group_size - 1) / work_group_size) * work_group_size;
+
+            const auto T_src_v = eigen_utils::to_sycl_vec(T_src);
+            const auto T_tgt_v = eigen_utils::to_sycl_vec(T_tgt);
+
+            const auto source_ptr = source.points_ptr();
+            const auto source_cov_ptr = source.has_cov() ? source.covs_ptr() : nullptr;
+            const auto target_ptr = target.points_ptr();
+            const auto target_cov_ptr = target.has_cov() ? target.covs_ptr() : nullptr;
+            const auto target_normal_ptr = target.has_normal() ? target.normals_ptr() : nullptr;
+
+            const auto neighbors_index_ptr = (*this->neighbors_)[0].indices->data();
+            const auto neighbors_distances_ptr = (*this->neighbors_)[0].distances->data();
+
+            const float max_corr_dist_squared =
+                this->params_.max_correspondence_distance * this->params_.max_correspondence_distance;
+
+            const bool rotation_constraint_enable = this->params_.rotation_constraint.enable;
+            const float rotation_constraint_weight = this->params_.rotation_constraint.weight;
+            const float rotation_robust_scale = this->params_.rotation_constraint.robust.default_scale;
+
+            this->device_->setZero();
+            auto sum_H00_0 = sycl::reduction(this->device_->H00_0, sycl::plus<sycl::float16>());
+            auto sum_H00_1 = sycl::reduction(this->device_->H00_1, sycl::plus<sycl::float16>());
+            auto sum_H00_2 = sycl::reduction(this->device_->H00_2, sycl::plus<sycl::float4>());
+            auto sum_H01_0 = sycl::reduction(this->device_->H01_0, sycl::plus<sycl::float16>());
+            auto sum_H01_1 = sycl::reduction(this->device_->H01_1, sycl::plus<sycl::float16>());
+            auto sum_H01_2 = sycl::reduction(this->device_->H01_2, sycl::plus<sycl::float4>());
+            auto sum_H11_0 = sycl::reduction(this->device_->H11_0, sycl::plus<sycl::float16>());
+            auto sum_H11_1 = sycl::reduction(this->device_->H11_1, sycl::plus<sycl::float16>());
+            auto sum_H11_2 = sycl::reduction(this->device_->H11_2, sycl::plus<sycl::float4>());
+            auto sum_b0_0 = sycl::reduction(this->device_->b0_0, sycl::plus<sycl::float3>());
+            auto sum_b0_1 = sycl::reduction(this->device_->b0_1, sycl::plus<sycl::float3>());
+            auto sum_b1_0 = sycl::reduction(this->device_->b1_0, sycl::plus<sycl::float3>());
+            auto sum_b1_1 = sycl::reduction(this->device_->b1_1, sycl::plus<sycl::float3>());
+            auto sum_error = sycl::reduction(this->device_->error, sycl::plus<float>());
+            auto sum_inlier = sycl::reduction(this->device_->inlier, sycl::plus<uint32_t>());
+
+            h.depends_on(depends);
+            h.parallel_for(  //
+                sycl::nd_range<1>(global_size, work_group_size),
+                sum_H00_0, sum_H00_1, sum_H00_2, sum_H01_0, sum_H01_1, sum_H01_2, sum_H11_0, sum_H11_1, sum_H11_2,
+                sum_b0_0, sum_b0_1, sum_b1_0, sum_b1_1, sum_error, sum_inlier,
+                [=](sycl::nd_item<1> item, auto& aH00_0, auto& aH00_1, auto& aH00_2, auto& aH01_0, auto& aH01_1,
+                    auto& aH01_2, auto& aH11_0, auto& aH11_1, auto& aH11_2, auto& ab0_0, auto& ab0_1, auto& ab1_0,
+                    auto& ab1_1, auto& aerror, auto& ainlier) {
+                    const size_t index = item.get_global_id(0);
+                    if (index >= N) return;
+                    if (neighbors_distances_ptr[index] > max_corr_dist_squared) return;
+
+                    const auto tgt_idx = neighbors_index_ptr[index];
+                    const auto src_cov = source_cov_ptr ? source_cov_ptr[index] : Covariance::Identity();
+                    const auto tgt_cov = target_cov_ptr ? target_cov_ptr[tgt_idx] : Covariance::Identity();
+
+                    const Normal tgt_normal = target_normal_ptr ? target_normal_ptr[tgt_idx] : Normal::Zero();
+                    auto lin = linearize_binary<reg>(T_src_v, T_tgt_v, source_ptr[index], src_cov,
+                                                     target_ptr[tgt_idx], tgt_cov, tgt_normal);
+                    const float residual_norm =
+                        registration::kernel::residual_norm_from_squared_error(lin.squared_error);
+
+                    const float weight = robust::kernel::compute_weight<loss>(residual_norm, robust_scale);
+
+                    const auto [lH00_0, lH00_1, lH00_2] = eigen_utils::to_sycl_vec(lin.H00);
+                    const auto [lH01_0, lH01_1, lH01_2] = eigen_utils::to_sycl_vec(lin.H01);
+                    const auto [lH11_0, lH11_1, lH11_2] = eigen_utils::to_sycl_vec(lin.H11);
+                    const auto [lb0_0, lb0_1] = eigen_utils::to_sycl_vec(lin.b0);
+                    const auto [lb1_0, lb1_1] = eigen_utils::to_sycl_vec(lin.b1);
+
+                    aH00_0 += weight * lH00_0;
+                    aH00_1 += weight * lH00_1;
+                    aH00_2 += weight * lH00_2;
+                    aH01_0 += weight * lH01_0;
+                    aH01_1 += weight * lH01_1;
+                    aH01_2 += weight * lH01_2;
+                    aH11_0 += weight * lH11_0;
+                    aH11_1 += weight * lH11_1;
+                    aH11_2 += weight * lH11_2;
+                    ab0_0 += weight * lb0_0;
+                    ab0_1 += weight * lb0_1;
+                    ab1_0 += weight * lb1_0;
+                    ab1_1 += weight * lb1_1;
+                    aerror += robust::kernel::compute_error<loss>(residual_norm, robust_scale);
+
+                    // Rotation constraint term (Jensen-Bregman LogDet Divergence) on the
+                    // relative rotation R_rel = R_tgt^T * R_src, mirroring the unary kernel
+                    // (registration.hpp). Each correspondence contributes its own divergence
+                    // term, weighted by the rotation-specific robust scale and weight (NOT
+                    // the geometric robust weight above).
+                    // Gradients under the solver's right-perturbation convention (T <- T exp(d)):
+                    //   J_s = dD/dd_s = R_rel^T * g_global        (unary-style local gradient)
+                    //   J_t = dD/dd_t = -R_rel * J_s = -g_global  (left perturbation of R_rel by exp(-d_t))
+                    // GN blocks: H00 += J_s J_s^T, H01 += J_s J_t^T, H11 += J_t J_t^T,
+                    //            b0 += J_s * D, b1 += J_t * D (solver solves H d = -b).
+                    if (rotation_constraint_enable) {
+                        const Eigen::Matrix3f R_rel = eigen_utils::from_sycl_vec(T_rel_v).block<3, 3>(0, 0);
+                        Eigen::Vector3f grad_rot;
+                        const float D = registration::kernel::calculate_logdet_divergence(src_cov, tgt_cov, T_rel_v,
+                                                                                          grad_rot);
+                        // Match the unary LO convention: its rotation factor stores
+                        // squared_error = 0.5 * D^2, so the robust kernel receives
+                        // D/sqrt(2), while the GN residual/Jacobian remain D/J.
+                        const float residual_norm_rot =
+                            registration::kernel::residual_norm_from_squared_error(0.5f * D * D);
+                        const float weight_rot =
+                            robust::kernel::compute_weight<loss>(residual_norm_rot, rotation_robust_scale);
+                        const Eigen::Vector3f J_s = grad_rot;
+                        const Eigen::Vector3f J_t =
+                            eigen_utils::multiply<3, 1>(eigen_utils::multiply<3, 3, 1>(R_rel, grad_rot), -1.0f);
+
+                        BinaryLinearizedKernelResult rot_lin;
+                        const float scaled_weight = rotation_constraint_weight * weight_rot;
+                        for (size_t i = 0; i < 3; ++i) {
+                            rot_lin.b0[i] = scaled_weight * D * J_s[i];
+                            rot_lin.b1[i] = scaled_weight * D * J_t[i];
+                            for (size_t j = 0; j < 3; ++j) {
+                                rot_lin.H00(i, j) = scaled_weight * J_s[i] * J_s[j];
+                                rot_lin.H01(i, j) = scaled_weight * J_s[i] * J_t[j];
+                                rot_lin.H11(i, j) = scaled_weight * J_t[i] * J_t[j];
+                            }
+                        }
+                        const auto [rH00_0, rH00_1, rH00_2] = eigen_utils::to_sycl_vec(rot_lin.H00);
+                        const auto [rH01_0, rH01_1, rH01_2] = eigen_utils::to_sycl_vec(rot_lin.H01);
+                        const auto [rH11_0, rH11_1, rH11_2] = eigen_utils::to_sycl_vec(rot_lin.H11);
+                        const auto [rb0_0, rb0_1] = eigen_utils::to_sycl_vec(rot_lin.b0);
+                        const auto [rb1_0, rb1_1] = eigen_utils::to_sycl_vec(rot_lin.b1);
+                        aH00_0 += rH00_0;
+                        aH00_1 += rH00_1;
+                        aH00_2 += rH00_2;
+                        aH01_0 += rH01_0;
+                        aH01_1 += rH01_1;
+                        aH01_2 += rH01_2;
+                        aH11_0 += rH11_0;
+                        aH11_1 += rH11_1;
+                        aH11_2 += rH11_2;
+                        ab0_0 += rb0_0;
+                        ab0_1 += rb0_1;
+                        ab1_0 += rb1_0;
+                        ab1_1 += rb1_1;
+                        aerror += rotation_constraint_weight *
+                                  robust::kernel::compute_error<loss>(residual_norm_rot, rotation_robust_scale);
+                    }
+
+                    ++ainlier;
+                });
+        });
+        return events;
+    }
+
+    /// @brief Mirror Registration::validate_params for the subset of types the
+    ///        binary factor supports (GENZ needs the single-frame alpha
+    ///        annealing schedule and is rejected).
+    void validate_params(const PointCloudShared& source, const PointCloudShared& target) const {
+        using registration::RegType;
+        switch (this->params_.reg_type) {
+            case RegType::GENZ:
+                throw std::runtime_error(
+                    "[BinaryGicpLinearizer] GENZ requires the single-frame genz alpha schedule and is "
+                    "not supported for binary factors; choose GICP or a POINT_TO_* type.");
+            case RegType::POINT_TO_PLANE:
+                if (!target.has_normal()) {
+                    if (!target.has_cov()) {
+                        throw std::runtime_error(
+                            "[BinaryGicpLinearizer] POINT_TO_PLANE requires target normals or covariances.");
+                    }
+                    covariance::extract_normals(target);
+                }
+                break;
+            case RegType::POINT_TO_DISTRIBUTION:
+                // The kernel builds per-point Omega = (C_tgt,w)^-1. Missing
+                // covariances fallback to Covariance::Identity() inside the
+                // kernel, which silently flattens the distribution model into
+                // point-to-point; fail fast instead.
+                if (!target.has_cov()) {
+                    throw std::runtime_error(
+                        "[BinaryGicpLinearizer] POINT_TO_DISTRIBUTION requires target covariances "
+                        "(enable scan covariance estimation for the graph odometry pipeline, "
+                        "graph path computes them for POINT_TO_DISTRIBUTION/POINT_TO_PLANE too).");
+                }
+                break;
+            case RegType::GICP:
+            case RegType::POINT_TO_POINT:
+                break;
+        }
+        if (this->params_.rotation_constraint.enable) {
+            if (!source.has_cov() || !target.has_cov()) {
+                throw std::runtime_error(
+                    "[BinaryGicpLinearizer] "
+                    "Covariance matrices of source and target are required for performing rotation constraint "
+                    "matching.");
+            }
+        }
+    }
+
+    template <typename Func>
+    sycl_utils::events dispatch(Func&& exec) const {
+        sycl_utils::events events;
+        auto dispatch_inner = [&]<registration::RegType reg, typename RobustLossTypeTags, size_t... Js>(
+                                  robust::RobustLossType loss, std::index_sequence<Js...>) {
+            return (((loss == std::tuple_element_t<Js, RobustLossTypeTags>::value)
+                         ? (events += exec.template operator()<reg,
+                                                          std::tuple_element_t<Js, RobustLossTypeTags>::value>(),
+                            true)
+                         : false) ||
+                    ...);
+        };
+        auto dispatch_outer = [&]<typename RegTypeTags, typename RobustLossTypeTags, size_t... Is>(
+                                  registration::RegType reg, robust::RobustLossType loss, std::index_sequence<Is...>) {
+            return (((reg == std::tuple_element_t<Is, RegTypeTags>::value)
+                         ? dispatch_inner.template operator()<std::tuple_element_t<Is, RegTypeTags>::value,
+                                                              RobustLossTypeTags>(
+                               loss, std::make_index_sequence<std::tuple_size_v<RobustLossTypeTags>>())
+                         : false) ||
+                    ...);
+        };
+        const bool found = dispatch_outer.template operator()<registration::RegTypeTags, robust::RobustLossTypeTags>(
+            this->params_.reg_type, this->params_.robust.type,
+            std::make_index_sequence<std::tuple_size_v<registration::RegTypeTags>>());
+        if (!found) {
+            throw std::runtime_error("[BinaryGicpLinearizer::dispatch] combination not found in tags");
+        }
+        return events;
+    }
+
+    sycl_utils::DeviceQueue queue_;
+    registration::RegistrationParams params_;
+    shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
+    std::shared_ptr<BinaryLinearizedDevice> device_ = nullptr;
+    mutable bool has_cached_correspondences_ = false;
+};
+
+}  // namespace graph
+}  // namespace algorithms
+}  // namespace sycl_points
