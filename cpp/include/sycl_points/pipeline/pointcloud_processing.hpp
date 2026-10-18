@@ -35,7 +35,7 @@ public:
     PCProcessor(const sycl_utils::DeviceQueue& q, const odometry::CommonParameters::Scan& scan_params,
                 const odometry::CommonParameters::CovarianceEstimation& covs_params,
                 const odometry::CommonParameters::IMU& imu_params)
-        : queue_(q), scan_params_(scan_params), covs_params_(covs_params), imu_params_(imu_params) {
+        : queue_(q), scan_params_(scan_params), covs_params_(covs_params), imu_params_(imu_params), imu_deskew_(q) {
         this->initialize();
     }
 

@@ -2,6 +2,8 @@
 
 #include <Eigen/Geometry>
 #include <algorithm>
+#include <memory>
+#include <mutex>
 #include <ranges>
 #include <vector>
 
@@ -121,12 +123,18 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 /// @return true on success, false if prerequisites are not met.
 class IMUDeskew {
 public:
+    explicit IMUDeskew(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
+        this->trajectory_sycl_ = std::make_shared<shared_vector<IMUTrajectoryPose>>(*this->queue_.ptr);
+        this->trajectory_mutex_ = std::make_shared<std::mutex>();
+    }
+
     template <imu::imu_measurement_range Range>
     bool deskew(const PointCloudShared& input_cloud, PointCloudShared& output_cloud, const Range& imu_buffer,
                 double scan_start_time_sec, const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
                 const imu::IMUPreintegrationParams& preintegration_params,
                 const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
                 IMUDeskewStatus* status = nullptr, bool gyro_only = false) const {
+    std::lock_guard<std::mutex> lock(*this->trajectory_mutex_);
     auto set_status = [&](IMUDeskewStatus s) {
         if (status) *status = s;
     };
@@ -137,6 +145,9 @@ public:
     if (input_cloud.queue.ptr->get_context() != output_cloud.queue.ptr->get_context()) {
         throw std::runtime_error(
             "[deskew_point_cloud_imu] input_cloud and output_cloud must share the same SYCL context");
+    }
+    if (this->queue_.ptr->get_context() != input_cloud.queue.ptr->get_context()) {
+        throw std::runtime_error("[IMUDeskew] deskew queue and input_cloud must share the same SYCL context");
     }
 
     const size_t cloud_size = input_cloud.size();
@@ -244,12 +255,11 @@ public:
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Step 4: Copy trajectory into SYCL shared memory.
-    // -----------------------------------------------------------------------
-    const size_t traj_size = traj_cpu.size();
-    shared_vector<IMUTrajectoryPose> traj_sycl(*input_cloud.queue.ptr);
-    traj_sycl.assign(traj_cpu.begin(), traj_cpu.end());
+        // -----------------------------------------------------------------------
+        // Step 4: Copy trajectory into SYCL shared memory.
+        // -----------------------------------------------------------------------
+        const size_t traj_size = traj_cpu.size();
+        this->trajectory_sycl_->assign(traj_cpu.begin(), traj_cpu.end());
 
     // -----------------------------------------------------------------------
     // Step 5: Mirror input metadata into output (if not in-place).
@@ -299,7 +309,7 @@ public:
         auto* normals_out = output_cloud.has_normal() ? output_cloud.normals->data() : nullptr;
         auto* covs_out = output_cloud.has_cov() ? output_cloud.covs->data() : nullptr;
         const auto* timestamps = input_cloud.timestamp_offsets->data();
-        const auto* traj_ptr = traj_sycl.data();
+        const auto* traj_ptr = this->trajectory_sycl_->data();
 
         const bool process_normals = normals_in != nullptr && normals_out != nullptr;
         const bool process_covs = covs_in != nullptr && covs_out != nullptr;
@@ -375,6 +385,11 @@ public:
     set_status(IMUDeskewStatus::success);
     return true;
     }
+
+private:
+    sycl_utils::DeviceQueue queue_;
+    mutable shared_vector_ptr<IMUTrajectoryPose> trajectory_sycl_ = nullptr;
+    mutable std::shared_ptr<std::mutex> trajectory_mutex_ = nullptr;
 };
 
 /// @brief Backward-compatible stateless wrapper around IMUDeskew.
@@ -385,7 +400,7 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
                                    const imu::IMUPreintegrationParams& preintegration_params,
                                    const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
                                    IMUDeskewStatus* status = nullptr, bool gyro_only = false) {
-    return IMUDeskew{}.deskew(input_cloud, output_cloud, imu_buffer, scan_start_time_sec, T_imu_to_lidar, bias,
+    return IMUDeskew(input_cloud.queue).deskew(input_cloud, output_cloud, imu_buffer, scan_start_time_sec, T_imu_to_lidar, bias,
                               preintegration_params, R_world_body_i, v_world_body_i, status, gyro_only);
 }
 
