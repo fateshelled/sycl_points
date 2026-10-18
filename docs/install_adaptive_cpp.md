@@ -184,7 +184,7 @@ acpp-info
 
 以下のように Intel GPU と NVIDIA GPU が両方認識されれば成功です。
 
-```
+```bash
 =================Backend information===================
 Loaded backend 0: Level Zero
   Found device: Intel(R) Graphics
@@ -202,7 +202,7 @@ Loaded backend 3: OpenMP
 
 ### lld が見つからない
 
-```
+```bash
 Cannot find ld.lld.
 ```
 
@@ -214,7 +214,7 @@ sudo apt-get install -y lld-20
 
 ### Level Zero ヘッダが見つからない
 
-```
+```bash
 Could not find Level Zero headers
 ```
 
