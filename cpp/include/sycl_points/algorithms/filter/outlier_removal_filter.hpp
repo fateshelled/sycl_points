@@ -1,5 +1,8 @@
 #pragma once
 
+#include <memory>
+#include <mutex>
+
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
 #include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/points/point_cloud.hpp"
@@ -39,6 +42,7 @@ public:
     /// @param remove_from_tree If true, removes the outlier nodes from the KD-Tree as well.
     void statistical(PointCloudShared& cloud, knn::KDTree& tree, size_t mean_k, float stddev_mul_thresh,
                      bool remove_from_tree = false) {
+        std::lock_guard<std::mutex> lock(*this->statistical_mutex_);
         const size_t N = cloud.size();
         if (N < mean_k) {
             std::cerr << "Not enough points in the cloud [ points = " << N << ", mean_k = " << mean_k << " ]"
@@ -222,6 +226,7 @@ private:
     shared_vector_ptr<float> distance_threshold_;
     shared_vector_ptr<float> global_distance_sum_;
     shared_vector_ptr<float> global_variance_;
+    std::shared_ptr<std::mutex> statistical_mutex_ = std::make_shared<std::mutex>();
 
     /// @brief Applies filtering based on the current flags
     /// @param data Point cloud to be filtered (modified in-place)
