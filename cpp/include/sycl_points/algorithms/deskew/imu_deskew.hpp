@@ -124,6 +124,9 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 class IMUDeskew {
 public:
     explicit IMUDeskew(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
+        if (!this->queue_.ptr) {
+            throw std::runtime_error("[IMUDeskew] SYCL queue is not initialized");
+        }
         this->trajectory_sycl_ = std::make_shared<shared_vector<IMUTrajectoryPose>>(*this->queue_.ptr);
         this->trajectory_mutex_ = std::make_shared<std::mutex>();
     }
@@ -140,11 +143,11 @@ public:
     };
 
     if (!input_cloud.queue.ptr || !output_cloud.queue.ptr) {
-        throw std::runtime_error("[deskew_point_cloud_imu] SYCL queue is not initialized");
+        throw std::runtime_error("[IMUDeskew] SYCL queue is not initialized");
     }
     if (input_cloud.queue.ptr->get_context() != output_cloud.queue.ptr->get_context()) {
         throw std::runtime_error(
-            "[deskew_point_cloud_imu] input_cloud and output_cloud must share the same SYCL context");
+            "[IMUDeskew] input_cloud and output_cloud must share the same SYCL context");
     }
     if (this->queue_.ptr->get_context() != input_cloud.queue.ptr->get_context()) {
         throw std::runtime_error("[IMUDeskew] deskew queue and input_cloud must share the same SYCL context");
@@ -391,18 +394,6 @@ private:
     mutable shared_vector_ptr<IMUTrajectoryPose> trajectory_sycl_ = nullptr;
     mutable std::shared_ptr<std::mutex> trajectory_mutex_ = nullptr;
 };
-
-/// @brief Backward-compatible stateless wrapper around IMUDeskew.
-template <imu::imu_measurement_range Range>
-inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
-                                   const Range& imu_buffer, double scan_start_time_sec,
-                                   const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
-                                   const imu::IMUPreintegrationParams& preintegration_params,
-                                   const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
-                                   IMUDeskewStatus* status = nullptr, bool gyro_only = false) {
-    return IMUDeskew(input_cloud.queue).deskew(input_cloud, output_cloud, imu_buffer, scan_start_time_sec, T_imu_to_lidar, bias,
-                              preintegration_params, R_world_body_i, v_world_body_i, status, gyro_only);
-}
 
 }  // namespace deskew
 }  // namespace algorithms
