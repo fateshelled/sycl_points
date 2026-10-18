@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <tuple>
 
 #include "sycl_points/algorithms/common/transform.hpp"
@@ -198,6 +199,8 @@ public:
         this->neighbors_ = std::make_shared<shared_vector<knn::KNNResult>>(1, knn::KNNResult(), *this->queue_.ptr);
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
         this->device_ = std::make_shared<BinaryLinearizedDevice>(this->queue_);
+        this->error_frozen_on_device_ = std::make_shared<shared_vector<float>>(1, 0.0f, *this->queue_.ptr);
+        this->inlier_frozen_on_device_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
     }
 
     /// @param scale robust loss scale override; <=0 falls back to
@@ -228,11 +231,12 @@ public:
     ///        LM compares current and trial costs on the same objective.
     std::pair<float, uint32_t> compute_error_frozen(const PointCloudShared& source,
                                                     const Eigen::Matrix4f& T_src,
-                                                    const PointCloudShared& target,
-                                                    const Eigen::Matrix4f& T_tgt,
-                                                    float scale = 0.0f) const {
-        shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
-        shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
+                                                     const PointCloudShared& target,
+                                                     const Eigen::Matrix4f& T_tgt,
+                                                     float scale = 0.0f) const {
+        std::lock_guard<std::mutex> lock(*this->error_frozen_mutex_);
+        auto& error = *this->error_frozen_on_device_;
+        auto& inlier = *this->inlier_frozen_on_device_;
         auto events = compute_error_frozen_async(source, T_src, target, T_tgt, error, inlier, scale);
         events.wait_and_throw();
         return {error[0], inlier[0]};
@@ -610,6 +614,9 @@ private:
     registration::RegistrationParams params_;
     shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<BinaryLinearizedDevice> device_ = nullptr;
+    std::shared_ptr<shared_vector<float>> error_frozen_on_device_ = nullptr;
+    std::shared_ptr<shared_vector<uint32_t>> inlier_frozen_on_device_ = nullptr;
+    std::shared_ptr<std::mutex> error_frozen_mutex_ = std::make_shared<std::mutex>();
     mutable bool has_cached_correspondences_ = false;
 };
 
