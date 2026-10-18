@@ -10,7 +10,7 @@ Intel が主導するオープンソースの SYCL コンパイラである [one
 
 ## 参考リンク
 
-- https://github.com/intel/llvm/blob/sycl/sycl/doc/GetStartedGuide.md
+- <https://github.com/intel/llvm/blob/sycl/sycl/doc/GetStartedGuide.md>
 
 ---
 
@@ -18,7 +18,7 @@ Intel が主導するオープンソースの SYCL コンパイラである [one
 
 特定のリリースバージョン（`v6.3.0` 等）を指定してクローンします。最新のタグはリポジトリのリリース一覧を確認してください。
 
-- リリース一覧: https://github.com/intel/llvm/releases
+- リリース一覧: <https://github.com/intel/llvm/releases>
 
 ```bash
 git clone https://github.com/intel/llvm.git --depth 1 --branch v6.3.0
