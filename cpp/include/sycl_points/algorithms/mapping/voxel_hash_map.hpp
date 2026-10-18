@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 
 #include "sycl_points/algorithms/common/prefix_sum.hpp"
@@ -32,6 +34,12 @@ public:
         this->allocate_storage(this->capacity_);
         this->prefix_sum_ = std::make_shared<common::PrefixSum>(this->queue_);
         this->valid_flags_ptr_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_.ptr);
+        this->overlap_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->add_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->remove_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->rehash_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->downsample_point_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->overlap_counter_mutex_ = std::make_shared<std::mutex>();
         this->clear();
         this->wg_size_add_point_cloud_ = this->compute_wg_size_add_point_cloud();
     }
@@ -193,15 +201,16 @@ public:
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @return Ratio of points that overlap with existing voxels in the map.
     float compute_overlap_ratio(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) const {
+        std::lock_guard<std::mutex> lock(*this->overlap_counter_mutex_);
         if (!cloud.points || cloud.points->empty() || this->voxel_num_ == 0) {
             return 0.0f;
         }
 
         const size_t N = cloud.size();
-        shared_vector<uint32_t> overlap_counter(1, 0U, *this->queue_.ptr);
+        this->overlap_counter_->at(0) = 0U;
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            auto overlap_reduction = sycl::reduction(overlap_counter.data(), sycl::plus<uint32_t>());
+            auto overlap_reduction = sycl::reduction(this->overlap_counter_->data(), sycl::plus<uint32_t>());
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             const auto point_ptr = cloud.points_ptr();
@@ -243,7 +252,7 @@ public:
 
         event.wait_and_throw();
 
-        return static_cast<float>(overlap_counter.at(0)) / static_cast<float>(N);
+        return static_cast<float>(this->overlap_counter_->at(0)) / static_cast<float>(N);
     }
 
     void remove_old_data() { this->remove_old_data_impl(); }
@@ -491,6 +500,12 @@ private:
     shared_vector_ptr<uint32_t> last_update_ptr_ = nullptr;
     shared_vector_ptr<uint8_t> valid_flags_ptr_ = nullptr;
     common::PrefixSum::Ptr prefix_sum_ = nullptr;
+    shared_vector_ptr<uint32_t> overlap_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> add_voxel_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> remove_voxel_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> rehash_voxel_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> downsample_point_counter_ = nullptr;
+    std::shared_ptr<std::mutex> overlap_counter_mutex_ = nullptr;
 
     uint32_t staleness_counter_ = 0;
     uint32_t max_staleness_ = 100;
@@ -611,7 +626,7 @@ private:
         this->has_intensity_data_ |= has_intensity;
 
         // add to voxel hash map
-        shared_vector<uint32_t> voxel_num_vec(1, this->voxel_num_, *this->queue_.ptr);
+        this->add_voxel_counter_->at(0) = static_cast<uint32_t>(this->voxel_num_);
 
         auto reduction_event = this->queue_.ptr->submit([&](sycl::handler& h) {
             // Use the configured work-group size as the kernel's local size.
@@ -731,7 +746,7 @@ private:
             auto range = sycl::nd_range<1>(global_size, local_size);
 
             if (this->queue_.is_nvidia()) {
-                auto voxel_num = sycl::reduction(voxel_num_vec.data(), sycl::plus<uint32_t>());
+                auto voxel_num = sycl::reduction(this->add_voxel_counter_->data(), sycl::plus<uint32_t>());
 
                 h.parallel_for(range, voxel_num, [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
                     const size_t global_id = item.get_global_id(0);
@@ -752,7 +767,7 @@ private:
                         has_rgb, has_intensity);
                 });
             } else {
-                auto voxel_num_ptr = voxel_num_vec.data();
+                auto voxel_num_ptr = this->add_voxel_counter_->data();
 
                 h.parallel_for(range, [=](sycl::nd_item<1> item) {
                     const size_t global_id = item.get_global_id(0);
@@ -776,13 +791,13 @@ private:
             }
         });
         reduction_event.wait_and_throw();
-        this->voxel_num_ = static_cast<size_t>(voxel_num_vec.at(0));
+        this->voxel_num_ = static_cast<size_t>(this->add_voxel_counter_->at(0));
     }
 
     void remove_old_data_impl() {
         if (this->staleness_counter_ <= this->max_staleness_) return;
 
-        shared_vector<uint32_t> voxel_num_vec(1, 0, *this->queue_.ptr);
+        this->remove_voxel_counter_->at(0) = 0U;
 
         this->queue_.ptr
             ->submit([&](sycl::handler& h) {
@@ -809,7 +824,7 @@ private:
 
                 const uint32_t remove_staleness = this->staleness_counter_ - this->max_staleness_;
                 auto range = sycl::nd_range<1>(global_size, work_group_size);
-                const auto voxel_num_ptr = voxel_num_vec.data();
+                const auto voxel_num_ptr = this->remove_voxel_counter_->data();
 
                 h.parallel_for(range, [=](sycl::nd_item<1> item) {
                     const uint32_t i = item.get_global_id(0);
@@ -829,7 +844,7 @@ private:
                 });
             })
             .wait_and_throw();
-        this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
+        this->update_voxel_num_and_flags(static_cast<size_t>(this->remove_voxel_counter_->at(0)));
     }
 
     void rehash(size_t new_capacity) {
@@ -848,7 +863,7 @@ private:
         // make new
         this->allocate_storage(new_capacity);
 
-        shared_vector<uint32_t> voxel_num_vec(1, 0, *this->queue_.ptr);
+        this->rehash_voxel_counter_->at(0) = 0U;
 
         this->queue_.ptr
             ->submit([&](sycl::handler& h) {
@@ -877,7 +892,7 @@ private:
                 const auto has_intensity = this->has_intensity_data_;
                 auto range = sycl::nd_range<1>(global_size, work_group_size);
 
-                auto voxel_num_ptr = voxel_num_vec.data();
+                auto voxel_num_ptr = this->rehash_voxel_counter_->data();
 
                 h.parallel_for(range, [=](sycl::nd_item<1> item) {
                     const uint32_t i = item.get_global_id(0);
@@ -918,7 +933,7 @@ private:
                 });
             })
             .wait_and_throw();
-        this->update_voxel_num_and_flags(static_cast<size_t>(voxel_num_vec.at(0)));
+        this->update_voxel_num_and_flags(static_cast<size_t>(this->rehash_voxel_counter_->at(0)));
     }
 
     size_t downsampling_impl(PointContainerShared& result, const Eigen::Vector3f& center, const float distance,
@@ -975,7 +990,7 @@ private:
 
         // voxel hash map to point cloud
         result.resize(this->voxel_num_);
-        shared_vector<uint32_t> point_num_vec(1, 0, *this->queue_.ptr);
+        this->downsample_point_counter_->at(0) = 0U;
 
         this->queue_.ptr
             ->submit([&](sycl::handler& h) {
@@ -1018,7 +1033,7 @@ private:
                 } else {
                     const auto key_ptr = this->key_ptr_->data();
 
-                    const auto point_num_ptr = point_num_vec.data();
+                    const auto point_num_ptr = this->downsample_point_counter_->data();
                     const auto min_num_point = this->min_num_point_;
                     h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                         const auto i = item.get_global_id(0);
@@ -1046,7 +1061,7 @@ private:
             .wait_and_throw();
 
         if (!is_nvidia) {
-            filtered_voxel_count = static_cast<size_t>(point_num_vec.at(0));
+            filtered_voxel_count = static_cast<size_t>(this->downsample_point_counter_->at(0));
         }
 
         return filtered_voxel_count;
