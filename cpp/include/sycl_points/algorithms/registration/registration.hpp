@@ -111,6 +111,8 @@ public:
         this->linearized_on_device_ = std::make_shared<LinearizedDevice>(this->queue_);
         this->error_frozen_on_device_ = std::make_shared<shared_vector<float>>(1, 0.0f, *this->queue_.ptr);
         this->inlier_frozen_on_device_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->error_on_device_ = std::make_shared<shared_vector<float>>(1, 0.0f, *this->queue_.ptr);
+        this->inlier_on_device_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
 
         this->degenerate_reg_.set_params(this->params_.degenerate_reg);
         this->map_prior_.set_params(this->params_.map_prior);
@@ -396,6 +398,9 @@ private:
     std::shared_ptr<shared_vector<float>> error_frozen_on_device_ = nullptr;
     std::shared_ptr<shared_vector<uint32_t>> inlier_frozen_on_device_ = nullptr;
     std::shared_ptr<std::mutex> error_frozen_mutex_ = std::make_shared<std::mutex>();
+    std::shared_ptr<shared_vector<float>> error_on_device_ = nullptr;
+    std::shared_ptr<shared_vector<uint32_t>> inlier_on_device_ = nullptr;
+    std::shared_ptr<std::mutex> error_mutex_ = std::make_shared<std::mutex>();
 
     DegenerateRegularization degenerate_reg_;
     MapPrior map_prior_;
@@ -811,17 +816,18 @@ private:
     std::tuple<float, uint32_t> compute_error(const PointCloudShared& source, const PointCloudShared& target,
                                               const knn::KNNResult& knn_results, const Eigen::Matrix4f transT,
                                               float robust_scale, float rotation_robust_scale) const {
-        std::tuple<float, uint32_t> result = {0.0f, 0};
-        shared_vector<float> error(1, 0.0f, *this->queue_.ptr);
-        shared_vector<uint32_t> inlier(1, 0, *this->queue_.ptr);
+        std::lock_guard<std::mutex> lock(*this->error_mutex_);
+        auto& error = *this->error_on_device_;
+        auto& inlier = *this->inlier_on_device_;
+        error[0] = 0.0f;
+        inlier[0] = 0;
         auto events = this->dispatch([&]<RegType reg, robust::RobustLossType loss>() {
             return this->compute_error_parallel_reduction_async<reg, loss>(
                 source, target, knn_results, transT, robust_scale, rotation_robust_scale,
                 error, inlier);
         });
         events.wait_and_throw();
-        result = {error[0], inlier[0]};
-        return result;
+        return {error[0], inlier[0]};
     }
 
     bool solve_linear_system(const Eigen::Matrix<float, 6, 6>& H, const Eigen::Vector<float, 6>& b,
