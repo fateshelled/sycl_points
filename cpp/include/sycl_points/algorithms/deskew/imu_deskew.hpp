@@ -28,7 +28,7 @@ struct IMUTrajectoryPose {
 
 static_assert(sizeof(IMUTrajectoryPose) == 32, "IMUTrajectoryPose size mismatch");
 
-/// @brief Return code for deskew_point_cloud_imu().
+/// @brief Return code for IMU deskew.
 enum class IMUDeskewStatus {
     success,
     insufficient_imu_coverage,  ///< IMU data does not bracket the full scan window.
@@ -119,13 +119,14 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 /// @param[out] status           Optional detailed result code.
 /// @param gyro_only             If true, integrate rotation only and omit IMU translation.
 /// @return true on success, false if prerequisites are not met.
-template <imu::imu_measurement_range Range>
-inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
-                                   const Range& imu_buffer, double scan_start_time_sec,
-                                   const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
-                                   const imu::IMUPreintegrationParams& preintegration_params,
-                                   const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
-                                   IMUDeskewStatus* status = nullptr, bool gyro_only = false) {
+class IMUDeskew {
+public:
+    template <imu::imu_measurement_range Range>
+    bool deskew(const PointCloudShared& input_cloud, PointCloudShared& output_cloud, const Range& imu_buffer,
+                double scan_start_time_sec, const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
+                const imu::IMUPreintegrationParams& preintegration_params,
+                const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
+                IMUDeskewStatus* status = nullptr, bool gyro_only = false) const {
     auto set_status = [&](IMUDeskewStatus s) {
         if (status) *status = s;
     };
@@ -373,6 +374,19 @@ inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointClo
 
     set_status(IMUDeskewStatus::success);
     return true;
+    }
+};
+
+/// @brief Backward-compatible stateless wrapper around IMUDeskew.
+template <imu::imu_measurement_range Range>
+inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
+                                   const Range& imu_buffer, double scan_start_time_sec,
+                                   const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
+                                   const imu::IMUPreintegrationParams& preintegration_params,
+                                   const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
+                                   IMUDeskewStatus* status = nullptr, bool gyro_only = false) {
+    return IMUDeskew{}.deskew(input_cloud, output_cloud, imu_buffer, scan_start_time_sec, T_imu_to_lidar, bias,
+                              preintegration_params, R_world_body_i, v_world_body_i, status, gyro_only);
 }
 
 }  // namespace deskew

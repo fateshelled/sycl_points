@@ -86,6 +86,7 @@ private:
     odometry::CommonParameters::Scan scan_params_;
     odometry::CommonParameters::CovarianceEstimation covs_params_;
     odometry::CommonParameters::IMU imu_params_;
+    algorithms::deskew::IMUDeskew imu_deskew_;
 
     void initialize() {
         this->preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(this->queue_);
@@ -110,7 +111,7 @@ private:
                               algorithms::deskew::IMUDeskewStatus* status) const {
         const double scan_start_sec = src.start_time_ms * 1e-3;
         const Eigen::Matrix3f R_world_imu = current_pose.rotation() * this->imu_params_.T_imu_to_lidar.rotation();
-        return algorithms::deskew::deskew_point_cloud_imu(
+        return this->imu_deskew_.deskew(
             src, dst, imu_buffer, scan_start_sec, this->imu_params_.T_imu_to_lidar, bias,
             this->imu_params_.preintegration, R_world_imu, v_world_body_i, status,
             this->imu_params_.deskew.gyro_only);
