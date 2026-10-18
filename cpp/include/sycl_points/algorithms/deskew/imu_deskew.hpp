@@ -2,6 +2,8 @@
 
 #include <Eigen/Geometry>
 #include <algorithm>
+#include <memory>
+#include <mutex>
 #include <ranges>
 #include <vector>
 
@@ -28,7 +30,7 @@ struct IMUTrajectoryPose {
 
 static_assert(sizeof(IMUTrajectoryPose) == 32, "IMUTrajectoryPose size mismatch");
 
-/// @brief Return code for deskew_point_cloud_imu().
+/// @brief Return code for IMU deskew.
 enum class IMUDeskewStatus {
     success,
     insufficient_imu_coverage,  ///< IMU data does not bracket the full scan window.
@@ -96,6 +98,7 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 /// the buffered IMU measurements over the scan window and applying per-point SE3
 /// corrections via a SYCL parallel kernel. Gravity is compensated using
 /// @p R_world_body_i consistent with IMUPreintegration::predict_relative_transform().
+/// The input, output, and constructor queue must belong to the same SYCL context.
 ///
 /// This function should be called *before* downsampling and ICP so that every
 /// raw point is corrected. If the IMU buffer does not bracket the full scan window
@@ -119,261 +122,283 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 /// @param[out] status           Optional detailed result code.
 /// @param gyro_only             If true, integrate rotation only and omit IMU translation.
 /// @return true on success, false if prerequisites are not met.
-template <imu::imu_measurement_range Range>
-inline bool deskew_point_cloud_imu(const PointCloudShared& input_cloud, PointCloudShared& output_cloud,
-                                   const Range& imu_buffer, double scan_start_time_sec,
-                                   const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
-                                   const imu::IMUPreintegrationParams& preintegration_params,
-                                   const Eigen::Matrix3f& R_world_body_i, const Eigen::Vector3f& v_world_body_i,
-                                   IMUDeskewStatus* status = nullptr, bool gyro_only = false) {
-    auto set_status = [&](IMUDeskewStatus s) {
-        if (status) *status = s;
-    };
-
-    if (!input_cloud.queue.ptr || !output_cloud.queue.ptr) {
-        throw std::runtime_error("[deskew_point_cloud_imu] SYCL queue is not initialized");
-    }
-    if (input_cloud.queue.ptr->get_context() != output_cloud.queue.ptr->get_context()) {
-        throw std::runtime_error(
-            "[deskew_point_cloud_imu] input_cloud and output_cloud must share the same SYCL context");
+class IMUDeskew {
+public:
+    explicit IMUDeskew(const sycl_utils::DeviceQueue& queue) : queue_(queue) {
+        if (!this->queue_.ptr) {
+            throw std::runtime_error("[IMUDeskew] SYCL queue is not initialized");
+        }
+        this->trajectory_sycl_ = std::make_shared<shared_vector<IMUTrajectoryPose>>(*this->queue_.ptr);
+        this->trajectory_mutex_ = std::make_shared<std::mutex>();
     }
 
-    const size_t cloud_size = input_cloud.size();
-    if (cloud_size == 0) {
-        set_status(IMUDeskewStatus::empty_cloud);
-        return false;
-    }
-    if (!input_cloud.has_timestamps()) {
-        set_status(IMUDeskewStatus::no_timestamps);
-        return false;
-    }
+    IMUDeskew(const IMUDeskew&) = delete;
+    IMUDeskew& operator=(const IMUDeskew&) = delete;
+    IMUDeskew(IMUDeskew&&) = delete;
+    IMUDeskew& operator=(IMUDeskew&&) = delete;
 
-    const double scan_duration_sec = (input_cloud.end_time_ms - input_cloud.start_time_ms) * 1e-3;
-    if (scan_duration_sec <= 0.0) {
-        set_status(IMUDeskewStatus::invalid_scan_duration);
-        return false;
-    }
-    const double scan_end_sec = scan_start_time_sec + scan_duration_sec;
+    template <imu::imu_measurement_range Range>
+    bool deskew(const PointCloudShared& input_cloud, PointCloudShared& output_cloud, const Range& imu_buffer,
+                double scan_start_time_sec, const Eigen::Isometry3f& T_imu_to_lidar, const imu::IMUBias& bias,
+                const imu::IMUPreintegrationParams& preintegration_params, const Eigen::Matrix3f& R_world_body_i,
+                const Eigen::Vector3f& v_world_body_i, IMUDeskewStatus* status = nullptr,
+                bool gyro_only = false) const {
+        std::lock_guard<std::mutex> lock(*this->trajectory_mutex_);
+        auto set_status = [&](IMUDeskewStatus s) {
+            if (status) *status = s;
+        };
 
-    // -----------------------------------------------------------------------
-    // Step 1: Extract an exactly bounded IMU window.  Endpoint extrapolation
-    // would silently clamp the last part of a scan to a stale pose.
-    // -----------------------------------------------------------------------
-    std::vector<imu::IMUMeasurement> filtered;
-    filtered.reserve(256);
-    if (!imu::build_measurement_window(imu_buffer, scan_start_time_sec, scan_end_sec, filtered) ||
-        filtered.size() < 2) {
-        set_status(IMUDeskewStatus::insufficient_imu_coverage);
-        return false;
-    }
+        if (!input_cloud.queue.ptr || !output_cloud.queue.ptr) {
+            throw std::runtime_error("[IMUDeskew] SYCL queue is not initialized");
+        }
+        if (input_cloud.queue.ptr->get_context() != output_cloud.queue.ptr->get_context()) {
+            throw std::runtime_error("[IMUDeskew] input_cloud and output_cloud must share the same SYCL context");
+        }
+        if (this->queue_.ptr->get_context() != input_cloud.queue.ptr->get_context()) {
+            throw std::runtime_error("[IMUDeskew] deskew queue and input_cloud must share the same SYCL context");
+        }
 
-    // -----------------------------------------------------------------------
-    // Step 2: Build a virtual IMU measurement at exactly scan_start_time_sec
-    //         by linearly interpolating adjacent measurements.
-    // -----------------------------------------------------------------------
-    const imu::IMUMeasurement& m_start = filtered.front();
+        const size_t cloud_size = input_cloud.size();
+        if (cloud_size == 0) {
+            set_status(IMUDeskewStatus::empty_cloud);
+            return false;
+        }
+        if (!input_cloud.has_timestamps()) {
+            set_status(IMUDeskewStatus::no_timestamps);
+            return false;
+        }
 
-    // -----------------------------------------------------------------------
-    // Step 3: Integrate IMU from scan_start to build a relative-pose trajectory.
-    //         Each entry is the LiDAR-frame relative pose at that IMU timestamp,
-    //         with gravity compensated as in IMUPreintegration::predict_relative_transform().
-    // -----------------------------------------------------------------------
-    std::vector<IMUTrajectoryPose> traj_cpu;
-    traj_cpu.reserve(filtered.size() + 1);
+        const double scan_duration_sec = (input_cloud.end_time_ms - input_cloud.start_time_ms) * 1e-3;
+        if (scan_duration_sec <= 0.0) {
+            set_status(IMUDeskewStatus::invalid_scan_duration);
+            return false;
+        }
+        const double scan_end_sec = scan_start_time_sec + scan_duration_sec;
 
-    // Identity pose at scan start (t = 0).
-    {
-        IMUTrajectoryPose identity{};
-        identity.q.setZero();
-        identity.q(3) = 1.0f;
-        identity.t.setZero();
-        identity.timestamp = 0.0f;
-        traj_cpu.push_back(identity);
-    }
+        // -----------------------------------------------------------------------
+        // Step 1: Extract an exactly bounded IMU window.  Endpoint extrapolation
+        // would silently clamp the last part of a scan to a stale pose.
+        // -----------------------------------------------------------------------
+        std::vector<imu::IMUMeasurement> filtered;
+        filtered.reserve(256);
+        if (!imu::build_measurement_window(imu_buffer, scan_start_time_sec, scan_end_sec, filtered) ||
+            filtered.size() < 2) {
+            set_status(IMUDeskewStatus::insufficient_imu_coverage);
+            return false;
+        }
 
-    // IMU integration
-    {
-        imu::IMUPreintegration local_integrator(preintegration_params);
-        local_integrator.reset(bias);
-        local_integrator.integrate(m_start);  // stores as prev; no integration step yet
+        // -----------------------------------------------------------------------
+        // Step 2: Build a virtual IMU measurement at exactly scan_start_time_sec
+        //         by linearly interpolating adjacent measurements.
+        // -----------------------------------------------------------------------
+        const imu::IMUMeasurement& m_start = filtered.front();
 
-        for (auto it = std::next(filtered.begin()); it != filtered.end(); ++it) {
-            local_integrator.integrate(*it);
+        // -----------------------------------------------------------------------
+        // Step 3: Integrate IMU from scan_start to build a relative-pose trajectory.
+        //         Each entry is the LiDAR-frame relative pose at that IMU timestamp,
+        //         with gravity compensated as in IMUPreintegration::predict_relative_transform().
+        // -----------------------------------------------------------------------
+        std::vector<IMUTrajectoryPose> traj_cpu;
+        traj_cpu.reserve(filtered.size() + 1);
 
-            const float t_rel_sec = static_cast<float>(it->timestamp - scan_start_time_sec);
-            if (t_rel_sec < 0.0f) continue;
+        // Identity pose at scan start (t = 0).
+        {
+            IMUTrajectoryPose identity{};
+            identity.q.setZero();
+            identity.q(3) = 1.0f;
+            identity.t.setZero();
+            identity.timestamp = 0.0f;
+            traj_cpu.push_back(identity);
+        }
 
-            Eigen::Isometry3f T_imu_rel = Eigen::Isometry3f::Identity();
-            if (gyro_only) {
-                // Rotation is directly constrained by the gyroscope. Do not let
-                // uncertain velocity or double-integrated acceleration affect points.
-                T_imu_rel.linear() = local_integrator.get_corrected(bias).Delta_R;
-            } else {
-                // predict_relative_transform() applies gravity compensation using dt_total,
-                // which equals t_rel_sec because the integrator was reset at scan_start.
-                T_imu_rel = Eigen::Isometry3f(
-                    local_integrator.predict_relative_transform(R_world_body_i, v_world_body_i, bias));
+        // IMU integration
+        {
+            imu::IMUPreintegration local_integrator(preintegration_params);
+            local_integrator.reset(bias);
+            local_integrator.integrate(m_start);  // stores as prev; no integration step yet
+
+            for (auto it = std::next(filtered.begin()); it != filtered.end(); ++it) {
+                local_integrator.integrate(*it);
+
+                const float t_rel_sec = static_cast<float>(it->timestamp - scan_start_time_sec);
+                if (t_rel_sec < 0.0f) continue;
+
+                Eigen::Isometry3f T_imu_rel = Eigen::Isometry3f::Identity();
+                if (gyro_only) {
+                    // Rotation is directly constrained by the gyroscope. Do not let
+                    // uncertain velocity or double-integrated acceleration affect points.
+                    T_imu_rel.linear() = local_integrator.get_corrected(bias).Delta_R;
+                } else {
+                    // predict_relative_transform() applies gravity compensation using dt_total,
+                    // which equals t_rel_sec because the integrator was reset at scan_start.
+                    T_imu_rel = Eigen::Isometry3f(
+                        local_integrator.predict_relative_transform(R_world_body_i, v_world_body_i, bias));
+                }
+
+                // Convert to LiDAR-frame relative transform:
+                //   T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
+                const Eigen::Isometry3f T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar.inverse();
+
+                // Store as flat quaternion + translation for SYCL kernel access.
+                const Eigen::Quaternionf q_lidar(T_lidar_rel.rotation());
+                IMUTrajectoryPose entry{};
+                entry.q = q_lidar.coeffs();
+                entry.t = T_lidar_rel.translation();
+                entry.timestamp = t_rel_sec;
+                traj_cpu.push_back(entry);
             }
 
-            // Convert to LiDAR-frame relative transform:
-            //   T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar^{-1}
-            const Eigen::Isometry3f T_lidar_rel = T_imu_to_lidar * T_imu_rel * T_imu_to_lidar.inverse();
+            // Need at least 2 entries to interpolate (identity + at least one more).
+            if (traj_cpu.size() < 2) {
+                set_status(IMUDeskewStatus::insufficient_imu_coverage);
+                return false;
+            }
 
-            // Store as flat quaternion + translation for SYCL kernel access.
-            const Eigen::Quaternionf q_lidar(T_lidar_rel.rotation());
-            IMUTrajectoryPose entry{};
-            entry.q = q_lidar.coeffs();
-            entry.t = T_lidar_rel.translation();
-            entry.timestamp = t_rel_sec;
-            traj_cpu.push_back(entry);
+            // Verify the trajectory covers the full scan duration.
+            const float scan_duration_f = static_cast<float>(scan_duration_sec);
+            constexpr float kCoverageToleranceSec = 1e-6f;
+            if (traj_cpu.back().timestamp < scan_duration_f - kCoverageToleranceSec) {
+                set_status(IMUDeskewStatus::insufficient_imu_coverage);
+                return false;
+            }
         }
 
-        // Need at least 2 entries to interpolate (identity + at least one more).
-        if (traj_cpu.size() < 2) {
-            set_status(IMUDeskewStatus::insufficient_imu_coverage);
-            return false;
+        // -----------------------------------------------------------------------
+        // Step 4: Copy trajectory into SYCL shared memory.
+        // -----------------------------------------------------------------------
+        const size_t traj_size = traj_cpu.size();
+        this->trajectory_sycl_->assign(traj_cpu.begin(), traj_cpu.end());
+
+        // -----------------------------------------------------------------------
+        // Step 5: Mirror input metadata into output (if not in-place).
+        // -----------------------------------------------------------------------
+        if (&input_cloud != &output_cloud) {
+            output_cloud.start_time_ms = input_cloud.start_time_ms;
+            output_cloud.end_time_ms = input_cloud.end_time_ms;
+
+            output_cloud.timestamp_offsets->assign(input_cloud.timestamp_offsets->begin(),
+                                                   input_cloud.timestamp_offsets->end());
+            output_cloud.points->resize(cloud_size);
+
+            if (input_cloud.has_normal()) {
+                output_cloud.normals->resize(cloud_size);
+            } else {
+                output_cloud.normals->clear();
+            }
+            if (input_cloud.has_cov()) {
+                output_cloud.covs->resize(cloud_size);
+            } else {
+                output_cloud.covs->clear();
+            }
+            if (input_cloud.has_rgb()) {
+                output_cloud.rgb->assign(input_cloud.rgb->begin(), input_cloud.rgb->end());
+            } else {
+                output_cloud.rgb->clear();
+            }
+            if (input_cloud.has_intensity()) {
+                output_cloud.intensities->assign(input_cloud.intensities->begin(), input_cloud.intensities->end());
+            } else {
+                output_cloud.intensities->clear();
+            }
         }
 
-        // Verify the trajectory covers the full scan duration.
-        const float scan_duration_f = static_cast<float>(scan_duration_sec);
-        constexpr float kCoverageToleranceSec = 1e-6f;
-        if (traj_cpu.back().timestamp < scan_duration_f - kCoverageToleranceSec) {
-            set_status(IMUDeskewStatus::insufficient_imu_coverage);
-            return false;
-        }
+        // -----------------------------------------------------------------------
+        // Step 6: SYCL kernel — per-point SE3 correction via trajectory lookup.
+        // -----------------------------------------------------------------------
+        auto deskew_event = input_cloud.queue.ptr->submit([&](sycl::handler& h) {
+            const auto work_group_size = input_cloud.queue.get_work_group_size();
+            const auto global_size = input_cloud.queue.get_global_size(input_cloud.size());
+
+            const auto* points_in = input_cloud.points->data();
+            const auto* normals_in = input_cloud.has_normal() ? input_cloud.normals->data() : nullptr;
+            const auto* covs_in = input_cloud.has_cov() ? input_cloud.covs->data() : nullptr;
+
+            auto* points_out = output_cloud.points->data();
+            auto* normals_out = output_cloud.has_normal() ? output_cloud.normals->data() : nullptr;
+            auto* covs_out = output_cloud.has_cov() ? output_cloud.covs->data() : nullptr;
+            const auto* timestamps = input_cloud.timestamp_offsets->data();
+            const auto* traj_ptr = this->trajectory_sycl_->data();
+
+            const bool process_normals = normals_in != nullptr && normals_out != nullptr;
+            const bool process_covs = covs_in != nullptr && covs_out != nullptr;
+
+            h.parallel_for(                                       //
+                sycl::nd_range<1>(global_size, work_group_size),  //
+                [=](sycl::nd_item<1> item) {
+                    const size_t idx = item.get_global_id(0);
+                    if (idx >= cloud_size) return;
+
+                    // Convert per-point offset [ms] to time from scan start [s].
+                    const float t_sec = timestamps[idx] * 1e-3f;
+
+                    if (!sycl::isfinite(t_sec)) {
+                        // Copy the point unchanged if its timestamp is invalid.
+                        eigen_utils::copy<4, 1>(points_in[idx], points_out[idx]);
+                        if (process_normals) eigen_utils::copy<4, 1>(normals_in[idx], normals_out[idx]);
+                        if (process_covs) eigen_utils::copy<4, 4>(covs_in[idx], covs_out[idx]);
+                        return;
+                    }
+
+                    // ---- Binary search for the enclosing trajectory interval ----
+                    size_t lo = 0;
+                    size_t hi = traj_size - 1;
+                    while (hi - lo > 1) {
+                        const size_t mid = (lo + hi) / 2;
+                        if (traj_ptr[mid].timestamp <= t_sec)
+                            lo = mid;
+                        else
+                            hi = mid;
+                    }
+
+                    // ---- Interpolation factor ----
+                    const float t_lo = traj_ptr[lo].timestamp;
+                    const float t_hi = traj_ptr[hi].timestamp;
+                    float alpha = 0.0f;
+                    if (t_hi > t_lo) {
+                        alpha = sycl::clamp((t_sec - t_lo) / (t_hi - t_lo), 0.0f, 1.0f);
+                    }
+
+                    // ---- SLERP + LERP ----
+                    Eigen::Matrix3f R_interp;
+                    Eigen::Vector3f t_interp;
+                    detail::interpolate_trajectory_pose(traj_ptr[lo], traj_ptr[hi], alpha, R_interp, t_interp);
+
+                    // ---- Apply SE3: p_out = R * p_in + t ----
+                    const Eigen::Vector3f p3 = points_in[idx].template head<3>();
+                    const Eigen::Vector3f Rp = eigen_utils::multiply<3, 3>(R_interp, p3);
+                    points_out[idx](0) = Rp(0) + t_interp(0);
+                    points_out[idx](1) = Rp(1) + t_interp(1);
+                    points_out[idx](2) = Rp(2) + t_interp(2);
+                    points_out[idx](3) = points_in[idx](3);
+
+                    // ---- Rotate frame-dependent attributes ----
+                    if (process_normals) {
+                        normals_out[idx].setZero();
+                        const Eigen::Vector3f normal_in = normals_in[idx].template head<3>();
+                        normals_out[idx].template head<3>() = eigen_utils::multiply<3, 3>(R_interp, normal_in);
+                    }
+                    if (process_covs) {
+                        covs_out[idx].setZero();
+                        const Eigen::Matrix3f cov_in = covs_in[idx].topLeftCorner<3, 3>();
+                        const Eigen::Matrix3f R_interp_t = eigen_utils::transpose<3, 3>(R_interp);
+                        const Eigen::Matrix3f rotated_cov = eigen_utils::multiply<3, 3, 3>(
+                            R_interp, eigen_utils::multiply<3, 3, 3>(cov_in, R_interp_t));
+                        covs_out[idx].topLeftCorner<3, 3>() = rotated_cov;
+                    }
+                });
+        });
+
+        deskew_event.wait_and_throw();
+
+        set_status(IMUDeskewStatus::success);
+        return true;
     }
 
-    // -----------------------------------------------------------------------
-    // Step 4: Copy trajectory into SYCL shared memory.
-    // -----------------------------------------------------------------------
-    const size_t traj_size = traj_cpu.size();
-    shared_vector<IMUTrajectoryPose> traj_sycl(*input_cloud.queue.ptr);
-    traj_sycl.assign(traj_cpu.begin(), traj_cpu.end());
-
-    // -----------------------------------------------------------------------
-    // Step 5: Mirror input metadata into output (if not in-place).
-    // -----------------------------------------------------------------------
-    if (&input_cloud != &output_cloud) {
-        output_cloud.start_time_ms = input_cloud.start_time_ms;
-        output_cloud.end_time_ms = input_cloud.end_time_ms;
-
-        output_cloud.timestamp_offsets->assign(input_cloud.timestamp_offsets->begin(),
-                                               input_cloud.timestamp_offsets->end());
-        output_cloud.points->resize(cloud_size);
-
-        if (input_cloud.has_normal()) {
-            output_cloud.normals->resize(cloud_size);
-        } else {
-            output_cloud.normals->clear();
-        }
-        if (input_cloud.has_cov()) {
-            output_cloud.covs->resize(cloud_size);
-        } else {
-            output_cloud.covs->clear();
-        }
-        if (input_cloud.has_rgb()) {
-            output_cloud.rgb->assign(input_cloud.rgb->begin(), input_cloud.rgb->end());
-        } else {
-            output_cloud.rgb->clear();
-        }
-        if (input_cloud.has_intensity()) {
-            output_cloud.intensities->assign(input_cloud.intensities->begin(), input_cloud.intensities->end());
-        } else {
-            output_cloud.intensities->clear();
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 6: SYCL kernel — per-point SE3 correction via trajectory lookup.
-    // -----------------------------------------------------------------------
-    auto deskew_event = input_cloud.queue.ptr->submit([&](sycl::handler& h) {
-        const auto work_group_size = input_cloud.queue.get_work_group_size();
-        const auto global_size = input_cloud.queue.get_global_size(input_cloud.size());
-
-        const auto* points_in = input_cloud.points->data();
-        const auto* normals_in = input_cloud.has_normal() ? input_cloud.normals->data() : nullptr;
-        const auto* covs_in = input_cloud.has_cov() ? input_cloud.covs->data() : nullptr;
-
-        auto* points_out = output_cloud.points->data();
-        auto* normals_out = output_cloud.has_normal() ? output_cloud.normals->data() : nullptr;
-        auto* covs_out = output_cloud.has_cov() ? output_cloud.covs->data() : nullptr;
-        const auto* timestamps = input_cloud.timestamp_offsets->data();
-        const auto* traj_ptr = traj_sycl.data();
-
-        const bool process_normals = normals_in != nullptr && normals_out != nullptr;
-        const bool process_covs = covs_in != nullptr && covs_out != nullptr;
-
-        h.parallel_for(                                       //
-            sycl::nd_range<1>(global_size, work_group_size),  //
-            [=](sycl::nd_item<1> item) {
-                const size_t idx = item.get_global_id(0);
-                if (idx >= cloud_size) return;
-
-                // Convert per-point offset [ms] to time from scan start [s].
-                const float t_sec = timestamps[idx] * 1e-3f;
-
-                if (!sycl::isfinite(t_sec)) {
-                    // Copy the point unchanged if its timestamp is invalid.
-                    eigen_utils::copy<4, 1>(points_in[idx], points_out[idx]);
-                    if (process_normals) eigen_utils::copy<4, 1>(normals_in[idx], normals_out[idx]);
-                    if (process_covs) eigen_utils::copy<4, 4>(covs_in[idx], covs_out[idx]);
-                    return;
-                }
-
-                // ---- Binary search for the enclosing trajectory interval ----
-                size_t lo = 0;
-                size_t hi = traj_size - 1;
-                while (hi - lo > 1) {
-                    const size_t mid = (lo + hi) / 2;
-                    if (traj_ptr[mid].timestamp <= t_sec)
-                        lo = mid;
-                    else
-                        hi = mid;
-                }
-
-                // ---- Interpolation factor ----
-                const float t_lo = traj_ptr[lo].timestamp;
-                const float t_hi = traj_ptr[hi].timestamp;
-                float alpha = 0.0f;
-                if (t_hi > t_lo) {
-                    alpha = sycl::clamp((t_sec - t_lo) / (t_hi - t_lo), 0.0f, 1.0f);
-                }
-
-                // ---- SLERP + LERP ----
-                Eigen::Matrix3f R_interp;
-                Eigen::Vector3f t_interp;
-                detail::interpolate_trajectory_pose(traj_ptr[lo], traj_ptr[hi], alpha, R_interp, t_interp);
-
-                // ---- Apply SE3: p_out = R * p_in + t ----
-                const Eigen::Vector3f p3 = points_in[idx].template head<3>();
-                const Eigen::Vector3f Rp = eigen_utils::multiply<3, 3>(R_interp, p3);
-                points_out[idx](0) = Rp(0) + t_interp(0);
-                points_out[idx](1) = Rp(1) + t_interp(1);
-                points_out[idx](2) = Rp(2) + t_interp(2);
-                points_out[idx](3) = points_in[idx](3);
-
-                // ---- Rotate frame-dependent attributes ----
-                if (process_normals) {
-                    normals_out[idx].setZero();
-                    const Eigen::Vector3f normal_in = normals_in[idx].template head<3>();
-                    normals_out[idx].template head<3>() = eigen_utils::multiply<3, 3>(R_interp, normal_in);
-                }
-                if (process_covs) {
-                    covs_out[idx].setZero();
-                    const Eigen::Matrix3f cov_in = covs_in[idx].topLeftCorner<3, 3>();
-                    const Eigen::Matrix3f R_interp_t = eigen_utils::transpose<3, 3>(R_interp);
-                    const Eigen::Matrix3f rotated_cov =
-                        eigen_utils::multiply<3, 3, 3>(R_interp, eigen_utils::multiply<3, 3, 3>(cov_in, R_interp_t));
-                    covs_out[idx].topLeftCorner<3, 3>() = rotated_cov;
-                }
-            });
-    });
-
-    deskew_event.wait_and_throw();
-
-    set_status(IMUDeskewStatus::success);
-    return true;
-}
+private:
+    sycl_utils::DeviceQueue queue_;
+    mutable shared_vector_ptr<IMUTrajectoryPose> trajectory_sycl_ = nullptr;
+    mutable std::shared_ptr<std::mutex> trajectory_mutex_ = nullptr;
+};
 
 }  // namespace deskew
 }  // namespace algorithms

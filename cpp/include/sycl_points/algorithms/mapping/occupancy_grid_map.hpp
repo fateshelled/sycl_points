@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -34,12 +35,24 @@ public:
     OccupancyGridMap(const sycl_utils::DeviceQueue& queue, const float voxel_size) : queue_(queue) {
         this->set_voxel_size(voxel_size);
         this->allocate_storage(this->capacity_);
+        this->extract_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->overlap_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->rehash_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->rehash_failure_flag_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->integrate_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->origin_hit_flag_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->expected_visit_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->free_space_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->prune_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->occupied_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
+        this->map_mutex_ = std::make_shared<std::mutex>();
 
         this->clear();
     }
 
     /// @brief Reset the map data.
     void clear() {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         this->capacity_ = kCapacityCandidates[0];
         this->voxel_num_ = 0;
         this->has_cov_data_ = false;
@@ -83,6 +96,7 @@ public:
 
     /// @brief Query the occupancy probability at the specified position.
     float voxel_probability(const Eigen::Vector3f& position) const {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         const uint64_t key = this->compute_key(position);
         const VoxelCoreData* core = this->find_voxel(key);
         if (!core) {
@@ -127,6 +141,7 @@ public:
     /// @param cloud Point cloud in the sensor frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     void add_point_cloud(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         if (!cloud.points || cloud.points->empty()) {
             return;
         }
@@ -168,6 +183,7 @@ public:
     /// @param max_distance Maximum extract L-infinity distance in meters.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
                                  const float max_distance = 100.0f) const {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         result.resize_points(0);
         result.resize_covs(0);
         result.resize_rgb(0);
@@ -188,6 +204,7 @@ public:
     /// @param vertical_fov Vertical field of view in radians.
     void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
                                 float horizontal_fov, float vertical_fov) const {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         result.resize_points(0);
         result.resize_covs(0);
         if (this->voxel_num_ == 0) {
@@ -197,7 +214,7 @@ public:
         horizontal_fov = std::clamp(horizontal_fov, kFovTolerance, kPi - kFovTolerance);
         vertical_fov = std::clamp(vertical_fov, kFovTolerance, 2.0f * kPi - kFovTolerance);
 
-        shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
+        this->extract_counter_->at(0) = 0U;
 
         // Allocate the worst-case storage before the filtering pass and shrink once visibility is known.
         result.resize_points(this->voxel_num_);
@@ -236,7 +253,7 @@ public:
             const size_t max_probe = this->max_probe_length_;
             const size_t capacity = this->capacity_;
 
-            auto counter_ptr = counter.data();
+            auto counter_ptr = this->extract_counter_->data();
             const float sensor_x = sensor_pose.translation().x();
             const float sensor_y = sensor_pose.translation().y();
             const float sensor_z = sensor_pose.translation().z();
@@ -395,7 +412,7 @@ public:
         });
 
         auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
-            const uint32_t final_count = counter.at(0);
+            const uint32_t final_count = this->extract_counter_->at(0);
             result.resize_points(final_count);
             if (this->has_cov_data_) {
                 result.resize_covs(final_count);
@@ -415,15 +432,16 @@ public:
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @return Ratio of points that overlap with existing voxels in the map.
     float compute_overlap_ratio(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) const {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         if (!cloud.points || cloud.points->empty() || this->voxel_num_ == 0) {
             return 0.0f;
         }
 
         const size_t N = cloud.size();
-        shared_vector<uint32_t> overlap_counter(1, 0U, *this->queue_.ptr);
+        this->overlap_counter_->at(0) = 0U;
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
-            auto overlap_reduction = sycl::reduction(overlap_counter.data(), sycl::plus<uint32_t>());
+            auto overlap_reduction = sycl::reduction(this->overlap_counter_->data(), sycl::plus<uint32_t>());
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
             const auto point_ptr = cloud.points_ptr();
@@ -468,7 +486,7 @@ public:
 
         event.wait_and_throw();
 
-        return static_cast<float>(overlap_counter.at(0)) / static_cast<float>(N);
+        return static_cast<float>(this->overlap_counter_->at(0)) / static_cast<float>(N);
     }
 
 private:
@@ -659,8 +677,8 @@ private:
 
         this->allocate_storage(new_capacity);
 
-        shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
-        shared_vector<uint32_t> failure_flag(1, 0U, *this->queue_.ptr);
+        this->rehash_voxel_counter_->at(0) = 0U;
+        this->rehash_failure_flag_->at(0) = 0U;
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const size_t N = old_capacity;
@@ -679,8 +697,8 @@ private:
             auto new_intensity_ptr = this->intensity_data_ptr_->data();
             const size_t new_capacity_local = this->capacity_;
             const size_t max_probe = this->max_probe_length_;
-            auto voxel_num_ptr = voxel_counter.data();
-            auto failure_ptr = failure_flag.data();
+            auto voxel_num_ptr = this->rehash_voxel_counter_->data();
+            auto failure_ptr = this->rehash_failure_flag_->data();
             auto range = sycl::nd_range<1>(global_size, work_group_size);
 
             const auto has_cov = this->has_cov_data_;
@@ -772,11 +790,11 @@ private:
         });
 
         auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
-            if (failure_flag.at(0) != 0U) {
-                std::cerr << "Could not find slot for " << failure_flag.at(0) << " voxel" << std::endl;
+            if (this->rehash_failure_flag_->at(0) != 0U) {
+                std::cerr << "Could not find slot for " << this->rehash_failure_flag_->at(0) << " voxel" << std::endl;
                 // throw std::runtime_error("Rehash failed: could not find a slot for a voxel.");
             }
-            this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+            this->voxel_num_ = static_cast<size_t>(this->rehash_voxel_counter_->at(0));
         });
         host_event.wait_and_throw();
     }
@@ -1072,7 +1090,7 @@ private:
     void integrate_points(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose, const bool has_cov,
                           const bool has_rgb, const bool has_intensity) {
         const size_t N = cloud.size();
-        shared_vector<uint32_t> voxel_counter(1, this->voxel_num_, *this->queue_.ptr);
+        this->integrate_voxel_counter_->at(0) = static_cast<uint32_t>(this->voxel_num_);
 
         // Parallel reduction merges per-point contributions into hashed voxels.
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
@@ -1182,7 +1200,7 @@ private:
             auto equal_keys = [](uint64_t lhs, uint64_t rhs) { return lhs == rhs; };
 
             if (this->queue_.is_nvidia()) {
-                auto reduction = sycl::reduction(voxel_counter.data(), sycl::plus<uint32_t>());
+                auto reduction = sycl::reduction(this->integrate_voxel_counter_->data(), sycl::plus<uint32_t>());
                 h.parallel_for(  //
                     sycl::nd_range<1>(global_size, local_size), reduction,
                     [=](sycl::nd_item<1> item, auto& voxel_num_arg) {
@@ -1203,7 +1221,7 @@ private:
                             has_intensity);
                     });
             } else {
-                auto voxel_ptr_counter = voxel_counter.data();
+                auto voxel_ptr_counter = this->integrate_voxel_counter_->data();
                 h.parallel_for(  //
                     sycl::nd_range<1>(global_size, local_size), [=](sycl::nd_item<1> item) {
                         common::local_reduction<false, VoxelLocalData>(
@@ -1227,7 +1245,7 @@ private:
         });
 
         auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
-            this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+            this->voxel_num_ = static_cast<size_t>(this->integrate_voxel_counter_->at(0));
         });
         host_event.wait_and_throw();
     }
@@ -1253,13 +1271,13 @@ private:
         const bool has_origin_key = this->grid_to_key(origin_ix_host, origin_iy_host, origin_iz_host, origin_key);
 
         sycl::event hit_event;
-        shared_vector<uint32_t> origin_hit_flag(1, 0U, *this->queue_.ptr);
+        this->origin_hit_flag_->at(0) = 0U;
 
         if (has_origin_key) {
             // Detect if any points fall into the sensor-origin voxel to avoid clearing true hits.
             hit_event = this->queue_.ptr->submit([&](sycl::handler& h) {
                 const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
-                auto hit_ptr = origin_hit_flag.data();
+                auto hit_ptr = this->origin_hit_flag_->data();
                 auto hit_reduction = sycl::reduction(hit_ptr, sycl::maximum<uint32_t>());
                 auto local_points_ptr = cloud.points_ptr();
                 const float inv_voxel_size = this->inv_voxel_size_;
@@ -1279,11 +1297,11 @@ private:
             });
         }
 
-        shared_vector<uint32_t> expected_visit_counter(1, 0U, *this->queue_.ptr);
+        this->expected_visit_counter_->at(0) = 0U;
         auto estimate_event = this->queue_.ptr->submit([&](sycl::handler& h) {
             const auto trans = eigen_utils::to_sycl_vec(sensor_pose.matrix());
 
-            auto counter_ptr = expected_visit_counter.data();
+            auto counter_ptr = this->expected_visit_counter_->data();
             auto local_points_ptr = cloud.points_ptr();
             const float inv_voxel_size = this->inv_voxel_size_;
 
@@ -1336,7 +1354,7 @@ private:
 
         size_t expected_voxel_visits = 0;
         auto expected_voxel_event = sycl_utils::submit_host_task(*this->queue_.ptr, {estimate_event}, [&]() {  //
-            expected_voxel_visits = static_cast<size_t>(expected_visit_counter.at(0));
+            expected_voxel_visits = static_cast<size_t>(this->expected_visit_counter_->at(0));
         });
         expected_voxel_event.wait_and_throw();
 
@@ -1354,7 +1372,7 @@ private:
             this->rehash(next_capacity);
         }
 
-        shared_vector<uint32_t> voxel_counter(1, static_cast<uint32_t>(this->voxel_num_), *this->queue_.ptr);
+        this->free_space_voxel_counter_->at(0) = static_cast<uint32_t>(this->voxel_num_);
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             h.depends_on(hit_event);
@@ -1368,8 +1386,8 @@ private:
             auto covariance_ptr = this->covariance_data_ptr_->data();
             auto color_ptr = this->color_data_ptr_->data();
             auto intensity_ptr = this->intensity_data_ptr_->data();
-            auto counter_ptr = voxel_counter.data();
-            auto origin_hit_ptr = origin_hit_flag.data();
+            auto counter_ptr = this->free_space_voxel_counter_->data();
+            auto origin_hit_ptr = this->origin_hit_flag_->data();
 
             const auto local_points_ptr = cloud.points_ptr();
             const float log_miss = this->log_odds_miss_;
@@ -1449,7 +1467,7 @@ private:
         });
 
         auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
-            this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+            this->voxel_num_ = static_cast<size_t>(this->free_space_voxel_counter_->at(0));
         });
         host_event.wait_and_throw();
     }
@@ -1491,7 +1509,7 @@ private:
             return;
         }
 
-        shared_vector<uint32_t> voxel_counter(1, 0U, *this->queue_.ptr);
+        this->prune_voxel_counter_->at(0) = 0U;
 
         auto event = this->queue_.ptr->submit([&](sycl::handler& h) {
             auto key_ptr = this->key_ptr_->data();
@@ -1499,7 +1517,7 @@ private:
             auto color_ptr = this->color_data_ptr_->data();
             auto intensity_ptr = this->intensity_data_ptr_->data();
 
-            auto counter_reduction = sycl::reduction(voxel_counter.data(), sycl::plus<uint32_t>());
+            auto counter_reduction = sycl::reduction(this->prune_voxel_counter_->data(), sycl::plus<uint32_t>());
 
             h.parallel_for(sycl::range<1>(N), counter_reduction, [=](sycl::id<1> idx, auto& counter) {
                 const size_t i = idx[0];
@@ -1522,7 +1540,7 @@ private:
             });
         });
         auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
-            this->voxel_num_ = static_cast<size_t>(voxel_counter.at(0));
+            this->voxel_num_ = static_cast<size_t>(this->prune_voxel_counter_->at(0));
         });
         host_event.wait_and_throw();
     }
@@ -1530,7 +1548,7 @@ private:
     void extract_occupied_points_impl(PointCloudShared& result, const Eigen::Vector3f& sensor_position,
                                       const float max_distance) const {
         const size_t N = this->capacity_;
-        shared_vector<uint32_t> counter(1, 0U, *this->queue_.ptr);
+        this->occupied_counter_->at(0) = 0U;
 
         result.resize_points(this->voxel_num_);
         if (this->has_cov_data_) {
@@ -1563,7 +1581,7 @@ private:
             const bool has_cov = this->has_cov_data_;
             const bool has_rgb = this->has_rgb_data_;
             const bool has_intensity = this->has_intensity_data_;
-            auto counter_ptr = counter.data();
+            auto counter_ptr = this->occupied_counter_->data();
 
             h.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
                 const size_t i = idx[0];
@@ -1623,7 +1641,7 @@ private:
         });
 
         auto host_event = sycl_utils::submit_host_task(*this->queue_.ptr, {event}, [&]() {  //
-            const uint32_t final_count = counter.at(0);
+            const uint32_t final_count = this->occupied_counter_->at(0);
             result.resize_points(final_count);
             if (this->has_cov_data_) {
                 result.resize_covs(final_count);
@@ -1672,6 +1690,18 @@ private:
     shared_vector_ptr<VoxelCovarianceData> covariance_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelColorData> color_data_ptr_ = nullptr;
     shared_vector_ptr<VoxelIntensityData> intensity_data_ptr_ = nullptr;
+    shared_vector_ptr<uint32_t> extract_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> overlap_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> rehash_voxel_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> rehash_failure_flag_ = nullptr;
+    shared_vector_ptr<uint32_t> integrate_voxel_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> origin_hit_flag_ = nullptr;
+    shared_vector_ptr<uint32_t> expected_visit_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> free_space_voxel_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> prune_voxel_counter_ = nullptr;
+    shared_vector_ptr<uint32_t> occupied_counter_ = nullptr;
+    // Serializes map updates and queries that reuse device-side counters and storage.
+    std::shared_ptr<std::mutex> map_mutex_ = nullptr;
 };
 
 }  // namespace mapping
