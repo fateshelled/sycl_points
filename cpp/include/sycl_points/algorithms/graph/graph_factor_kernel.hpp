@@ -230,7 +230,7 @@ public:
     ///        the most recent linearize() call. This deliberately skips KNN so
     ///        LM compares current and trial costs on the same objective.
     std::pair<float, uint32_t> compute_error_frozen(const PointCloudShared& source,
-                                                    const Eigen::Matrix4f& T_src,
+                                                     const Eigen::Matrix4f& T_src,
                                                      const PointCloudShared& target,
                                                      const Eigen::Matrix4f& T_tgt,
                                                      float scale = 0.0f) const {

@@ -120,6 +120,11 @@ public:
     Registration(const sycl_utils::DeviceQueue& queue, const RegistrationFactorParams& params)
         : Registration(queue, RegistrationParams(params)) {}
 
+    Registration(const Registration&) = delete;
+    Registration& operator=(const Registration&) = delete;
+    Registration(Registration&&) = delete;
+    Registration& operator=(Registration&&) = delete;
+
     /// @brief Set the MAP prior state for the upcoming align() call.
     ///        Must be called once per frame, after motion prediction and before align().
     /// @param prev_result  Registration result of the previous frame.

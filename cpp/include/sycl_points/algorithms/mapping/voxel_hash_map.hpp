@@ -39,7 +39,7 @@ public:
         this->remove_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
         this->rehash_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
         this->downsample_point_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
-        this->overlap_counter_mutex_ = std::make_shared<std::mutex>();
+        this->map_mutex_ = std::make_shared<std::mutex>();
         this->clear();
         this->wg_size_add_point_cloud_ = this->compute_wg_size_add_point_cloud();
     }
@@ -90,6 +90,7 @@ public:
 
     /// @brief Reset the map data.
     void clear() {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         this->capacity_ = kCapacityCandidates[0];
         this->voxel_num_ = 0;
         this->staleness_counter_ = 0;
@@ -124,6 +125,7 @@ public:
     /// @param cloud Point cloud in the sensor frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     void add_point_cloud(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         const size_t N = cloud.size();
 
         // rehash
@@ -141,7 +143,7 @@ public:
 
         // remove old data
         if (this->remove_old_data_cycle_ > 0 && (this->staleness_counter_ % this->remove_old_data_cycle_) == 0) {
-            this->remove_old_data();
+            this->remove_old_data_impl();
         }
 
         // increment counter
@@ -153,6 +155,7 @@ public:
     /// @param center Center of the query bounding box in meters.
     /// @param distance Half-extent of the axis-aligned bounding box in meters.
     void downsampling(PointCloudShared& result, const Eigen::Vector3f& center, const float distance = 100.0f) {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         if (this->voxel_num_ == 0) {
             result.clear();
             return;
@@ -201,7 +204,7 @@ public:
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @return Ratio of points that overlap with existing voxels in the map.
     float compute_overlap_ratio(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) const {
-        std::lock_guard<std::mutex> lock(*this->overlap_counter_mutex_);
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         if (!cloud.points || cloud.points->empty() || this->voxel_num_ == 0) {
             return 0.0f;
         }
@@ -255,7 +258,10 @@ public:
         return static_cast<float>(this->overlap_counter_->at(0)) / static_cast<float>(N);
     }
 
-    void remove_old_data() { this->remove_old_data_impl(); }
+    void remove_old_data() {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
+        this->remove_old_data_impl();
+    }
 
 private:
     using atomic_ref_float = sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device>;
@@ -505,7 +511,8 @@ private:
     shared_vector_ptr<uint32_t> remove_voxel_counter_ = nullptr;
     shared_vector_ptr<uint32_t> rehash_voxel_counter_ = nullptr;
     shared_vector_ptr<uint32_t> downsample_point_counter_ = nullptr;
-    std::shared_ptr<std::mutex> overlap_counter_mutex_ = nullptr;
+    // Serializes map updates and queries that reuse device-side counters and storage.
+    std::shared_ptr<std::mutex> map_mutex_ = nullptr;
 
     uint32_t staleness_counter_ = 0;
     uint32_t max_staleness_ = 100;

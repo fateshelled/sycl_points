@@ -159,6 +159,7 @@ public:
     /// @param radius The radius to search for neighbors.
     /// @param remove_from_tree If true, removes the outlier nodes from the KD-Tree as well.
     void radius(PointCloudShared& cloud, knn::KDTree& tree, size_t min_k, float radius, bool remove_from_tree = false) {
+        std::lock_guard<std::mutex> lock(*this->statistical_mutex_);
         const size_t N = cloud.size();
         if (N < min_k) {
             std::cerr << "Not enough points in the cloud [ points = " << N << ", min_k = " << min_k << " ]"

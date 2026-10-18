@@ -98,6 +98,7 @@ SYCL_EXTERNAL inline void interpolate_trajectory_pose(const IMUTrajectoryPose& t
 /// the buffered IMU measurements over the scan window and applying per-point SE3
 /// corrections via a SYCL parallel kernel. Gravity is compensated using
 /// @p R_world_body_i consistent with IMUPreintegration::predict_relative_transform().
+/// The input, output, and constructor queue must belong to the same SYCL context.
 ///
 /// This function should be called *before* downsampling and ICP so that every
 /// raw point is corrected. If the IMU buffer does not bracket the full scan window
@@ -130,6 +131,11 @@ public:
         this->trajectory_sycl_ = std::make_shared<shared_vector<IMUTrajectoryPose>>(*this->queue_.ptr);
         this->trajectory_mutex_ = std::make_shared<std::mutex>();
     }
+
+    IMUDeskew(const IMUDeskew&) = delete;
+    IMUDeskew& operator=(const IMUDeskew&) = delete;
+    IMUDeskew(IMUDeskew&&) = delete;
+    IMUDeskew& operator=(IMUDeskew&&) = delete;
 
     template <imu::imu_measurement_range Range>
     bool deskew(const PointCloudShared& input_cloud, PointCloudShared& output_cloud, const Range& imu_buffer,
@@ -258,11 +264,11 @@ public:
         }
     }
 
-        // -----------------------------------------------------------------------
-        // Step 4: Copy trajectory into SYCL shared memory.
-        // -----------------------------------------------------------------------
-        const size_t traj_size = traj_cpu.size();
-        this->trajectory_sycl_->assign(traj_cpu.begin(), traj_cpu.end());
+    // -----------------------------------------------------------------------
+    // Step 4: Copy trajectory into SYCL shared memory.
+    // -----------------------------------------------------------------------
+    const size_t traj_size = traj_cpu.size();
+    this->trajectory_sycl_->assign(traj_cpu.begin(), traj_cpu.end());
 
     // -----------------------------------------------------------------------
     // Step 5: Mirror input metadata into output (if not in-place).

@@ -45,13 +45,14 @@ public:
         this->free_space_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
         this->prune_voxel_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
         this->occupied_counter_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
-        this->query_counter_mutex_ = std::make_shared<std::mutex>();
+        this->map_mutex_ = std::make_shared<std::mutex>();
 
         this->clear();
     }
 
     /// @brief Reset the map data.
     void clear() {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         this->capacity_ = kCapacityCandidates[0];
         this->voxel_num_ = 0;
         this->has_cov_data_ = false;
@@ -95,6 +96,7 @@ public:
 
     /// @brief Query the occupancy probability at the specified position.
     float voxel_probability(const Eigen::Vector3f& position) const {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         const uint64_t key = this->compute_key(position);
         const VoxelCoreData* core = this->find_voxel(key);
         if (!core) {
@@ -139,6 +141,7 @@ public:
     /// @param cloud Point cloud in the sensor frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.
     void add_point_cloud(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) {
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         if (!cloud.points || cloud.points->empty()) {
             return;
         }
@@ -180,7 +183,7 @@ public:
     /// @param max_distance Maximum extract L-infinity distance in meters.
     void extract_occupied_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose,
                                  const float max_distance = 100.0f) const {
-        std::lock_guard<std::mutex> lock(*this->query_counter_mutex_);
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         result.resize_points(0);
         result.resize_covs(0);
         result.resize_rgb(0);
@@ -201,7 +204,7 @@ public:
     /// @param vertical_fov Vertical field of view in radians.
     void extract_visible_points(PointCloudShared& result, const Eigen::Isometry3f& sensor_pose, float max_distance,
                                 float horizontal_fov, float vertical_fov) const {
-        std::lock_guard<std::mutex> lock(*this->query_counter_mutex_);
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         result.resize_points(0);
         result.resize_covs(0);
         if (this->voxel_num_ == 0) {
@@ -429,7 +432,7 @@ public:
     /// @param sensor_pose Sensor pose expressed in the map frame.
     /// @return Ratio of points that overlap with existing voxels in the map.
     float compute_overlap_ratio(const PointCloudShared& cloud, const Eigen::Isometry3f& sensor_pose) const {
-        std::lock_guard<std::mutex> lock(*this->query_counter_mutex_);
+        std::lock_guard<std::mutex> lock(*this->map_mutex_);
         if (!cloud.points || cloud.points->empty() || this->voxel_num_ == 0) {
             return 0.0f;
         }
@@ -1697,7 +1700,8 @@ private:
     shared_vector_ptr<uint32_t> free_space_voxel_counter_ = nullptr;
     shared_vector_ptr<uint32_t> prune_voxel_counter_ = nullptr;
     shared_vector_ptr<uint32_t> occupied_counter_ = nullptr;
-    std::shared_ptr<std::mutex> query_counter_mutex_ = nullptr;
+    // Serializes map updates and queries that reuse device-side counters and storage.
+    std::shared_ptr<std::mutex> map_mutex_ = nullptr;
 };
 
 }  // namespace mapping
