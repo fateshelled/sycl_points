@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
 
 #include "sycl_points/algorithms/feature/covariance.hpp"
 #include "sycl_points/algorithms/knn/knn.hpp"
@@ -108,6 +109,8 @@ public:
         this->neighbors_->at(0).allocate(this->queue_, 1, 1);
 
         this->linearized_on_device_ = std::make_shared<LinearizedDevice>(this->queue_);
+        this->error_frozen_on_device_ = std::make_shared<shared_vector<float>>(1, 0.0f, *this->queue_.ptr);
+        this->inlier_frozen_on_device_ = std::make_shared<shared_vector<uint32_t>>(1, 0U, *this->queue_.ptr);
 
         this->degenerate_reg_.set_params(this->params_.degenerate_reg);
         this->map_prior_.set_params(this->params_.map_prior);
@@ -350,13 +353,12 @@ public:
     std::tuple<float, uint32_t> compute_error_frozen(const PointCloudShared& source, const PointCloudShared& target,
                                                      const TransformMatrix& pose,
                                                      const ExecutionOptions& options = ExecutionOptions()) const {
-        auto error = std::make_shared<shared_vector<float>>(1, 0.0f, *this->queue_.ptr);
-        auto inlier = std::make_shared<shared_vector<uint32_t>>(1, 0, *this->queue_.ptr);
-        auto events = compute_error_frozen_async(source, target, pose, *error, *inlier, options);
-        events.keep_alive.push_back(error);
-        events.keep_alive.push_back(inlier);
+        std::lock_guard<std::mutex> lock(*this->error_frozen_mutex_);
+        auto& error = *this->error_frozen_on_device_;
+        auto& inlier = *this->inlier_frozen_on_device_;
+        auto events = compute_error_frozen_async(source, target, pose, error, inlier, options);
         events.wait_and_throw();
-        return {(*error)[0], (*inlier)[0]};
+        return {error[0], inlier[0]};
     }
 
     /// @brief Asynchronous form of compute_error_frozen(). The caller owns the
@@ -386,6 +388,9 @@ private:
 
     mutable shared_vector_ptr<knn::KNNResult> neighbors_ = nullptr;
     std::shared_ptr<LinearizedDevice> linearized_on_device_ = nullptr;
+    std::shared_ptr<shared_vector<float>> error_frozen_on_device_ = nullptr;
+    std::shared_ptr<shared_vector<uint32_t>> inlier_frozen_on_device_ = nullptr;
+    std::shared_ptr<std::mutex> error_frozen_mutex_ = std::make_shared<std::mutex>();
 
     DegenerateRegularization degenerate_reg_;
     MapPrior map_prior_;
