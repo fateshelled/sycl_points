@@ -22,6 +22,8 @@ public:
         this->indices_ = std::make_shared<shared_vector<int32_t>>(*this->queue_.ptr);
         this->local_mean_distance_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
         this->distance_threshold_ = std::make_shared<shared_vector<float>>(*this->queue_.ptr);
+        this->global_distance_sum_ = std::make_shared<shared_vector<float>>(1, 0.0f, *this->queue_.ptr);
+        this->global_variance_ = std::make_shared<shared_vector<float>>(1, 0.0f, *this->queue_.ptr);
 
         this->neighbors_ = std::make_shared<knn::KNNResult>();
     }
@@ -48,7 +50,7 @@ public:
         this->flags_->resize(cloud.size());
         this->local_mean_distance_->resize(cloud.size());
 
-        shared_vector<float> global_distance_sum_vec(1, 0.0f, *this->queue_.ptr);
+        this->global_distance_sum_->at(0) = 0.0f;
 
         // compute knn mean distance
         this->queue_.ptr
@@ -64,7 +66,7 @@ public:
                 const auto local_mean_distance_ptr = this->local_mean_distance_->data();
 
                 auto global_distance_sum_reduction =
-                    sycl::reduction(global_distance_sum_vec.data(), sycl::plus<float>());
+                    sycl::reduction(this->global_distance_sum_->data(), sycl::plus<float>());
 
                 // wait for knn search
                 h.depends_on(knn_event.evs);
@@ -89,17 +91,17 @@ public:
             .wait_and_throw();
 
         // compute variance
-        shared_vector<float> global_variance_vec(1, 0.0f, *this->queue_.ptr);
+        this->global_variance_->at(0) = 0.0f;
         this->queue_.ptr
             ->submit([&](sycl::handler& h) {
                 const size_t work_group_size = this->queue_.get_work_group_size();
                 const size_t global_size = this->queue_.get_global_size(N);
 
-                auto global_var_reduction = sycl::reduction(global_variance_vec.data(), sycl::plus<float>());
+                auto global_var_reduction = sycl::reduction(this->global_variance_->data(), sycl::plus<float>());
 
                 // get pointers
                 const auto local_mean_distance_ptr = this->local_mean_distance_->data();
-                const float global_mean_distance = global_distance_sum_vec[0] / static_cast<float>(N);
+                const float global_mean_distance = (*this->global_distance_sum_)[0] / static_cast<float>(N);
 
                 h.parallel_for(  //
                     sycl::nd_range<1>(global_size, work_group_size),
@@ -123,8 +125,8 @@ public:
                 const auto local_mean_distance_ptr = this->local_mean_distance_->data();
                 const auto flag_ptr = this->flags_->data();
 
-                const float global_mean_distance = global_distance_sum_vec[0] / static_cast<float>(N);
-                const float global_stddev = std::sqrt(global_variance_vec[0] / static_cast<float>(N));
+                const float global_mean_distance = (*this->global_distance_sum_)[0] / static_cast<float>(N);
+                const float global_stddev = std::sqrt((*this->global_variance_)[0] / static_cast<float>(N));
                 const float threshold = global_mean_distance + stddev_mul_thresh * global_stddev;
 
                 h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
@@ -218,6 +220,8 @@ private:
     shared_vector_ptr<int32_t> indices_;
     shared_vector_ptr<float> local_mean_distance_;
     shared_vector_ptr<float> distance_threshold_;
+    shared_vector_ptr<float> global_distance_sum_;
+    shared_vector_ptr<float> global_variance_;
 
     /// @brief Applies filtering based on the current flags
     /// @param data Point cloud to be filtered (modified in-place)
