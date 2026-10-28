@@ -157,10 +157,10 @@
     submap/max_distance_range: 50.0
     submap/point_random_sampling_num: 512
     submap/weighted_sampling_ratio: 0.8
-    submap/map_type: VOXEL_HASH_MAP # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
+    submap/map_type: OCCUPANCY_GRID_MAP # OCCUPANCY_GRID_MAP, VOXEL_HASH_MAP
     submap/keyframe/inlier_ratio_threshold: 0.3
     submap/keyframe/distance_threshold: 2.0
-    submap/keyframe/angle_threshold_degrees: 20.0
+    submap/keyframe/angle_threshold_degrees: 2.0
     submap/keyframe/time_threshold_seconds: 1.0
     submap/occupancy_grid_map/log_odds_hit: 0.5
     submap/occupancy_grid_map/log_odds_miss: -0.03
@@ -197,7 +197,7 @@
     # only re-searched when the threshold is crossed).
     graph/relinearize/translation_threshold: 0.1  # [m]
     graph/relinearize/rotation_threshold: 0.02     # [rad]
-    graph/solver/optimization_method: GN           # GN, LM
+    graph/solver/optimization_method: LM           # GN, LM
     graph/solver/damping_lambda: 1.0e+3            # GN-only LDLT fallback regularization
     graph/solver/lm/max_inner_iterations: 5
     graph/solver/lm/lambda_factor: 2.0
