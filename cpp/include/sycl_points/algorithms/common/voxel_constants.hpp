@@ -33,7 +33,8 @@ struct PolarCoordComponent {
 namespace filter {
 namespace kernel {
 
-SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float voxel_size_inv) {
+SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float voxel_size_x_inv,
+                                                const float voxel_size_y_inv, const float voxel_size_z_inv) {
     // Ref: https://github.com/koide3/gtsam_points/blob/master/src/gtsam_points/types/point_cloud_cpu_funcs.cpp
     // function: voxelgrid_sampling
     // MIT License
@@ -42,9 +43,18 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
         return VoxelConstants::invalid_coord;
     }
 
-    const auto coord0 = static_cast<int64_t>(std::floor(point.x() * voxel_size_inv)) + VoxelConstants::coord_offset;
-    const auto coord1 = static_cast<int64_t>(std::floor(point.y() * voxel_size_inv)) + VoxelConstants::coord_offset;
-    const auto coord2 = static_cast<int64_t>(std::floor(point.z() * voxel_size_inv)) + VoxelConstants::coord_offset;
+    const auto scaled_x = point.x() * voxel_size_x_inv;
+    const auto scaled_y = point.y() * voxel_size_y_inv;
+    const auto scaled_z = point.z() * voxel_size_z_inv;
+    // Check before converting to integer: a finite point can overflow after scaling.
+    const auto offset = static_cast<float>(VoxelConstants::coord_offset);
+    if (!(scaled_x >= -offset && scaled_x < offset) || !(scaled_y >= -offset && scaled_y < offset) ||
+        !(scaled_z >= -offset && scaled_z < offset)) {
+        return VoxelConstants::invalid_coord;
+    }
+    const auto coord0 = static_cast<int64_t>(std::floor(scaled_x)) + VoxelConstants::coord_offset;
+    const auto coord1 = static_cast<int64_t>(std::floor(scaled_y)) + VoxelConstants::coord_offset;
+    const auto coord2 = static_cast<int64_t>(std::floor(scaled_z)) + VoxelConstants::coord_offset;
 
     if (coord0 < 0 || VoxelConstants::coord_bit_mask < coord0 ||  //
         coord1 < 0 || VoxelConstants::coord_bit_mask < coord1 ||  //
@@ -58,7 +68,11 @@ SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const fl
            (static_cast<uint64_t>(coord1 & VoxelConstants::coord_bit_mask)
             << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Y)) |
            (static_cast<uint64_t>(coord2 & VoxelConstants::coord_bit_mask)
-            << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Z));
+             << (VoxelConstants::coord_bit_size * CartesianCoordComponent::Z));
+}
+
+SYCL_EXTERNAL inline uint64_t compute_voxel_bit(const PointType& point, const float voxel_size_inv) {
+    return compute_voxel_bit(point, voxel_size_inv, voxel_size_inv, voxel_size_inv);
 }
 
 }  // namespace kernel

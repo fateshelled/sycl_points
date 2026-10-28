@@ -88,6 +88,12 @@ inline pipeline::odometry::CommonParameters declare_odometry_common_parameters(r
             node->declare_parameter<bool>("scan/downsampling/voxel/enable", params.scan.downsampling.voxel.enable);
         params.scan.downsampling.voxel.size =
             node->declare_parameter<double>("scan/downsampling/voxel/voxel_size", params.scan.downsampling.voxel.size);
+        params.scan.downsampling.voxel.size_x = node->declare_parameter<double>(
+            "scan/downsampling/voxel/voxel_size_x", params.scan.downsampling.voxel.size);
+        params.scan.downsampling.voxel.size_y = node->declare_parameter<double>(
+            "scan/downsampling/voxel/voxel_size_y", params.scan.downsampling.voxel.size);
+        params.scan.downsampling.voxel.size_z = node->declare_parameter<double>(
+            "scan/downsampling/voxel/voxel_size_z", params.scan.downsampling.voxel.size);
 
         params.scan.downsampling.polar.enable =
             node->declare_parameter<bool>("scan/downsampling/polar/enable", params.scan.downsampling.polar.enable);

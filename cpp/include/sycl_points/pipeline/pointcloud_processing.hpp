@@ -91,8 +91,10 @@ private:
     void initialize() {
         this->preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(this->queue_);
         if (this->scan_params_.downsampling.voxel.enable) {
+            const auto& voxel = this->scan_params_.downsampling.voxel;
             this->voxel_filter_ = std::make_shared<algorithms::filter::VoxelGrid>(
-                this->queue_, this->scan_params_.downsampling.voxel.size);
+                this->queue_, voxel.size_x.value_or(voxel.size), voxel.size_y.value_or(voxel.size),
+                voxel.size_z.value_or(voxel.size));
         }
         if (this->scan_params_.downsampling.polar.enable) {
             const auto coord_system =

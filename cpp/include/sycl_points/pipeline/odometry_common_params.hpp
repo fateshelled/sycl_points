@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstddef>
 #include <numbers>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -67,6 +68,9 @@ struct CommonParameters {
             struct Voxel {
                 bool enable = false;
                 float size = 1.0f;
+                std::optional<float> size_x;
+                std::optional<float> size_y;
+                std::optional<float> size_z;
             };
 
             struct Polar {

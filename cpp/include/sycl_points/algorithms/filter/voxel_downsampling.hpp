@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
@@ -19,28 +21,48 @@ public:
     /// @param queue SYCL queue
     /// @param voxel_size voxel size
     VoxelGrid(const sycl_points::sycl_utils::DeviceQueue& queue, const float voxel_size)
-        : queue_(queue), voxel_size_(voxel_size) {
-        if (voxel_size <= 0.0f) {
-            throw std::invalid_argument("voxel_size must be positive");
-        }
+        : VoxelGrid(queue, voxel_size, voxel_size, voxel_size) {}
+
+    /// @brief Constructor with independent X, Y, Z leaf sizes
+    VoxelGrid(const sycl_points::sycl_utils::DeviceQueue& queue, const float size_x, const float size_y,
+              const float size_z)
+        : queue_(queue) {
+        this->set_leaf_size(size_x, size_y, size_z);
         this->bit_ptr_ = std::make_shared<shared_vector<uint64_t>>(0, *this->queue_.ptr);
-        this->voxel_size_inv_ = 1.0f / this->voxel_size_;
         this->min_voxel_count_ = 1;
     }
 
     /// @brief Set voxel size
     /// @param voxel_size voxel size
     void set_voxel_size(const float voxel_size) {
-        if (voxel_size <= 0.0f) {
-            throw std::invalid_argument("voxel_size must be positive");
+        this->set_leaf_size(voxel_size, voxel_size, voxel_size);
+    }
+
+    void set_leaf_size(const float size_x, const float size_y, const float size_z) {
+        if (!std::isfinite(size_x) || !std::isfinite(size_y) || !std::isfinite(size_z) ||
+            size_x <= 0.0f || size_y <= 0.0f || size_z <= 0.0f) {
+            throw std::invalid_argument("voxel leaf sizes must be finite and positive");
         }
-        this->voxel_size_ = voxel_size;
-        this->voxel_size_inv_ = 1.0f / this->voxel_size_;
+        const float inv_x = 1.0f / size_x;
+        const float inv_y = 1.0f / size_y;
+        const float inv_z = 1.0f / size_z;
+        if (!std::isfinite(inv_x) || !std::isfinite(inv_y) || !std::isfinite(inv_z)) {
+            throw std::invalid_argument("voxel leaf sizes are too small");
+        }
+        this->voxel_size_x_ = size_x;
+        this->voxel_size_y_ = size_y;
+        this->voxel_size_z_ = size_z;
+        this->voxel_size_x_inv_ = inv_x;
+        this->voxel_size_y_inv_ = inv_y;
+        this->voxel_size_z_inv_ = inv_z;
     }
 
     /// @brief Get voxel size
-    /// @param voxel_size voxel size
-    float get_voxel_size() const { return this->voxel_size_; }
+    /// @brief Get X leaf size (legacy isotropic API)
+    float get_voxel_size() const { return this->voxel_size_x_; }
+    float get_leaf_size_x() const { return this->voxel_size_x_; }
+    float get_leaf_size_y() const { return this->voxel_size_y_; }
+    float get_leaf_size_z() const { return this->voxel_size_z_; }
 
     void set_min_voxel_count(const size_t min_voxel_count) { this->min_voxel_count_ = min_voxel_count; }
 
@@ -98,8 +120,12 @@ private:
     }
 
     sycl_points::sycl_utils::DeviceQueue queue_;
-    float voxel_size_;
-    float voxel_size_inv_;
+    float voxel_size_x_;
+    float voxel_size_y_;
+    float voxel_size_z_;
+    float voxel_size_x_inv_;
+    float voxel_size_y_inv_;
+    float voxel_size_z_inv_;
     size_t min_voxel_count_;
 
     shared_vector_ptr<uint64_t> bit_ptr_ = nullptr;
@@ -126,12 +152,15 @@ private:
             // memory ptr
             const auto point_ptr = points.data();
             const auto bit_ptr = this->bit_ptr_->data();
-            const auto voxel_size_inv = this->voxel_size_inv_;
+            const auto voxel_size_x_inv = this->voxel_size_x_inv_;
+            const auto voxel_size_y_inv = this->voxel_size_y_inv_;
+            const auto voxel_size_z_inv = this->voxel_size_z_inv_;
             h.parallel_for(sycl::nd_range<1>(global_size, work_group_size), [=](sycl::nd_item<1> item) {
                 const uint32_t i = item.get_global_id(0);
                 if (i >= N) return;
 
-                bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], voxel_size_inv);
+                bit_ptr[i] = kernel::compute_voxel_bit(point_ptr[i], voxel_size_x_inv, voxel_size_y_inv,
+                                                       voxel_size_z_inv);
             });
         });
         event.wait_and_throw();

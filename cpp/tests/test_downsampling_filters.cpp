@@ -87,6 +87,34 @@ TEST_F(DownsamplingFilterTest, VoxelGridUsesMedianIntensityWithSortAggregation) 
     EXPECT_NEAR((*result.rgb)[first].z(), 60.0f, 1e-5f);
 }
 
+TEST_F(DownsamplingFilterTest, VoxelGridSupportsIndependentLeafSizes) {
+    PointCloudCPU cpu_cloud;
+    cpu_cloud.points->resize(5);
+    (*cpu_cloud.points)[0] = PointType(0.1f, 0.1f, 0.1f, 1.0f);
+    (*cpu_cloud.points)[1] = PointType(0.4f, 0.4f, 0.2f, 1.0f);
+    (*cpu_cloud.points)[2] = PointType(1.1f, 0.1f, 0.1f, 1.0f);
+    (*cpu_cloud.points)[3] = PointType(0.1f, 0.6f, 0.1f, 1.0f);
+    (*cpu_cloud.points)[4] = PointType(0.1f, 0.1f, 0.3f, 1.0f);
+
+    PointCloudShared cloud(*queue_, cpu_cloud);
+    PointCloudShared result(*queue_);
+    algorithms::filter::VoxelGrid filter(*queue_, 1.0f, 0.5f, 0.25f);
+    filter.downsampling(cloud, result);
+    ASSERT_EQ(result.size(), 4U);
+    EXPECT_TRUE(std::any_of(result.points->begin(), result.points->end(), [](const PointType& p) {
+        return std::abs(p.x() - 0.25f) < 1e-5f && std::abs(p.y() - 0.25f) < 1e-5f &&
+               std::abs(p.z() - 0.15f) < 1e-5f;
+    }));
+
+    filter.set_voxel_size(1.0f);
+    filter.downsampling(cloud, result);
+    ASSERT_EQ(result.size(), 2U);
+    EXPECT_FLOAT_EQ(filter.get_leaf_size_y(), 1.0f);
+    EXPECT_FLOAT_EQ(filter.get_leaf_size_z(), 1.0f);
+    EXPECT_THROW(filter.set_leaf_size(1.0f, 0.0f, 1.0f), std::invalid_argument);
+    EXPECT_THROW(filter.set_leaf_size(1e-40f, 1.0f, 1.0f), std::invalid_argument);
+}
+
 TEST_F(DownsamplingFilterTest, PolarGridUsesMedianIntensityWithSortAggregation) {
     PointCloudCPU cpu_cloud;
     cpu_cloud.points->resize(5);
