@@ -135,5 +135,41 @@ TEST_F(DownsamplingFilterTest, PolarGridUsesMedianIntensityWithSortAggregation) 
     EXPECT_TRUE(approx_pair_found(2.2666667f, 10.0f));
 }
 
+TEST_F(DownsamplingFilterTest, VoxelCovariancesFollowPointsAndUseLogEuclideanMean) {
+    PointCloudCPU cpu;
+    for (float x : {0.1f, 0.2f, 1.1f}) cpu.points->emplace_back(x, 0.0f, 0.0f, 1.0f);
+    for (float variance : {1.0f, 9.0f, 4.0f}) {
+        Covariance cov = Covariance::Zero();
+        cov.topLeftCorner<3, 3>() = variance * Eigen::Matrix3f::Identity();
+        cpu.covs->push_back(cov);
+    }
+    PointCloudShared cloud(*queue_, cpu);
+    algorithms::filter::VoxelGrid grid(*queue_, 1.0f);
+    grid.downsampling(cloud, cloud);
+    ASSERT_EQ(cloud.size(), 2U);
+    ASSERT_TRUE(cloud.has_cov());
+    for (size_t i = 0; i < cloud.size(); ++i) {
+        const float expected = (*cloud.points)[i].x() < 1.0f ? 3.0f : 4.0f;
+        EXPECT_NEAR((*cloud.covs)[i](0, 0), expected, 1e-4f);
+        EXPECT_EQ((*cloud.covs)[i](3, 3), 0.0f);
+    }
+}
+
+TEST_F(DownsamplingFilterTest, VoxelCovarianceClampsSingularAndRejectsNonFinite) {
+    PointCloudCPU cpu;
+    cpu.points->emplace_back(0.1f, 0.0f, 0.0f, 1.0f);
+    cpu.covs->push_back(Covariance::Zero());
+    PointCloudShared cloud(*queue_, cpu);
+    PointCloudShared result(*queue_);
+    algorithms::filter::VoxelGrid grid(*queue_, 1.0f);
+    grid.set_covariance_eigenvalue_floor(0.02f);
+    grid.downsampling(cloud, result);
+    EXPECT_EQ(grid.covariance_clamp_count(), 3U);
+    ASSERT_TRUE(result.has_cov());
+    EXPECT_NEAR((*result.covs)[0](1, 1), 0.02f, 1e-5f);
+    (*cloud.covs)[0](0, 0) = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_THROW(grid.downsampling(cloud, result), std::invalid_argument);
+}
+
 }  // namespace
 }  // namespace sycl_points

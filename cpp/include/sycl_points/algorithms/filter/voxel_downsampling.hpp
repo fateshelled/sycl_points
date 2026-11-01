@@ -1,9 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "sycl_points/algorithms/common/voxel_constants.hpp"
+#include "sycl_points/algorithms/filter/covariance_aggregation.hpp"
 #include "sycl_points/points/point_cloud.hpp"
 
 namespace sycl_points {
@@ -43,6 +45,12 @@ public:
     float get_voxel_size() const { return this->voxel_size_; }
 
     void set_min_voxel_count(const size_t min_voxel_count) { this->min_voxel_count_ = min_voxel_count; }
+
+    void set_covariance_eigenvalue_floor(float floor) {
+        if (!std::isfinite(floor) || floor <= 0.0f) throw std::invalid_argument("Invalid covariance floor");
+        covariance_floor_ = floor;
+    }
+    size_t covariance_clamp_count() const { return covariance_clamp_count_; }
 
     /// @brief Voxel downsampling
     /// @param points Point Cloud
@@ -101,6 +109,8 @@ private:
     float voxel_size_;
     float voxel_size_inv_;
     size_t min_voxel_count_;
+    float covariance_floor_ = 1e-4f;
+    size_t covariance_clamp_count_ = 0;
 
     shared_vector_ptr<uint64_t> bit_ptr_ = nullptr;
 
@@ -109,6 +119,7 @@ private:
     std::vector<RGBType> work_rgb_;
     std::vector<float> work_intensities_;
     std::vector<float> work_timestamps_;
+    std::vector<Covariance> work_covs_;
     std::vector<float> work_intensity_values_;
 
     void compute_voxel_bit(const PointContainerShared& points) {
@@ -223,6 +234,8 @@ private:
         const bool has_rgb = cloud.has_rgb();
         const bool has_intensity = cloud.has_intensity();
         const bool has_timestamp = cloud.has_timestamps();
+        const bool has_cov = cloud.has_cov();
+        covariance_clamp_count_ = 0;
 
         // mem_advise set to host
         this->queue_.set_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
@@ -233,10 +246,12 @@ private:
         work_rgb_.clear();
         work_intensities_.clear();
         work_timestamps_.clear();
+        work_covs_.clear();
         work_points_.reserve(N);
         if (has_rgb) work_rgb_.reserve(N);
         if (has_intensity) work_intensities_.reserve(N);
         if (has_timestamp) work_timestamps_.reserve(N);
+        if (has_cov) work_covs_.reserve(N);
 
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
         size_t group_begin = 0;
@@ -245,6 +260,7 @@ private:
             PointType point_sum = PointType::Zero();
             RGBType rgb_sum = RGBType::Zero();
             float timestamp_sum = 0.0f;
+            Eigen::Matrix3f log_sum = Eigen::Matrix3f::Zero();
             work_intensity_values_.clear();
 
             size_t group_end = group_begin;
@@ -254,6 +270,7 @@ private:
                 if (has_rgb) rgb_sum += (*cloud.rgb)[idx];
                 if (has_intensity) work_intensity_values_.push_back((*cloud.intensities)[idx]);
                 if (has_timestamp) timestamp_sum += (*cloud.timestamp_offsets)[idx];
+                if (has_cov) log_sum += map_covariance_log((*cloud.covs)[idx], covariance_floor_, &covariance_clamp_count_);
                 ++group_end;
             }
 
@@ -263,6 +280,7 @@ private:
                 if (has_rgb) work_rgb_.emplace_back(rgb_sum / point_count);
                 if (has_intensity) work_intensities_.emplace_back(compute_median(work_intensity_values_));
                 if (has_timestamp) work_timestamps_.emplace_back(timestamp_sum / point_count);
+                if (has_cov) work_covs_.emplace_back(map_covariance_exp(log_sum / static_cast<float>(group_end - group_begin)));
             }
             group_begin = group_end;
         }
@@ -273,6 +291,10 @@ private:
         result.clear();
         result.reserve_points(work_points_.size());
         for (const auto& p : work_points_) result.points->emplace_back(p);
+        if (has_cov) {
+            result.reserve_covs(work_covs_.size());
+            for (const auto& c : work_covs_) result.covs->emplace_back(c);
+        }
         if (has_rgb) {
             result.reserve_rgb(work_rgb_.size());
             for (const auto& c : work_rgb_) result.rgb->emplace_back(c);
