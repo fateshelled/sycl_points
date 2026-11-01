@@ -1,31 +1,33 @@
 # sycl_points
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/fateshelled/sycl_points)
 
-A C++ header-only point cloud processing library accelerated with SYCL.
+`sycl_points` is a C++ header-only library for point cloud processing. It uses SYCL to accelerate operations.
 
 ## Overview
 
-sycl_points implements common point cloud processing operations with SYCL, targeting CPUs, Intel iGPUs, and NVIDIA GPUs. Two SYCL implementations are supported:
+`sycl_points` uses SYCL for point cloud processing on CPUs, Intel integrated GPUs, and NVIDIA GPUs. It supports two SYCL implementations:
 
-- **Intel oneAPI DPC++** (default) — Intel CPUs, Intel iGPUs, NVIDIA GPUs via CUDA (source build required)
-- **AdaptiveCpp** (formerly hipSYCL) — OpenMP CPUs, NVIDIA (CUDA), AMD (HIP; not supported by this project), and more
+- **Intel oneAPI DPC++** (default): Intel CPUs and integrated GPUs. For NVIDIA GPUs, use CUDA and build DPC++ from source.
+- **AdaptiveCpp** (formerly hipSYCL): OpenMP CPUs and NVIDIA GPUs with CUDA. AdaptiveCpp also supports AMD GPUs with HIP and other devices.
+  This project does not support AMD GPUs.
 
-Developed with reference to [small_gicp](https://github.com/koide3/small_gicp) and [gtsam_points](https://github.com/koide3/gtsam_points).
+The development of `sycl_points` used [small_gicp](https://github.com/koide3/small_gicp) and [gtsam_points](https://github.com/koide3/gtsam_points) as references.
 
 ### Key features
 
-- Point cloud data structures for CPU and accelerator memory, accessible from host and device kernels
+- Point cloud data structures for CPU and accelerator memory. Host code and device kernels can get access to them.
 - Nearest neighbor search: KD-tree, octree, brute force
 - Registration
   - ICP: Point to Point, Point to Plane, Point to Distribution, GICP, Genz-ICP
   - Robust estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
-  - VICP: estimates sensor velocity to compensate motion distortion; source cloud requires a `time` field
-  - Rotation constraint via Jensen-Bregman LogDet divergence; both clouds require `covariance` matrices
+  - VICP: estimates sensor velocity to compensate for motion distortion. The source cloud must have a `time` field.
+  - Rotation constraint with Jensen-Bregman LogDet divergence. Both clouds must have `covariance` matrices.
 - Submapping: voxel hashmap, occupancy grid map
 - Filtering: L∞ (Chebyshev) distance, random sampling, FPS, angle incidence, voxel grid and polar grid downsampling
 - File I/O: PLY and PCD, ASCII and binary, CPU and shared memory
 
-Planned work: further parallelization of algorithms.
+The project plans to increase the parallel processing of its algorithms.
 
 ### Supported devices
 
@@ -33,28 +35,30 @@ Planned work: further parallelization of algorithms.
 - Intel iGPU (Level Zero or OpenCL backend)
 - NVIDIA GPU (CUDA backend)
 
-Notes: AMD CPUs are expected to work but are untested; AMD GPUs are not tested or supported by this project (no hardware available).
+The project expects AMD CPUs to work, but has not tested them. It does not support AMD GPUs and has not tested them because no hardware is available.
 
 ## Requirements
 
-- C++20 or later
+- C++20 or a later version
 - Eigen, GTest
 - One of the following SYCL implementations:
-  - **Intel oneAPI DPC++** (default) — https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/
-  - **AdaptiveCpp** — https://github.com/AdaptiveCpp/AdaptiveCpp
+  - **Intel oneAPI DPC++** (default) — <https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/>
+  - **AdaptiveCpp** — <https://github.com/AdaptiveCpp/AdaptiveCpp>
 - Optional (Intel DPC++ only):
-  - Intel oneAPI for NVIDIA GPUs — binary packages discontinued, build from source: https://github.com/intel/llvm
-  - Intel GPU driver — https://dgpu-docs.intel.com/driver/client/overview.html
+  - Intel oneAPI for NVIDIA GPUs — binary packages are no longer available. Build from source: <https://github.com/intel/llvm>
+  - Intel GPU driver — <https://dgpu-docs.intel.com/driver/client/overview.html>
 
 ### Install dependencies
 
 #### Eigen and GTest
+
 ```bash
 sudo apt update
 sudo apt install libeigen3-dev libgtest-dev
 ```
 
 #### oneAPI DPC++
+
 See the [installation guide](https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/).
 
 ```bash
@@ -72,10 +76,11 @@ sudo apt install intel-cpp-essentials
 
 #### Intel oneAPI for NVIDIA GPUs (optional)
 
-> Binary packages are discontinued; Intel DPC++ must be built from source.
+> Binary packages are no longer available. Build Intel DPC++ from source.
 > See [docs/install_dpcpp_nvidia.md](docs/install_dpcpp_nvidia.md).
 
 #### Intel GPU driver (optional)
+
 See the [driver documentation](https://dgpu-docs.intel.com/driver/client/overview.html).
 
 ```bash
@@ -177,15 +182,17 @@ ACPP_VISIBILITY_MASK=cuda ./example_registration
 CUDA_VISIBLE_DEVICES=0 ./example_registration
 ```
 
-> **Note:** Switching `SYCL_IMPL` or `ACPP_TARGETS` requires a fresh build directory or deleting `CMakeCache.txt`,
-> since CMake caches compiler and target selections. Use separate directories (e.g. `build_omp`, `build_cuda`)
-> when testing multiple configurations.
+> **NOTE:** If you change `SYCL_IMPL` or `ACPP_TARGETS`, use a new build directory or delete `CMakeCache.txt`. \
+> CMake keeps the selected compiler and targets in its cache. \
+> If you test more than one configuration, use a separate directory for each configuration (for example, `build_omp` and `build_cuda`).
 
 ## References
-- https://github.com/koide3/small_gicp
-- https://github.com/koide3/gtsam_points
-- **GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)** — https://arxiv.org/abs/2411.06766
-- **Informed, Constrained, Aligned: A Field Analysis on Degeneracy-aware Point Cloud Registration in the Wild (2024)** — https://arxiv.org/abs/2408.11809
+
+- <https://github.com/koide3/small_gicp>
+- <https://github.com/koide3/gtsam_points>
+- **GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)** — <https://arxiv.org/abs/2411.06766>
+- **Informed, Constrained, Aligned: A Field Analysis on Degeneracy-aware Point Cloud Registration in the Wild (2024)** — <https://arxiv.org/abs/2408.11809>
 
 ## License
-Released under Apache License 2.0.
+
+The project uses the Apache License 2.0.
