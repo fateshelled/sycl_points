@@ -16,11 +16,15 @@ GraphOdometryBaseNode::~GraphOdometryBaseNode() {
     if (!this->processing_initialized_) {
         return;
     }
+    if (this->pipeline_ != nullptr) {
+        this->submap_export_.save(*this, *this->pipeline_, this->odom_frame_id_);
+    }
     this->log_processing_times();
 }
 
 void GraphOdometryBaseNode::initialize_processing() {
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
+    this->submap_export_.declare_parameters(*this);
 
     // Tightly-coupled graph LIO requires an IMU. The LiDAR-only graph mode has
     // been removed, so a graph node started without an IMU must fail fast

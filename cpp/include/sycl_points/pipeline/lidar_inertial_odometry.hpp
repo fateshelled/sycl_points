@@ -114,6 +114,10 @@ public:
 
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
+    /// @brief Export all points retained in the internal map, independent of the local target range.
+    void extract_full_submap_point_cloud(PointCloudShared& result) const {
+        this->submap_->extract_full_point_cloud(result);
+    }
     const PointCloudShared& get_last_keyframe_point_cloud() const {
         return this->submap_->get_last_keyframe_point_cloud();
     }

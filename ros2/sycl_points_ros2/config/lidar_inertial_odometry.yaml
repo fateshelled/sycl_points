@@ -177,6 +177,11 @@ lidar_inertial_odometry_node:
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
+    # Save all retained map points on node destruction, without the local distance limit.
+    submap/save_on_exit: false
+    submap/output_path: "submap.pcd" # .pcd or .ply; relative to the process working directory
+    submap/output_binary: true
+
     # LIO optimization (Gauss-Newton combining ICP + IMU Hessians)
     # Maximum linearize+solve count per frame, distributed as evenly as possible
     # across registration/robust/auto_scaling_iter robust levels.

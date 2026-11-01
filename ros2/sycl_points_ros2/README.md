@@ -82,6 +82,31 @@ The same library also registers the corresponding component plugins:
 `sycl_points::ros2::LidarInertialOdometryBagEvalNode`, and
 `sycl_points::ros2::GraphOdometryBagEvalNode`.
 
+## Save The Submap On Exit
+
+For LO, LIO, and graph LIO (both live and bag evaluation nodes), configure:
+
+```yaml
+submap/save_on_exit: true
+submap/output_path: "/path/to/submap.pcd" # .pcd or .ply
+submap/output_binary: true
+```
+
+On node destruction (including normal Ctrl+C shutdown), the node saves all exportable
+points still retained in the internal map in the odom frame, not just the local
+registration target limited by `submap/max_distance_range`. Existing voxel
+aggregation, occupancy thresholds, sampling, and stale-voxel removal remain
+unchanged; previously removed points and raw scan history are not recovered.
+Graph LIO exports only points already inserted into the internal map, not scans
+still in the active optimization window.
+The existing writer includes RGB when present; intensity is also included in PLY
+(the PCD writer exports XYZ and optional RGB only). Saving is disabled by default.
+Parent directories are created automatically, relative paths use the process
+working directory, and an existing output file is overwritten. Empty maps are
+skipped with a warning; write failures are logged without throwing from shutdown.
+SIGKILL or a process crash cannot guarantee saving. Bag evaluation saves when
+the node is destroyed, not merely when bag reading finishes with `eval/exit_on_end=false`.
+
 ## Live Quick Start
 
 Launch LO with its defaults:

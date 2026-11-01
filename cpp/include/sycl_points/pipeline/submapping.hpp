@@ -63,6 +63,16 @@ public:
     const auto& get_submap_kdtree() const { return *this->submap_tree_; }
 
     const PointCloudShared& get_submap_point_cloud() const { return *this->submap_pc_ptr_; }
+    /// @brief Export the entire retained map in odom/world coordinates, not the local registration target.
+    ///        Existing voxel aggregation and occupancy thresholds still apply.
+    void extract_full_point_cloud(PointCloudShared& result) const {
+        if (this->submap_params_.map_type == SubmapMapType::OCCUPANCY_GRID_MAP) {
+            this->occupancy_grid_->extract_all_points(result);
+        } else {
+            this->submap_voxel_->extract_all_points(result);
+        }
+    }
+
     const PointCloudShared& get_last_keyframe_point_cloud() const { return *this->last_keyframe_pc_; }
 
     /// @brief Ownership-aware handle to the current fixed target generation.

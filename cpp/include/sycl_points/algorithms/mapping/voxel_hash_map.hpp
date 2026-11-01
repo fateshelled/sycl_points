@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -197,6 +198,11 @@ public:
         result.resize_covs(this->has_cov_data_ ? final_voxel_num : 0);
         result.resize_rgb(this->has_rgb_data_ ? final_voxel_num : 0);
         result.resize_intensities(this->has_intensity_data_ ? final_voxel_num : 0);
+    }
+
+    /// @brief Export all retained voxel representatives without a local range limit.
+    void extract_all_points(PointCloudShared& result) {
+        this->downsampling(result, Eigen::Vector3f::Zero(), std::numeric_limits<float>::max());
     }
 
     /// @brief Compute the overlap ratio between the map and an input point cloud.

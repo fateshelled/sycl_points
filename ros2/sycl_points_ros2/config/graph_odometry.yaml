@@ -171,6 +171,11 @@
     submap/occupancy_grid_map/enable_pruning: true
     submap/occupancy_grid_map/stale_frame_threshold: 600
 
+    # Export the retained map only; active graph-window scans are not included.
+    submap/save_on_exit: false
+    submap/output_path: "submap.pcd" # .pcd or .ply; relative to the process working directory
+    submap/output_binary: true
+
     # Sliding-window graph optimizer (local BA).
     # graph/window_size counts persistent KEYFRAME nodes (the per-frame tip is
     # transient when the submap/keyframe/* gate rejects it). The keyframe gate
