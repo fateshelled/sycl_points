@@ -202,7 +202,7 @@
     graph/solver/lm/max_inner_iterations: 5
     graph/solver/lm/lambda_factor: 2.0
     graph/solver/lm/init_lambda: 1.0e+2
-    graph/solver/lm/max_lambda: 1.0e+3
+    graph/solver/lm/max_lambda: 1.0e+6
     graph/solver/lm/min_lambda: 1.0e-3
     graph/marginalization_lambda: 1.0e+2           # Schur-complement H_mm regularization
     # LiDAR-only observability regularization. Weak tip modes are anchored to
