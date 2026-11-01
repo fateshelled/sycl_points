@@ -46,21 +46,23 @@ public:
             !options.file_pose.matrix().allFinite()) {
             throw std::invalid_argument("Invalid prior map configuration");
         }
-        auto cpu = PointCloudReader::readFile(path);
-        if (cpu.size() == 0) throw std::runtime_error("Prior map is empty");
-        for (const auto& p : *cpu.points) {
-            if (!p.head<3>().allFinite()) throw std::runtime_error("Non-finite prior map point");
+        bool preserve = false;
+        {
+            auto cpu = PointCloudReader::readFile(path, false, false);
+            if (cpu.size() == 0) throw std::runtime_error("Prior map is empty");
+            for (const auto& p : *cpu.points) {
+                if (!p.head<3>().allFinite()) throw std::runtime_error("Non-finite prior map point");
+            }
+            preserve = options.covariance_mode == "AUTO" && cpu.has_cov();
+            if (!preserve) cpu.covs->clear();
+            map_ = std::make_shared<PointCloudShared>(queue, cpu);
         }
-        const bool preserve = options.covariance_mode == "AUTO" && cpu.has_cov();
-        if (!preserve) cpu.covs->clear();
-        PointCloudShared input(queue, cpu);
+        auto& input = *map_;
         if (options.downsample) {
             algorithms::filter::VoxelGrid voxel(queue, options.voxel_size);
             voxel.set_covariance_eigenvalue_floor(options.eigenvalue_floor);
-            PointCloudShared reduced(queue);
-            voxel.downsampling(input, reduced);
+            voxel.downsampling(input, input);
             covariance_clamp_count_ += voxel.covariance_clamp_count();
-            input = PointCloudShared(queue, reduced);
         }
         if (input.size() == 0) throw std::runtime_error("Prior map is empty after downsampling");
         if (preserve && !options.downsample) {
@@ -88,7 +90,6 @@ public:
             (*input.covs)[i].setZero();
             (*input.covs)[i].topLeftCorner<3, 3>() = 0.5f * (rotated + rotated.transpose()).eval();
         }
-        map_ = std::make_shared<PointCloudShared>(queue, input);
         cell_size_ = options.local_radius;
         for (size_t i = 0; i < map_->size(); ++i) cells_[cell((*map_->points)[i].head<3>())].push_back(i);
     }
