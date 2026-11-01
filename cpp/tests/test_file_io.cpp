@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <random>
+#include <vector>
 
 #include "sycl_points/io/point_cloud_reader.hpp"
 #include "sycl_points/io/point_cloud_writer.hpp"
@@ -332,6 +333,128 @@ TEST_F(PointCloudIOTest, PCD_WithRGBAndIntensity_Fields) {
         file.close();
         std::remove(filename.c_str());
     }
+}
+
+TEST_F(PointCloudIOTest, CovarianceUpperTriangle_Export) {
+    sycl_points::PointCloudCPU cloud;
+    cloud.points->emplace_back(1.f, 2.f, 3.f, 1.f);
+    cloud.rgb->emplace_back(1.f, 0.f, 0.f, 1.f);
+    cloud.intensities->push_back(42.25f);
+    sycl_points::Covariance cov = sycl_points::Covariance::Zero();
+    cov(0, 0) = 11.f;
+    cov(0, 1) = cov(1, 0) = 12.f;
+    cov(0, 2) = cov(2, 0) = 13.f;
+    cov(1, 1) = 22.f;
+    cov(1, 2) = cov(2, 1) = 23.f;
+    cov(2, 2) = 33.f;
+    cloud.covs->push_back(cov);
+
+    for (const std::string extension : {"pcd", "ply"}) {
+        for (const bool binary : {false, true}) {
+            for (const bool shared : {false, true}) {
+                const std::string filename = "test_cov_" + extension + (binary ? "_binary" : "_ascii") +
+                                             (shared ? "_shared." : "_cpu.") + extension;
+                if (shared) {
+                    sycl_points::PointCloudShared shared_cloud(*queue, cloud);
+                    sycl_points::PointCloudWriter::writeFile(filename, shared_cloud, binary);
+                } else {
+                    sycl_points::PointCloudWriter::writeFile(filename, cloud, binary);
+                }
+
+                std::ifstream file(filename, std::ios::binary);
+                ASSERT_TRUE(file.is_open());
+                std::string line;
+                if (extension == "pcd") {
+                    ASSERT_TRUE(std::getline(file, line));
+                    ASSERT_TRUE(std::getline(file, line));
+                    ASSERT_TRUE(std::getline(file, line));
+                    EXPECT_EQ(line, "FIELDS x y z rgb intensity cov_xx cov_xy cov_xz cov_yy cov_yz cov_zz");
+                    ASSERT_TRUE(std::getline(file, line));
+                    EXPECT_EQ(line, "SIZE 4 4 4 4 4 4 4 4 4 4 4");
+                    ASSERT_TRUE(std::getline(file, line));
+                    EXPECT_EQ(line, "TYPE F F F U F F F F F F F");
+                    ASSERT_TRUE(std::getline(file, line));
+                    EXPECT_EQ(line, "COUNT 1 1 1 1 1 1 1 1 1 1 1");
+                    while (std::getline(file, line) && line.rfind("DATA ", 0) != 0) {}
+                    ASSERT_EQ(line, binary ? "DATA binary" : "DATA ascii");
+                } else {
+                    const std::vector<std::string> names = {"cov_xx", "cov_xy", "cov_xz", "cov_yy", "cov_yz", "cov_zz"};
+                    size_t field = 0;
+                    while (std::getline(file, line) && line != "end_header") {
+                        if (line.rfind("property float cov_", 0) == 0) {
+                            ASSERT_LT(field, names.size());
+                            EXPECT_EQ(line, "property float " + names[field++]);
+                        }
+                    }
+                    ASSERT_EQ(line, "end_header");
+                    EXPECT_EQ(field, names.size());
+                }
+
+                if (binary) {
+                    file.ignore(extension == "pcd" ? 20 : 19);  // XYZ, RGB, intensity.
+                    float upper[6] = {};
+                    file.read(reinterpret_cast<char*>(upper), sizeof(upper));
+                    ASSERT_TRUE(file.good());
+                    const float expected[6] = {11.f, 12.f, 13.f, 22.f, 23.f, 33.f};
+                    for (size_t i = 0; i < 6; ++i) EXPECT_FLOAT_EQ(upper[i], expected[i]);
+                    EXPECT_EQ(file.peek(), std::char_traits<char>::eof());
+                } else {
+                    ASSERT_TRUE(std::getline(file, line));
+                    const std::string suffix = " 11.000000 12.000000 13.000000 22.000000 23.000000 33.000000";
+                    ASSERT_GE(line.size(), suffix.size());
+                    EXPECT_EQ(line.substr(line.size() - suffix.size()), suffix);
+                }
+                file.close();
+                const auto loaded = sycl_points::PointCloudReader::readFile(filename);
+                ASSERT_TRUE(loaded.has_cov());
+                ASSERT_TRUE(loaded.has_intensity());
+                EXPECT_FLOAT_EQ((*loaded.intensities)[0], 42.25f);
+                for (int row = 0; row < 4; ++row) {
+                    for (int col = 0; col < 4; ++col) {
+                        EXPECT_FLOAT_EQ((*loaded.covs)[0](row, col), cov(row, col));
+                    }
+                }
+                const auto loaded_shared = sycl_points::PointCloudReader::readFile(filename, *queue);
+                ASSERT_TRUE(loaded_shared.has_cov());
+                for (int row = 0; row < 4; ++row) {
+                    for (int col = 0; col < 4; ++col) {
+                        EXPECT_FLOAT_EQ((*loaded_shared.covs)[0](row, col), cov(row, col));
+                    }
+                }
+                std::remove(filename.c_str());
+            }
+        }
+    }
+}
+
+TEST_F(PointCloudIOTest, CovarianceFields_ReorderedAndIncomplete) {
+    const std::string filename = "test_cov_reordered.pcd";
+    {
+        std::ofstream file(filename);
+        file << "FIELDS cov_zz y cov_xy x cov_yy z cov_xx cov_xz cov_yz\n"
+                "SIZE 4 4 4 4 4 4 4 4 4\n"
+                "TYPE F F F F F F F F F\n"
+                "COUNT 1 1 1 1 1 1 1 1 1\n"
+                "POINTS 1\nDATA ascii\n"
+                "33 2 12 1 22 3 11 13 23\n";
+    }
+    const auto loaded = sycl_points::PointCloudReader::readFile(filename);
+    ASSERT_TRUE(loaded.has_cov());
+    EXPECT_FLOAT_EQ((*loaded.covs)[0](2, 1), 23.f);
+    EXPECT_FLOAT_EQ((*loaded.covs)[0](0, 2), 13.f);
+    std::remove(filename.c_str());
+
+    {
+        std::ofstream file(filename);
+        file << "FIELDS x y z cov_xx cov_xy cov_xz cov_yy cov_yz\n"
+                "SIZE 4 4 4 4 4 4 4 4\n"
+                "TYPE F F F F F F F F\n"
+                "POINTS 1\nDATA ascii\n"
+                "1 2 3 11 12 13 22 23\n";
+    }
+    const auto incomplete = sycl_points::PointCloudReader::readFile(filename);
+    EXPECT_FALSE(incomplete.has_cov());
+    std::remove(filename.c_str());
 }
 
 TEST_F(PointCloudIOTest, PLY_ASCII_WithRGB) {

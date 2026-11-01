@@ -62,6 +62,7 @@ private:
         const size_t N = cloud.size();
         const bool has_rgb = cloud.has_rgb();
         const bool has_intensity = cloud.has_intensity();
+        const bool has_cov = cloud.has_cov();
 
         // Count valid points first
         const size_t valid_count = countValidPoints(cloud);
@@ -75,6 +76,9 @@ private:
             cloud.queue.set_accessed_by_host(cloud.points_ptr(), N);
             if (has_rgb) {
                 cloud.queue.set_accessed_by_host(cloud.rgb_ptr(), N);
+            }
+            if (has_cov) {
+                cloud.queue.set_accessed_by_host(cloud.covs_ptr(), N);
             }
         }
 
@@ -97,6 +101,14 @@ private:
         }
         if (has_intensity) {
             file << "property float intensity\n";
+        }
+        if (has_cov) {
+            file << "property float cov_xx\n";
+            file << "property float cov_xy\n";
+            file << "property float cov_xz\n";
+            file << "property float cov_yy\n";
+            file << "property float cov_yz\n";
+            file << "property float cov_zz\n";
         }
 
         file << "end_header\n";
@@ -126,6 +138,11 @@ private:
                     const auto& intensity = (*cloud.intensities)[i];
                     file.write(reinterpret_cast<const char*>(&intensity), sizeof(intensity));
                 }
+                if (has_cov) {
+                    const auto& cov = (*cloud.covs)[i];
+                    const float upper[6] = {cov(0, 0), cov(0, 1), cov(0, 2), cov(1, 1), cov(1, 2), cov(2, 2)};
+                    file.write(reinterpret_cast<const char*>(upper), sizeof(upper));
+                }
             }
         } else {
             // ASCII format
@@ -147,6 +164,11 @@ private:
                     const auto& intensity = (*cloud.intensities)[i];
                     file << " " << intensity;
                 }
+                if (has_cov) {
+                    const auto& cov = (*cloud.covs)[i];
+                    file << " " << cov(0, 0) << " " << cov(0, 1) << " " << cov(0, 2)  //
+                         << " " << cov(1, 1) << " " << cov(1, 2) << " " << cov(2, 2);
+                }
                 file << "\n";
             }
         }
@@ -156,6 +178,9 @@ private:
             cloud.queue.clear_accessed_by_host(cloud.points_ptr(), N);
             if (has_rgb) {
                 cloud.queue.clear_accessed_by_host(cloud.rgb_ptr(), N);
+            }
+            if (has_cov) {
+                cloud.queue.clear_accessed_by_host(cloud.covs_ptr(), N);
             }
         }
 
@@ -170,6 +195,7 @@ private:
         const size_t N = cloud.size();
         const bool has_rgb = cloud.has_rgb();
         const bool has_intensity = cloud.has_intensity();
+        const bool has_cov = cloud.has_cov();
 
         // Count valid points first
         const size_t valid_count = countValidPoints(cloud);
@@ -184,6 +210,9 @@ private:
             if (has_rgb) {
                 cloud.queue.set_accessed_by_host(cloud.rgb_ptr(), N);
             }
+            if (has_cov) {
+                cloud.queue.set_accessed_by_host(cloud.covs_ptr(), N);
+            }
         }
 
         // Write PCD header
@@ -197,6 +226,9 @@ private:
         if (has_intensity) {
             file << " intensity";
         }
+        if (has_cov) {
+            file << " cov_xx cov_xy cov_xz cov_yy cov_yz cov_zz";
+        }
         file << "\n";
 
         file << "SIZE 4 4 4";
@@ -205,6 +237,9 @@ private:
         }
         if (has_intensity) {
             file << " 4";
+        }
+        if (has_cov) {
+            file << " 4 4 4 4 4 4";
         }
         file << "\n";
 
@@ -215,6 +250,9 @@ private:
         if (has_intensity) {
             file << " F";
         }
+        if (has_cov) {
+            file << " F F F F F F";
+        }
         file << "\n";
 
         file << "COUNT 1 1 1";
@@ -223,6 +261,9 @@ private:
         }
         if (has_intensity) {
             file << " 1";
+        }
+        if (has_cov) {
+            file << " 1 1 1 1 1 1";
         }
         file << "\n";
 
@@ -262,6 +303,11 @@ private:
                     const float intensity = (*cloud.intensities)[i];
                     file.write(reinterpret_cast<const char*>(&intensity), sizeof(intensity));
                 }
+                if (has_cov) {
+                    const auto& cov = (*cloud.covs)[i];
+                    const float upper[6] = {cov(0, 0), cov(0, 1), cov(0, 2), cov(1, 1), cov(1, 2), cov(2, 2)};
+                    file.write(reinterpret_cast<const char*>(upper), sizeof(upper));
+                }
             }
         } else {
             // ASCII format
@@ -282,6 +328,11 @@ private:
                 if (has_intensity) {
                     file << " " << (*cloud.intensities)[i];
                 }
+                if (has_cov) {
+                    const auto& cov = (*cloud.covs)[i];
+                    file << " " << cov(0, 0) << " " << cov(0, 1) << " " << cov(0, 2)  //
+                         << " " << cov(1, 1) << " " << cov(1, 2) << " " << cov(2, 2);
+                }
                 file << "\n";
             }
         }
@@ -291,6 +342,9 @@ private:
             cloud.queue.clear_accessed_by_host(cloud.points_ptr(), N);
             if (has_rgb) {
                 cloud.queue.clear_accessed_by_host(cloud.rgb_ptr(), N);
+            }
+            if (has_cov) {
+                cloud.queue.clear_accessed_by_host(cloud.covs_ptr(), N);
             }
         }
 
