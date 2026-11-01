@@ -1,32 +1,22 @@
 # sycl_points_ros2
 
-`sycl_points_ros2` provides ROS 2 components and executables for SYCL-accelerated
-LiDAR odometry (LO), LiDAR-inertial odometry (LIO), and sliding-window graph
-odometry. Each mode supports live ROS topics and direct offline rosbag evaluation.
+ROS 2 nodes for SYCL-accelerated LiDAR odometry (LO), LiDAR-inertial odometry
+(LIO), and sliding-window graph odometry. Each supports live topics and offline
+rosbag evaluation.
 
 ## Prerequisites
 
-- A ROS 2 installation. The examples below use ROS 2 Jazzy.
-- A C++20 compiler and Eigen.
-- Intel oneAPI DPC++ or AdaptiveCpp.
-- A SYCL device with unified shared memory support.
+- ROS 2 (examples use Jazzy), C++20, Eigen, Intel oneAPI DPC++ or AdaptiveCpp.
+- A SYCL device with unified shared memory: Intel CPU/GPU or NVIDIA GPU.
+  AMD GPUs are untested and unsupported.
 
-See the repository [README](../../README.md) for supported devices, runtime device
-filtering, and general installation instructions. AdaptiveCpp setup is documented
-in [install_adaptive_cpp.md](../../docs/install_adaptive_cpp.md). The current
-DPC++ NVIDIA limitation is documented in
-[install_dpcpp_nvidia.md](../../docs/install_dpcpp_nvidia.md).
-
-Intel CPUs, Intel GPUs, and NVIDIA GPUs are the supported targets. AMD GPUs may be
-exposed by AdaptiveCpp, but they are untested and unsupported by this project.
+See the repository [README](../../README.md) for installation and device selection,
+[AdaptiveCpp setup](../../docs/install_adaptive_cpp.md), and
+[DPC++ NVIDIA limitations](../../docs/install_dpcpp_nvidia.md).
 
 ## Build
 
-Clone this repository into a ROS 2 workspace. Building `sycl_points_ros2` with
-`--packages-up-to` also builds the local `sycl_points` package; a separate install
-of that package is not required.
-
-Intel oneAPI DPC++ is the default SYCL implementation:
+Clone the repository into a ROS 2 workspace. Build with DPC++ (the default):
 
 ```bash
 source /opt/intel/oneapi/setvars.sh
@@ -38,7 +28,7 @@ colcon build --symlink-install \
   --cmake-args -DSYCL_IMPL=IntelDPCPP
 ```
 
-For AdaptiveCpp, do not source oneAPI solely for this package:
+Or use AdaptiveCpp (without sourcing oneAPI):
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -49,42 +39,29 @@ colcon build --symlink-install \
   --cmake-args -DSYCL_IMPL=AdaptiveCpp
 ```
 
-Use a clean CMake build directory, or remove the affected CMake cache, when
-switching between `IntelDPCPP` and `AdaptiveCpp` or changing AdaptiveCpp targets.
-CMake caches the compiler and target selection.
-
-After building, source the workspace before running any example:
+`--packages-up-to` also builds `sycl_points`. When changing SYCL implementations
+or AdaptiveCpp targets, use a clean build directory or clear the affected CMake
+cache. Before running, source the workspace:
 
 ```bash
 source ~/ros2_ws/install/setup.bash
 ```
 
-The package manifest lists its core ROS dependencies, but is not an exhaustive
-list of every tool used by launch files, such as RViz and Python launch support.
-
 ## Choose A Mode
 
-| Mode                          | Live executable                | Live launch file                    | Use case                                 | IMU requirement                                         |
-| ----------------------------- | ------------------------------ | ----------------------------------- | ---------------------------------------- | ------------------------------------------------------- |
-| LiDAR odometry (LO)           | `lidar_odometry_node`          | `lidar_odometry_launch.py`          | Frame-to-submap LiDAR odometry           | LiDAR-only by default; optional when `imu/enable:=true` |
-| LiDAR-inertial odometry (LIO) | `lidar_inertial_odometry_node` | `lidar_inertial_odometry_launch.py` | Tightly coupled LiDAR and IMU estimation | Required                                                |
-| Graph odometry                | `graph_odometry_node`          | `graph_odometry_launch.py`          | Sliding-window graph LIO                 | Required                                                |
+| Mode | Live executable | Launch file | IMU |
+| ---- | --------------- | ----------- | --- |
+| LO | `lidar_odometry_node` | `lidar_odometry_launch.py` | Optional (`imu/enable=true`) |
+| LIO | `lidar_inertial_odometry_node` | `lidar_inertial_odometry_launch.py` | Required |
+| Graph | `graph_odometry_node` | `graph_odometry_launch.py` | Required |
 
-Graph odometry is not a LiDAR-only mode. It validates that `imu/enable=true`,
-`imu/initial_alignment/enable=true`, `imu/deskew/enable=true`, and
-`motion_prediction/mode=IMU_SE3` at startup.
-
-The same library also registers the corresponding component plugins:
-`sycl_points::ros2::LiDAROdometryNode`,
-`sycl_points::ros2::LidarInertialOdometryNode`, and
-`sycl_points::ros2::GraphOdometryNode`. The evaluator plugins are
-`sycl_points::ros2::LiDAROdometryBagEvalNode`,
-`sycl_points::ros2::LidarInertialOdometryBagEvalNode`, and
-`sycl_points::ros2::GraphOdometryBagEvalNode`.
+Graph mode requires `imu/enable`, `imu/initial_alignment/enable`, and
+`imu/deskew/enable` to be true, plus `motion_prediction/mode=IMU_SE3`.
+All modes also provide ROS 2 components and bag-evaluation nodes.
 
 ## Save The Submap On Exit
 
-For LO, LIO, and graph LIO (both live and bag evaluation nodes), configure:
+For any mode (live or bag evaluation):
 
 ```yaml
 submap/save_on_exit: true
@@ -92,76 +69,44 @@ submap/output_path: "/path/to/submap.pcd" # .pcd or .ply
 submap/output_binary: true
 ```
 
-On node destruction (including normal Ctrl+C shutdown), the node saves all exportable
-points still retained in the internal map in the odom frame, not just the local
-registration target limited by `submap/max_distance_range`. Existing voxel
-aggregation, occupancy thresholds, sampling, and stale-voxel removal remain
-unchanged; previously removed points and raw scan history are not recovered.
-Graph LIO exports only points already inserted into the internal map, not scans
-still in the active optimization window.
-The existing writer includes RGB when present; intensity is also included in PLY
-(the PCD writer exports XYZ and optional RGB only). Saving is disabled by default.
-Parent directories are created automatically, relative paths use the process
-working directory, and an existing output file is overwritten. Empty maps are
-skipped with a warning; write failures are logged without throwing from shutdown.
-SIGKILL or a process crash cannot guarantee saving. Bag evaluation saves when
-the node is destroyed, not merely when bag reading finishes with `eval/exit_on_end=false`.
+On normal shutdown (including Ctrl+C), save all points retained in the internal
+map in the odom frame. This is not limited by `submap/max_distance_range`, but
+removed voxels and raw scans cannot be recovered. Graph mode excludes scans
+still in the optimization window.
+
+PCD and PLY include RGB, intensity, and covariance when available. Covariance
+uses six fields (`cov_xx`, `cov_xy`, `cov_xz`, `cov_yy`, `cov_yz`, `cov_zz`);
+the readers reconstruct the symmetric 3x3 matrix.
+
+The node default is off; check each mode's YAML for launch defaults. Parent
+directories are created, relative paths use the process working directory, and
+existing files are overwritten. Empty maps are skipped. Crashes and SIGKILL
+cannot guarantee a save. Bag evaluation saves on node destruction, not just
+when bag reading ends.
 
 ## Live Quick Start
 
-Launch LO with its defaults:
-
 ```bash
 ros2 launch sycl_points_ros2 lidar_odometry_launch.py
-```
-
-Launch LIO with LiDAR and IMU topics:
-
-```bash
 ros2 launch sycl_points_ros2 lidar_inertial_odometry_launch.py \
-  points_topic:=/lidar/points \
-  imu_topic:=/imu/data
-```
-
-Launch graph odometry:
-
-```bash
+  points_topic:=/lidar/points imu_topic:=/imu/data
 ros2 launch sycl_points_ros2 graph_odometry_launch.py \
-  points_topic:=/lidar/points \
-  imu_topic:=/imu/data
+  points_topic:=/lidar/points imu_topic:=/imu/data
 ```
 
-Common launch defaults are `points_topic=points`, `imu_topic=imu/data`,
+The first scan may take longer to process because the SYCL runtime can JIT-compile
+device kernels on first use. Startup time depends on the backend and device.
+
+Common launch defaults: `points_topic=points`, `imu_topic=imu/data`,
 `odom_frame_id=odom`, `base_link_id=base_link`, `lidar_frame_id=os_sensor`,
-`rviz2=true`, and `use_sim_time=false`. Representative overrides include:
-
-```bash
-ros2 launch sycl_points_ros2 lidar_odometry_launch.py \
-  points_topic:=/lidar/points \
-  odom_frame_id:=odom \
-  base_link_id:=base_link \
-  lidar_frame_id:=lidar \
-  sycl/device_vendor:=intel \
-  sycl/device_type:=gpu \
-  rviz2:=false
-```
-
-Every entry under `ros__parameters` in the mode's YAML file is exposed as a
-same-named launch argument. The defaults documented here are launch/YAML defaults.
-Running an executable directly uses constructor fallbacks for any parameter not
-provided. Notable fallback differences are point QoS depth 1 instead of 10, IMU
-keep-all instead of keep-last depth 100, enabled intensity and reflectivity
-conversion instead of disabled, and an LIO timer period of 1 ms instead of 5 ms.
-Prefer the launch files or pass a complete parameter file when reproducibility
-matters.
-
-The live launch files run the components with intra-process communication in a
-multi-threaded component container. Container startup is delayed by one second so
-the rosbag player can load first when enabled.
+`rviz2=true`, `use_sim_time=false`. Any YAML parameter can be overridden by a
+same-named launch argument (e.g. `sycl/device_type:=gpu`). Direct execution
+without a parameter file uses different defaults; use launch files for
+reproducible settings.
 
 ### Live Rosbag Playback
 
-Each live launch file can start an in-process rosbag player:
+Start an in-process rosbag player from any live launch:
 
 ```bash
 ros2 launch sycl_points_ros2 lidar_inertial_odometry_launch.py \
@@ -171,53 +116,30 @@ ros2 launch sycl_points_ros2 lidar_inertial_odometry_launch.py \
   use_sim_time:=true
 ```
 
-| Argument                  | Description                              | Default |
-| ------------------------- | ---------------------------------------- | ------- |
-| `rosbag/play`             | Start the in-process rosbag player       | `false` |
-| `rosbag/uri`              | Bag URI                                  | Empty   |
-| `rosbag/start_offset/sec` | Integer playback start offset in seconds | `0`     |
-| `rosbag/exclude_topics`   | Comma-separated topics to exclude        | Empty   |
-
-Playback uses a read-ahead queue of 1000 messages, rate `1.0`, no loop, and an
-unpaused start. If the bag contains a `/tf_static` transform that conflicts with
-the transform created by the launch file, exclude it:
-
-```bash
-ros2 launch sycl_points_ros2 graph_odometry_launch.py \
-  rosbag/play:=true \
-  rosbag/uri:=/data/run_01 \
-  rosbag/exclude_topics:=/tf_static \
-  use_sim_time:=true
-```
-
-TF exclusion affects the displayed TF tree, not odometry estimation; the
-odometry pipeline does not consume TF.
+`rosbag/play` defaults to false; `rosbag/start_offset/sec` defaults to 0.
+Use `rosbag/exclude_topics:=/tf_static` if the bag conflicts with the launch
+file's static TF. TF is not used for odometry estimation.
 
 ## Input Requirements
 
 ### Point Clouds
 
-The topic selected by `points_topic` must use
-`sensor_msgs/msg/PointCloud2`. Empty clouds are rejected. Supported fields are:
+`points_topic` must carry nonempty `sensor_msgs/msg/PointCloud2` messages:
 
-| Field                                      | Accepted type                                      | Control and behavior                                                                                               |
-| ------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `x`, `y`, `z`                              | All three must be `FLOAT32` or all three `FLOAT64` | Required                                                                                                           |
-| `rgb` or `rgba`                            | `FLOAT32` or `UINT32`                              | Copied when `input/convert_rgb=true`                                                                               |
-| `intensity`                                | `FLOAT32` or `UINT16`                              | Copied when `input/convert_intensity=true`                                                                         |
-| `reflectivity`                             | `UINT16`                                           | Preferred over `intensity` when both `input/convert_intensity=true` and `input/use_reflectivity_as_intensity=true` |
-| `t`, `time`, `timestamp`, or `offset_time` | `UINT32`, `FLOAT32`, or `FLOAT64`                  | Converted to milliseconds relative to the message header stamp; see the type-specific interpretation below         |
+| Field | Type | Notes |
+| ----- | ---- | ----- |
+| `x`, `y`, `z` | All `FLOAT32` or all `FLOAT64` | Required |
+| `rgb` / `rgba` | `FLOAT32` / `UINT32` | Requires `input/convert_rgb=true` |
+| `intensity` | `FLOAT32` / `UINT16` | Requires `input/convert_intensity=true` |
+| `reflectivity` | `UINT16` | Preferred when `input/use_reflectivity_as_intensity=true` |
+| `t`, `time`, `timestamp`, `offset_time` | `UINT32` / `FLOAT32` / `FLOAT64` | Per-point time |
 
-Ouster enhanced reflectivity, enabled with
-`scan/enhanced_reflectivity/enable=true`, operates on converted raw `intensity`
-and additionally requires `ambient: UINT16` and `ring: UINT8` or `UINT16` in the
-input message. Set `input/convert_intensity=true` and keep
-`input/use_reflectivity_as_intensity=false` to use the raw `intensity` field.
-Missing or invalid supporting fields cause enhanced reflectivity to be skipped
-with a warning.
+Ouster enhanced reflectivity needs raw `intensity`, `ambient: UINT16`, and
+`ring: UINT8` or `UINT16`. Set `input/convert_intensity=true`,
+`input/use_reflectivity_as_intensity=false`, and
+`scan/enhanced_reflectivity/enable=true`.
 
-The accepted per-point time types are interpreted as follows before conversion
-to milliseconds relative to the message header stamp:
+Per-point time is converted to milliseconds relative to the message timestamp:
 
 | Type                         | Interpretation                     |
 | ---------------------------- | ---------------------------------- |
@@ -226,38 +148,25 @@ to milliseconds relative to the message header stamp:
 | `FLOAT64` greater than `1e8` | Absolute Unix seconds              |
 | Other non-negative `FLOAT64` | Seconds relative to scan start     |
 
-Per-point time is needed for scan-time deskew. LIO and graph odometry also wait
-for IMU samples covering the frame timestamp and, when timestamped points are
-present, the full scan interval.
+Deskew needs per-point time. LIO and graph mode wait for IMU coverage of the
+frame and, when timed points are present, the full scan.
 
 ### IMU
 
-The topic selected by `imu_topic` must use `sensor_msgs/msg/Imu`. The nodes use
-the header timestamp, angular velocity, and linear acceleration. The message
-orientation and frame ID are not consumed. Configure `T_imu_to_lidar/*` with the
-sensor extrinsic and set `imu/accel_unit` to match the input units.
-
-LO subscribes to IMU only when `imu/enable=true`. LIO and graph odometry always
-require both point cloud and IMU streams.
+`imu_topic` must carry `sensor_msgs/msg/Imu`. Only timestamp, angular velocity,
+and linear acceleration are used (not orientation or frame ID). Set
+`T_imu_to_lidar/*` and `imu/accel_unit` for your sensor. LO uses IMU only when
+`imu/enable=true`; LIO and graph mode require it.
 
 ## ROS Topics And Frames
 
-### Subscriptions
-
-| Mode  | Point cloud subscription                       | IMU subscription                                           |
-| ----- | ---------------------------------------------- | ---------------------------------------------------------- |
-| LO    | `points_topic` (`sensor_msgs/msg/PointCloud2`) | `imu_topic` (`sensor_msgs/msg/Imu`) when `imu/enable=true` |
-| LIO   | `points_topic` (`sensor_msgs/msg/PointCloud2`) | `imu_topic` (`sensor_msgs/msg/Imu`)                        |
-| Graph | `points_topic` (`sensor_msgs/msg/PointCloud2`) | `imu_topic` (`sensor_msgs/msg/Imu`)                        |
-
-Subscription history, depth, and reliability are controlled by `points_qos/*`
-and `imu_qos/*`. The YAML defaults use keep-last depths of 10 for points and 100
-for IMU, both with best-effort reliability.
+All modes subscribe to `points_topic`; LIO and graph mode also subscribe to
+`imu_topic` (LO only with `imu/enable=true`). Set `points_qos/*` and `imu_qos/*`
+for subscription QoS; YAML defaults are best-effort, keep-last depths 10 and 100.
 
 ### Publications
 
-Replace `<prefix>` with `sycl_lo`, `sycl_lio`, or `sycl_go` for LO, LIO, or graph
-odometry respectively. Standard live publishers use QoS depth 5.
+Replace `<prefix>` with `sycl_lo`, `sycl_lio`, or `sycl_go` (LO/LIO/graph):
 
 | Topic                    | Type                            | Content                                          |
 | ------------------------ | ------------------------------- | ------------------------------------------------ |
@@ -267,32 +176,16 @@ odometry respectively. Standard live publishers use QoS depth 5.
 | `<prefix>/keyframe/pose` | `nav_msgs/msg/Odometry`         | Accepted keyframe base-link pose                 |
 | `<prefix>/pose`          | `geometry_msgs/msg/PoseStamped` | Current base-link pose                           |
 
-Debug point clouds are converted and published only while they have subscribers.
-LO also publishes covariance markers on the configurable
-`vis/covariance_markers/scan/topic_name`, whose YAML default is
-`sycl_lo/scan_covariance_markers`.
-
-The estimator state is the LiDAR pose. ROS odometry, pose, keyframe, TF, and TUM
-outputs convert it to the base-link pose using `T_base_link_to_lidar`.
-
-For live launches:
-
-- The launch file publishes the static transform `base_link_id -> lidar_frame_id`
-  from `T_base_link_to_lidar/*`.
-- The odometry node publishes the dynamic transform
-  `odom_frame_id -> base_link_id`.
-- `lidar_frame_id` selects the child frame of the launch-created static transform;
-  it does not transform or validate incoming clouds.
-- The pipeline performs no TF lookup and does not transform the input cloud based
-  on its frame ID.
-
-Offline bag evaluators do not publish ROS topics or TF. They write a TUM file and
-processing statistics to the log.
+Debug clouds publish only when subscribed. LO also publishes scan covariance
+markers (`vis/covariance_markers/scan/topic_name`). The launch file publishes
+static `base_link_id -> lidar_frame_id` TF; the node publishes dynamic
+`odom_frame_id -> base_link_id` TF. Estimation uses LiDAR poses; base-link outputs
+apply `T_base_link_to_lidar`. Incoming clouds are **not** transformed via TF.
+Offline evaluators publish no topics or TF; they write TUM poses and log statistics.
 
 ## Offline Bag Evaluation
 
-Bag evaluators read messages directly in bag order without running
-`ros2 bag play`:
+Bag evaluators read messages directly; no `ros2 bag play` is needed:
 
 ```bash
 ros2 launch sycl_points_ros2 lidar_odometry_bag_eval_launch.py \
@@ -310,73 +203,37 @@ ros2 launch sycl_points_ros2 graph_odometry_bag_eval_launch.py \
   imu_topic:=/imu/data
 ```
 
-| Mode  | Evaluator executable                    | Default TUM output  |
-| ----- | --------------------------------------- | ------------------- |
-| LO    | `lidar_odometry_bag_eval_node`          | `sycl_lo_odom.tum`  |
-| LIO   | `lidar_inertial_odometry_bag_eval_node` | `sycl_lio_odom.tum` |
-| Graph | `graph_odometry_bag_eval_node`          | `sycl_go_odom.tum`  |
-
-| Argument                        | Description                                     | Default                   |
-| ------------------------------- | ----------------------------------------------- | ------------------------- |
-| `rosbag/uri`                    | Input bag URI; must not be empty                | Empty                     |
-| `rosbag/start_offset/sec`       | Start offset in seconds                         | `0.0`                     |
-| `eval/output_tum`               | Output TUM path                                 | Mode-specific value above |
-| `eval/write_first_frame`        | Include the initialized first-frame pose        | `true`                    |
-| `eval/exit_on_end`              | Shut down after the one-shot evaluation         | `true`                    |
-| `eval/max_pending_point_clouds` | Graph-only limit while waiting for IMU coverage | `10000`                   |
-
-TUM rows contain the base-link pose in this exact order:
+Default outputs are `sycl_lo_odom.tum`, `sycl_lio_odom.tum`, and
+`sycl_go_odom.tum`. Set `eval/output_tum` to change the path and
+`eval/write_first_frame` (default `true`) to include the first pose.
+Each TUM row contains the base-link pose:
 
 ```text
 timestamp tx ty tz qx qy qz qw
 ```
 
-The evaluator creates the output's parent directories and truncates an existing
-file. With `eval/exit_on_end=false`, evaluation still runs once, then the process
-continues spinning.
-
-LO and LIO evaluators consume clouds in bag order. Graph evaluation queues clouds
-until matching IMU coverage is available, bounded by
-`eval/max_pending_point_clouds`. It reports expired frames and clouds left
-incomplete at overflow or bag end; the resulting TUM file is partial. Evaluation
-exceptions are caught and logged internally, so process exit status alone is not
-a reliable success signal. Inspect the final statistics and error log.
+`rosbag/start_offset/sec` defaults to `0.0`. Evaluation runs once;
+`eval/exit_on_end=false` keeps the process alive afterward. Graph mode buffers
+clouds awaiting IMU coverage (limit: `eval/max_pending_point_clouds`, default
+`10000`); dropped or incomplete frames can make output partial. Check logs for
+errors; exit status alone is not a success indicator.
 
 ## Configuration
 
-Launch defaults and the complete parameter inventories are in:
+Launch defaults and all parameters are in:
 
 - [config/lidar_odometry.yaml](config/lidar_odometry.yaml)
 - [config/lidar_inertial_odometry.yaml](config/lidar_inertial_odometry.yaml)
 - [config/graph_odometry.yaml](config/graph_odometry.yaml)
 
-The graph launch merges wildcard (`/**`) parameters with node-specific overrides.
-Important configuration groups include:
-
-- Device, input conversion, subscription QoS, frames, initial pose, and sensor
-  extrinsics.
-- Scan preprocessing, intensity processing, downsampling, covariance estimation,
-  and submapping.
-- LO registration and motion prediction, LIO optimization and IMU settings, or
-  graph factors and sliding-window optimization.
-
-`sycl/device_vendor` accepts case-insensitive `default`, `intel`, `nvidia`, and
-`amd`; AdaptiveCpp also accepts `omp`. `sycl/device_type` accepts `cpu` or `gpu`.
-Selection fails if the requested device is invalid or unavailable. Runtime
-visibility filters such as `ONEAPI_DEVICE_SELECTOR` and `ACPP_VISIBILITY_MASK`
-are described in the repository [README](../../README.md).
+`sycl/device_vendor` accepts `default`, `intel`, `nvidia`, `amd` (also `omp`
+with AdaptiveCpp); `sycl/device_type` accepts `cpu` or `gpu`. Unavailable
+devices cause startup failure. See the repository [README](../../README.md) for
+runtime device filters.
 
 ### Deskew Selection
 
-Two different mechanisms must not be confused:
-
-- `registration/velocity_update/enable` is LiDAR registration velocity-update
-  deskew. It is useful for sequential spinning-LiDAR scans with per-point time.
-  Random-scan sensors may not benefit because nearby points need not be adjacent
-  in time.
-- `imu/deskew/enable` uses buffered IMU measurements before downsampling and
-  registration. It requires per-point time plus IMU coverage for the scan
-  interval. Graph odometry requires it; LIO enables it in the default YAML.
-
-Tune from the mode's YAML rather than treating scenario-specific values as
-universal defaults.
+- `registration/velocity_update/enable`: registration-based deskew for timed,
+  sequential scans; may not help random-scan sensors.
+- `imu/deskew/enable`: IMU-based deskew before registration; needs per-point
+  time and IMU coverage. Required in graph mode, enabled by default in LIO.
