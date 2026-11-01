@@ -1,8 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -16,6 +18,20 @@ namespace sycl_points {
 class PointCloudReader {
 private:
     using T = float;
+    static constexpr std::array<const char*, 6> covariance_fields = {"cov_xx", "cov_xy", "cov_xz",
+                                                                     "cov_yy", "cov_yz", "cov_zz"};
+
+    static Covariance makeCovariance(const std::array<float, 6>& upper) {
+        Covariance cov = Covariance::Zero();
+        cov(0, 0) = upper[0];
+        cov(0, 1) = cov(1, 0) = upper[1];
+        cov(0, 2) = cov(2, 0) = upper[2];
+        cov(1, 1) = upper[3];
+        cov(1, 2) = cov(2, 1) = upper[4];
+        cov(2, 2) = upper[5];
+        return cov;
+    }
+
     // Read PLY file
     static void readPLY(std::ifstream& file, PointCloudCPU& points, bool read_rgb, bool read_intensity) {
         std::string line;
@@ -28,6 +44,8 @@ private:
         int x_index = -1, y_index = -1, z_index = -1;
         int rgb_r_index = -1, rgb_g_index = -1, rgb_b_index = -1;
         int intensity_index = -1;
+        std::array<int, 6> cov_indices;
+        cov_indices.fill(-1);
 
         // Read header
         while (std::getline(file, line)) {
@@ -65,6 +83,9 @@ private:
                 if (token3 == "green") rgb_g_index = properties.size() - 1;
                 if (token3 == "blue") rgb_b_index = properties.size() - 1;
                 if (token3.find("intensity") != std::string::npos) intensity_index = properties.size() - 1;
+                for (size_t k = 0; k < covariance_fields.size(); ++k) {
+                    if (token3 == covariance_fields[k]) cov_indices[k] = properties.size() - 1;
+                }
             }
         }
 
@@ -86,6 +107,11 @@ private:
         if (has_intensity) {
             points.intensities->reserve(vertex_count);
         }
+        points.covs->clear();
+        const bool has_cov = std::all_of(cov_indices.begin(), cov_indices.end(), [&](int idx) {
+            return idx >= 0 && (property_types[idx] == "float" || property_types[idx] == "float32");
+        });
+        if (has_cov) points.covs->reserve(vertex_count);
 
         // For binary format
         if (is_binary) {
@@ -235,6 +261,13 @@ private:
                     const T intensity = read_intensity(intensity_index);
                     points.intensities->emplace_back(intensity);
                 }
+                if (has_cov) {
+                    std::array<float, 6> upper;
+                    for (size_t k = 0; k < upper.size(); ++k) {
+                        std::memcpy(&upper[k], buffer.data() + property_offsets[cov_indices[k]], sizeof(float));
+                    }
+                    points.covs->push_back(makeCovariance(upper));
+                }
             }
         } else {
             // For ASCII format
@@ -270,6 +303,13 @@ private:
                     const T intensity = static_cast<T>(raw_values[intensity_index]);
                     points.intensities->emplace_back(intensity);
                 }
+                if (has_cov) {
+                    std::array<float, 6> upper;
+                    for (size_t k = 0; k < upper.size(); ++k) {
+                        upper[k] = static_cast<float>(raw_values[cov_indices[k]]);
+                    }
+                    points.covs->push_back(makeCovariance(upper));
+                }
             }
         }
     }
@@ -288,6 +328,8 @@ private:
         int x_index = -1, y_index = -1, z_index = -1;
         int rgb_r_index = -1, rgb_g_index = -1, rgb_b_index = -1;
         int intensity_index = -1;
+        std::array<int, 6> cov_indices;
+        cov_indices.fill(-1);
 
         std::string data_type;
 
@@ -310,6 +352,9 @@ private:
                     if (field == "g") rgb_g_index = fields.size() - 1;
                     if (field == "b") rgb_b_index = fields.size() - 1;
                     if (field == "intensity") intensity_index = fields.size() - 1;
+                    for (size_t k = 0; k < covariance_fields.size(); ++k) {
+                        if (field == covariance_fields[k]) cov_indices[k] = fields.size() - 1;
+                    }
                 }
                 fields_count = fields.size();
             } else if (keyword == "TYPE") {
@@ -354,11 +399,20 @@ private:
         bool has_intensity = false;
         if (read_intensity && intensity_index >= 0) {
             if (field_sizes_line.size() > static_cast<size_t>(intensity_index) &&
-                field_sizes_line[intensity_index] == 1) {
+                (field_sizes_line[intensity_index] == 1 || field_sizes_line[intensity_index] == 4)) {
                 has_intensity = true;
                 points.intensities->reserve(point_count);
             }
         }
+        points.covs->clear();
+        const bool has_cov = std::all_of(cov_indices.begin(), cov_indices.end(), [&](int idx) {
+            return idx >= 0 &&                                            //
+                   static_cast<size_t>(idx) < field_types.size() &&       //
+                   field_types[idx] == "F" &&                             //
+                   static_cast<size_t>(idx) < field_sizes_line.size() &&  //
+                   field_sizes_line[idx] == 4;
+        });
+        if (has_cov) points.covs->reserve(point_count);
 
         // For binary format
         if (is_binary) {
@@ -456,6 +510,13 @@ private:
                     }
                     points.intensities->emplace_back(intensity);
                 }
+                if (has_cov) {
+                    std::array<float, 6> upper;
+                    for (size_t k = 0; k < upper.size(); ++k) {
+                        std::memcpy(&upper[k], buffer.data() + field_offsets[cov_indices[k]], sizeof(float));
+                    }
+                    points.covs->push_back(makeCovariance(upper));
+                }
             }
         } else {
             // For ASCII format
@@ -482,6 +543,13 @@ private:
                 if (has_intensity) {
                     const T intensity = static_cast<T>(values[intensity_index]);
                     points.intensities->emplace_back(intensity);
+                }
+                if (has_cov) {
+                    std::array<float, 6> upper;
+                    for (size_t k = 0; k < upper.size(); ++k) {
+                        upper[k] = static_cast<float>(values[cov_indices[k]]);
+                    }
+                    points.covs->push_back(makeCovariance(upper));
                 }
             }
         }

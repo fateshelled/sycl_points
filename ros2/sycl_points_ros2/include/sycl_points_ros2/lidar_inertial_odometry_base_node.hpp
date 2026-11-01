@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "sycl_points_ros2/lidar_odometry_base_node.hpp"
+#include "sycl_points_ros2/submap_export.hpp"
 
 namespace sycl_points {
 namespace ros2 {
@@ -111,6 +112,7 @@ private:
     // Processing-time bookkeeping
     // -----------------------------------------------------------------------
     PublishOptions publish_options_;
+    SubmapExport submap_export_;
     bool processing_initialized_ = false;
     std::map<std::string, std::vector<double>> processing_times_;
 };

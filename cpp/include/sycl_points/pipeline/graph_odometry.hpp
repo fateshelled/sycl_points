@@ -122,6 +122,10 @@ public:
     const auto& get_keyframe_poses() const { return this->keyframe_poses_; }
     const PointCloudShared& get_preprocessed_point_cloud() const { return *this->preprocessed_pc_; }
     const PointCloudShared& get_submap_point_cloud() const { return this->submap_->get_submap_point_cloud(); }
+    /// @brief Export the retained map only; active graph-window scans are not inserted for export.
+    void extract_full_submap_point_cloud(PointCloudShared& result) const {
+        this->submap_->extract_full_point_cloud(result);
+    }
     /// @brief The exact point cloud the latest frame's tip factor consumed
     ///        (sampled / final-deskewed, i.e. FrameResult::tip_cloud). Null
     ///        before the first successful graph frame. Discarded frames leave

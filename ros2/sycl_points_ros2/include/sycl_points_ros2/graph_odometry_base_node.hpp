@@ -14,6 +14,8 @@
 #include <tf2_ros/transform_broadcaster.hpp>
 #include <vector>
 
+#include "sycl_points_ros2/submap_export.hpp"
+
 namespace sycl_points {
 namespace ros2 {
 
@@ -126,6 +128,7 @@ private:
     void log_processing_times();
 
     PublishOptions publish_options_;
+    SubmapExport submap_export_;
     bool processing_initialized_ = false;
     std::map<std::string, std::vector<double>> processing_times_;
 };

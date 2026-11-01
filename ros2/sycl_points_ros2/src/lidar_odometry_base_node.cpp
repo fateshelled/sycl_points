@@ -15,11 +15,16 @@ LiDAROdometryBaseNode::~LiDAROdometryBaseNode() {
     if (!this->processing_initialized_) {
         return;
     }
+    if (this->pipeline_ != nullptr) {
+        this->submap_export_.save(*this, *this->pipeline_, this->odom_frame_id_);
+    }
     this->log_processing_times();
 }
 
 void LiDAROdometryBaseNode::initialize_processing() {
     this->params_ = ros2::declare_lidar_odometry_parameters(this);
+
+    this->submap_export_.declare_parameters(*this);
 
     this->points_topic_ = this->declare_parameter<std::string>("points_topic", this->points_topic_);
     this->imu_topic_ = this->declare_parameter<std::string>("imu_topic", this->imu_topic_);

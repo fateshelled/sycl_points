@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <utility>
 
+#include "sycl_points/io/point_cloud_reader.hpp"
+#include "sycl_points/io/point_cloud_writer.hpp"
 #include "sycl_points/pipeline/submapping.hpp"
 
 namespace {
@@ -64,6 +68,85 @@ TEST_P(StagedSubmapTest, EvictedKeyframesUpdateMapInPlaceAndRetarget) {
     EXPECT_EQ(AsVoid(second.knn.get()), AsVoid(&submap.get_submap_kdtree()));
     EXPECT_NE(AsVoid(second.cloud.get()), AsVoid(first.cloud.get()));
     EXPECT_NE(AsVoid(second.knn.get()), AsVoid(first.knn.get()));
+}
+
+TEST_P(StagedSubmapTest, FullExportIncludesDistantPointsWithoutChangingTarget) {
+    sp::sycl_utils::DeviceQueue queue{sycl::device(sp::sycl_utils::device_selector::default_selector_v)};
+    auto params = MakeParams(GetParam());
+    params.submap.max_distance_range = 5.0f;
+    sp::pipeline::submapping::Submap submap(queue, params);
+    auto cloud = MakeCloud(queue);
+    cloud.resize_rgb(cloud.size());
+    cloud.resize_intensities(cloud.size());
+    for (size_t i = 0; i < cloud.size(); ++i) {
+        (*cloud.rgb)[i] = sp::RGBType(1.0f, 0.0f, 0.0f, 1.0f);
+        (*cloud.intensities)[i] = 42.0f;
+    }
+    submap.add_first_frame(cloud, 0.0, Eigen::Isometry3f::Identity());
+    Eigen::Isometry3f distant_pose = Eigen::Isometry3f::Identity();
+    distant_pose.translation().x() = 100.0f;
+    submap.insert_evicted_keyframe(cloud, distant_pose);
+    const auto target = submap.get_target();
+    ASSERT_EQ(target.cloud->size(), 3U);
+
+    sp::PointCloudShared full_cloud(queue);
+    submap.extract_full_point_cloud(full_cloud);
+    ASSERT_EQ(full_cloud.size(), 6U);
+    ASSERT_TRUE(full_cloud.has_rgb());
+    ASSERT_TRUE(full_cloud.has_intensity());
+    size_t distant_count = 0;
+    for (size_t i = 0; i < full_cloud.size(); ++i) {
+        distant_count += (*full_cloud.points)[i].x() > 100.0f;
+        EXPECT_FLOAT_EQ((*full_cloud.intensities)[i], 42.0f);
+        EXPECT_FLOAT_EQ((*full_cloud.rgb)[i].x(), 1.0f);
+    }
+    EXPECT_EQ(distant_count, 3U);
+    EXPECT_EQ(submap.get_target().cloud, target.cloud);
+    EXPECT_EQ(submap.get_target().knn, target.knn);
+    EXPECT_EQ(submap.get_submap_point_cloud().size(), 3U);
+
+    // Exercise both file formats and encodings with the full exported map.
+    for (const auto* extension : {".pcd", ".ply"}) {
+        for (bool binary : {false, true}) {
+            const auto path = std::filesystem::temp_directory_path() /
+                              ("sycl_points_full_submap_" + std::to_string(static_cast<int>(GetParam())) +
+                               (binary ? "_binary" : "_ascii") + extension);
+            sp::PointCloudWriter::writeFile(path.string(), full_cloud, binary);
+            if (std::string(extension) == ".pcd") {
+                // The existing reader does not decode the writer's packed PCD RGB field.
+                std::ifstream file(path, std::ios::binary);
+                std::string line;
+                std::getline(file, line);
+                std::getline(file, line);
+                std::getline(file, line);
+                EXPECT_EQ(line, "FIELDS x y z rgb");
+            }
+            auto loaded = sp::PointCloudReader::readFile(path.string());
+            std::filesystem::remove(path);
+            ASSERT_EQ(loaded.size(), full_cloud.size());
+            if (std::string(extension) == ".ply") {
+                ASSERT_TRUE(loaded.has_rgb());
+                ASSERT_TRUE(loaded.has_intensity());
+            }
+            for (size_t i = 0; i < loaded.size(); ++i) {
+                EXPECT_TRUE((*loaded.points)[i].isApprox((*full_cloud.points)[i]));
+                if (loaded.has_intensity()) {
+                    EXPECT_FLOAT_EQ((*loaded.intensities)[i], 42.0f);
+                }
+            }
+        }
+    }
+}
+
+TEST_P(StagedSubmapTest, FullExportHandlesEmptyAndFirstFrameMaps) {
+    sp::sycl_utils::DeviceQueue queue{sycl::device(sp::sycl_utils::device_selector::default_selector_v)};
+    sp::pipeline::submapping::Submap submap(queue, MakeParams(GetParam()));
+    auto result = MakeCloud(queue);
+    submap.extract_full_point_cloud(result);
+    EXPECT_EQ(result.size(), 0U);
+    submap.add_first_frame(MakeCloud(queue), 0.0, Eigen::Isometry3f::Identity());
+    submap.extract_full_point_cloud(result);
+    EXPECT_EQ(result.size(), 3U);
 }
 
 INSTANTIATE_TEST_SUITE_P(AllMapBackends, StagedSubmapTest,

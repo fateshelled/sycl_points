@@ -196,6 +196,11 @@ public:
         this->extract_occupied_points_impl(result, sensor_pose.translation(), max_distance);
     }
 
+    /// @brief Export all retained occupied voxel representatives without a local range limit.
+    void extract_all_points(PointCloudShared& result) const {
+        this->extract_occupied_points(result, Eigen::Isometry3f::Identity(), std::numeric_limits<float>::max());
+    }
+
     /// @brief [Experimental] Extract the visible subset of the map as a new point cloud.
     /// @param result Output point cloud in the map frame.
     /// @param sensor_pose Sensor pose expressed in the map frame.

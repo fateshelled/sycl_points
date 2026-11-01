@@ -1,93 +1,65 @@
 # sycl_points
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/fateshelled/sycl_points)
 
-A C++ header-only point cloud processing library accelerated with SYCL for heterogeneous computing systems.
+`sycl_points` is a C++ header-only library for point cloud processing. It uses SYCL to accelerate operations.
 
 ## Overview
 
-sycl_points provides efficient implementations of common point cloud processing operations using the SYCL (Single-source heterogeneous programming for C++) standard. The library enables accelerated processing on CPUs, Intel iGPU and NVIDIA GPUs supported by SYCL.
+`sycl_points` uses SYCL for point cloud processing on CPUs, Intel integrated GPUs, and NVIDIA GPUs. It supports two SYCL implementations:
 
-Two SYCL implementations are supported:
-- **Intel oneAPI DPC++** (default) — Intel CPUs, Intel iGPUs, NVIDIA GPUs via Codeplay plugin
-- **AdaptiveCpp** (formerly hipSYCL) — CPUs (OpenMP), NVIDIA GPUs (CUDA), AMD GPUs (HIP), and more
+- **Intel oneAPI DPC++** (default): Intel CPUs and integrated GPUs. For NVIDIA GPUs, use CUDA and build DPC++ from source.
+- **AdaptiveCpp** (formerly hipSYCL): OpenMP CPUs and NVIDIA GPUs with CUDA. AdaptiveCpp also supports AMD GPUs with HIP and other devices.
+  This project does not support AMD GPUs.
 
-This project was developed with reference to small_gicp and gtsam_points
-- https://github.com/koide3/small_gicp
-- https://github.com/koide3/gtsam_points
+The development of `sycl_points` used [small_gicp](https://github.com/koide3/small_gicp) and [gtsam_points](https://github.com/koide3/gtsam_points) as references.
 
 ### Key features
-- Efficient point cloud data structures for CPU and accelerator memory
-  - Data structures accessible from CPU and device kernel
-- K-nearest neighbor search
-  - KD-trees
-  - Octree
-  - Brute force
-- Point cloud registration
-  - Iterative Closest Point (ICP)
-    - Point to Point
-    - Point to Plane
-    - Point to Distribution
-    - Generalized ICP (GICP)
-    - Genz-ICP
-  - Robust Estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
-  - Velocity updating ICP (VICP)
-    - Estimates sensor velocity to compensate for motion distortion in the source point cloud. The source cloud must have a `time` field for each point.
-  - Rotation Constraint
-    - Adding rotation constraints using `Jensen-Bregman LogDet` divergence. Source and target cloud require pre-computed `covariance` matrices.
-- Submapping
-  - Voxel hashmap
-  - Occupancy grid map
-- Filtering
-  - L∞ distance (chebyshev distance) filter
-  - Random sampling
-  - Farthest point sampling (FPS)
-  - Angle incidence filter
-  - Voxel grid downsampling
-  - Polar grid downsampling
-- Point cloud file I/O
-  - PLY and PCD format support
-  - ASCII and binary format reading/writing
-  - CPU and shared memory interface compatibility
 
-### Future optimization work will include
-- Algorithm refinements for better parallelization
+- Point cloud data structures for CPU and accelerator memory. Host code and device kernels can get access to them.
+- Nearest neighbor search: KD-tree, octree, brute force
+- Registration
+  - ICP: Point to Point, Point to Plane, Point to Distribution, GICP, Genz-ICP
+  - Robust estimation (HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE)
+  - VICP: estimates sensor velocity to compensate for motion distortion. The source cloud must have a `time` field.
+  - Rotation constraint with Jensen-Bregman LogDet divergence. Both clouds must have `covariance` matrices.
+- Submapping: voxel hashmap, occupancy grid map
+- Filtering: L∞ (Chebyshev) distance, random sampling, FPS, angle incidence, voxel grid and polar grid downsampling
+- File I/O: PLY and PCD, ASCII and binary, CPU and shared memory
 
-### Supported Device
+The project plans to increase the parallel processing of its algorithms.
+
+### Supported devices
+
 - Intel CPU (OpenCL backend)
 - Intel iGPU (Level Zero or OpenCL backend)
 - NVIDIA GPU (CUDA backend)
 
-note:
-- AMD CPU will work fine.
-- I do not own an AMD GPU, so it is not supported.
+The project expects AMD CPUs to work, but has not tested them. It does not support AMD GPUs and has not tested them because no hardware is available.
 
 ## Requirements
 
-- C++20 or later
-- Eigen
-- GTest
+- C++20 or a later version
+- Eigen, GTest
 - One of the following SYCL implementations:
-  - **Intel oneAPI DPC++** (default)
-      - https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/
-  - **AdaptiveCpp** (formerly hipSYCL)
-      - https://github.com/AdaptiveCpp/AdaptiveCpp
-- Intel oneAPI for NVIDIA® GPUs (optional, Intel DPC++ only)
-    - **Binary packages are no longer distributed**; must be built from source
-    - https://github.com/intel/llvm
-- Intel GPU Driver (optional, Intel DPC++ only)
-    - https://dgpu-docs.intel.com/driver/client/overview.html
+  - **Intel oneAPI DPC++** (default) — <https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/>
+  - **AdaptiveCpp** — <https://github.com/AdaptiveCpp/AdaptiveCpp>
+- Optional (Intel DPC++ only):
+  - Intel oneAPI for NVIDIA GPUs — binary packages are no longer available. Build from source: <https://github.com/intel/llvm>
+  - Intel GPU driver — <https://dgpu-docs.intel.com/driver/client/overview.html>
 
 ### Install dependencies
 
 #### Eigen and GTest
+
 ```bash
 sudo apt update
 sudo apt install libeigen3-dev libgtest-dev
 ```
 
 #### oneAPI DPC++
-For the latest information, please refer to the following URL:
-- https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/
+
+See the [installation guide](https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/).
 
 ```bash
 # download the key to system keyring
@@ -102,14 +74,14 @@ sudo apt update
 sudo apt install intel-cpp-essentials
 ```
 
-#### Intel oneAPI for NVIDIA® GPUs (optional)
+#### Intel oneAPI for NVIDIA GPUs (optional)
 
-> **Note:** Binary packages are no longer distributed. Intel DPC++ must be built from source.
-> See [docs/install_dpcpp_nvidia.md](docs/install_dpcpp_nvidia.md) for details.
+> Binary packages are no longer available. Build Intel DPC++ from source.
+> See [docs/install_dpcpp_nvidia.md](docs/install_dpcpp_nvidia.md).
 
-#### Intel GPU Driver (Optional)
-For the latest information, please refer to the following URL:
-- https://dgpu-docs.intel.com/driver/client/overview.html
+#### Intel GPU driver (optional)
+
+See the [driver documentation](https://dgpu-docs.intel.com/driver/client/overview.html).
 
 ```bash
 # add apt repository
@@ -133,8 +105,7 @@ newgrp render
 
 #### AdaptiveCpp
 
-See [docs/install_adaptive_cpp.md](docs/install_adaptive_cpp.md) for details.
-
+See [docs/install_adaptive_cpp.md](docs/install_adaptive_cpp.md).
 
 ## Build and run example
 
@@ -158,7 +129,7 @@ sycl-ls
 # [opencl:gpu][opencl:1] Intel(R) OpenCL Graphics, Intel(R) Graphics OpenCL 3.0 NEO  [25.13.33276]
 # [cuda:gpu][cuda:0] NVIDIA CUDA BACKEND, NVIDIA GeForce RTX 3060 8.6 [CUDA 12.9]
 
-# specify the device to be used with `ONEAPI_DEVICE_SELECTOR`
+# select the device with `ONEAPI_DEVICE_SELECTOR`
 
 # run example with Level Zero device (iGPU)
 ONEAPI_DEVICE_SELECTOR=level_zero:0 ./example_registration
@@ -193,8 +164,8 @@ acpp-info -l
 # Loaded backend 3: OpenMP
 #   Found device: AdaptiveCpp OpenMP host device
 
-# specify the device to be used with `ACPP_VISIBILITY_MASK`
-# if specify cuda devive number, use `CUDA_VISIBLE_DEVICES`
+# select the device with `ACPP_VISIBILITY_MASK`
+# for a specific CUDA device number, use `CUDA_VISIBLE_DEVICES`
 
 # run example with Level Zero device
 ACPP_VISIBILITY_MASK=ze ./example_registration
@@ -211,18 +182,17 @@ ACPP_VISIBILITY_MASK=cuda ./example_registration
 CUDA_VISIBLE_DEVICES=0 ./example_registration
 ```
 
-> **Note:** When switching between `IntelDPCPP` and `AdaptiveCpp`, or changing `ACPP_TARGETS`,
-> use a **fresh build directory** or delete `CMakeCache.txt`, since the compiler and target
-> selections are cached by CMake. Using separate directories (e.g. `build_omp`, `build_cuda`)
-> is recommended when testing multiple target configurations.
+> **NOTE:** If you change `SYCL_IMPL` or `ACPP_TARGETS`, use a new build directory or delete `CMakeCache.txt`. \
+> CMake keeps the selected compiler and targets in its cache. \
+> If you test more than one configuration, use a separate directory for each configuration (for example, `build_omp` and `build_cuda`).
 
 ## References
-- https://github.com/koide3/small_gicp
-- https://github.com/koide3/gtsam_points
-- **GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)**
-  - https://arxiv.org/abs/2411.06766
-- **Informed, Constrained, Aligned: A Field Analysis on Degeneracy-aware Point Cloud Registration in the Wild (2024)**
-  - https://arxiv.org/abs/2408.11809
+
+- <https://github.com/koide3/small_gicp>
+- <https://github.com/koide3/gtsam_points>
+- **GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)** — <https://arxiv.org/abs/2411.06766>
+- **Informed, Constrained, Aligned: A Field Analysis on Degeneracy-aware Point Cloud Registration in the Wild (2024)** — <https://arxiv.org/abs/2408.11809>
 
 ## License
-This library is released under Apache License 2.0
+
+The project uses the Apache License 2.0.
