@@ -169,6 +169,7 @@ private:
     static void writePCD(std::ofstream& file, const PointCloud& cloud, bool binary) {
         const size_t N = cloud.size();
         const bool has_rgb = cloud.has_rgb();
+        const bool has_intensity = cloud.has_intensity();
 
         // Count valid points first
         const size_t valid_count = countValidPoints(cloud);
@@ -193,10 +194,16 @@ private:
         if (has_rgb) {
             file << " rgb";
         }
+        if (has_intensity) {
+            file << " intensity";
+        }
         file << "\n";
 
         file << "SIZE 4 4 4";
         if (has_rgb) {
+            file << " 4";
+        }
+        if (has_intensity) {
             file << " 4";
         }
         file << "\n";
@@ -205,10 +212,16 @@ private:
         if (has_rgb) {
             file << " U";
         }
+        if (has_intensity) {
+            file << " F";
+        }
         file << "\n";
 
         file << "COUNT 1 1 1";
         if (has_rgb) {
+            file << " 1";
+        }
+        if (has_intensity) {
             file << " 1";
         }
         file << "\n";
@@ -245,6 +258,10 @@ private:
                                         (static_cast<uint32_t>(color.z() * 255.0f));
                     file.write(reinterpret_cast<const char*>(&rgb), sizeof(rgb));
                 }
+                if (has_intensity) {
+                    const float intensity = (*cloud.intensities)[i];
+                    file.write(reinterpret_cast<const char*>(&intensity), sizeof(intensity));
+                }
             }
         } else {
             // ASCII format
@@ -261,6 +278,9 @@ private:
                                         (static_cast<uint32_t>(color.y() * 255.0f) << 8) |
                                         (static_cast<uint32_t>(color.z() * 255.0f));
                     file << " " << rgb;
+                }
+                if (has_intensity) {
+                    file << " " << (*cloud.intensities)[i];
                 }
                 file << "\n";
             }

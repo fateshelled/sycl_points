@@ -250,6 +250,90 @@ TEST_F(PointCloudIOTest, PCD_Binary_Shared_RoundTrip) { testRoundTripShared("tes
 
 TEST_F(PointCloudIOTest, PCD_Binary_CrossFormat) { testCrossFormat("test_pcd_binary_cross.pcd", true); }
 
+TEST_F(PointCloudIOTest, PCD_WithIntensity_RoundTrip) {
+    sycl_points::PointCloudCPU cloud;
+    cloud.points->emplace_back(1.f, 2.f, 3.f, 1.f);
+    cloud.points->emplace_back(4.f, 5.f, 6.f, 1.f);
+    cloud.intensities->assign({0.25f, 123.5f});
+
+    for (const bool binary : {false, true}) {
+        for (const bool shared : {false, true}) {
+            const std::string filename = std::string("test_intensity_") + (binary ? "binary_" : "ascii_") +
+                                         (shared ? "shared.pcd" : "cpu.pcd");
+            if (shared) {
+                sycl_points::PointCloudShared shared_cloud(*queue, cloud);
+                sycl_points::PointCloudWriter::writeFile(filename, shared_cloud, binary);
+            } else {
+                sycl_points::PointCloudWriter::writeFile(filename, cloud, binary);
+            }
+
+            std::ifstream file(filename, std::ios::binary);
+            std::string line;
+            ASSERT_TRUE(std::getline(file, line));
+            ASSERT_TRUE(std::getline(file, line));
+            ASSERT_TRUE(std::getline(file, line));
+            EXPECT_EQ(line, "FIELDS x y z intensity");
+            ASSERT_TRUE(std::getline(file, line));
+            EXPECT_EQ(line, "SIZE 4 4 4 4");
+            ASSERT_TRUE(std::getline(file, line));
+            EXPECT_EQ(line, "TYPE F F F F");
+            ASSERT_TRUE(std::getline(file, line));
+            EXPECT_EQ(line, "COUNT 1 1 1 1");
+            file.close();
+
+            const auto loaded = sycl_points::PointCloudReader::readFile(filename);
+            comparePointClouds(cloud, loaded);
+            ASSERT_TRUE(loaded.has_intensity());
+            EXPECT_NEAR((*loaded.intensities)[0], 0.25f, tolerance);
+            EXPECT_NEAR((*loaded.intensities)[1], 123.5f, tolerance);
+            std::remove(filename.c_str());
+        }
+    }
+}
+
+TEST_F(PointCloudIOTest, PCD_WithRGBAndIntensity_Fields) {
+    sycl_points::PointCloudCPU cloud;
+    cloud.points->emplace_back(1.f, 2.f, 3.f, 1.f);
+    cloud.rgb->emplace_back(1.f, 0.f, 0.f, 1.f);
+    cloud.intensities->push_back(42.25f);
+
+    for (const bool binary : {false, true}) {
+        const std::string filename = binary ? "test_rgb_intensity_binary.pcd" : "test_rgb_intensity_ascii.pcd";
+        sycl_points::PointCloudWriter::writeFile(filename, cloud, binary);
+        std::ifstream file(filename, std::ios::binary);
+        std::string line;
+        ASSERT_TRUE(std::getline(file, line));
+        ASSERT_TRUE(std::getline(file, line));
+        ASSERT_TRUE(std::getline(file, line));
+        EXPECT_EQ(line, "FIELDS x y z rgb intensity");
+        ASSERT_TRUE(std::getline(file, line));
+        EXPECT_EQ(line, "SIZE 4 4 4 4 4");
+        ASSERT_TRUE(std::getline(file, line));
+        EXPECT_EQ(line, "TYPE F F F U F");
+        ASSERT_TRUE(std::getline(file, line));
+        EXPECT_EQ(line, "COUNT 1 1 1 1 1");
+        while (std::getline(file, line) && line.rfind("DATA ", 0) != 0) {}
+        ASSERT_EQ(line, binary ? "DATA binary" : "DATA ascii");
+        if (binary) {
+            float coords[3];
+            uint32_t rgb;
+            float intensity;
+            file.read(reinterpret_cast<char*>(coords), sizeof(coords));
+            file.read(reinterpret_cast<char*>(&rgb), sizeof(rgb));
+            file.read(reinterpret_cast<char*>(&intensity), sizeof(intensity));
+            ASSERT_TRUE(file.good());
+            EXPECT_FLOAT_EQ(coords[0], 1.f);
+            EXPECT_EQ(rgb, 0x00ff0000u);
+            EXPECT_FLOAT_EQ(intensity, 42.25f);
+        } else {
+            ASSERT_TRUE(std::getline(file, line));
+            EXPECT_EQ(line, "1.000000 2.000000 3.000000 16711680 42.250000");
+        }
+        file.close();
+        std::remove(filename.c_str());
+    }
+}
+
 TEST_F(PointCloudIOTest, PLY_ASCII_WithRGB) {
     const std::string filename = "test_rgb_ascii.ply";
     {

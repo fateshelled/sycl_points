@@ -354,7 +354,7 @@ private:
         bool has_intensity = false;
         if (read_intensity && intensity_index >= 0) {
             if (field_sizes_line.size() > static_cast<size_t>(intensity_index) &&
-                field_sizes_line[intensity_index] == 1) {
+                (field_sizes_line[intensity_index] == 1 || field_sizes_line[intensity_index] == 4)) {
                 has_intensity = true;
                 points.intensities->reserve(point_count);
             }
