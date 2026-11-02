@@ -15,6 +15,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -56,7 +57,7 @@ geometry_msgs::msg::Pose to_msg(const Eigen::Isometry3f& t) {
 
 class PriorMapLocalizationNode : public rclcpp::Node {
 public:
-    PriorMapLocalizationNode() : Node("prior_map_localization") {
+    explicit PriorMapLocalizationNode(const rclcpp::NodeOptions& options) : Node("prior_map_localization", options) {
         const auto number = [this](const std::string& key, double value) { return declare_parameter(key, value); };
         const auto integer = [this](const std::string& key, int value) { return declare_parameter(key, value); };
         frame_ = declare_parameter<std::string>("map/frame_id", "map");
@@ -435,15 +436,4 @@ private:
 
 }  // namespace sycl_points::ros2
 
-int main(int argc, char** argv) {
-    rclcpp::init(argc, argv);
-    try {
-        rclcpp::spin(std::make_shared<sycl_points::ros2::PriorMapLocalizationNode>());
-    } catch (const std::exception& e) {
-        fprintf(stderr, "Prior map localization: %s\n", e.what());
-        rclcpp::shutdown();
-        return 1;
-    }
-    rclcpp::shutdown();
-    return 0;
-}
+RCLCPP_COMPONENTS_REGISTER_NODE(sycl_points::ros2::PriorMapLocalizationNode)

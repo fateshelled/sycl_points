@@ -49,9 +49,15 @@ target_link_libraries(lidar_odometry
 
 apply_sycl_settings(lidar_odometry)
 
-ament_auto_add_executable(prior_map_localization_node src/prior_map_localization_node.cpp)
-target_link_libraries(prior_map_localization_node Eigen3::Eigen)
-apply_sycl_settings(prior_map_localization_node)
+ament_auto_add_library(prior_map_localization SHARED src/prior_map_localization_node.cpp)
+target_link_libraries(prior_map_localization Eigen3::Eigen)
+apply_sycl_settings(prior_map_localization)
+
+rclcpp_components_register_node(
+  prior_map_localization
+  PLUGIN "sycl_points::ros2::PriorMapLocalizationNode"
+  EXECUTABLE prior_map_localization_node
+)
 
 rclcpp_components_register_node(
   lidar_odometry
