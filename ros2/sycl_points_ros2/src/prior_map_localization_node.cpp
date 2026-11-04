@@ -7,8 +7,10 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <thread>
+#include <vector>
 
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -142,6 +144,7 @@ public:
         { std::lock_guard lock(mutex_); stopping_ = true; }
         cv_.notify_one();
         if (worker_.joinable()) worker_.join();
+        log_processing_times();
     }
 
 private:
@@ -313,6 +316,41 @@ private:
         }
     }
 
+    void print_processing_time(const std::string& name, double us) const {
+        constexpr size_t width = 24;
+        RCLCPP_INFO(get_logger(), "%s: %*s%9.2f us", name.c_str(),
+                    static_cast<int>(name.size() < width ? width - name.size() : 0), "", us);
+    }
+
+    void record_processing_time(const std::string& name, Clock::time_point begin, Clock::time_point end) {
+        const double us = std::chrono::duration<double, std::micro>(end - begin).count();
+        processing_times_[name].push_back(us);
+        print_processing_time(name, us);
+    }
+
+    void log_processing_times() {
+        int statistic = 0;
+        for (const char* heading : {"MAX processing time", "MEAN processing time", "MEDIAN processing time"}) {
+            RCLCPP_INFO(get_logger(), "");
+            RCLCPP_INFO(get_logger(), "%s", heading);
+            for (auto& [name, times] : processing_times_) {
+                if (times.empty()) continue;
+                double value;
+                if (statistic == 0) {
+                    value = *std::max_element(times.begin(), times.end());
+                } else if (statistic == 1) {
+                    value = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+                } else {
+                    std::sort(times.begin(), times.end());
+                    value = times[times.size() / 2];
+                }
+                print_processing_time(name, value);
+            }
+            ++statistic;
+        }
+        RCLCPP_INFO(get_logger(), "");
+    }
+
     void process(const Pair& job) {
         Eigen::Isometry3f guess;
         {
@@ -373,6 +411,7 @@ private:
         const float local_overlap = nearby ? static_cast<float>(nearby_matched) / nearby : 0.0f;
         if (nearby < static_cast<size_t>(min_local_points_) || local_overlap < min_local_overlap_ratio_)
             throw std::runtime_error("insufficient map overlap near current robot position");
+        const auto checked = Clock::now();
         {
             std::lock_guard lock(mutex_);
             if (job.epoch != epoch_ || job.time <= last_accepted_ ||
@@ -390,11 +429,18 @@ private:
             }
             publish_tf_locked();
         }
-        const auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
-        RCLCPP_DEBUG(get_logger(),
-            "Matched %zu correspondences; transfer %.1f, voxel %.1f, source tree %.1f, covariance %.1f, target %.1f, registration %.1f ms",
-            inliers_, ms(started, converted), ms(converted, reduced), ms(reduced, indexed),
-            ms(indexed, covariances), ms(covariances, localized), ms(localized, matched));
+        const auto published = Clock::now();
+        RCLCPP_INFO(get_logger(), "Matched %zu correspondences", static_cast<size_t>(result.inlier));
+        record_processing_time("0. from ROS 2 msg", started, converted);
+        record_processing_time("1. downsampling", converted, reduced);
+        record_processing_time("2. source tree", reduced, indexed);
+        record_processing_time("3. covariance", indexed, covariances);
+        record_processing_time("4. local target", covariances, localized);
+        record_processing_time("5. registration", localized, matched);
+        record_processing_time("6. overlap check", matched, checked);
+        record_processing_time("7. publish ROS 2 msg", checked, published);
+        record_processing_time("8. total", started, published);
+        RCLCPP_INFO(get_logger(), "");
     }
 
     std::unique_ptr<sycl_utils::DeviceQueue> queue_;
@@ -427,6 +473,7 @@ private:
     size_t inliers_ = 0;
     float error_ = 0;
     float local_overlap_ = 0;
+    std::map<std::string, std::vector<double>> processing_times_;
     int source_max_points_, source_neighbors_, source_min_points_, max_pending_, min_inliers_;
     double source_voxel_size_, max_rate_, pair_wait_, submap_wait_, frozen_age_, odom_age_, corr_distance_;
     double min_ratio_, max_translation_, max_rotation_, max_error_;
