@@ -59,6 +59,7 @@ geometry_msgs::msg::Pose to_msg(const Eigen::Isometry3f& t) {
 
 class PriorMapLocalizationNode : public rclcpp::Node {
 public:
+    // Declares parameters, builds the prior map, and wires the ROS 2 interfaces.
     explicit PriorMapLocalizationNode(const rclcpp::NodeOptions& options)
         : Node("prior_map_localization", options), parameters_(declare_parameters()) {
         queue_ = std::make_unique<sycl_utils::DeviceQueue>(
@@ -98,6 +99,7 @@ public:
             [this] { work(); }, processing_group_);
     }
 
+    // Stops timers and waits for in-flight processing before logging timings.
     ~PriorMapLocalizationNode() override {
         processing_timer_->cancel();
         timer_->cancel();
@@ -232,6 +234,7 @@ private:
         return pose(p);
     }
 
+    // Publishes the corrected map->odom transform and localized pose.
     // Caller holds mutex_. Never publish a correction for an already published timestamp.
     void publish_tf_locked() {
         if (!correction_ || !latest_odom_ || !last_success_ ||
@@ -257,6 +260,7 @@ private:
         pose_pub_->publish(located);
     }
 
+    // Clears all localization state after a clock or sensor-time rewind. Caller holds mutex_.
     void rewind_locked() {
         pending_.clear(); waiting_.clear(); odoms_.clear();
         ++epoch_;
@@ -272,6 +276,7 @@ private:
         last_odom_arrival_ = Clock::now(); last_cloud_arrival_ = Clock::now();
     }
 
+    // Resets localization when the ROS clock moves backwards. Caller holds mutex_.
     void check_clock_locked(const rclcpp::Time& current) {
         // Compare ROS time to its previous value, not to a possibly future sensor stamp.
         if (last_ros_time_ && (*last_ros_time_ - current).seconds() > 0.5) {
@@ -281,12 +286,14 @@ private:
         last_ros_time_ = current;
     }
 
+    // Queues a cloud/odometry pair for processing and caps the backlog. Caller holds mutex_.
     void pair_locked(int64_t t, const CloudMsg::ConstSharedPtr& cloud, const OdomMsg::ConstSharedPtr& odom) {
         if (t <= last_accepted_) return;
         pending_.push_back({cloud, odom, t, epoch_});
         while (pending_.size() > static_cast<size_t>(parameters_.runtime.max_pending)) pending_.pop_front();
     }
 
+    // Validates and stores odometry, pairs it with a waiting cloud, and publishes the latest TF.
     void on_odom(OdomMsg::ConstSharedPtr msg) {
         if (msg->header.frame_id != parameters_.odom_frame || msg->child_frame_id != parameters_.base_frame) {
             std::lock_guard lock(mutex_);
@@ -366,6 +373,7 @@ private:
         publish_tf_locked();
     }
 
+    // Ignores unchanged clouds after a successful match; otherwise pairs the cloud with odometry.
     void on_cloud(CloudMsg::ConstSharedPtr msg) {
         if (msg->header.frame_id != parameters_.odom_frame) {
             std::lock_guard lock(mutex_);
@@ -407,6 +415,7 @@ private:
         }
     }
 
+    // Drops expired waiting clouds and publishes the current tracking state.
     void publish_status() {
         std_msgs::msg::String status;
         std::lock_guard lock(mutex_);
@@ -433,6 +442,7 @@ private:
         status_pub_->publish(status);
     }
 
+    // Pops the newest pending pair at the configured rate and runs registration.
     void work() {
         std::lock_guard processing_lock(processing_mutex_);
         Pair job;
@@ -459,12 +469,14 @@ private:
                     static_cast<int>(name.size() < width ? width - name.size() : 0), "", us);
     }
 
+    // Records and prints the duration of one processing stage.
     void record_processing_time(const std::string& name, Clock::time_point begin, Clock::time_point end) {
         const double us = std::chrono::duration<double, std::micro>(end - begin).count();
         processing_times_[name].push_back(us);
         print_processing_time(name, us);
     }
 
+    // Prints max, mean, and median durations for each processing stage.
     void log_processing_times() {
         int statistic = 0;
         for (const char* heading : {"MAX processing time", "MEAN processing time", "MEDIAN processing time"}) {
@@ -572,7 +584,9 @@ private:
         return params;
     }
 
+    // Converts a submap, matches it against the local prior map, and applies the quality gates.
     void process(const Pair& job) {
+        // Reject stale jobs and use the latest correction as the initial guess.
         Eigen::Isometry3f guess;
         {
             std::lock_guard lock(mutex_);
@@ -581,6 +595,8 @@ private:
             guess = correction_.value_or(*initial_correction_);
         }
         const auto started = Clock::now();
+
+        // Subsample the incoming cloud to the configured point budget.
         PointCloudCPU cpu;
         sensor_msgs::PointCloud2ConstIterator<float> x(*job.cloud, "x"), y(*job.cloud, "y"), z(*job.cloud, "z");
         const size_t total = static_cast<size_t>(job.cloud->width) * job.cloud->height;
@@ -591,16 +607,22 @@ private:
         }
         if (cpu.size() < static_cast<size_t>(parameters_.runtime.source_min_points)) throw std::runtime_error("source too small");
         const auto converted = Clock::now();
+
+        // Downsample on the device and reject clouds that are still too small.
         auto source = PointCloudShared(*queue_, cpu);
         algorithms::filter::VoxelGrid voxel(*queue_, parameters_.runtime.source_voxel_size);
         voxel.downsampling(source, source);
         if (source.size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points, parameters_.runtime.source_neighbors)))
             throw std::runtime_error("downsampled source too small");
         const auto reduced = Clock::now();
+
+        // Build the source KD-tree and estimate covariances for registration.
         const auto source_tree = algorithms::knn::KDTree::build(*queue_, source);
         const auto indexed = Clock::now();
         algorithms::covariance::estimate_async(*source_tree, source, parameters_.runtime.source_neighbors).wait_and_throw();
         const auto covariances = Clock::now();
+
+        // Select the local prior map that covers the predicted source extent.
         const auto center = (guess * pose(job.odom->pose.pose)).translation();
         float reach = 0;
         for (const auto& p : *source.points)
@@ -608,6 +630,8 @@ private:
         const auto target = map_->target(center, reach + parameters_.runtime.corr_distance);
         if (!target) throw std::runtime_error("local map insufficient or required extent exceeds radius");
         const auto localized = Clock::now();
+
+        // Run registration and reject results that fail the quality gates.
         const auto result = registration_->align(source, *target->cloud, *target->tree, guess.matrix());
         const auto matched = Clock::now();
         const auto delta = guess.inverse() * result.T;
@@ -618,6 +642,8 @@ private:
             delta.translation().norm() > parameters_.runtime.max_translation ||
             Eigen::AngleAxisf(delta.rotation()).angle() > parameters_.runtime.max_rotation || mean_error > parameters_.runtime.max_error)
             throw std::runtime_error("registration rejected by quality gates");
+
+        // Verify that the map near the current robot position actually overlaps the source.
         // Older submap points can match a map even after the robot leaves it.
         algorithms::knn::KNNResult neighbors;
         target->tree->nearest_neighbor_search(source, neighbors, {}, result.T.matrix());
@@ -633,6 +659,8 @@ private:
         if (nearby < static_cast<size_t>(parameters_.runtime.min_local_points) || local_overlap < parameters_.runtime.min_local_overlap_ratio)
             throw std::runtime_error("insufficient map overlap near current robot position");
         const auto checked = Clock::now();
+
+        // Commit the accepted correction unless a newer job or rewind superseded it.
         {
             std::lock_guard lock(mutex_);
             if (job.epoch != epoch_ || job.time <= last_accepted_ ||
@@ -651,17 +679,21 @@ private:
             publish_tf_locked();
         }
         const auto published = Clock::now();
-        RCLCPP_INFO(get_logger(), "Matched %zu correspondences", static_cast<size_t>(result.inlier));
-        record_processing_time("0. from ROS 2 msg", started, converted);
-        record_processing_time("1. downsampling", converted, reduced);
-        record_processing_time("2. source tree", reduced, indexed);
-        record_processing_time("3. covariance", indexed, covariances);
-        record_processing_time("4. local target", covariances, localized);
-        record_processing_time("5. registration", localized, matched);
-        record_processing_time("6. overlap check", matched, checked);
-        record_processing_time("7. publish ROS 2 msg", checked, published);
-        record_processing_time("8. total", started, published);
-        RCLCPP_INFO(get_logger(), "");
+
+        // Report correspondences and per-stage timings.
+        {
+            RCLCPP_INFO(get_logger(), "Matched %zu correspondences", static_cast<size_t>(result.inlier));
+            record_processing_time("0. from ROS 2 msg", started, converted);
+            record_processing_time("1. downsampling", converted, reduced);
+            record_processing_time("2. source tree", reduced, indexed);
+            record_processing_time("3. covariance", indexed, covariances);
+            record_processing_time("4. local target", covariances, localized);
+            record_processing_time("5. registration", localized, matched);
+            record_processing_time("6. overlap check", matched, checked);
+            record_processing_time("7. publish ROS 2 msg", checked, published);
+            record_processing_time("8. total", started, published);
+            RCLCPP_INFO(get_logger(), "");
+        }
     }
 
     // Core components.
