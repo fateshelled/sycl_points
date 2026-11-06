@@ -1,25 +1,25 @@
+#include <tf2_ros/transform_broadcaster.h>
+
+#include <Eigen/Geometry>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <deque>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <nav_msgs/msg/odometry.hpp>
 #include <numeric>
 #include <optional>
-#include <sycl_points/algorithms/registration/degenerate_regularization.hpp>
-#include <vector>
-
-#include <Eigen/Geometry>
-#include <geometry_msgs/msg/pose_stamped.hpp>
-#include <geometry_msgs/msg/transform_stamped.hpp>
-#include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <tf2_ros/transform_broadcaster.h>
+#include <sycl_points/algorithms/registration/degenerate_regularization.hpp>
+#include <vector>
 
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
@@ -32,17 +32,19 @@ using CloudMsg = sensor_msgs::msg::PointCloud2;
 using OdomMsg = nav_msgs::msg::Odometry;
 using Clock = std::chrono::steady_clock;
 
-int64_t stamp(const builtin_interfaces::msg::Time& t) {
-    return static_cast<int64_t>(t.sec) * 1000000000LL + t.nanosec;
-}
+int64_t stamp(const builtin_interfaces::msg::Time& t) { return static_cast<int64_t>(t.sec) * 1000000000LL + t.nanosec; }
 
 Eigen::Isometry3f pose(const geometry_msgs::msg::Pose& p) {
     Eigen::Quaternionf q(p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z);
-    if (!q.coeffs().allFinite() || q.norm() < 1e-6f) throw std::invalid_argument("Invalid pose quaternion");
+    if (!q.coeffs().allFinite() || q.norm() < 1e-6f) {
+        throw std::invalid_argument("Invalid pose quaternion");
+    }
     Eigen::Isometry3f result = Eigen::Isometry3f::Identity();
     result.linear() = q.normalized().toRotationMatrix();
     result.translation() = Eigen::Vector3f(p.position.x, p.position.y, p.position.z);
-    if (!result.matrix().allFinite()) throw std::invalid_argument("Invalid pose translation");
+    if (!result.matrix().allFinite()) {
+        throw std::invalid_argument("Invalid pose translation");
+    }
     return result;
 }
 
@@ -52,7 +54,10 @@ geometry_msgs::msg::Pose to_msg(const Eigen::Isometry3f& t) {
     p.position.y = t.translation().y();
     p.position.z = t.translation().z();
     Eigen::Quaternionf q(t.rotation());
-    p.orientation.x = q.x(); p.orientation.y = q.y(); p.orientation.z = q.z(); p.orientation.w = q.w();
+    p.orientation.x = q.x();
+    p.orientation.y = q.y();
+    p.orientation.z = q.z();
+    p.orientation.w = q.w();
     return p;
 }
 }  // namespace
@@ -62,19 +67,38 @@ public:
     // Declares parameters, builds the prior map, and wires the ROS 2 interfaces.
     explicit PriorMapLocalizationNode(const rclcpp::NodeOptions& options)
         : Node("prior_map_localization", options), parameters_(declare_parameters()) {
-        queue_ = std::make_unique<sycl_utils::DeviceQueue>(
-            sycl::device(sycl_utils::device_selector::default_selector_v));
+        queue_ =
+            std::make_unique<sycl_utils::DeviceQueue>(sycl::device(sycl_utils::device_selector::default_selector_v));
         source_pc_ = std::make_shared<PointCloudShared>(*queue_);
         registration_pc_ = std::make_shared<PointCloudShared>(*queue_);
         msg_data_buffer_ = std::make_shared<shared_vector<uint8_t>>(*queue_->ptr);
         preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(*queue_);
+
+        registration_ = std::make_unique<algorithms::registration::Registration>(*queue_, parameters_.registration);
+
         const auto map_path = declare_parameter<std::string>("map/path", "");
-        if (map_path.empty()) throw std::invalid_argument("map/path must point to a PCD or PLY file");
+        if (map_path.empty()) {
+            throw std::invalid_argument("map/path must point to a PCD or PLY file");
+        }
         map_ = std::make_unique<pipeline::PriorMap>(*queue_, map_path, parameters_.map);
-        RCLCPP_INFO(get_logger(), "Prior map: %zu points, %zu covariance eigenvalues clamped",
-                    map_->size(), map_->covariance_clamp_count());
+        RCLCPP_INFO(get_logger(), "Prior map: %zu points, %zu covariance eigenvalues clamped", map_->size(),
+                    map_->covariance_clamp_count());
+
         map_cloud_pub_ = create_publisher<CloudMsg>("localization/prior_map",
-            rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+                                                    rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+
+        tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("localization/pose", 5);
+        status_pub_ = create_publisher<std_msgs::msg::String>("localization/status", 5);
+        odom_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        rclcpp::SubscriptionOptions odom_options;
+        odom_options.callback_group = odom_group_;
+        odom_sub_ = create_subscription<OdomMsg>(
+            "sycl_lio/odom", rclcpp::QoS(5), [this](OdomMsg::ConstSharedPtr msg) { on_odom(std::move(msg)); },
+            odom_options);
+        cloud_sub_ = create_subscription<CloudMsg>("sycl_lio/submap", rclcpp::QoS(5),
+                                                   [this](CloudMsg::ConstSharedPtr msg) { on_cloud(std::move(msg)); });
+
         // Publish the full prior map after the executor starts, then stop the timer.
         map_cloud_timer_ = create_wall_timer(std::chrono::milliseconds(100), [this] {
             map_cloud_timer_->cancel();
@@ -83,24 +107,16 @@ public:
             header.stamp = now();
             map_cloud_pub_->publish(*toROS2msg(map_->cloud(), header));
         });
-        registration_ =
-            std::make_unique<algorithms::registration::Registration>(*queue_, parameters_.registration);
-        tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-        pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("localization/pose", 5);
-        status_pub_ = create_publisher<std_msgs::msg::String>("localization/status", 5);
-        odom_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-        rclcpp::SubscriptionOptions odom_options;
-        odom_options.callback_group = odom_group_;
-        odom_sub_ = create_subscription<OdomMsg>("sycl_lio/odom", rclcpp::QoS(5),
-            [this](OdomMsg::ConstSharedPtr msg) { on_odom(std::move(msg)); }, odom_options);
-        cloud_sub_ = create_subscription<CloudMsg>("sycl_lio/submap", rclcpp::QoS(5),
-            [this](CloudMsg::ConstSharedPtr msg) { on_cloud(std::move(msg)); });
+
         timer_ = create_wall_timer(std::chrono::milliseconds(200), [this] { publish_status(); });
+
         processing_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
         const auto interval = std::max(std::chrono::nanoseconds(1),
-            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / parameters_.runtime.max_rate)));
-        processing_timer_ = create_wall_timer(std::min(interval, std::chrono::nanoseconds(std::chrono::milliseconds(20))),
-            [this] { work(); }, processing_group_);
+                                       std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::duration<double>(1.0 / parameters_.runtime.max_rate)));
+        processing_timer_ = create_wall_timer(
+            std::min(interval, std::chrono::nanoseconds(std::chrono::milliseconds(20))), [this] { work(); },
+            processing_group_);
     }
 
     // Stops timers and waits for in-flight processing before logging timings.
@@ -114,8 +130,16 @@ public:
     }
 
 private:
-    struct Pair { CloudMsg::ConstSharedPtr cloud; OdomMsg::ConstSharedPtr odom; int64_t time; size_t epoch; };
-    struct Waiting { CloudMsg::ConstSharedPtr cloud; Clock::time_point received; };
+    struct Pair {
+        CloudMsg::ConstSharedPtr cloud;
+        OdomMsg::ConstSharedPtr odom;
+        int64_t time;
+        size_t epoch;
+    };
+    struct Waiting {
+        CloudMsg::ConstSharedPtr cloud;
+        Clock::time_point received;
+    };
     struct SensorRewindCandidate {
         int64_t first, last;
         size_t count;
@@ -212,15 +236,15 @@ private:
         // Validation.
         if (runtime.source_max_points < 4 || runtime.source_min_points < 4 || runtime.source_neighbors < 4 ||
             runtime.source_neighbors > 100 || runtime.source_neighbors > runtime.source_max_points ||
-            runtime.max_pending < 1 || runtime.min_inliers < 1 || runtime.max_rate <= 0 ||
-            runtime.pair_wait <= 0 || runtime.submap_wait <= 0 || runtime.frozen_age <= 0 ||
-            runtime.odom_age <= 0 || runtime.corr_distance <= 0 || runtime.source_voxel_size <= 0 ||
-            runtime.min_ratio < 0 || runtime.min_ratio > 1 || runtime.max_translation <= 0 ||
-            runtime.max_rotation <= 0 || runtime.max_error <= 0 || runtime.local_overlap_radius <= 0 ||
-            runtime.min_local_points < 1 || local_min_points < 1 ||
-            opts.prediction_margin < runtime.max_translation ||
-            runtime.min_local_overlap_ratio < 0 || runtime.min_local_overlap_ratio > 1)
+            runtime.max_pending < 1 || runtime.min_inliers < 1 || runtime.max_rate <= 0 || runtime.pair_wait <= 0 ||
+            runtime.submap_wait <= 0 || runtime.frozen_age <= 0 || runtime.odom_age <= 0 ||
+            runtime.corr_distance <= 0 || runtime.source_voxel_size <= 0 || runtime.min_ratio < 0 ||
+            runtime.min_ratio > 1 || runtime.max_translation <= 0 || runtime.max_rotation <= 0 ||
+            runtime.max_error <= 0 || runtime.local_overlap_radius <= 0 || runtime.min_local_points < 1 ||
+            local_min_points < 1 || opts.prediction_margin < runtime.max_translation ||
+            runtime.min_local_overlap_ratio < 0 || runtime.min_local_overlap_ratio > 1) {
             throw std::invalid_argument("Invalid localization parameters");
+        }
         opts.local_min_points = static_cast<size_t>(local_min_points);
 
         return params;
@@ -243,7 +267,8 @@ private:
     void publish_tf_locked() {
         if (!correction_ || !latest_odom_ || !last_success_ ||
             (now() - *last_success_).seconds() > parameters_.runtime.frozen_age ||
-            std::chrono::duration<double>(Clock::now() - last_odom_arrival_).count() > parameters_.runtime.odom_age) return;
+            std::chrono::duration<double>(Clock::now() - last_odom_arrival_).count() > parameters_.runtime.odom_age)
+            return;
         const auto t = stamp(latest_odom_->header.stamp);
         if (t <= last_tf_stamp_) return;
         geometry_msgs::msg::PoseStamped located;
@@ -266,18 +291,27 @@ private:
 
     // Clears all localization state after a clock or sensor-time rewind. Caller holds mutex_.
     void rewind_locked() {
-        pending_.clear(); waiting_.clear(); odoms_.clear();
+        pending_.clear();
+        waiting_.clear();
+        odoms_.clear();
         ++epoch_;
-        correction_.reset(); initial_correction_.reset(); last_success_.reset();
+        correction_.reset();
+        initial_correction_.reset();
+        last_success_.reset();
         last_accepted_ = std::numeric_limits<int64_t>::min();
         latest_odom_.reset();
         sensor_rewind_candidate_.reset();
         last_tf_stamp_ = std::numeric_limits<int64_t>::min();
-        last_cloud_.reset(); reason_ = "clock rewind";
-        inliers_ = 0; error_ = 0; local_overlap_ = 0;
+        last_cloud_.reset();
+        reason_ = "clock rewind";
+        inliers_ = 0;
+        error_ = 0;
+        local_overlap_ = 0;
         time_sync_warned_ = false;
-        odom_frame_warned_ = false; cloud_frame_warned_ = false;
-        last_odom_arrival_ = Clock::now(); last_cloud_arrival_ = Clock::now();
+        odom_frame_warned_ = false;
+        cloud_frame_warned_ = false;
+        last_odom_arrival_ = Clock::now();
+        last_cloud_arrival_ = Clock::now();
     }
 
     // Resets localization when the ROS clock moves backwards. Caller holds mutex_.
@@ -302,9 +336,10 @@ private:
         if (msg->header.frame_id != parameters_.odom_frame || msg->child_frame_id != parameters_.base_frame) {
             std::lock_guard lock(mutex_);
             if (!odom_frame_warned_) {
-                RCLCPP_WARN(get_logger(), "Skipping odometry with unexpected frames: '%s' -> '%s' (expected '%s' -> '%s')",
-                            msg->header.frame_id.c_str(), msg->child_frame_id.c_str(),
-                            parameters_.odom_frame.c_str(), parameters_.base_frame.c_str());
+                RCLCPP_WARN(get_logger(),
+                            "Skipping odometry with unexpected frames: '%s' -> '%s' (expected '%s' -> '%s')",
+                            msg->header.frame_id.c_str(), msg->child_frame_id.c_str(), parameters_.odom_frame.c_str(),
+                            parameters_.base_frame.c_str());
                 odom_frame_warned_ = true;
             }
             return;
@@ -328,16 +363,14 @@ private:
                 // Sensor time alone cannot distinguish a replay from late packets. Require
                 // sustained progress below the latest stamp without fresh latest odometry;
                 // short replays and restarts within five seconds cannot be detected safely.
-                if (!sensor_rewind_candidate_ ||
-                    sensor_rewind_candidate_->latest_arrival != last_odom_arrival_ ||
+                if (!sensor_rewind_candidate_ || sensor_rewind_candidate_->latest_arrival != last_odom_arrival_ ||
                     arrival - sensor_rewind_candidate_->started > std::chrono::seconds(5) ||
                     t < sensor_rewind_candidate_->last) {
                     sensor_rewind_candidate_ = SensorRewindCandidate{t, t, 1, arrival, last_odom_arrival_};
                 } else if (t > sensor_rewind_candidate_->last) {
                     sensor_rewind_candidate_->last = t;
                     ++sensor_rewind_candidate_->count;
-                    if (sensor_rewind_candidate_->count >= 3 &&
-                        t - sensor_rewind_candidate_->first >= rewind_span_ns &&
+                    if (sensor_rewind_candidate_->count >= 3 && t - sensor_rewind_candidate_->first >= rewind_span_ns &&
                         arrival - sensor_rewind_candidate_->started >= std::chrono::milliseconds(500)) {
                         RCLCPP_WARN(get_logger(), "Odometry stamps moved backwards; resetting localization");
                         rewind_locked();
@@ -364,8 +397,10 @@ private:
         latest_odom_ = msg;
         if (!initial_correction_) initial_correction_ = parameters_.initial_pose * pose(msg->pose.pose).inverse();
         last_odom_arrival_ = Clock::now();
-        if (!time_sync_warned_ && std::abs((now() - rclcpp::Time(msg->header.stamp)).seconds()) > parameters_.runtime.frozen_age) {
-            RCLCPP_WARN(get_logger(), "Odometry stamp differs from ROS time; check use_sim_time and clock synchronization");
+        if (!time_sync_warned_ &&
+            std::abs((now() - rclcpp::Time(msg->header.stamp)).seconds()) > parameters_.runtime.frozen_age) {
+            RCLCPP_WARN(get_logger(),
+                        "Odometry stamp differs from ROS time; check use_sim_time and clock synchronization");
             time_sync_warned_ = true;
         }
         odoms_[t] = msg;
@@ -397,11 +432,10 @@ private:
                 previous = last_cloud_;
                 epoch = epoch_;
             }
-            const bool unchanged = previous && previous->width == msg->width &&
-                previous->height == msg->height && previous->fields == msg->fields &&
-                previous->is_bigendian == msg->is_bigendian && previous->point_step == msg->point_step &&
-                previous->row_step == msg->row_step && previous->is_dense == msg->is_dense &&
-                previous->data == msg->data;
+            const bool unchanged = previous && previous->width == msg->width && previous->height == msg->height &&
+                                   previous->fields == msg->fields && previous->is_bigendian == msg->is_bigendian &&
+                                   previous->point_step == msg->point_step && previous->row_step == msg->row_step &&
+                                   previous->is_dense == msg->is_dense && previous->data == msg->data;
             std::lock_guard lock(mutex_);
             if (epoch != epoch_) return;
             if (previous != last_cloud_) continue;
@@ -412,9 +446,12 @@ private:
             // A previous failure can be retried, but identical successful matches must
             // not refresh the TF freshness deadline without a new map observation.
             if (unchanged && last_success_ && reason_.empty()) return;
-            if (const auto it = odoms_.find(t); it != odoms_.end()) pair_locked(t, msg, it->second);
-            else waiting_[t] = {msg, Clock::now()};
-            while (waiting_.size() > static_cast<size_t>(parameters_.runtime.max_pending)) waiting_.erase(waiting_.begin());
+            if (const auto it = odoms_.find(t); it != odoms_.end())
+                pair_locked(t, msg, it->second);
+            else
+                waiting_[t] = {msg, Clock::now()};
+            while (waiting_.size() > static_cast<size_t>(parameters_.runtime.max_pending))
+                waiting_.erase(waiting_.begin());
             return;
         }
     }
@@ -425,24 +462,32 @@ private:
         std::lock_guard lock(mutex_);
         check_clock_locked(now());
         for (auto it = waiting_.begin(); it != waiting_.end();) {
-            if (std::chrono::duration<double>(Clock::now() - it->second.received).count() > parameters_.runtime.pair_wait) {
+            if (std::chrono::duration<double>(Clock::now() - it->second.received).count() >
+                parameters_.runtime.pair_wait) {
                 reason_ = "matching odometry missing";
                 it = waiting_.erase(it);
-            } else ++it;
+            } else
+                ++it;
         }
         const auto age = last_success_ ? (now() - *last_success_).seconds() : -1.0;
         const auto odom_elapsed = std::chrono::duration<double>(Clock::now() - last_odom_arrival_).count();
         const auto cloud_elapsed = std::chrono::duration<double>(Clock::now() - last_cloud_arrival_).count();
         const std::string reason = reason_.empty() && cloud_elapsed > parameters_.runtime.submap_wait
-                                       ? "submap unavailable or unchanged" : reason_;
-        const char* state = !last_success_ ? "UNINITIALIZED" :
-            (age > parameters_.runtime.frozen_age || odom_elapsed > parameters_.runtime.odom_age ? "LOST" :
-             (cloud_elapsed > parameters_.runtime.submap_wait || age > parameters_.runtime.submap_wait || !reason_.empty() ? "DEGRADED" : "TRACKING"));
-        status.data = std::string(state) + " last_success_ns=" +
-            std::to_string(last_success_ ? last_success_->nanoseconds() : 0) +
-            " age_sec=" + std::to_string(age) + " inliers=" + std::to_string(inliers_) +
-            " mean_error=" + std::to_string(error_) + " local_overlap=" +
-            std::to_string(local_overlap_) + " reason=" + reason;
+                                       ? "submap unavailable or unchanged"
+                                       : reason_;
+        const char* state = !last_success_
+                                ? "UNINITIALIZED"
+                                : (age > parameters_.runtime.frozen_age || odom_elapsed > parameters_.runtime.odom_age
+                                       ? "LOST"
+                                       : (cloud_elapsed > parameters_.runtime.submap_wait ||
+                                                  age > parameters_.runtime.submap_wait || !reason_.empty()
+                                              ? "DEGRADED"
+                                              : "TRACKING"));
+        status.data = std::string(state) +
+                      " last_success_ns=" + std::to_string(last_success_ ? last_success_->nanoseconds() : 0) +
+                      " age_sec=" + std::to_string(age) + " inliers=" + std::to_string(inliers_) +
+                      " mean_error=" + std::to_string(error_) + " local_overlap=" + std::to_string(local_overlap_) +
+                      " reason=" + reason;
         status_pub_->publish(status);
     }
 
@@ -454,12 +499,14 @@ private:
             std::lock_guard lock(mutex_);
             const auto current = Clock::now();
             if (pending_.empty() || current < next_processing_) return;
-            job = pending_.back(); pending_.clear();
+            job = pending_.back();
+            pending_.clear();
             next_processing_ = current + std::chrono::duration_cast<Clock::duration>(
-                std::chrono::duration<double>(1.0 / parameters_.runtime.max_rate));
+                                             std::chrono::duration<double>(1.0 / parameters_.runtime.max_rate));
         }
-        try { process(job); }
-        catch (const std::exception& e) {
+        try {
+            process(job);
+        } catch (const std::exception& e) {
             std::lock_guard lock(mutex_);
             if (job.epoch != epoch_) return;
             reason_ = e.what();
@@ -511,80 +558,73 @@ private:
         using algorithms::robust::RobustLossType_from_string;
 
         algorithms::registration::RegistrationParams params;
-        params.reg_type =
-            RegType_from_string(declare_parameter<std::string>("registration/type", "gicp"));
-        params.max_correspondence_distance = declare_parameter<double>(
-            "registration/max_correspondence_distance", params.max_correspondence_distance);
-        const int64_t max_iterations = declare_parameter<int64_t>(
-            "registration/max_iterations", static_cast<int64_t>(params.max_iterations));
+        params.reg_type = RegType_from_string(declare_parameter<std::string>("registration/type", "gicp"));
+        params.max_correspondence_distance =
+            declare_parameter<double>("registration/max_correspondence_distance", params.max_correspondence_distance);
+        const int64_t max_iterations =
+            declare_parameter<int64_t>("registration/max_iterations", static_cast<int64_t>(params.max_iterations));
         params.max_iterations = static_cast<size_t>(max_iterations);
-        params.criteria.translation = declare_parameter<double>(
-            "registration/criteria/translation", params.criteria.translation);
-        params.criteria.rotation = declare_parameter<double>(
-            "registration/criteria/rotation", params.criteria.rotation);
+        params.criteria.translation =
+            declare_parameter<double>("registration/criteria/translation", params.criteria.translation);
+        params.criteria.rotation =
+            declare_parameter<double>("registration/criteria/rotation", params.criteria.rotation);
         params.verbose = declare_parameter<bool>("registration/verbose", params.verbose);
 
-        params.robust.type = RobustLossType_from_string(
-            declare_parameter<std::string>("registration/robust/type", "NONE"));
-        params.robust.default_scale = declare_parameter<double>(
-            "registration/robust/default_scale", params.robust.default_scale);
+        params.robust.type =
+            RobustLossType_from_string(declare_parameter<std::string>("registration/robust/type", "NONE"));
+        params.robust.default_scale =
+            declare_parameter<double>("registration/robust/default_scale", params.robust.default_scale);
 
-        params.rotation_constraint.enable = declare_parameter<bool>(
-            "registration/rotation_constraint/enable", params.rotation_constraint.enable);
-        params.rotation_constraint.weight = declare_parameter<double>(
-            "registration/rotation_constraint/weight", params.rotation_constraint.weight);
+        params.rotation_constraint.enable =
+            declare_parameter<bool>("registration/rotation_constraint/enable", params.rotation_constraint.enable);
+        params.rotation_constraint.weight =
+            declare_parameter<double>("registration/rotation_constraint/weight", params.rotation_constraint.weight);
         params.rotation_constraint.robust.default_scale = declare_parameter<double>(
-            "registration/rotation_constraint/robust/default_scale",
-            params.rotation_constraint.robust.default_scale);
+            "registration/rotation_constraint/robust/default_scale", params.rotation_constraint.robust.default_scale);
 
-        params.genz.planarity_threshold = declare_parameter<double>(
-            "registration/genz/planarity_threshold", params.genz.planarity_threshold);
+        params.genz.planarity_threshold =
+            declare_parameter<double>("registration/genz/planarity_threshold", params.genz.planarity_threshold);
 
-        params.optimization_method = OptimizationMethod_from_string(
-            declare_parameter<std::string>("registration/optimization_method", "GN"));
+        params.optimization_method =
+            OptimizationMethod_from_string(declare_parameter<std::string>("registration/optimization_method", "GN"));
         params.gn.lambda = declare_parameter<double>("registration/gn/lambda", params.gn.lambda);
         const int64_t lm_max_inner_iterations = declare_parameter<int64_t>(
             "registration/lm/max_inner_iterations", static_cast<int64_t>(params.lm.max_inner_iterations));
         params.lm.max_inner_iterations = static_cast<size_t>(lm_max_inner_iterations);
-        params.lm.lambda_factor = declare_parameter<double>(
-            "registration/lm/lambda_factor", params.lm.lambda_factor);
-        params.lm.init_lambda = declare_parameter<double>(
-            "registration/lm/init_lambda", params.lm.init_lambda);
-        params.lm.max_lambda = declare_parameter<double>(
-            "registration/lm/max_lambda", params.lm.max_lambda);
-        params.lm.min_lambda = declare_parameter<double>(
-            "registration/lm/min_lambda", params.lm.min_lambda);
+        params.lm.lambda_factor = declare_parameter<double>("registration/lm/lambda_factor", params.lm.lambda_factor);
+        params.lm.init_lambda = declare_parameter<double>("registration/lm/init_lambda", params.lm.init_lambda);
+        params.lm.max_lambda = declare_parameter<double>("registration/lm/max_lambda", params.lm.max_lambda);
+        params.lm.min_lambda = declare_parameter<double>("registration/lm/min_lambda", params.lm.min_lambda);
         params.dogleg.initial_trust_region_radius = declare_parameter<double>(
             "registration/dogleg/initial_trust_region_radius", params.dogleg.initial_trust_region_radius);
-        params.dogleg.min_trust_region_radius = declare_parameter<double>(
-            "registration/dogleg/min_trust_region_radius", params.dogleg.min_trust_region_radius);
-        params.dogleg.max_trust_region_radius = declare_parameter<double>(
-            "registration/dogleg/max_trust_region_radius", params.dogleg.max_trust_region_radius);
+        params.dogleg.min_trust_region_radius = declare_parameter<double>("registration/dogleg/min_trust_region_radius",
+                                                                          params.dogleg.min_trust_region_radius);
+        params.dogleg.max_trust_region_radius = declare_parameter<double>("registration/dogleg/max_trust_region_radius",
+                                                                          params.dogleg.max_trust_region_radius);
         params.dogleg.eta1 = declare_parameter<double>("registration/dogleg/eta1", params.dogleg.eta1);
         params.dogleg.eta2 = declare_parameter<double>("registration/dogleg/eta2", params.dogleg.eta2);
-        params.dogleg.gamma_decrease = declare_parameter<double>(
-            "registration/dogleg/gamma_decrease", params.dogleg.gamma_decrease);
-        params.dogleg.gamma_increase = declare_parameter<double>(
-            "registration/dogleg/gamma_increase", params.dogleg.gamma_increase);
+        params.dogleg.gamma_decrease =
+            declare_parameter<double>("registration/dogleg/gamma_decrease", params.dogleg.gamma_decrease);
+        params.dogleg.gamma_increase =
+            declare_parameter<double>("registration/dogleg/gamma_increase", params.dogleg.gamma_increase);
 
         params.degenerate_reg.type = algorithms::registration::DegenerateRegularizationType::none;
         params.map_prior.enabled = false;
 
-        if (params.max_correspondence_distance <= 0 || params.max_iterations < 1 ||
-            params.criteria.translation <= 0 || params.criteria.rotation <= 0 ||
-            params.robust.default_scale <= 0 || params.rotation_constraint.weight < 0 ||
-            params.rotation_constraint.robust.default_scale <= 0 ||
-            params.genz.planarity_threshold < 0 || params.genz.planarity_threshold > 1 ||
-            params.gn.lambda <= 0 || params.lm.max_inner_iterations < 1 || params.lm.lambda_factor <= 1 ||
-            params.lm.init_lambda <= 0 || params.lm.min_lambda <= 0 ||
-            params.lm.max_lambda < params.lm.min_lambda ||
+        if (params.max_correspondence_distance <= 0 || params.max_iterations < 1 || params.criteria.translation <= 0 ||
+            params.criteria.rotation <= 0 || params.robust.default_scale <= 0 ||
+            params.rotation_constraint.weight < 0 || params.rotation_constraint.robust.default_scale <= 0 ||
+            params.genz.planarity_threshold < 0 || params.genz.planarity_threshold > 1 || params.gn.lambda <= 0 ||
+            params.lm.max_inner_iterations < 1 || params.lm.lambda_factor <= 1 || params.lm.init_lambda <= 0 ||
+            params.lm.min_lambda <= 0 || params.lm.max_lambda < params.lm.min_lambda ||
             params.dogleg.min_trust_region_radius <= 0 ||
             params.dogleg.initial_trust_region_radius < params.dogleg.min_trust_region_radius ||
             params.dogleg.max_trust_region_radius < params.dogleg.initial_trust_region_radius ||
             params.dogleg.eta1 < 0 || params.dogleg.eta1 > params.dogleg.eta2 || params.dogleg.eta2 > 1 ||
             params.dogleg.gamma_decrease <= 0 || params.dogleg.gamma_decrease >= 1 ||
-            params.dogleg.gamma_increase <= 1)
+            params.dogleg.gamma_increase <= 1) {
             throw std::invalid_argument("Invalid registration parameters");
+        }
         return params;
     }
 
@@ -595,7 +635,8 @@ private:
         {
             std::lock_guard lock(mutex_);
             if (job.epoch != epoch_ || job.time <= last_accepted_ ||
-                (latest_odom_ && job.time > stamp(latest_odom_->header.stamp))) return;
+                (latest_odom_ && job.time > stamp(latest_odom_->header.stamp)))
+                return;
             guess = correction_.value_or(*initial_correction_);
         }
         const auto started = Clock::now();
@@ -605,37 +646,46 @@ private:
             source_pc_->size() == 0) {
             throw std::runtime_error("failed to convert submap");
         }
-        if (source_pc_->size() < static_cast<size_t>(parameters_.runtime.source_min_points))
+        if (source_pc_->size() < static_cast<size_t>(parameters_.runtime.source_min_points)) {
             throw std::runtime_error("source too small");
+        }
         const auto converted = Clock::now();
 
         // Downsample on the device; this also removes non-finite points.
         algorithms::filter::VoxelGrid voxel(*queue_, parameters_.runtime.source_voxel_size);
         voxel.downsampling(*source_pc_, *source_pc_);
-        if (source_pc_->size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points, parameters_.runtime.source_neighbors)))
+        if (source_pc_->size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points,
+                                                              parameters_.runtime.source_neighbors))) {
             throw std::runtime_error("downsampled source too small");
+        }
         const auto reduced = Clock::now();
 
         // Build the source KD-tree and estimate covariances over the whole cloud.
         const auto source_tree = algorithms::knn::KDTree::build(*queue_, *source_pc_);
         const auto indexed = Clock::now();
-        algorithms::covariance::estimate_async(*source_tree, *source_pc_, parameters_.runtime.source_neighbors).wait_and_throw();
+        algorithms::covariance::estimate_async(*source_tree, *source_pc_, parameters_.runtime.source_neighbors)
+            .wait_and_throw();
         const auto covariances = Clock::now();
 
         // Randomly sample the registration input after covariance estimation.
         preprocess_filter_->random_sampling(*source_pc_, *registration_pc_,
                                             static_cast<size_t>(parameters_.runtime.source_max_points));
-        if (registration_pc_->size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points, parameters_.runtime.source_neighbors)))
+        if (registration_pc_->size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points,
+                                                                    parameters_.runtime.source_neighbors))) {
             throw std::runtime_error("sampled source too small");
+        }
         const auto sampled = Clock::now();
 
         // Select the local prior map that covers the predicted source extent.
         const auto center = (guess * pose(job.odom->pose.pose)).translation();
         float reach = 0;
-        for (const auto& p : *registration_pc_->points)
+        for (const auto& p : *registration_pc_->points) {
             reach = std::max(reach, (guess * p.head<3>() - center).norm());
+        }
         const auto target = map_->target(center, reach + parameters_.runtime.corr_distance);
-        if (!target) throw std::runtime_error("local map insufficient or required extent exceeds radius");
+        if (!target) {
+            throw std::runtime_error("local map insufficient or required extent exceeds radius");
+        }
         const auto localized = Clock::now();
 
         // Run registration and reject results that fail the quality gates.
@@ -647,8 +697,10 @@ private:
             result.inlier < static_cast<size_t>(parameters_.runtime.min_inliers) ||
             static_cast<double>(result.inlier) / registration_pc_->size() < parameters_.runtime.min_ratio ||
             delta.translation().norm() > parameters_.runtime.max_translation ||
-            Eigen::AngleAxisf(delta.rotation()).angle() > parameters_.runtime.max_rotation || mean_error > parameters_.runtime.max_error)
+            Eigen::AngleAxisf(delta.rotation()).angle() > parameters_.runtime.max_rotation ||
+            mean_error > parameters_.runtime.max_error) {
             throw std::runtime_error("registration rejected by quality gates");
+        }
 
         // Verify that the map near the current robot position actually overlaps the source.
         // Older submap points can match a map even after the robot leaves it.
@@ -658,20 +710,26 @@ private:
         size_t nearby = 0, nearby_matched = 0;
         for (size_t i = 0; i < registration_pc_->size(); ++i) {
             if (((*registration_pc_->points)[i].head<3>() - current_odom_position).squaredNorm() >
-                parameters_.runtime.local_overlap_radius * parameters_.runtime.local_overlap_radius) continue;
+                parameters_.runtime.local_overlap_radius * parameters_.runtime.local_overlap_radius)
+                continue;
             ++nearby;
-            if ((*neighbors.distances)[i] <= parameters_.runtime.corr_distance * parameters_.runtime.corr_distance) ++nearby_matched;
+            if ((*neighbors.distances)[i] <= parameters_.runtime.corr_distance * parameters_.runtime.corr_distance)
+                ++nearby_matched;
         }
         const float local_overlap = nearby ? static_cast<float>(nearby_matched) / nearby : 0.0f;
-        if (nearby < static_cast<size_t>(parameters_.runtime.min_local_points) || local_overlap < parameters_.runtime.min_local_overlap_ratio)
+        if (nearby < static_cast<size_t>(parameters_.runtime.min_local_points) ||
+            local_overlap < parameters_.runtime.min_local_overlap_ratio) {
             throw std::runtime_error("insufficient map overlap near current robot position");
+        }
         const auto checked = Clock::now();
 
         // Commit the accepted correction unless a newer job or rewind superseded it.
         {
             std::lock_guard lock(mutex_);
             if (job.epoch != epoch_ || job.time <= last_accepted_ ||
-                (latest_odom_ && job.time > stamp(latest_odom_->header.stamp))) return;
+                (latest_odom_ && job.time > stamp(latest_odom_->header.stamp))) {
+                return;
+            }
             correction_ = result.T;
             last_accepted_ = job.time;
             last_success_ = rclcpp::Time(job.cloud->header.stamp);
