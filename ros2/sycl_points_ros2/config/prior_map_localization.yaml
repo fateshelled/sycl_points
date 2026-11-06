@@ -28,8 +28,8 @@ prior_map_localization:
     map/covariance/mode: AUTO
     map/covariance/eigenvalue_floor: 0.0001
     map/covariance/neighbor_num: 20
-    map/local_target/radius: 50.0
-    map/local_target/prediction_margin: 2.0
+    map/local_target/radius: 60.0
+    map/local_target/prediction_margin: 3.0
     map/local_target/min_points: 50
 
     source/max_points: 6000

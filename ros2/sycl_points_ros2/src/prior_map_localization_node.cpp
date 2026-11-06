@@ -1,15 +1,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdio>
 #include <deque>
-#include <functional>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <numeric>
 #include <optional>
-#include <thread>
 #include <vector>
 
 #include <Eigen/Geometry>
@@ -84,9 +82,9 @@ public:
         opts.covariance_mode = declare_parameter<std::string>("map/covariance/mode", "AUTO");
         opts.eigenvalue_floor = number("map/covariance/eigenvalue_floor", 1e-4);
         opts.covariance_neighbors = integer("map/covariance/neighbor_num", 20);
-        opts.local_radius = number("map/local_target/radius", 50);
-        opts.prediction_margin = number("map/local_target/prediction_margin", 2);
-        opts.local_min_points = integer("map/local_target/min_points", 50);
+        opts.local_radius = number("map/local_target/radius", 60);
+        opts.prediction_margin = number("map/local_target/prediction_margin", 3);
+        const int local_min_points = integer("map/local_target/min_points", 50);
         source_max_points_ = integer("source/max_points", 6000);
         source_voxel_size_ = number("source/voxel_size", 0.4);
         source_neighbors_ = integer("source/covariance/neighbor_num", 20);
@@ -111,9 +109,11 @@ public:
             max_pending_ < 1 || min_inliers_ < 1 || max_rate_ <= 0 || pair_wait_ <= 0 || submap_wait_ <= 0 ||
             frozen_age_ <= 0 || odom_age_ <= 0 || corr_distance_ <= 0 || source_voxel_size_ <= 0 ||
             min_ratio_ < 0 || min_ratio_ > 1 || max_translation_ <= 0 || max_rotation_ <= 0 || max_error_ <= 0 ||
-            local_overlap_radius_ <= 0 || min_local_points_ < 1 ||
+            local_overlap_radius_ <= 0 || min_local_points_ < 1 || local_min_points < 1 ||
+            opts.prediction_margin < max_translation_ ||
             min_local_overlap_ratio_ < 0 || min_local_overlap_ratio_ > 1)
             throw std::invalid_argument("Invalid localization parameters");
+        opts.local_min_points = static_cast<size_t>(local_min_points);
 
         queue_ = std::make_unique<sycl_utils::DeviceQueue>(
             sycl::device(sycl_utils::device_selector::default_selector_v));
@@ -132,24 +132,37 @@ public:
         tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("localization/pose", 5);
         status_pub_ = create_publisher<std_msgs::msg::String>("localization/status", 5);
+        odom_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        rclcpp::SubscriptionOptions odom_options;
+        odom_options.callback_group = odom_group_;
         odom_sub_ = create_subscription<OdomMsg>("sycl_lio/odom", rclcpp::QoS(5),
-            [this](OdomMsg::ConstSharedPtr msg) { on_odom(std::move(msg)); });
+            [this](OdomMsg::ConstSharedPtr msg) { on_odom(std::move(msg)); }, odom_options);
         cloud_sub_ = create_subscription<CloudMsg>("sycl_lio/submap", rclcpp::QoS(5),
             [this](CloudMsg::ConstSharedPtr msg) { on_cloud(std::move(msg)); });
         timer_ = create_wall_timer(std::chrono::milliseconds(200), [this] { publish_status(); });
-        worker_ = std::thread([this] { work(); });
+        processing_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        const auto interval = std::max(std::chrono::nanoseconds(1),
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / max_rate_)));
+        processing_timer_ = create_wall_timer(std::min(interval, std::chrono::nanoseconds(std::chrono::milliseconds(20))),
+            [this] { work(); }, processing_group_);
     }
 
     ~PriorMapLocalizationNode() override {
-        { std::lock_guard lock(mutex_); stopping_ = true; }
-        cv_.notify_one();
-        if (worker_.joinable()) worker_.join();
+        processing_timer_->cancel();
+        timer_->cancel();
+        std::lock_guard processing_lock(processing_mutex_);
+        std::lock_guard state_lock(mutex_);
         log_processing_times();
     }
 
 private:
     struct Pair { CloudMsg::ConstSharedPtr cloud; OdomMsg::ConstSharedPtr odom; int64_t time; size_t epoch; };
     struct Waiting { CloudMsg::ConstSharedPtr cloud; Clock::time_point received; };
+    struct SensorRewindCandidate {
+        int64_t first, last;
+        size_t count;
+        Clock::time_point started, latest_arrival;
+    };
 
     // Caller holds mutex_. Never publish a correction for an already published timestamp.
     void publish_tf_locked() {
@@ -179,9 +192,16 @@ private:
     void rewind_locked() {
         pending_.clear(); waiting_.clear(); odoms_.clear();
         ++epoch_;
-        correction_.reset(); last_success_.reset(); last_accepted_ = 0;
+        correction_.reset(); initial_correction_.reset(); last_success_.reset();
+        last_accepted_ = std::numeric_limits<int64_t>::min();
         latest_odom_.reset();
-        last_tf_stamp_ = 0; last_cloud_hash_.reset(); reason_ = "clock rewind";
+        sensor_rewind_candidate_.reset();
+        last_tf_stamp_ = std::numeric_limits<int64_t>::min();
+        last_cloud_.reset(); reason_ = "clock rewind";
+        inliers_ = 0; error_ = 0; local_overlap_ = 0;
+        time_sync_warned_ = false;
+        odom_frame_warned_ = false; cloud_frame_warned_ = false;
+        last_odom_arrival_ = Clock::now(); last_cloud_arrival_ = Clock::now();
     }
 
     void check_clock_locked(const rclcpp::Time& current) {
@@ -197,11 +217,19 @@ private:
         if (t <= last_accepted_) return;
         pending_.push_back({cloud, odom, t, epoch_});
         while (pending_.size() > static_cast<size_t>(max_pending_)) pending_.pop_front();
-        cv_.notify_one();
     }
 
     void on_odom(OdomMsg::ConstSharedPtr msg) {
-        if (msg->header.frame_id != odom_frame_ || msg->child_frame_id != base_frame_) return;
+        if (msg->header.frame_id != odom_frame_ || msg->child_frame_id != base_frame_) {
+            std::lock_guard lock(mutex_);
+            if (!odom_frame_warned_) {
+                RCLCPP_WARN(get_logger(), "Skipping odometry with unexpected frames: '%s' -> '%s' (expected '%s' -> '%s')",
+                            msg->header.frame_id.c_str(), msg->child_frame_id.c_str(),
+                            odom_frame_.c_str(), base_frame_.c_str());
+                odom_frame_warned_ = true;
+            }
+            return;
+        }
         try {
             (void)pose(msg->pose.pose);
         } catch (const std::invalid_argument& e) {
@@ -214,6 +242,36 @@ private:
         std::lock_guard lock(mutex_);
         check_clock_locked(now());
         if (latest_odom_ && t < stamp(latest_odom_->header.stamp)) {
+            constexpr int64_t rewind_threshold_ns = 5000000000LL;
+            constexpr int64_t rewind_span_ns = 2000000000LL;
+            const auto arrival = Clock::now();
+            if (stamp(latest_odom_->header.stamp) - t >= rewind_threshold_ns) {
+                // Sensor time alone cannot distinguish a replay from late packets. Require
+                // sustained progress below the latest stamp without fresh latest odometry;
+                // short replays and restarts within five seconds cannot be detected safely.
+                if (!sensor_rewind_candidate_ ||
+                    sensor_rewind_candidate_->latest_arrival != last_odom_arrival_ ||
+                    arrival - sensor_rewind_candidate_->started > std::chrono::seconds(5) ||
+                    t < sensor_rewind_candidate_->last) {
+                    sensor_rewind_candidate_ = SensorRewindCandidate{t, t, 1, arrival, last_odom_arrival_};
+                } else if (t > sensor_rewind_candidate_->last) {
+                    sensor_rewind_candidate_->last = t;
+                    ++sensor_rewind_candidate_->count;
+                    if (sensor_rewind_candidate_->count >= 3 &&
+                        t - sensor_rewind_candidate_->first >= rewind_span_ns &&
+                        arrival - sensor_rewind_candidate_->started >= std::chrono::milliseconds(500)) {
+                        RCLCPP_WARN(get_logger(), "Odometry stamps moved backwards; resetting localization");
+                        rewind_locked();
+                        reason_ = "sensor stamp rewind";
+                    }
+                }
+            } else {
+                sensor_rewind_candidate_.reset();
+            }
+        } else {
+            sensor_rewind_candidate_.reset();
+        }
+        if (latest_odom_ && t < stamp(latest_odom_->header.stamp)) {
             // Keep a late odometry message available to pair with its scan,
             // without moving the latest TF publication timestamp backwards.
             odoms_[t] = msg;
@@ -225,6 +283,7 @@ private:
             return;
         }
         latest_odom_ = msg;
+        if (!initial_correction_) initial_correction_ = initial_pose_ * pose(msg->pose.pose).inverse();
         last_odom_arrival_ = Clock::now();
         if (!time_sync_warned_ && std::abs((now() - rclcpp::Time(msg->header.stamp)).seconds()) > frozen_age_) {
             RCLCPP_WARN(get_logger(), "Odometry stamp differs from ROS time; check use_sim_time and clock synchronization");
@@ -240,30 +299,44 @@ private:
     }
 
     void on_cloud(CloudMsg::ConstSharedPtr msg) {
-        if (msg->header.frame_id != odom_frame_) return;
-        const auto t = stamp(msg->header.stamp);
-        std::lock_guard lock(mutex_);
-        size_t hash = msg->width * static_cast<size_t>(msg->height);
-        if (msg->point_step && !msg->data.empty()) {
-            const size_t count = msg->data.size() / msg->point_step;
-            const size_t samples = std::min<size_t>(32, count);
-            for (size_t sample = 0; sample < samples; ++sample) {
-                const size_t offset = (sample * count / samples) * msg->point_step;
-                for (size_t byte = 0; byte < msg->point_step; ++byte)
-                    hash ^= std::hash<uint8_t>{}(msg->data[offset + byte]) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+        if (msg->header.frame_id != odom_frame_) {
+            std::lock_guard lock(mutex_);
+            if (!cloud_frame_warned_) {
+                RCLCPP_WARN(get_logger(), "Skipping submap with unexpected frame: '%s' (expected '%s')",
+                            msg->header.frame_id.c_str(), odom_frame_.c_str());
+                cloud_frame_warned_ = true;
             }
+            return;
         }
-        const bool unchanged = last_cloud_hash_ && *last_cloud_hash_ == hash;
-        if (!unchanged) {
-            last_cloud_hash_ = hash;
-            last_cloud_arrival_ = Clock::now();
+        const auto t = stamp(msg->header.stamp);
+        for (;;) {
+            CloudMsg::ConstSharedPtr previous;
+            size_t epoch;
+            {
+                std::lock_guard lock(mutex_);
+                previous = last_cloud_;
+                epoch = epoch_;
+            }
+            const bool unchanged = previous && previous->width == msg->width &&
+                previous->height == msg->height && previous->fields == msg->fields &&
+                previous->is_bigendian == msg->is_bigendian && previous->point_step == msg->point_step &&
+                previous->row_step == msg->row_step && previous->is_dense == msg->is_dense &&
+                previous->data == msg->data;
+            std::lock_guard lock(mutex_);
+            if (epoch != epoch_) return;
+            if (previous != last_cloud_) continue;
+            if (!unchanged) {
+                last_cloud_ = msg;
+                last_cloud_arrival_ = Clock::now();
+            }
+            // A previous failure can be retried, but identical successful matches must
+            // not refresh the TF freshness deadline without a new map observation.
+            if (unchanged && last_success_ && reason_.empty()) return;
+            if (const auto it = odoms_.find(t); it != odoms_.end()) pair_locked(t, msg, it->second);
+            else waiting_[t] = {msg, Clock::now()};
+            while (waiting_.size() > static_cast<size_t>(max_pending_)) waiting_.erase(waiting_.begin());
+            return;
         }
-        // A previous failure can be retried, but identical successful matches must
-        // not refresh the TF freshness deadline without a new map observation.
-        if (unchanged && last_success_ && reason_.empty()) return;
-        if (const auto it = odoms_.find(t); it != odoms_.end()) pair_locked(t, msg, it->second);
-        else waiting_[t] = {msg, Clock::now()};
-        while (waiting_.size() > static_cast<size_t>(max_pending_)) waiting_.erase(waiting_.begin());
     }
 
     void publish_status() {
@@ -293,26 +366,22 @@ private:
     }
 
     void work() {
-        auto next = Clock::now();
-        while (true) {
-            Pair job;
-            {
-                std::unique_lock lock(mutex_);
-                cv_.wait(lock, [this] { return stopping_ || !pending_.empty(); });
-                if (stopping_) return;
-                lock.unlock();
-                std::this_thread::sleep_until(next);
-                lock.lock();
-                if (stopping_) return;
-                if (pending_.empty()) continue;
-                job = pending_.back(); pending_.clear();
-            }
-            next = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1 / max_rate_));
-            try { process(job); }
-            catch (const std::exception& e) {
-                std::lock_guard lock(mutex_); reason_ = e.what();
-                RCLCPP_WARN(get_logger(), "Map matching failed: %s", e.what());
-            }
+        std::lock_guard processing_lock(processing_mutex_);
+        Pair job;
+        {
+            std::lock_guard lock(mutex_);
+            const auto current = Clock::now();
+            if (pending_.empty() || current < next_processing_) return;
+            job = pending_.back(); pending_.clear();
+            next_processing_ = current + std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(1.0 / max_rate_));
+        }
+        try { process(job); }
+        catch (const std::exception& e) {
+            std::lock_guard lock(mutex_);
+            if (job.epoch != epoch_) return;
+            reason_ = e.what();
+            RCLCPP_WARN(get_logger(), "Map matching failed: %s", e.what());
         }
     }
 
@@ -357,7 +426,7 @@ private:
             std::lock_guard lock(mutex_);
             if (job.epoch != epoch_ || job.time <= last_accepted_ ||
                 (latest_odom_ && job.time > stamp(latest_odom_->header.stamp))) return;
-            guess = correction_.value_or(initial_pose_ * pose(job.odom->pose.pose).inverse());
+            guess = correction_.value_or(*initial_correction_);
         }
         const auto started = Clock::now();
         PointCloudCPU cpu;
@@ -449,27 +518,33 @@ private:
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
+    rclcpp::CallbackGroup::SharedPtr odom_group_;
     rclcpp::Subscription<OdomMsg>::SharedPtr odom_sub_;
     rclcpp::Subscription<CloudMsg>::SharedPtr cloud_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::CallbackGroup::SharedPtr processing_group_;
+    rclcpp::TimerBase::SharedPtr processing_timer_;
     std::string frame_, odom_frame_, base_frame_, reason_;
     Eigen::Isometry3f initial_pose_;
     std::optional<Eigen::Isometry3f> correction_;
+    std::optional<Eigen::Isometry3f> initial_correction_;
     std::optional<rclcpp::Time> last_success_;
     std::optional<rclcpp::Time> last_ros_time_;
     bool time_sync_warned_ = false;
+    bool odom_frame_warned_ = false, cloud_frame_warned_ = false;
     OdomMsg::ConstSharedPtr latest_odom_;
     Clock::time_point last_odom_arrival_ = Clock::now(), last_cloud_arrival_ = Clock::now();
     std::mutex mutex_;
-    std::condition_variable cv_;
-    std::thread worker_;
-    bool stopping_ = false;
+    std::mutex processing_mutex_;
+    Clock::time_point next_processing_ = Clock::time_point::min();
     std::deque<Pair> pending_;
     std::map<int64_t, OdomMsg::ConstSharedPtr> odoms_;
     std::map<int64_t, Waiting> waiting_;
-    int64_t last_tf_stamp_ = 0, last_accepted_ = 0;
+    int64_t last_tf_stamp_ = std::numeric_limits<int64_t>::min();
+    int64_t last_accepted_ = std::numeric_limits<int64_t>::min();
+    std::optional<SensorRewindCandidate> sensor_rewind_candidate_;
     size_t epoch_ = 0;
-    std::optional<size_t> last_cloud_hash_;
+    CloudMsg::ConstSharedPtr last_cloud_;
     size_t inliers_ = 0;
     float error_ = 0;
     float local_overlap_ = 0;

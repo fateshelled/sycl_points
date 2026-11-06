@@ -57,6 +57,7 @@ rclcpp_components_register_node(
   prior_map_localization
   PLUGIN "sycl_points::ros2::PriorMapLocalizationNode"
   EXECUTABLE prior_map_localization_node
+  EXECUTOR MultiThreadedExecutor
 )
 
 rclcpp_components_register_node(

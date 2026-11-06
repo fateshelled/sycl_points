@@ -21,8 +21,8 @@ struct PriorMapOptions {
     size_t covariance_neighbors = 20;
     std::string covariance_mode = "AUTO";
     Eigen::Isometry3f file_pose = Eigen::Isometry3f::Identity();
-    float local_radius = 50.0f;
-    float prediction_margin = 2.0f;
+    float local_radius = 60.0f;
+    float prediction_margin = 3.0f;
     size_t local_min_points = 50;
 };
 
@@ -42,7 +42,7 @@ public:
             !std::isfinite(options.local_radius) || options.local_radius <= 0 ||
             !std::isfinite(options.prediction_margin) || options.prediction_margin < 0 ||
             !std::isfinite(options.voxel_size) || options.voxel_size <= 0 ||
-            options.covariance_neighbors < 4 || options.covariance_neighbors > 100 ||
+            options.covariance_neighbors < 4 || options.covariance_neighbors > 100 || options.local_min_points < 1 ||
             !options.file_pose.matrix().allFinite()) {
             throw std::invalid_argument("Invalid prior map configuration");
         }

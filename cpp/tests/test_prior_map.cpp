@@ -51,19 +51,23 @@ TEST(PriorMapTest, EstimatesMissingCovariancesAfterDownsampling) {
     options.voxel_size = 0.5f;
     options.covariance_neighbors = 8;
     options.local_min_points = 4;
-    options.local_radius = 5;
+    EXPECT_EQ(options.local_radius, 60.0f);
+    EXPECT_GE(options.prediction_margin, 3.0f);
     for (const char* mode : {"AUTO", "REESTIMATE"}) {
         options.covariance_mode = mode;
         sycl_points::pipeline::PriorMap map(queue, path.string(), options);
         EXPECT_EQ(map.size(), 64U);
-        const auto target = map.target(Eigen::Vector3f(2, 2, 2), 2);
+        const auto target = map.target(Eigen::Vector3f(2, 2, 2), 52);
         ASSERT_NE(target, nullptr);
+        EXPECT_EQ(map.target(Eigen::Vector3f(2, 2, 2), 58), nullptr);
         ASSERT_TRUE(target->cloud->has_cov());
         for (const auto& cov : *target->cloud->covs) {
             EXPECT_TRUE((cov.topLeftCorner<3, 3>().allFinite()));
             EXPECT_GT(cov(0, 0), 0.0f);
         }
     }
+    options.local_min_points = 0;
+    EXPECT_THROW(sycl_points::pipeline::PriorMap(queue, path.string(), options), std::invalid_argument);
     std::filesystem::remove(path);
 }
 
