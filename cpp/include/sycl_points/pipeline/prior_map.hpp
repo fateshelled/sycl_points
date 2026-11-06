@@ -96,6 +96,8 @@ public:
 
     size_t size() const { return map_->size(); }
     size_t covariance_clamp_count() const { return covariance_clamp_count_; }
+    // Full map after downsampling and covariance regularization, before local-target extraction.
+    const PointCloudShared& cloud() const { return *map_; }
 
     // required_radius contains the full predicted submap, correspondence distance and drift margin.
     std::shared_ptr<const LocalMapTarget> target(const Eigen::Vector3f& center, float required_radius) {

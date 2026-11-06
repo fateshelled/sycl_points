@@ -23,6 +23,7 @@
 
 #include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/pipeline/prior_map.hpp"
+#include "sycl_points/ros2/convert.hpp"
 
 namespace sycl_points::ros2 {
 namespace {
@@ -122,6 +123,16 @@ public:
         map_ = std::make_unique<pipeline::PriorMap>(*queue_, map_path, opts);
         RCLCPP_INFO(get_logger(), "Prior map: %zu points, %zu covariance eigenvalues clamped",
                     map_->size(), map_->covariance_clamp_count());
+        map_cloud_pub_ = create_publisher<CloudMsg>("localization/prior_map",
+            rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+        // Publish the full prior map after the executor starts, then stop the timer.
+        map_cloud_timer_ = create_wall_timer(std::chrono::milliseconds(100), [this] {
+            map_cloud_timer_->cancel();
+            std_msgs::msg::Header header;
+            header.frame_id = frame_;
+            header.stamp = now();
+            map_cloud_pub_->publish(*toROS2msg(map_->cloud(), header));
+        });
         algorithms::registration::RegistrationParams params;
         params.reg_type = algorithms::registration::RegType::GICP;
         params.max_correspondence_distance = corr_distance_;
@@ -150,6 +161,7 @@ public:
     ~PriorMapLocalizationNode() override {
         processing_timer_->cancel();
         timer_->cancel();
+        map_cloud_timer_->cancel();
         std::lock_guard processing_lock(processing_mutex_);
         std::lock_guard state_lock(mutex_);
         log_processing_times();
@@ -517,11 +529,13 @@ private:
     std::unique_ptr<algorithms::registration::Registration> registration_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    rclcpp::Publisher<CloudMsg>::SharedPtr map_cloud_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
     rclcpp::CallbackGroup::SharedPtr odom_group_;
     rclcpp::Subscription<OdomMsg>::SharedPtr odom_sub_;
     rclcpp::Subscription<CloudMsg>::SharedPtr cloud_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::TimerBase::SharedPtr map_cloud_timer_;
     rclcpp::CallbackGroup::SharedPtr processing_group_;
     rclcpp::TimerBase::SharedPtr processing_timer_;
     std::string frame_, odom_frame_, base_frame_, reason_;
