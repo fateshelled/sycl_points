@@ -59,70 +59,13 @@ geometry_msgs::msg::Pose to_msg(const Eigen::Isometry3f& t) {
 
 class PriorMapLocalizationNode : public rclcpp::Node {
 public:
-    explicit PriorMapLocalizationNode(const rclcpp::NodeOptions& options) : Node("prior_map_localization", options) {
-        const auto number = [this](const std::string& key, double value) { return declare_parameter(key, value); };
-        const auto integer = [this](const std::string& key, int value) { return declare_parameter(key, value); };
-        frame_ = declare_parameter<std::string>("map/frame_id", "map");
-        odom_frame_ = declare_parameter<std::string>("odom/frame_id", "odom");
-        base_frame_ = declare_parameter<std::string>("base/frame_id", "base_link");
-        auto configured_pose = [&](const std::string& prefix) {
-            geometry_msgs::msg::Pose p;
-            p.position.x = number(prefix + "/x", 0);
-            p.position.y = number(prefix + "/y", 0);
-            p.position.z = number(prefix + "/z", 0);
-            p.orientation.x = number(prefix + "/qx", 0);
-            p.orientation.y = number(prefix + "/qy", 0);
-            p.orientation.z = number(prefix + "/qz", 0);
-            p.orientation.w = number(prefix + "/qw", 1);
-            return pose(p);
-        };
-        initial_pose_ = configured_pose("initial_pose");
-        pipeline::PriorMapOptions opts;
-        opts.file_pose = configured_pose("map_file_pose");
-        opts.downsample = declare_parameter("map/downsampling/enable", true);
-        opts.voxel_size = number("map/downsampling/voxel_size", 0.4);
-        opts.covariance_mode = declare_parameter<std::string>("map/covariance/mode", "AUTO");
-        opts.eigenvalue_floor = number("map/covariance/eigenvalue_floor", 1e-4);
-        opts.covariance_neighbors = integer("map/covariance/neighbor_num", 20);
-        opts.local_radius = number("map/local_target/radius", 60);
-        opts.prediction_margin = number("map/local_target/prediction_margin", 3);
-        const int local_min_points = integer("map/local_target/min_points", 50);
-        source_max_points_ = integer("source/max_points", 6000);
-        source_voxel_size_ = number("source/voxel_size", 0.4);
-        source_neighbors_ = integer("source/covariance/neighbor_num", 20);
-        source_min_points_ = integer("source/min_points", 50);
-        max_rate_ = number("localization/max_rate_hz", 1);
-        max_pending_ = integer("localization/max_pending_submaps", 2);
-        pair_wait_ = number("localization/max_pair_wait_sec", 0.5);
-        submap_wait_ = number("localization/max_submap_wait_sec", 3);
-        frozen_age_ = number("localization/max_frozen_tf_age_sec", 5);
-        odom_age_ = number("localization/max_odom_age_sec", 1);
-        auto registration_params = declare_registration_parameters();
-        corr_distance_ = registration_params.max_correspondence_distance;
-        min_inliers_ = integer("registration/min_correspondences", 30);
-        min_ratio_ = number("registration/min_correspondence_ratio", 0.2);
-        max_translation_ = number("registration/max_translation_correction", 3);
-        max_rotation_ = number("registration/max_rotation_correction_rad", 0.5);
-        max_error_ = number("registration/max_mean_error", 10);
-        local_overlap_radius_ = number("registration/local_overlap_radius", 10);
-        min_local_overlap_ratio_ = number("registration/min_local_overlap_ratio", 0.2);
-        min_local_points_ = integer("registration/min_local_points", 10);
-        if (source_max_points_ < 4 || source_min_points_ < 4 || source_neighbors_ < 4 || source_neighbors_ > 100 ||
-            source_neighbors_ > source_max_points_ ||
-            max_pending_ < 1 || min_inliers_ < 1 || max_rate_ <= 0 || pair_wait_ <= 0 || submap_wait_ <= 0 ||
-            frozen_age_ <= 0 || odom_age_ <= 0 || corr_distance_ <= 0 || source_voxel_size_ <= 0 ||
-            min_ratio_ < 0 || min_ratio_ > 1 || max_translation_ <= 0 || max_rotation_ <= 0 || max_error_ <= 0 ||
-            local_overlap_radius_ <= 0 || min_local_points_ < 1 || local_min_points < 1 ||
-            opts.prediction_margin < max_translation_ ||
-            min_local_overlap_ratio_ < 0 || min_local_overlap_ratio_ > 1)
-            throw std::invalid_argument("Invalid localization parameters");
-        opts.local_min_points = static_cast<size_t>(local_min_points);
-
+    explicit PriorMapLocalizationNode(const rclcpp::NodeOptions& options)
+        : Node("prior_map_localization", options), parameters_(declare_parameters()) {
         queue_ = std::make_unique<sycl_utils::DeviceQueue>(
             sycl::device(sycl_utils::device_selector::default_selector_v));
         const auto map_path = declare_parameter<std::string>("map/path", "");
         if (map_path.empty()) throw std::invalid_argument("map/path must point to a PCD or PLY file");
-        map_ = std::make_unique<pipeline::PriorMap>(*queue_, map_path, opts);
+        map_ = std::make_unique<pipeline::PriorMap>(*queue_, map_path, parameters_.map);
         RCLCPP_INFO(get_logger(), "Prior map: %zu points, %zu covariance eigenvalues clamped",
                     map_->size(), map_->covariance_clamp_count());
         map_cloud_pub_ = create_publisher<CloudMsg>("localization/prior_map",
@@ -131,12 +74,12 @@ public:
         map_cloud_timer_ = create_wall_timer(std::chrono::milliseconds(100), [this] {
             map_cloud_timer_->cancel();
             std_msgs::msg::Header header;
-            header.frame_id = frame_;
+            header.frame_id = parameters_.frame;
             header.stamp = now();
             map_cloud_pub_->publish(*toROS2msg(map_->cloud(), header));
         });
         registration_ =
-            std::make_unique<algorithms::registration::Registration>(*queue_, registration_params);
+            std::make_unique<algorithms::registration::Registration>(*queue_, parameters_.registration);
         tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("localization/pose", 5);
         status_pub_ = create_publisher<std_msgs::msg::String>("localization/status", 5);
@@ -150,7 +93,7 @@ public:
         timer_ = create_wall_timer(std::chrono::milliseconds(200), [this] { publish_status(); });
         processing_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
         const auto interval = std::max(std::chrono::nanoseconds(1),
-            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / max_rate_)));
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / parameters_.runtime.max_rate)));
         processing_timer_ = create_wall_timer(std::min(interval, std::chrono::nanoseconds(std::chrono::milliseconds(20))),
             [this] { work(); }, processing_group_);
     }
@@ -172,22 +115,138 @@ private:
         size_t count;
         Clock::time_point started, latest_arrival;
     };
+    struct Parameters {
+        // Frames and initial pose.
+        std::string frame;
+        std::string odom_frame;
+        std::string base_frame;
+        Eigen::Isometry3f initial_pose;
+
+        pipeline::PriorMapOptions map;
+        algorithms::registration::RegistrationParams registration;
+
+        // Scalar parameters used after construction.
+        struct RuntimeParams {
+            // Source point cloud preprocessing.
+            int source_max_points = 0;
+            double source_voxel_size = 0;
+            int source_neighbors = 0;
+            int source_min_points = 0;
+
+            // Localization scheduling and freshness.
+            double max_rate = 0;
+            int max_pending = 0;
+            double pair_wait = 0;
+            double submap_wait = 0;
+            double frozen_age = 0;
+            double odom_age = 0;
+
+            // Registration and quality gates.
+            double corr_distance = 0;
+            int min_inliers = 0;
+            double min_ratio = 0;
+            double max_translation = 0;
+            double max_rotation = 0;
+            double max_error = 0;
+            double local_overlap_radius = 0;
+            double min_local_overlap_ratio = 0;
+            int min_local_points = 0;
+        } runtime;
+    };
+
+    // Declares and validates all parameters, and applies the values used to build the node.
+    Parameters declare_parameters() {
+        Parameters params;
+        auto& opts = params.map;
+        auto& runtime = params.runtime;
+
+        // Frames and initial pose.
+        params.frame = declare_parameter<std::string>("map/frame_id", "map");
+        params.odom_frame = declare_parameter<std::string>("odom/frame_id", "odom");
+        params.base_frame = declare_parameter<std::string>("base/frame_id", "base_link");
+        params.initial_pose = declare_pose("initial_pose");
+
+        // Prior map construction.
+        opts.file_pose = declare_pose("map_file_pose");
+        opts.downsample = declare_parameter<bool>("map/downsampling/enable", true);
+        opts.voxel_size = declare_parameter<double>("map/downsampling/voxel_size", 0.4);
+        opts.covariance_mode = declare_parameter<std::string>("map/covariance/mode", "AUTO");
+        opts.eigenvalue_floor = declare_parameter<double>("map/covariance/eigenvalue_floor", 1e-4);
+        opts.covariance_neighbors = declare_parameter<int>("map/covariance/neighbor_num", 20);
+        opts.local_radius = declare_parameter<double>("map/local_target/radius", 60);
+        opts.prediction_margin = declare_parameter<double>("map/local_target/prediction_margin", 3);
+        const int local_min_points = declare_parameter<int>("map/local_target/min_points", 50);
+
+        // Source point cloud preprocessing.
+        runtime.source_max_points = declare_parameter<int>("source/max_points", 6000);
+        runtime.source_voxel_size = declare_parameter<double>("source/voxel_size", 0.4);
+        runtime.source_neighbors = declare_parameter<int>("source/covariance/neighbor_num", 20);
+        runtime.source_min_points = declare_parameter<int>("source/min_points", 50);
+
+        // Localization scheduling and freshness.
+        runtime.max_rate = declare_parameter<double>("localization/max_rate_hz", 1);
+        runtime.max_pending = declare_parameter<int>("localization/max_pending_submaps", 2);
+        runtime.pair_wait = declare_parameter<double>("localization/max_pair_wait_sec", 0.5);
+        runtime.submap_wait = declare_parameter<double>("localization/max_submap_wait_sec", 3);
+        runtime.frozen_age = declare_parameter<double>("localization/max_frozen_tf_age_sec", 5);
+        runtime.odom_age = declare_parameter<double>("localization/max_odom_age_sec", 1);
+
+        // Registration and quality gates.
+        params.registration = declare_registration_parameters();
+        runtime.corr_distance = params.registration.max_correspondence_distance;
+        runtime.min_inliers = declare_parameter<int>("registration/min_correspondences", 30);
+        runtime.min_ratio = declare_parameter<double>("registration/min_correspondence_ratio", 0.2);
+        runtime.max_translation = declare_parameter<double>("registration/max_translation_correction", 3);
+        runtime.max_rotation = declare_parameter<double>("registration/max_rotation_correction_rad", 0.5);
+        runtime.max_error = declare_parameter<double>("registration/max_mean_error", 10);
+        runtime.local_overlap_radius = declare_parameter<double>("registration/local_overlap_radius", 10);
+        runtime.min_local_overlap_ratio = declare_parameter<double>("registration/min_local_overlap_ratio", 0.2);
+        runtime.min_local_points = declare_parameter<int>("registration/min_local_points", 10);
+
+        // Validation.
+        if (runtime.source_max_points < 4 || runtime.source_min_points < 4 || runtime.source_neighbors < 4 ||
+            runtime.source_neighbors > 100 || runtime.source_neighbors > runtime.source_max_points ||
+            runtime.max_pending < 1 || runtime.min_inliers < 1 || runtime.max_rate <= 0 ||
+            runtime.pair_wait <= 0 || runtime.submap_wait <= 0 || runtime.frozen_age <= 0 ||
+            runtime.odom_age <= 0 || runtime.corr_distance <= 0 || runtime.source_voxel_size <= 0 ||
+            runtime.min_ratio < 0 || runtime.min_ratio > 1 || runtime.max_translation <= 0 ||
+            runtime.max_rotation <= 0 || runtime.max_error <= 0 || runtime.local_overlap_radius <= 0 ||
+            runtime.min_local_points < 1 || local_min_points < 1 ||
+            opts.prediction_margin < runtime.max_translation ||
+            runtime.min_local_overlap_ratio < 0 || runtime.min_local_overlap_ratio > 1)
+            throw std::invalid_argument("Invalid localization parameters");
+        opts.local_min_points = static_cast<size_t>(local_min_points);
+
+        return params;
+    }
+
+    Eigen::Isometry3f declare_pose(const std::string& prefix) {
+        geometry_msgs::msg::Pose p;
+        p.position.x = declare_parameter<double>(prefix + "/x", 0.0);
+        p.position.y = declare_parameter<double>(prefix + "/y", 0.0);
+        p.position.z = declare_parameter<double>(prefix + "/z", 0.0);
+        p.orientation.x = declare_parameter<double>(prefix + "/qx", 0.0);
+        p.orientation.y = declare_parameter<double>(prefix + "/qy", 0.0);
+        p.orientation.z = declare_parameter<double>(prefix + "/qz", 0.0);
+        p.orientation.w = declare_parameter<double>(prefix + "/qw", 1.0);
+        return pose(p);
+    }
 
     // Caller holds mutex_. Never publish a correction for an already published timestamp.
     void publish_tf_locked() {
         if (!correction_ || !latest_odom_ || !last_success_ ||
-            (now() - *last_success_).seconds() > frozen_age_ ||
-            std::chrono::duration<double>(Clock::now() - last_odom_arrival_).count() > odom_age_) return;
+            (now() - *last_success_).seconds() > parameters_.runtime.frozen_age ||
+            std::chrono::duration<double>(Clock::now() - last_odom_arrival_).count() > parameters_.runtime.odom_age) return;
         const auto t = stamp(latest_odom_->header.stamp);
         if (t <= last_tf_stamp_) return;
         geometry_msgs::msg::PoseStamped located;
         located.header = latest_odom_->header;
-        located.header.frame_id = frame_;
+        located.header.frame_id = parameters_.frame;
         located.pose = to_msg(*correction_ * pose(latest_odom_->pose.pose));
         geometry_msgs::msg::TransformStamped msg;
         msg.header = latest_odom_->header;
-        msg.header.frame_id = frame_;
-        msg.child_frame_id = odom_frame_;
+        msg.header.frame_id = parameters_.frame;
+        msg.child_frame_id = parameters_.odom_frame;
         const auto p = to_msg(*correction_);
         msg.transform.translation.x = p.position.x;
         msg.transform.translation.y = p.position.y;
@@ -225,16 +284,16 @@ private:
     void pair_locked(int64_t t, const CloudMsg::ConstSharedPtr& cloud, const OdomMsg::ConstSharedPtr& odom) {
         if (t <= last_accepted_) return;
         pending_.push_back({cloud, odom, t, epoch_});
-        while (pending_.size() > static_cast<size_t>(max_pending_)) pending_.pop_front();
+        while (pending_.size() > static_cast<size_t>(parameters_.runtime.max_pending)) pending_.pop_front();
     }
 
     void on_odom(OdomMsg::ConstSharedPtr msg) {
-        if (msg->header.frame_id != odom_frame_ || msg->child_frame_id != base_frame_) {
+        if (msg->header.frame_id != parameters_.odom_frame || msg->child_frame_id != parameters_.base_frame) {
             std::lock_guard lock(mutex_);
             if (!odom_frame_warned_) {
                 RCLCPP_WARN(get_logger(), "Skipping odometry with unexpected frames: '%s' -> '%s' (expected '%s' -> '%s')",
                             msg->header.frame_id.c_str(), msg->child_frame_id.c_str(),
-                            odom_frame_.c_str(), base_frame_.c_str());
+                            parameters_.odom_frame.c_str(), parameters_.base_frame.c_str());
                 odom_frame_warned_ = true;
             }
             return;
@@ -292,9 +351,9 @@ private:
             return;
         }
         latest_odom_ = msg;
-        if (!initial_correction_) initial_correction_ = initial_pose_ * pose(msg->pose.pose).inverse();
+        if (!initial_correction_) initial_correction_ = parameters_.initial_pose * pose(msg->pose.pose).inverse();
         last_odom_arrival_ = Clock::now();
-        if (!time_sync_warned_ && std::abs((now() - rclcpp::Time(msg->header.stamp)).seconds()) > frozen_age_) {
+        if (!time_sync_warned_ && std::abs((now() - rclcpp::Time(msg->header.stamp)).seconds()) > parameters_.runtime.frozen_age) {
             RCLCPP_WARN(get_logger(), "Odometry stamp differs from ROS time; check use_sim_time and clock synchronization");
             time_sync_warned_ = true;
         }
@@ -308,11 +367,11 @@ private:
     }
 
     void on_cloud(CloudMsg::ConstSharedPtr msg) {
-        if (msg->header.frame_id != odom_frame_) {
+        if (msg->header.frame_id != parameters_.odom_frame) {
             std::lock_guard lock(mutex_);
             if (!cloud_frame_warned_) {
                 RCLCPP_WARN(get_logger(), "Skipping submap with unexpected frame: '%s' (expected '%s')",
-                            msg->header.frame_id.c_str(), odom_frame_.c_str());
+                            msg->header.frame_id.c_str(), parameters_.odom_frame.c_str());
                 cloud_frame_warned_ = true;
             }
             return;
@@ -343,7 +402,7 @@ private:
             if (unchanged && last_success_ && reason_.empty()) return;
             if (const auto it = odoms_.find(t); it != odoms_.end()) pair_locked(t, msg, it->second);
             else waiting_[t] = {msg, Clock::now()};
-            while (waiting_.size() > static_cast<size_t>(max_pending_)) waiting_.erase(waiting_.begin());
+            while (waiting_.size() > static_cast<size_t>(parameters_.runtime.max_pending)) waiting_.erase(waiting_.begin());
             return;
         }
     }
@@ -353,7 +412,7 @@ private:
         std::lock_guard lock(mutex_);
         check_clock_locked(now());
         for (auto it = waiting_.begin(); it != waiting_.end();) {
-            if (std::chrono::duration<double>(Clock::now() - it->second.received).count() > pair_wait_) {
+            if (std::chrono::duration<double>(Clock::now() - it->second.received).count() > parameters_.runtime.pair_wait) {
                 reason_ = "matching odometry missing";
                 it = waiting_.erase(it);
             } else ++it;
@@ -361,11 +420,11 @@ private:
         const auto age = last_success_ ? (now() - *last_success_).seconds() : -1.0;
         const auto odom_elapsed = std::chrono::duration<double>(Clock::now() - last_odom_arrival_).count();
         const auto cloud_elapsed = std::chrono::duration<double>(Clock::now() - last_cloud_arrival_).count();
-        const std::string reason = reason_.empty() && cloud_elapsed > submap_wait_
+        const std::string reason = reason_.empty() && cloud_elapsed > parameters_.runtime.submap_wait
                                        ? "submap unavailable or unchanged" : reason_;
         const char* state = !last_success_ ? "UNINITIALIZED" :
-            (age > frozen_age_ || odom_elapsed > odom_age_ ? "LOST" :
-             (cloud_elapsed > submap_wait_ || age > submap_wait_ || !reason_.empty() ? "DEGRADED" : "TRACKING"));
+            (age > parameters_.runtime.frozen_age || odom_elapsed > parameters_.runtime.odom_age ? "LOST" :
+             (cloud_elapsed > parameters_.runtime.submap_wait || age > parameters_.runtime.submap_wait || !reason_.empty() ? "DEGRADED" : "TRACKING"));
         status.data = std::string(state) + " last_success_ns=" +
             std::to_string(last_success_ ? last_success_->nanoseconds() : 0) +
             " age_sec=" + std::to_string(age) + " inliers=" + std::to_string(inliers_) +
@@ -383,7 +442,7 @@ private:
             if (pending_.empty() || current < next_processing_) return;
             job = pending_.back(); pending_.clear();
             next_processing_ = current + std::chrono::duration_cast<Clock::duration>(
-                std::chrono::duration<double>(1.0 / max_rate_));
+                std::chrono::duration<double>(1.0 / parameters_.runtime.max_rate));
         }
         try { process(job); }
         catch (const std::exception& e) {
@@ -525,28 +584,28 @@ private:
         PointCloudCPU cpu;
         sensor_msgs::PointCloud2ConstIterator<float> x(*job.cloud, "x"), y(*job.cloud, "y"), z(*job.cloud, "z");
         const size_t total = static_cast<size_t>(job.cloud->width) * job.cloud->height;
-        const size_t stride = std::max<size_t>(1, (total + source_max_points_ - 1) / source_max_points_);
+        const size_t stride = std::max<size_t>(1, (total + parameters_.runtime.source_max_points - 1) / parameters_.runtime.source_max_points);
         for (size_t i = 0; i < total; ++i, ++x, ++y, ++z) {
             if (i % stride == 0 && std::isfinite(*x) && std::isfinite(*y) && std::isfinite(*z))
                 cpu.points->emplace_back(*x, *y, *z, 1.0f);
         }
-        if (cpu.size() < static_cast<size_t>(source_min_points_)) throw std::runtime_error("source too small");
+        if (cpu.size() < static_cast<size_t>(parameters_.runtime.source_min_points)) throw std::runtime_error("source too small");
         const auto converted = Clock::now();
         auto source = PointCloudShared(*queue_, cpu);
-        algorithms::filter::VoxelGrid voxel(*queue_, source_voxel_size_);
+        algorithms::filter::VoxelGrid voxel(*queue_, parameters_.runtime.source_voxel_size);
         voxel.downsampling(source, source);
-        if (source.size() < static_cast<size_t>(std::max(source_min_points_, source_neighbors_)))
+        if (source.size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points, parameters_.runtime.source_neighbors)))
             throw std::runtime_error("downsampled source too small");
         const auto reduced = Clock::now();
         const auto source_tree = algorithms::knn::KDTree::build(*queue_, source);
         const auto indexed = Clock::now();
-        algorithms::covariance::estimate_async(*source_tree, source, source_neighbors_).wait_and_throw();
+        algorithms::covariance::estimate_async(*source_tree, source, parameters_.runtime.source_neighbors).wait_and_throw();
         const auto covariances = Clock::now();
         const auto center = (guess * pose(job.odom->pose.pose)).translation();
         float reach = 0;
         for (const auto& p : *source.points)
             reach = std::max(reach, (guess * p.head<3>() - center).norm());
-        const auto target = map_->target(center, reach + corr_distance_);
+        const auto target = map_->target(center, reach + parameters_.runtime.corr_distance);
         if (!target) throw std::runtime_error("local map insufficient or required extent exceeds radius");
         const auto localized = Clock::now();
         const auto result = registration_->align(source, *target->cloud, *target->tree, guess.matrix());
@@ -554,10 +613,10 @@ private:
         const auto delta = guess.inverse() * result.T;
         const float mean_error = result.inlier ? result.error / result.inlier : INFINITY;
         if (!result.T.matrix().allFinite() || !std::isfinite(mean_error) ||
-            result.inlier < static_cast<size_t>(min_inliers_) ||
-            static_cast<double>(result.inlier) / source.size() < min_ratio_ ||
-            delta.translation().norm() > max_translation_ ||
-            Eigen::AngleAxisf(delta.rotation()).angle() > max_rotation_ || mean_error > max_error_)
+            result.inlier < static_cast<size_t>(parameters_.runtime.min_inliers) ||
+            static_cast<double>(result.inlier) / source.size() < parameters_.runtime.min_ratio ||
+            delta.translation().norm() > parameters_.runtime.max_translation ||
+            Eigen::AngleAxisf(delta.rotation()).angle() > parameters_.runtime.max_rotation || mean_error > parameters_.runtime.max_error)
             throw std::runtime_error("registration rejected by quality gates");
         // Older submap points can match a map even after the robot leaves it.
         algorithms::knn::KNNResult neighbors;
@@ -566,12 +625,12 @@ private:
         size_t nearby = 0, nearby_matched = 0;
         for (size_t i = 0; i < source.size(); ++i) {
             if (((*source.points)[i].head<3>() - current_odom_position).squaredNorm() >
-                local_overlap_radius_ * local_overlap_radius_) continue;
+                parameters_.runtime.local_overlap_radius * parameters_.runtime.local_overlap_radius) continue;
             ++nearby;
-            if ((*neighbors.distances)[i] <= corr_distance_ * corr_distance_) ++nearby_matched;
+            if ((*neighbors.distances)[i] <= parameters_.runtime.corr_distance * parameters_.runtime.corr_distance) ++nearby_matched;
         }
         const float local_overlap = nearby ? static_cast<float>(nearby_matched) / nearby : 0.0f;
-        if (nearby < static_cast<size_t>(min_local_points_) || local_overlap < min_local_overlap_ratio_)
+        if (nearby < static_cast<size_t>(parameters_.runtime.min_local_points) || local_overlap < parameters_.runtime.min_local_overlap_ratio)
             throw std::runtime_error("insufficient map overlap near current robot position");
         const auto checked = Clock::now();
         {
@@ -585,7 +644,7 @@ private:
             error_ = mean_error;
             local_overlap_ = local_overlap;
             reason_.clear();
-            if ((now() - *last_success_).seconds() > frozen_age_) {
+            if ((now() - *last_success_).seconds() > parameters_.runtime.frozen_age) {
                 reason_ = "registration completed after TF freshness deadline";
                 RCLCPP_WARN(get_logger(), "%s", reason_.c_str());
             }
@@ -619,8 +678,7 @@ private:
     rclcpp::TimerBase::SharedPtr map_cloud_timer_;
     rclcpp::CallbackGroup::SharedPtr processing_group_;
     rclcpp::TimerBase::SharedPtr processing_timer_;
-    std::string frame_, odom_frame_, base_frame_, reason_;
-    Eigen::Isometry3f initial_pose_;
+    std::string reason_;
     std::optional<Eigen::Isometry3f> correction_;
     std::optional<Eigen::Isometry3f> initial_correction_;
     std::optional<rclcpp::Time> last_success_;
@@ -644,11 +702,7 @@ private:
     float error_ = 0;
     float local_overlap_ = 0;
     std::map<std::string, std::vector<double>> processing_times_;
-    int source_max_points_, source_neighbors_, source_min_points_, max_pending_, min_inliers_;
-    double source_voxel_size_, max_rate_, pair_wait_, submap_wait_, frozen_age_, odom_age_, corr_distance_;
-    double min_ratio_, max_translation_, max_rotation_, max_error_;
-    double local_overlap_radius_, min_local_overlap_ratio_;
-    int min_local_points_;
+    const Parameters parameters_;
 };
 
 }  // namespace sycl_points::ros2
