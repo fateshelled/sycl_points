@@ -11,8 +11,8 @@ prior_map_localization:
     initial_pose/z: 0.0
     initial_pose/qx: 0.0
     initial_pose/qy: 0.0
-    initial_pose/qz: 0.0
-    initial_pose/qw: 1.0
+    initial_pose/qz: -0.38268343 
+    initial_pose/qw: 0.92387953
 
     # Pose of the map file's coordinate frame in the map frame.
     map_file_pose/x: 0.0
@@ -52,14 +52,14 @@ prior_map_localization:
     registration/criteria/rotation: 1.0e-3     # [rad]
     registration/verbose: false
 
-    registration/robust/type: NONE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
     registration/robust/default_scale: 10.0
     registration/rotation_constraint/enable: false  # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
     registration/rotation_constraint/weight: 1.0
     registration/rotation_constraint/robust/default_scale: 10.0
     registration/genz/planarity_threshold: 0.2
 
-    registration/optimization_method: GN  # GN, LM, DOGLEG
+    registration/optimization_method: LM  # GN, LM, DOGLEG
     registration/gn/lambda: 1.0
     registration/lm/max_inner_iterations: 10
     registration/lm/lambda_factor: 2.0
