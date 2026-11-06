@@ -18,10 +18,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/pipeline/prior_map.hpp"
 #include "sycl_points/ros2/convert.hpp"
@@ -64,6 +64,10 @@ public:
         : Node("prior_map_localization", options), parameters_(declare_parameters()) {
         queue_ = std::make_unique<sycl_utils::DeviceQueue>(
             sycl::device(sycl_utils::device_selector::default_selector_v));
+        source_pc_ = std::make_shared<PointCloudShared>(*queue_);
+        registration_pc_ = std::make_shared<PointCloudShared>(*queue_);
+        msg_data_buffer_ = std::make_shared<shared_vector<uint8_t>>(*queue_->ptr);
+        preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(*queue_);
         const auto map_path = declare_parameter<std::string>("map/path", "");
         if (map_path.empty()) throw std::invalid_argument("map/path must point to a PCD or PLY file");
         map_ = std::make_unique<pipeline::PriorMap>(*queue_, map_path, parameters_.map);
@@ -596,49 +600,52 @@ private:
         }
         const auto started = Clock::now();
 
-        // Subsample the incoming cloud to the configured point budget.
-        PointCloudCPU cpu;
-        sensor_msgs::PointCloud2ConstIterator<float> x(*job.cloud, "x"), y(*job.cloud, "y"), z(*job.cloud, "z");
-        const size_t total = static_cast<size_t>(job.cloud->width) * job.cloud->height;
-        const size_t stride = std::max<size_t>(1, (total + parameters_.runtime.source_max_points - 1) / parameters_.runtime.source_max_points);
-        for (size_t i = 0; i < total; ++i, ++x, ++y, ++z) {
-            if (i % stride == 0 && std::isfinite(*x) && std::isfinite(*y) && std::isfinite(*z))
-                cpu.points->emplace_back(*x, *y, *z, 1.0f);
+        // Convert the whole submap on the device. Non-finite points are dropped by VoxelGrid.
+        if (!fromROS2msg(*queue_, *job.cloud, source_pc_, msg_data_buffer_, false, false, false) ||
+            source_pc_->size() == 0) {
+            throw std::runtime_error("failed to convert submap");
         }
-        if (cpu.size() < static_cast<size_t>(parameters_.runtime.source_min_points)) throw std::runtime_error("source too small");
+        if (source_pc_->size() < static_cast<size_t>(parameters_.runtime.source_min_points))
+            throw std::runtime_error("source too small");
         const auto converted = Clock::now();
 
-        // Downsample on the device and reject clouds that are still too small.
-        auto source = PointCloudShared(*queue_, cpu);
+        // Downsample on the device; this also removes non-finite points.
         algorithms::filter::VoxelGrid voxel(*queue_, parameters_.runtime.source_voxel_size);
-        voxel.downsampling(source, source);
-        if (source.size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points, parameters_.runtime.source_neighbors)))
+        voxel.downsampling(*source_pc_, *source_pc_);
+        if (source_pc_->size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points, parameters_.runtime.source_neighbors)))
             throw std::runtime_error("downsampled source too small");
         const auto reduced = Clock::now();
 
-        // Build the source KD-tree and estimate covariances for registration.
-        const auto source_tree = algorithms::knn::KDTree::build(*queue_, source);
+        // Build the source KD-tree and estimate covariances over the whole cloud.
+        const auto source_tree = algorithms::knn::KDTree::build(*queue_, *source_pc_);
         const auto indexed = Clock::now();
-        algorithms::covariance::estimate_async(*source_tree, source, parameters_.runtime.source_neighbors).wait_and_throw();
+        algorithms::covariance::estimate_async(*source_tree, *source_pc_, parameters_.runtime.source_neighbors).wait_and_throw();
         const auto covariances = Clock::now();
+
+        // Randomly sample the registration input after covariance estimation.
+        preprocess_filter_->random_sampling(*source_pc_, *registration_pc_,
+                                            static_cast<size_t>(parameters_.runtime.source_max_points));
+        if (registration_pc_->size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points, parameters_.runtime.source_neighbors)))
+            throw std::runtime_error("sampled source too small");
+        const auto sampled = Clock::now();
 
         // Select the local prior map that covers the predicted source extent.
         const auto center = (guess * pose(job.odom->pose.pose)).translation();
         float reach = 0;
-        for (const auto& p : *source.points)
+        for (const auto& p : *registration_pc_->points)
             reach = std::max(reach, (guess * p.head<3>() - center).norm());
         const auto target = map_->target(center, reach + parameters_.runtime.corr_distance);
         if (!target) throw std::runtime_error("local map insufficient or required extent exceeds radius");
         const auto localized = Clock::now();
 
         // Run registration and reject results that fail the quality gates.
-        const auto result = registration_->align(source, *target->cloud, *target->tree, guess.matrix());
+        const auto result = registration_->align(*registration_pc_, *target->cloud, *target->tree, guess.matrix());
         const auto matched = Clock::now();
         const auto delta = guess.inverse() * result.T;
         const float mean_error = result.inlier ? result.error / result.inlier : INFINITY;
         if (!result.T.matrix().allFinite() || !std::isfinite(mean_error) ||
             result.inlier < static_cast<size_t>(parameters_.runtime.min_inliers) ||
-            static_cast<double>(result.inlier) / source.size() < parameters_.runtime.min_ratio ||
+            static_cast<double>(result.inlier) / registration_pc_->size() < parameters_.runtime.min_ratio ||
             delta.translation().norm() > parameters_.runtime.max_translation ||
             Eigen::AngleAxisf(delta.rotation()).angle() > parameters_.runtime.max_rotation || mean_error > parameters_.runtime.max_error)
             throw std::runtime_error("registration rejected by quality gates");
@@ -646,11 +653,11 @@ private:
         // Verify that the map near the current robot position actually overlaps the source.
         // Older submap points can match a map even after the robot leaves it.
         algorithms::knn::KNNResult neighbors;
-        target->tree->nearest_neighbor_search(source, neighbors, {}, result.T.matrix());
+        target->tree->nearest_neighbor_search(*registration_pc_, neighbors, {}, result.T.matrix());
         const auto current_odom_position = pose(job.odom->pose.pose).translation();
         size_t nearby = 0, nearby_matched = 0;
-        for (size_t i = 0; i < source.size(); ++i) {
-            if (((*source.points)[i].head<3>() - current_odom_position).squaredNorm() >
+        for (size_t i = 0; i < registration_pc_->size(); ++i) {
+            if (((*registration_pc_->points)[i].head<3>() - current_odom_position).squaredNorm() >
                 parameters_.runtime.local_overlap_radius * parameters_.runtime.local_overlap_radius) continue;
             ++nearby;
             if ((*neighbors.distances)[i] <= parameters_.runtime.corr_distance * parameters_.runtime.corr_distance) ++nearby_matched;
@@ -687,11 +694,12 @@ private:
             record_processing_time("1. downsampling", converted, reduced);
             record_processing_time("2. source tree", reduced, indexed);
             record_processing_time("3. covariance", indexed, covariances);
-            record_processing_time("4. local target", covariances, localized);
-            record_processing_time("5. registration", localized, matched);
-            record_processing_time("6. overlap check", matched, checked);
-            record_processing_time("7. publish ROS 2 msg", checked, published);
-            record_processing_time("8. total", started, published);
+            record_processing_time("4. random sampling", covariances, sampled);
+            record_processing_time("5. local target", sampled, localized);
+            record_processing_time("6. registration", localized, matched);
+            record_processing_time("7. overlap check", matched, checked);
+            record_processing_time("8. publish ROS 2 msg", checked, published);
+            record_processing_time("9. total", started, published);
             RCLCPP_INFO(get_logger(), "");
         }
     }
@@ -701,6 +709,12 @@ private:
     std::unique_ptr<pipeline::PriorMap> map_;
     std::unique_ptr<algorithms::registration::Registration> registration_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
+
+    // Reused conversion, sampling, and point cloud buffers.
+    PointCloudShared::Ptr source_pc_ = nullptr;
+    PointCloudShared::Ptr registration_pc_ = nullptr;
+    shared_vector_ptr<uint8_t> msg_data_buffer_ = nullptr;
+    algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
 
     // ROS 2 interfaces.
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
