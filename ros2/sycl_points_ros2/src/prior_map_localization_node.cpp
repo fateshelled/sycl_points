@@ -8,6 +8,7 @@
 #include <mutex>
 #include <numeric>
 #include <optional>
+#include <sycl_points/algorithms/registration/degenerate_regularization.hpp>
 #include <vector>
 
 #include <Eigen/Geometry>
@@ -96,7 +97,8 @@ public:
         submap_wait_ = number("localization/max_submap_wait_sec", 3);
         frozen_age_ = number("localization/max_frozen_tf_age_sec", 5);
         odom_age_ = number("localization/max_odom_age_sec", 1);
-        corr_distance_ = number("registration/max_correspondence_distance", 2);
+        auto registration_params = declare_registration_parameters();
+        corr_distance_ = registration_params.max_correspondence_distance;
         min_inliers_ = integer("registration/min_correspondences", 30);
         min_ratio_ = number("registration/min_correspondence_ratio", 0.2);
         max_translation_ = number("registration/max_translation_correction", 3);
@@ -133,13 +135,8 @@ public:
             header.stamp = now();
             map_cloud_pub_->publish(*toROS2msg(map_->cloud(), header));
         });
-        algorithms::registration::RegistrationParams params;
-        params.reg_type = algorithms::registration::RegType::GICP;
-        params.max_correspondence_distance = corr_distance_;
-        const int max_iterations = integer("registration/max_iterations", 20);
-        if (max_iterations < 1) throw std::invalid_argument("registration/max_iterations must be positive");
-        params.max_iterations = max_iterations;
-        registration_ = std::make_unique<algorithms::registration::Registration>(*queue_, params);
+        registration_ =
+            std::make_unique<algorithms::registration::Registration>(*queue_, registration_params);
         tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("localization/pose", 5);
         status_pub_ = create_publisher<std_msgs::msg::String>("localization/status", 5);
@@ -430,6 +427,90 @@ private:
             ++statistic;
         }
         RCLCPP_INFO(get_logger(), "");
+    }
+
+    // All RegistrationParams fields are exposed under `registration/*`.
+    algorithms::registration::RegistrationParams declare_registration_parameters() {
+        using algorithms::registration::OptimizationMethod_from_string;
+        using algorithms::registration::RegType_from_string;
+        using algorithms::robust::RobustLossType_from_string;
+
+        algorithms::registration::RegistrationParams params;
+        params.reg_type =
+            RegType_from_string(declare_parameter<std::string>("registration/type", "gicp"));
+        params.max_correspondence_distance = declare_parameter<double>(
+            "registration/max_correspondence_distance", params.max_correspondence_distance);
+        const int64_t max_iterations = declare_parameter<int64_t>(
+            "registration/max_iterations", static_cast<int64_t>(params.max_iterations));
+        params.max_iterations = static_cast<size_t>(max_iterations);
+        params.criteria.translation = declare_parameter<double>(
+            "registration/criteria/translation", params.criteria.translation);
+        params.criteria.rotation = declare_parameter<double>(
+            "registration/criteria/rotation", params.criteria.rotation);
+        params.verbose = declare_parameter<bool>("registration/verbose", params.verbose);
+
+        params.robust.type = RobustLossType_from_string(
+            declare_parameter<std::string>("registration/robust/type", "NONE"));
+        params.robust.default_scale = declare_parameter<double>(
+            "registration/robust/default_scale", params.robust.default_scale);
+
+        params.rotation_constraint.enable = declare_parameter<bool>(
+            "registration/rotation_constraint/enable", params.rotation_constraint.enable);
+        params.rotation_constraint.weight = declare_parameter<double>(
+            "registration/rotation_constraint/weight", params.rotation_constraint.weight);
+        params.rotation_constraint.robust.default_scale = declare_parameter<double>(
+            "registration/rotation_constraint/robust/default_scale",
+            params.rotation_constraint.robust.default_scale);
+
+        params.genz.planarity_threshold = declare_parameter<double>(
+            "registration/genz/planarity_threshold", params.genz.planarity_threshold);
+
+        params.optimization_method = OptimizationMethod_from_string(
+            declare_parameter<std::string>("registration/optimization_method", "GN"));
+        params.gn.lambda = declare_parameter<double>("registration/gn/lambda", params.gn.lambda);
+        const int64_t lm_max_inner_iterations = declare_parameter<int64_t>(
+            "registration/lm/max_inner_iterations", static_cast<int64_t>(params.lm.max_inner_iterations));
+        params.lm.max_inner_iterations = static_cast<size_t>(lm_max_inner_iterations);
+        params.lm.lambda_factor = declare_parameter<double>(
+            "registration/lm/lambda_factor", params.lm.lambda_factor);
+        params.lm.init_lambda = declare_parameter<double>(
+            "registration/lm/init_lambda", params.lm.init_lambda);
+        params.lm.max_lambda = declare_parameter<double>(
+            "registration/lm/max_lambda", params.lm.max_lambda);
+        params.lm.min_lambda = declare_parameter<double>(
+            "registration/lm/min_lambda", params.lm.min_lambda);
+        params.dogleg.initial_trust_region_radius = declare_parameter<double>(
+            "registration/dogleg/initial_trust_region_radius", params.dogleg.initial_trust_region_radius);
+        params.dogleg.min_trust_region_radius = declare_parameter<double>(
+            "registration/dogleg/min_trust_region_radius", params.dogleg.min_trust_region_radius);
+        params.dogleg.max_trust_region_radius = declare_parameter<double>(
+            "registration/dogleg/max_trust_region_radius", params.dogleg.max_trust_region_radius);
+        params.dogleg.eta1 = declare_parameter<double>("registration/dogleg/eta1", params.dogleg.eta1);
+        params.dogleg.eta2 = declare_parameter<double>("registration/dogleg/eta2", params.dogleg.eta2);
+        params.dogleg.gamma_decrease = declare_parameter<double>(
+            "registration/dogleg/gamma_decrease", params.dogleg.gamma_decrease);
+        params.dogleg.gamma_increase = declare_parameter<double>(
+            "registration/dogleg/gamma_increase", params.dogleg.gamma_increase);
+
+        params.degenerate_reg.type = algorithms::registration::DegenerateRegularizationType::none;
+        params.map_prior.enabled = false;
+
+        if (params.max_correspondence_distance <= 0 || params.max_iterations < 1 ||
+            params.criteria.translation <= 0 || params.criteria.rotation <= 0 ||
+            params.robust.default_scale <= 0 || params.rotation_constraint.weight < 0 ||
+            params.rotation_constraint.robust.default_scale <= 0 ||
+            params.genz.planarity_threshold < 0 || params.genz.planarity_threshold > 1 ||
+            params.gn.lambda <= 0 || params.lm.max_inner_iterations < 1 || params.lm.lambda_factor <= 1 ||
+            params.lm.init_lambda <= 0 || params.lm.min_lambda <= 0 ||
+            params.lm.max_lambda < params.lm.min_lambda ||
+            params.dogleg.min_trust_region_radius <= 0 ||
+            params.dogleg.initial_trust_region_radius < params.dogleg.min_trust_region_radius ||
+            params.dogleg.max_trust_region_radius < params.dogleg.initial_trust_region_radius ||
+            params.dogleg.eta1 < 0 || params.dogleg.eta1 > params.dogleg.eta2 || params.dogleg.eta2 > 1 ||
+            params.dogleg.gamma_decrease <= 0 || params.dogleg.gamma_decrease >= 1 ||
+            params.dogleg.gamma_increase <= 1)
+            throw std::invalid_argument("Invalid registration parameters");
+        return params;
     }
 
     void process(const Pair& job) {

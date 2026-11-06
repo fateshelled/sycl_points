@@ -44,8 +44,37 @@ prior_map_localization:
     localization/max_frozen_tf_age_sec: 5.0
     localization/max_odom_age_sec: 1.0
 
+    # Registration solver (RegistrationParams).
+    registration/type: gicp  # point_to_point, point_to_plane, point_to_distribution, gicp, genz
     registration/max_correspondence_distance: 2.0
     registration/max_iterations: 20
+    registration/criteria/translation: 1.0e-3  # [m]
+    registration/criteria/rotation: 1.0e-3     # [rad]
+    registration/verbose: false
+
+    registration/robust/type: NONE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    registration/robust/default_scale: 10.0
+    registration/rotation_constraint/enable: false  # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
+    registration/rotation_constraint/weight: 1.0
+    registration/rotation_constraint/robust/default_scale: 10.0
+    registration/genz/planarity_threshold: 0.2
+
+    registration/optimization_method: GN  # GN, LM, DOGLEG
+    registration/gn/lambda: 1.0
+    registration/lm/max_inner_iterations: 10
+    registration/lm/lambda_factor: 2.0
+    registration/lm/init_lambda: 1.0
+    registration/lm/max_lambda: 1.0e+3
+    registration/lm/min_lambda: 1.0e-6
+    registration/dogleg/initial_trust_region_radius: 1.0
+    registration/dogleg/min_trust_region_radius: 1.0e-4
+    registration/dogleg/max_trust_region_radius: 10.0
+    registration/dogleg/eta1: 0.25
+    registration/dogleg/eta2: 0.75
+    registration/dogleg/gamma_decrease: 0.25
+    registration/dogleg/gamma_increase: 2.0
+
+    # Localization quality gates.
     registration/min_correspondences: 30
     registration/min_correspondence_ratio: 0.2
     registration/max_translation_correction: 3.0
