@@ -664,10 +664,13 @@ private:
         RCLCPP_INFO(get_logger(), "");
     }
 
+    // Core components.
     std::unique_ptr<sycl_utils::DeviceQueue> queue_;
     std::unique_ptr<pipeline::PriorMap> map_;
     std::unique_ptr<algorithms::registration::Registration> registration_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
+
+    // ROS 2 interfaces.
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<CloudMsg>::SharedPtr map_cloud_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
@@ -678,30 +681,48 @@ private:
     rclcpp::TimerBase::SharedPtr map_cloud_timer_;
     rclcpp::CallbackGroup::SharedPtr processing_group_;
     rclcpp::TimerBase::SharedPtr processing_timer_;
+
+    // Status and pose correction.
     std::string reason_;
     std::optional<Eigen::Isometry3f> correction_;
     std::optional<Eigen::Isometry3f> initial_correction_;
     std::optional<rclcpp::Time> last_success_;
     std::optional<rclcpp::Time> last_ros_time_;
+
+    // One-shot warning flags.
     bool time_sync_warned_ = false;
     bool odom_frame_warned_ = false, cloud_frame_warned_ = false;
+
+    // Latest sensor arrivals.
     OdomMsg::ConstSharedPtr latest_odom_;
     Clock::time_point last_odom_arrival_ = Clock::now(), last_cloud_arrival_ = Clock::now();
+
+    // Mutual exclusion.
     std::mutex mutex_;
     std::mutex processing_mutex_;
+
+    // Processing scheduling.
     Clock::time_point next_processing_ = Clock::time_point::min();
+
+    // Pending messages waiting for pairing.
     std::deque<Pair> pending_;
     std::map<int64_t, OdomMsg::ConstSharedPtr> odoms_;
     std::map<int64_t, Waiting> waiting_;
+
+    // Output deduplication and sensor rewind detection.
     int64_t last_tf_stamp_ = std::numeric_limits<int64_t>::min();
     int64_t last_accepted_ = std::numeric_limits<int64_t>::min();
     std::optional<SensorRewindCandidate> sensor_rewind_candidate_;
     size_t epoch_ = 0;
     CloudMsg::ConstSharedPtr last_cloud_;
+
+    // Latest registration diagnostics.
     size_t inliers_ = 0;
     float error_ = 0;
     float local_overlap_ = 0;
     std::map<std::string, std::vector<double>> processing_times_;
+
+    // Declared parameters (immutable after construction).
     const Parameters parameters_;
 };
 
