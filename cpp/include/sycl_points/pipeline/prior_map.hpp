@@ -41,8 +41,8 @@ public:
         if (path.empty() || (options.covariance_mode != "AUTO" && options.covariance_mode != "REESTIMATE") ||
             !std::isfinite(options.local_radius) || options.local_radius <= 0 ||
             !std::isfinite(options.prediction_margin) || options.prediction_margin < 0 ||
-            !std::isfinite(options.voxel_size) || options.voxel_size <= 0 ||
-            options.covariance_neighbors < 4 || options.covariance_neighbors > 100 || options.local_min_points < 1 ||
+            !std::isfinite(options.voxel_size) || options.voxel_size <= 0 || options.covariance_neighbors < 4 ||
+            options.covariance_neighbors > 100 || options.local_min_points < 1 ||
             !options.file_pose.matrix().allFinite()) {
             throw std::invalid_argument("Invalid prior map configuration");
         }
@@ -76,7 +76,7 @@ public:
         if (preserve && !options.downsample) {
             for (auto& cov : *input.covs) {
                 cov = algorithms::filter::regularize_map_covariance(cov, options.eigenvalue_floor,
-                                                                      &this->covariance_clamp_count_);
+                                                                    &this->covariance_clamp_count_);
             }
         }
         if (!preserve) {
@@ -90,7 +90,7 @@ public:
             }
             for (auto& cov : *input.covs) {
                 cov = algorithms::filter::regularize_map_covariance(cov, options.eigenvalue_floor,
-                                                                      &this->covariance_clamp_count_);
+                                                                    &this->covariance_clamp_count_);
             }
         }
         const Eigen::Matrix3f rotation = options.file_pose.rotation();
@@ -114,11 +114,11 @@ public:
     // required_radius contains the full predicted submap, correspondence distance and drift margin.
     std::shared_ptr<const LocalMapTarget> target(const Eigen::Vector3f& center, float required_radius) {
         if (!center.allFinite() || !std::isfinite(required_radius) || required_radius < 0 ||
-            required_radius + this->options_.prediction_margin > this->options_.local_radius) {
+            (required_radius + this->options_.prediction_margin) > this->options_.local_radius) {
             return nullptr;
         }
-        if (this->active_ && (center - this->active_->center).norm() + required_radius +
-                                         this->options_.prediction_margin <= this->active_->radius) {
+        if (this->active_ && ((center - this->active_->center).norm() + required_radius +
+                              this->options_.prediction_margin) <= this->active_->radius) {
             return this->active_;
         }
         // Collect the contained map points first so that the result buffers are allocated only once.
