@@ -48,9 +48,9 @@ public:
 
     void set_covariance_eigenvalue_floor(float floor) {
         if (!std::isfinite(floor) || floor <= 0.0f) throw std::invalid_argument("Invalid covariance floor");
-        covariance_floor_ = floor;
+        this->covariance_floor_ = floor;
     }
-    size_t covariance_clamp_count() const { return covariance_clamp_count_; }
+    size_t covariance_clamp_count() const { return this->covariance_clamp_count_; }
 
     /// @brief Voxel downsampling
     /// @param points Point Cloud
@@ -235,7 +235,7 @@ private:
         const bool has_intensity = cloud.has_intensity();
         const bool has_timestamp = cloud.has_timestamps();
         const bool has_cov = cloud.has_cov();
-        covariance_clamp_count_ = 0;
+        this->covariance_clamp_count_ = 0;
 
         // mem_advise set to host
         this->queue_.set_accessed_by_host(this->bit_ptr_->data(), this->bit_ptr_->size());
@@ -246,12 +246,12 @@ private:
         work_rgb_.clear();
         work_intensities_.clear();
         work_timestamps_.clear();
-        work_covs_.clear();
+        this->work_covs_.clear();
         work_points_.reserve(N);
         if (has_rgb) work_rgb_.reserve(N);
         if (has_intensity) work_intensities_.reserve(N);
         if (has_timestamp) work_timestamps_.reserve(N);
-        if (has_cov) work_covs_.reserve(N);
+        if (has_cov) this->work_covs_.reserve(N);
 
         const float min_voxel_count = static_cast<float>(this->min_voxel_count_);
         size_t group_begin = 0;
@@ -270,7 +270,9 @@ private:
                 if (has_rgb) rgb_sum += (*cloud.rgb)[idx];
                 if (has_intensity) work_intensity_values_.push_back((*cloud.intensities)[idx]);
                 if (has_timestamp) timestamp_sum += (*cloud.timestamp_offsets)[idx];
-                if (has_cov) log_sum += map_covariance_log((*cloud.covs)[idx], covariance_floor_, &covariance_clamp_count_);
+                if (has_cov)
+                    log_sum += map_covariance_log((*cloud.covs)[idx], this->covariance_floor_,
+                                                  &this->covariance_clamp_count_);
                 ++group_end;
             }
 
@@ -280,7 +282,9 @@ private:
                 if (has_rgb) work_rgb_.emplace_back(rgb_sum / point_count);
                 if (has_intensity) work_intensities_.emplace_back(compute_median(work_intensity_values_));
                 if (has_timestamp) work_timestamps_.emplace_back(timestamp_sum / point_count);
-                if (has_cov) work_covs_.emplace_back(map_covariance_exp(log_sum / static_cast<float>(group_end - group_begin)));
+                if (has_cov)
+                    this->work_covs_.emplace_back(
+                        map_covariance_exp(log_sum / static_cast<float>(group_end - group_begin)));
             }
             group_begin = group_end;
         }
@@ -292,8 +296,8 @@ private:
         result.reserve_points(work_points_.size());
         for (const auto& p : work_points_) result.points->emplace_back(p);
         if (has_cov) {
-            result.reserve_covs(work_covs_.size());
-            for (const auto& c : work_covs_) result.covs->emplace_back(c);
+            result.reserve_covs(this->work_covs_.size());
+            for (const auto& c : this->work_covs_) result.covs->emplace_back(c);
         }
         if (has_rgb) {
             result.reserve_rgb(work_rgb_.size());

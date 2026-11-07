@@ -55,20 +55,20 @@ public:
             }
             preserve = options.covariance_mode == "AUTO" && cpu.has_cov();
             if (!preserve) cpu.covs->clear();
-            map_ = std::make_shared<PointCloudShared>(queue, cpu);
+            this->map_ = std::make_shared<PointCloudShared>(queue, cpu);
         }
-        auto& input = *map_;
+        auto& input = *this->map_;
         if (options.downsample) {
             algorithms::filter::VoxelGrid voxel(queue, options.voxel_size);
             voxel.set_covariance_eigenvalue_floor(options.eigenvalue_floor);
             voxel.downsampling(input, input);
-            covariance_clamp_count_ += voxel.covariance_clamp_count();
+            this->covariance_clamp_count_ += voxel.covariance_clamp_count();
         }
         if (input.size() == 0) throw std::runtime_error("Prior map is empty after downsampling");
         if (preserve && !options.downsample) {
             for (auto& cov : *input.covs) {
                 cov = algorithms::filter::regularize_map_covariance(cov, options.eigenvalue_floor,
-                                                                      &covariance_clamp_count_);
+                                                                      &this->covariance_clamp_count_);
             }
         }
         if (!preserve) {
@@ -80,7 +80,7 @@ public:
             if (!input.has_cov()) throw std::runtime_error("Map covariance estimation failed");
             for (auto& cov : *input.covs) {
                 cov = algorithms::filter::regularize_map_covariance(cov, options.eigenvalue_floor,
-                                                                      &covariance_clamp_count_);
+                                                                      &this->covariance_clamp_count_);
             }
         }
         const Eigen::Matrix3f rotation = options.file_pose.rotation();
@@ -90,55 +90,59 @@ public:
             (*input.covs)[i].setZero();
             (*input.covs)[i].topLeftCorner<3, 3>() = 0.5f * (rotated + rotated.transpose()).eval();
         }
-        cell_size_ = options.local_radius;
-        for (size_t i = 0; i < map_->size(); ++i) cells_[cell((*map_->points)[i].head<3>())].push_back(i);
+        this->cell_size_ = options.local_radius;
+        for (size_t i = 0; i < this->map_->size(); ++i) {
+            this->cells_[this->cell((*this->map_->points)[i].head<3>())].push_back(i);
+        }
     }
 
-    size_t size() const { return map_->size(); }
-    size_t covariance_clamp_count() const { return covariance_clamp_count_; }
+    size_t size() const { return this->map_->size(); }
+    size_t covariance_clamp_count() const { return this->covariance_clamp_count_; }
     // Full map after downsampling and covariance regularization, before local-target extraction.
-    const PointCloudShared& cloud() const { return *map_; }
+    const PointCloudShared& cloud() const { return *this->map_; }
 
     // required_radius contains the full predicted submap, correspondence distance and drift margin.
     std::shared_ptr<const LocalMapTarget> target(const Eigen::Vector3f& center, float required_radius) {
         if (!center.allFinite() || !std::isfinite(required_radius) || required_radius < 0 ||
-            required_radius + options_.prediction_margin > options_.local_radius) return nullptr;
-        if (active_ && (center - active_->center).norm() + required_radius + options_.prediction_margin <=
-                           active_->radius) return active_;
+            required_radius + this->options_.prediction_margin > this->options_.local_radius)
+            return nullptr;
+        if (this->active_ && (center - this->active_->center).norm() + required_radius +
+                                         this->options_.prediction_margin <= this->active_->radius)
+            return this->active_;
 
         // Collect the contained map points first so that the result buffers are allocated only once.
-        const float radius = options_.local_radius;
+        const float radius = this->options_.local_radius;
         const float radius_squared = radius * radius;
-        scratch_indices_.clear();
-        const auto min_cell = cell(center - Eigen::Vector3f::Constant(radius));
-        const auto max_cell = cell(center + Eigen::Vector3f::Constant(radius));
+        this->scratch_indices_.clear();
+        const auto min_cell = this->cell(center - Eigen::Vector3f::Constant(radius));
+        const auto max_cell = this->cell(center + Eigen::Vector3f::Constant(radius));
         for (int64_t x = min_cell.x; x <= max_cell.x; ++x) {
             for (int64_t y = min_cell.y; y <= max_cell.y; ++y) {
                 for (int64_t z = min_cell.z; z <= max_cell.z; ++z) {
-                    const auto it = cells_.find({x, y, z});
-                    if (it == cells_.end()) continue;
+                    const auto it = this->cells_.find({x, y, z});
+                    if (it == this->cells_.end()) continue;
                     for (const size_t index : it->second) {
-                        if (((*map_->points)[index].head<3>() - center).squaredNorm() > radius_squared) continue;
-                        scratch_indices_.push_back(index);
+                        if (((*this->map_->points)[index].head<3>() - center).squaredNorm() > radius_squared) continue;
+                        this->scratch_indices_.push_back(index);
                     }
                 }
             }
         }
-        if (scratch_indices_.size() < options_.local_min_points) return nullptr;
+        if (this->scratch_indices_.size() < this->options_.local_min_points) return nullptr;
 
         auto next = std::make_shared<LocalMapTarget>();
         next->center = center;
         next->radius = radius;
-        next->cloud = std::make_shared<PointCloudShared>(queue_);
-        next->cloud->reserve_points(scratch_indices_.size());
-        next->cloud->reserve_covs(scratch_indices_.size());
-        for (const size_t index : scratch_indices_) {
-            next->cloud->points->push_back((*map_->points)[index]);
-            next->cloud->covs->push_back((*map_->covs)[index]);
+        next->cloud = std::make_shared<PointCloudShared>(this->queue_);
+        next->cloud->reserve_points(this->scratch_indices_.size());
+        next->cloud->reserve_covs(this->scratch_indices_.size());
+        for (const size_t index : this->scratch_indices_) {
+            next->cloud->points->push_back((*this->map_->points)[index]);
+            next->cloud->covs->push_back((*this->map_->covs)[index]);
         }
-        next->tree = algorithms::knn::KDTree::build(queue_, *next->cloud);
-        active_ = next;
-        return active_;
+        next->tree = algorithms::knn::KDTree::build(this->queue_, *next->cloud);
+        this->active_ = next;
+        return this->active_;
     }
 
 private:
@@ -155,9 +159,9 @@ private:
         }
     };
     Cell cell(const Eigen::Vector3f& p) const {
-        return {static_cast<int64_t>(std::floor(p.x() / cell_size_)),
-                static_cast<int64_t>(std::floor(p.y() / cell_size_)),
-                static_cast<int64_t>(std::floor(p.z() / cell_size_))};
+        return {static_cast<int64_t>(std::floor(p.x() / this->cell_size_)),
+                static_cast<int64_t>(std::floor(p.y() / this->cell_size_)),
+                static_cast<int64_t>(std::floor(p.z() / this->cell_size_))};
     }
     sycl_utils::DeviceQueue queue_;
     PriorMapOptions options_;
