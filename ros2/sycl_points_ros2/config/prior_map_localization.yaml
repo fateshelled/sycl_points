@@ -1,0 +1,89 @@
+prior_map_localization:
+  ros__parameters:
+    use_sim_time: false
+
+    sycl/device_type: gpu      # gpu, cpu
+    sycl/device_vendor: intel  # default, intel, nvidia, amd, omp(for AdaptiveCpp CPU backend)
+
+    map/frame_id: map
+    odom/frame_id: odom
+    base/frame_id: base_link
+
+    # Initial base-link pose in the map frame.
+    initial_pose/x: 0.0
+    initial_pose/y: 0.0
+    initial_pose/z: 0.0
+    initial_pose/qx: 0.0
+    initial_pose/qy: 0.0
+    initial_pose/qz: -0.38268343
+    initial_pose/qw: 0.92387953
+
+    # Pose of the map file's coordinate frame in the map frame.
+    map_file_pose/x: 0.0
+    map_file_pose/y: 0.0
+    map_file_pose/z: 0.0
+    map_file_pose/qx: 0.0
+    map_file_pose/qy: 0.0
+    map_file_pose/qz: 0.0
+    map_file_pose/qw: 1.0
+
+    map/downsampling/enable: true
+    map/downsampling/voxel_size: 0.4
+    map/covariance/mode: AUTO
+    map/covariance/eigenvalue_floor: 0.0001
+    map/covariance/neighbor_num: 20
+    map/local_target/radius: 60.0
+    map/local_target/prediction_margin: 3.0
+    map/local_target/min_points: 50
+
+    source/max_points: 6000
+    source/voxel_size: 0.4
+    source/covariance/neighbor_num: 20
+    source/min_points: 50
+
+    localization/max_rate_hz: 1.0
+    localization/max_pending_submaps: 2
+    localization/max_pair_wait_sec: 0.5
+    localization/max_submap_wait_sec: 3.0
+    localization/max_frozen_tf_age_sec: 5.0
+    localization/max_odom_age_sec: 1.0
+
+    # Registration solver (RegistrationParams).
+    registration/type: gicp  # point_to_point, point_to_plane, point_to_distribution, gicp, genz
+    registration/max_correspondence_distance: 2.0
+    registration/max_iterations: 20
+    registration/criteria/translation: 1.0e-3  # [m]
+    registration/criteria/rotation: 1.0e-3     # [rad]
+    registration/verbose: false
+
+    registration/robust/type: GEMAN_MCCLURE  # NONE, HUBER, TUKEY, CAUCHY, GEMAN_MCCLURE
+    registration/robust/default_scale: 10.0
+    registration/rotation_constraint/enable: false  # Jensen-Bregman LogDet Divergence. EXPERIMENTAL
+    registration/rotation_constraint/weight: 1.0
+    registration/rotation_constraint/robust/default_scale: 10.0
+    registration/genz/planarity_threshold: 0.2
+
+    registration/optimization_method: LM  # GN, LM, DOGLEG
+    registration/gn/lambda: 1.0
+    registration/lm/max_inner_iterations: 10
+    registration/lm/lambda_factor: 2.0
+    registration/lm/init_lambda: 1.0
+    registration/lm/max_lambda: 1.0e+3
+    registration/lm/min_lambda: 1.0e-6
+    registration/dogleg/initial_trust_region_radius: 1.0
+    registration/dogleg/min_trust_region_radius: 1.0e-4
+    registration/dogleg/max_trust_region_radius: 10.0
+    registration/dogleg/eta1: 0.25
+    registration/dogleg/eta2: 0.75
+    registration/dogleg/gamma_decrease: 0.25
+    registration/dogleg/gamma_increase: 2.0
+
+    # Localization quality gates.
+    registration/min_correspondences: 30
+    registration/min_correspondence_ratio: 0.2
+    registration/max_translation_correction: 3.0
+    registration/max_rotation_correction_rad: 0.5
+    registration/max_mean_error: 10.0
+    registration/local_overlap_radius: 10.0
+    registration/min_local_overlap_ratio: 0.2
+    registration/min_local_points: 10

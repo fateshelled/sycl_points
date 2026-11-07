@@ -64,6 +64,11 @@ def generate_launch_description():
                 description="rosbag start offset in seconds",
             ),
             DeclareLaunchArgument(
+                "rosbag/clock_publish_frequency",
+                default_value="100.0",
+                description="Frequency in Hz of /clock during rosbag playback (0 disables it)",
+            ),
+            DeclareLaunchArgument(
                 "rosbag/exclude_topics",
                 default_value="",
                 description=(
@@ -102,6 +107,13 @@ def generate_launch_description():
             "play.read_ahead_queue_size": 1000,
             "play.node_prefix": "",
             "play.rate": 1.0,
+            "play.clock_publish_frequency": (
+                float(
+                    LaunchConfiguration("rosbag/clock_publish_frequency").perform(context)
+                )
+                if sim_time
+                else 0.0
+            ),
             "play.loop": False,
             "play.start_paused": False,
             "play.start_offset.sec": start_offset_sec,
