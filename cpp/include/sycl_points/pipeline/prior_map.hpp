@@ -106,27 +106,36 @@ public:
         if (active_ && (center - active_->center).norm() + required_radius + options_.prediction_margin <=
                            active_->radius) return active_;
 
-        auto next = std::make_shared<LocalMapTarget>();
-        next->center = center;
-        next->radius = options_.local_radius;
-        next->cloud = std::make_shared<PointCloudShared>(queue_);
-        const auto min_cell = cell(center - Eigen::Vector3f::Constant(next->radius));
-        const auto max_cell = cell(center + Eigen::Vector3f::Constant(next->radius));
+        // Collect the contained map points first so that the result buffers are allocated only once.
+        const float radius = options_.local_radius;
+        const float radius_squared = radius * radius;
+        scratch_indices_.clear();
+        const auto min_cell = cell(center - Eigen::Vector3f::Constant(radius));
+        const auto max_cell = cell(center + Eigen::Vector3f::Constant(radius));
         for (int64_t x = min_cell.x; x <= max_cell.x; ++x) {
             for (int64_t y = min_cell.y; y <= max_cell.y; ++y) {
                 for (int64_t z = min_cell.z; z <= max_cell.z; ++z) {
                     const auto it = cells_.find({x, y, z});
                     if (it == cells_.end()) continue;
                     for (const size_t index : it->second) {
-                        if (((*map_->points)[index].head<3>() - center).squaredNorm() > next->radius * next->radius)
-                            continue;
-                        next->cloud->points->push_back((*map_->points)[index]);
-                        next->cloud->covs->push_back((*map_->covs)[index]);
+                        if (((*map_->points)[index].head<3>() - center).squaredNorm() > radius_squared) continue;
+                        scratch_indices_.push_back(index);
                     }
                 }
             }
         }
-        if (next->cloud->size() < options_.local_min_points) return nullptr;
+        if (scratch_indices_.size() < options_.local_min_points) return nullptr;
+
+        auto next = std::make_shared<LocalMapTarget>();
+        next->center = center;
+        next->radius = radius;
+        next->cloud = std::make_shared<PointCloudShared>(queue_);
+        next->cloud->reserve_points(scratch_indices_.size());
+        next->cloud->reserve_covs(scratch_indices_.size());
+        for (const size_t index : scratch_indices_) {
+            next->cloud->points->push_back((*map_->points)[index]);
+            next->cloud->covs->push_back((*map_->covs)[index]);
+        }
         next->tree = algorithms::knn::KDTree::build(queue_, *next->cloud);
         active_ = next;
         return active_;
@@ -156,6 +165,8 @@ private:
     size_t covariance_clamp_count_ = 0;
     PointCloudShared::Ptr map_;
     std::unordered_map<Cell, std::vector<size_t>, CellHash> cells_;
+    // Reused index buffer for local target extraction.
+    std::vector<size_t> scratch_indices_;
     std::shared_ptr<const LocalMapTarget> active_;
 };
 
