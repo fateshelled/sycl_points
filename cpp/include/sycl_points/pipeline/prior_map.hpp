@@ -49,12 +49,18 @@ public:
         bool preserve = false;
         {
             auto cpu = PointCloudReader::readFile(path, false, false);
-            if (cpu.size() == 0) throw std::runtime_error("Prior map is empty");
+            if (cpu.size() == 0) {
+                throw std::runtime_error("Prior map is empty");
+            }
             for (const auto& p : *cpu.points) {
-                if (!p.head<3>().allFinite()) throw std::runtime_error("Non-finite prior map point");
+                if (!p.head<3>().allFinite()) {
+                    throw std::runtime_error("Non-finite prior map point");
+                }
             }
             preserve = options.covariance_mode == "AUTO" && cpu.has_cov();
-            if (!preserve) cpu.covs->clear();
+            if (!preserve) {
+                cpu.covs->clear();
+            }
             this->map_ = std::make_shared<PointCloudShared>(queue, cpu);
         }
         auto& input = *this->map_;
@@ -64,7 +70,9 @@ public:
             voxel.downsampling(input, input);
             this->covariance_clamp_count_ += voxel.covariance_clamp_count();
         }
-        if (input.size() == 0) throw std::runtime_error("Prior map is empty after downsampling");
+        if (input.size() == 0) {
+            throw std::runtime_error("Prior map is empty after downsampling");
+        }
         if (preserve && !options.downsample) {
             for (auto& cov : *input.covs) {
                 cov = algorithms::filter::regularize_map_covariance(cov, options.eigenvalue_floor,
@@ -77,7 +85,9 @@ public:
             }
             const auto tree = algorithms::knn::KDTree::build(queue, input);
             algorithms::covariance::estimate_async(*tree, input, options.covariance_neighbors).wait_and_throw();
-            if (!input.has_cov()) throw std::runtime_error("Map covariance estimation failed");
+            if (!input.has_cov()) {
+                throw std::runtime_error("Map covariance estimation failed");
+            }
             for (auto& cov : *input.covs) {
                 cov = algorithms::filter::regularize_map_covariance(cov, options.eigenvalue_floor,
                                                                       &this->covariance_clamp_count_);
@@ -104,12 +114,13 @@ public:
     // required_radius contains the full predicted submap, correspondence distance and drift margin.
     std::shared_ptr<const LocalMapTarget> target(const Eigen::Vector3f& center, float required_radius) {
         if (!center.allFinite() || !std::isfinite(required_radius) || required_radius < 0 ||
-            required_radius + this->options_.prediction_margin > this->options_.local_radius)
+            required_radius + this->options_.prediction_margin > this->options_.local_radius) {
             return nullptr;
+        }
         if (this->active_ && (center - this->active_->center).norm() + required_radius +
-                                         this->options_.prediction_margin <= this->active_->radius)
+                                         this->options_.prediction_margin <= this->active_->radius) {
             return this->active_;
-
+        }
         // Collect the contained map points first so that the result buffers are allocated only once.
         const float radius = this->options_.local_radius;
         const float radius_squared = radius * radius;
@@ -120,15 +131,21 @@ public:
             for (int64_t y = min_cell.y; y <= max_cell.y; ++y) {
                 for (int64_t z = min_cell.z; z <= max_cell.z; ++z) {
                     const auto it = this->cells_.find({x, y, z});
-                    if (it == this->cells_.end()) continue;
+                    if (it == this->cells_.end()) {
+                        continue;
+                    }
                     for (const size_t index : it->second) {
-                        if (((*this->map_->points)[index].head<3>() - center).squaredNorm() > radius_squared) continue;
+                        if (((*this->map_->points)[index].head<3>() - center).squaredNorm() > radius_squared) {
+                            continue;
+                        }
                         this->scratch_indices_.push_back(index);
                     }
                 }
             }
         }
-        if (this->scratch_indices_.size() < this->options_.local_min_points) return nullptr;
+        if (this->scratch_indices_.size() < this->options_.local_min_points) {
+            return nullptr;
+        }
 
         auto next = std::make_shared<LocalMapTarget>();
         next->center = center;
