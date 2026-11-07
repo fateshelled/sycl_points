@@ -67,8 +67,11 @@ public:
     // Declares parameters, builds the prior map, and wires the ROS 2 interfaces.
     explicit PriorMapLocalizationNode(const rclcpp::NodeOptions& options)
         : Node("prior_map_localization", options), parameters_(declare_parameters()) {
-        this->queue_ =
-            std::make_unique<sycl_utils::DeviceQueue>(sycl::device(sycl_utils::device_selector::default_selector_v));
+        const auto device =
+            sycl_utils::device_selector::select_device(this->parameters_.device_vendor, this->parameters_.device_type);
+        this->queue_ = std::make_unique<sycl_utils::DeviceQueue>(device);
+        this->queue_->print_device_info();
+
         this->source_pc_ = std::make_shared<PointCloudShared>(*this->queue_);
         this->registration_pc_ = std::make_shared<PointCloudShared>(*this->queue_);
         this->msg_data_buffer_ = std::make_shared<shared_vector<uint8_t>>(*this->queue_->ptr);
@@ -149,6 +152,10 @@ private:
         Clock::time_point started, latest_arrival;
     };
     struct Parameters {
+        // SYCL device selection.
+        std::string device_vendor;
+        std::string device_type;
+
         // Frames and initial pose.
         std::string frame;
         std::string odom_frame;
@@ -192,6 +199,10 @@ private:
         Parameters params;
         auto& opts = params.map;
         auto& runtime = params.runtime;
+
+        // SYCL device selection.
+        params.device_vendor = declare_parameter<std::string>("sycl/device_vendor", "intel");
+        params.device_type = declare_parameter<std::string>("sycl/device_type", "gpu");
 
         // Frames and initial pose.
         params.frame = declare_parameter<std::string>("map/frame_id", "map");

@@ -1,6 +1,10 @@
 prior_map_localization:
   ros__parameters:
     use_sim_time: false
+
+    sycl/device_type: gpu      # gpu, cpu
+    sycl/device_vendor: intel  # default, intel, nvidia, amd, omp(for AdaptiveCpp CPU backend)
+
     map/frame_id: map
     odom/frame_id: odom
     base/frame_id: base_link
