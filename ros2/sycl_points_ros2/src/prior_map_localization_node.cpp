@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
+#include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/pipeline/prior_map.hpp"
 #include "sycl_points/ros2/convert.hpp"
@@ -73,6 +74,7 @@ public:
         registration_pc_ = std::make_shared<PointCloudShared>(*queue_);
         msg_data_buffer_ = std::make_shared<shared_vector<uint8_t>>(*queue_->ptr);
         preprocess_filter_ = std::make_shared<algorithms::filter::PreprocessFilter>(*queue_);
+        voxel_ = std::make_shared<algorithms::filter::VoxelGrid>(*queue_, parameters_.runtime.source_voxel_size);
 
         registration_ = std::make_unique<algorithms::registration::Registration>(*queue_, parameters_.registration);
 
@@ -652,8 +654,7 @@ private:
         const auto converted = Clock::now();
 
         // Downsample on the device; this also removes non-finite points.
-        algorithms::filter::VoxelGrid voxel(*queue_, parameters_.runtime.source_voxel_size);
-        voxel.downsampling(*source_pc_, *source_pc_);
+        voxel_->downsampling(*source_pc_, *source_pc_);
         if (source_pc_->size() < static_cast<size_t>(std::max(parameters_.runtime.source_min_points,
                                                               parameters_.runtime.source_neighbors))) {
             throw std::runtime_error("downsampled source too small");
@@ -704,8 +705,7 @@ private:
 
         // Verify that the map near the current robot position actually overlaps the source.
         // Older submap points can match a map even after the robot leaves it.
-        algorithms::knn::KNNResult neighbors;
-        target->tree->nearest_neighbor_search(*registration_pc_, neighbors, {}, result.T.matrix());
+        target->tree->nearest_neighbor_search(*registration_pc_, neighbors_, {}, result.T.matrix());
         const auto current_odom_position = pose(job.odom->pose.pose).translation();
         size_t nearby = 0, nearby_matched = 0;
         for (size_t i = 0; i < registration_pc_->size(); ++i) {
@@ -713,7 +713,7 @@ private:
                 parameters_.runtime.local_overlap_radius * parameters_.runtime.local_overlap_radius)
                 continue;
             ++nearby;
-            if ((*neighbors.distances)[i] <= parameters_.runtime.corr_distance * parameters_.runtime.corr_distance)
+            if ((*neighbors_.distances)[i] <= parameters_.runtime.corr_distance * parameters_.runtime.corr_distance)
                 ++nearby_matched;
         }
         const float local_overlap = nearby ? static_cast<float>(nearby_matched) / nearby : 0.0f;
@@ -773,6 +773,8 @@ private:
     PointCloudShared::Ptr registration_pc_ = nullptr;
     shared_vector_ptr<uint8_t> msg_data_buffer_ = nullptr;
     algorithms::filter::PreprocessFilter::Ptr preprocess_filter_ = nullptr;
+    algorithms::filter::VoxelGrid::Ptr voxel_ = nullptr;
+    algorithms::knn::KNNResult neighbors_;
 
     // ROS 2 interfaces.
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
