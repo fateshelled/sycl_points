@@ -70,6 +70,40 @@ TEST_F(LocalizationTest, RecoversKnownTransform) {
     EXPECT_LE(std::abs(std::remainder(yaw - 0.5f, 2.0f * std::numbers::pi_v<float>)), 0.3f);
 }
 
+TEST_F(LocalizationTest, AppliesScanToReferenceTransform) {
+    auto p = small_params();
+    p.max_level = 2;
+    p.max_rpy.z() = 2.0f * std::numbers::pi_v<float>;
+    p.min_translation = Eigen::Vector3f(3, -3, 0);
+    p.max_translation = p.min_translation;
+    p.radius_scale = 0.6f;
+    const auto scene = make_scene(180);
+
+    // The scan frame is offset from the reference frame whose pose is estimated.
+    Eigen::Isometry3f reference_from_scan = Eigen::Isometry3f::Identity();
+    reference_from_scan.translation() = Eigen::Vector3f(5.0f, -2.0f, 1.0f);
+    reference_from_scan.linear() = Eigen::AngleAxisf(-0.7f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
+    Eigen::Isometry3f truth = Eigen::Isometry3f::Identity();
+    truth.translation() = Eigen::Vector3f(3.0f, -3.0f, 0.0f);
+    truth.linear() = Eigen::AngleAxisf(0.5f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
+
+    std::vector<PointType> scan_points;
+    std::vector<PointType> target_points;
+    for (const auto& point : scene) {
+        scan_points.push_back(reference_from_scan.inverse() * point);
+        target_points.push_back(truth * point);
+    }
+    auto scan = make_cloud(this->queue, scan_points);
+    auto target = make_cloud(this->queue, target_points);
+    BranchAndBoundLocalizer localizer(this->queue, p);
+    localizer.set_target(target);
+    const auto result = localizer.localize(scan, reference_from_scan);
+    ASSERT_TRUE(result.converged);
+    EXPECT_LE((result.T.translation() - truth.translation()).norm(), 1.5f * p.min_resolution);
+    const float yaw = std::atan2(result.T.rotation()(1, 0), result.T.rotation()(0, 0));
+    EXPECT_LE(std::abs(std::remainder(yaw - 0.5f, 2.0f * std::numbers::pi_v<float>)), 0.3f);
+}
+
 TEST_F(LocalizationTest, AgreesWithExhaustiveLeafEnumeration) {
     auto p = small_params();
     p.max_level = 2;
@@ -167,6 +201,9 @@ TEST_F(LocalizationTest, ValidatesInputs) {
     localizer.set_target(valid);
     EXPECT_THROW(localizer.localize(empty), std::invalid_argument);
     EXPECT_THROW(localizer.localize(non_finite), std::invalid_argument);
+    Eigen::Isometry3f invalid_transform = Eigen::Isometry3f::Identity();
+    invalid_transform.translation().x() = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_THROW(localizer.localize(valid, invalid_transform), std::invalid_argument);
     auto invalid = [&](BranchAndBoundParams params) {
         EXPECT_THROW(BranchAndBoundLocalizer(this->queue, params), std::invalid_argument);
     };

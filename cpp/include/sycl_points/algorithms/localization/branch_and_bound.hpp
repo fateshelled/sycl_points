@@ -63,10 +63,17 @@ public:
         }
     }
 
-    /// @brief Find the pose of a scan with gravity alignment in the target map.
-    /// @throws std::invalid_argument if the scan is empty or contains non-finite coordinates.
+    /// @brief Find the pose of a scan in the target map.
+    /// @param scan Scan points expressed in the scan frame.
+    /// @param scan_to_reference Transform from the scan frame to the reference frame.
+    /// @return Best pose from the map frame to the reference frame.
+    /// @note The reference frame is the frame whose pose is estimated. The default identity estimates the map frame
+    ///       pose of the scan frame.
+    /// @throws std::invalid_argument if the scan is empty, contains non-finite coordinates, or the transform is
+    /// invalid.
     /// @throws std::runtime_error if no target was set.
-    BranchAndBoundResult localize(const PointCloudShared& scan) {
+    BranchAndBoundResult localize(const PointCloudShared& scan,
+                                  const Eigen::Isometry3f& scan_to_reference = Eigen::Isometry3f::Identity()) {
         this->validate_cloud(scan);
         if (!this->tree_) {
             throw std::runtime_error("[BranchAndBoundLocalizer] target not set");
@@ -74,13 +81,17 @@ public:
         if (scan.size() > std::numeric_limits<uint32_t>::max()) {
             throw std::overflow_error("[BranchAndBoundLocalizer] scan exceeds score range");
         }
+        if (!scan_to_reference.matrix().allFinite()) {
+            throw std::invalid_argument("[BranchAndBoundLocalizer] invalid scan transform");
+        }
 
         using Clock = std::chrono::steady_clock;
         const auto start = Clock::now();
         BranchAndBoundResult result;
+        const TransformMatrix reference_from_scan = scan_to_reference.matrix();
         float max_norm = 0.0f;
         for (const auto& point : *scan.points) {
-            max_norm = std::max(max_norm, point.head<3>().norm());
+            max_norm = std::max(max_norm, (reference_from_scan * point).head<3>().norm());
         }
         const auto angular = detail::angular_info(this->params_, this->resolutions_, max_norm);
         const float top_res = this->resolutions_.back();
@@ -129,8 +140,10 @@ public:
                     this->score_matrices_.resize(count);
                     this->score_counts_.resize(count);
                     for (size_t i = 0; i < count; ++i) {
-                        this->score_matrices_[i] = stock[indices[begin + i]].create_matrix(
-                            this->resolutions_[level], angular[level].rpy_res, angular[level].min_rpy);
+                        this->score_matrices_[i] =
+                            stock[indices[begin + i]].create_matrix(this->resolutions_[level], angular[level].rpy_res,
+                                                                    angular[level].min_rpy) *
+                            reference_from_scan;
                     }
                     const float radius =
                         this->params_.correspondence_distance + this->params_.radius_scale * this->resolutions_[level];
