@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <stdexcept>
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
 #include "sycl_points/algorithms/common/transform.hpp"
@@ -277,6 +278,97 @@ public:
         } else {
             throw std::runtime_error("[KDTree::radius_search_async] `max_k` is too large. not support.");
         }
+    }
+
+    /// @brief Count queries having at least one valid tree point within radius for each pose.
+    /// @param queries Source points (homogeneous coordinates).
+    /// @param transforms Candidate source-to-target transforms in shared USM.
+    /// @param radius Matching radius; non-positive values produce zero counts.
+    /// @param counts One output count per candidate, in shared USM.
+    /// @param depends Events that must complete before the kernel runs.
+    /// @return Completion events; inputs and output must remain alive until completion.
+    sycl_utils::events count_neighbors_within_radius_async(
+        const PointCloudShared& queries, const shared_vector<TransformMatrix>& transforms, float radius,
+        shared_vector<uint32_t>& counts, const std::vector<sycl::event>& depends = std::vector<sycl::event>()) const {
+        if (transforms.size() != counts.size()) {
+            throw std::invalid_argument("[KDTree::count_neighbors_within_radius_async] output size mismatch");
+        }
+        if (counts.empty()) return {};
+
+        const size_t group_size =
+            std::max<size_t>(1, std::min<size_t>(64, queue.get_work_group_size_for_parallel_reduction()));
+        const size_t candidates = transforms.size();
+        if (candidates > std::numeric_limits<size_t>::max() / group_size ||
+            queries.size() > std::numeric_limits<uint32_t>::max()) {
+            throw std::overflow_error("[KDTree::count_neighbors_within_radius_async] count or launch size overflow");
+        }
+        const size_t query_size = queries.size();
+        const size_t tree_size = tree_->size();
+        const auto* query_ptr = queries.points_ptr();
+        const auto* matrix_ptr = transforms.data();
+        const auto* tree_ptr = tree_->data();
+        auto* count_ptr = counts.data();
+        const float radius_sq = radius * radius;
+        const bool search = radius > 0.0f && query_size != 0 && tree_size != 0;
+
+        sycl_utils::events events;
+        events += queue.ptr->submit([&](sycl::handler& h) {
+            h.depends_on(depends);
+            sycl::local_accessor<uint32_t, 1> partial(sycl::range<1>(group_size), h);
+            h.parallel_for(sycl::nd_range<1>(candidates * group_size, group_size), [=](sycl::nd_item<1> item) {
+                const size_t candidate = item.get_group(0);
+                const size_t lane = item.get_local_id(0);
+                uint32_t local_count = 0;
+                if (search) {
+                    const auto transform_vec = eigen_utils::to_sycl_vec(matrix_ptr[candidate]);
+                    for (size_t q = lane; q < query_size; q += group_size) {
+                        PointType point;
+                        transform::kernel::transform_point(query_ptr[q], point, transform_vec);
+                        // The tree is finite; stack capacity exceeds the maximum depth of a
+                        // balanced tree whose node indices fit in int32_t.
+                        int32_t stack[64];
+                        size_t top = 0;
+                        stack[top++] = 0;
+                        bool found = false;
+                        while (top && !found) {
+                            const int32_t index = stack[--top];
+                            if (index < 0 || static_cast<size_t>(index) >= tree_size) continue;
+                            const auto& node = tree_ptr[index];
+                            if (node.is_leaf) {
+                                for (int32_t i = 0; i < node.right && !found; ++i) {
+                                    const auto& member = tree_ptr[node.left + i];
+                                    if (member.valid != filter::INCLUDE_FLAG) continue;
+                                    const auto diff = eigen_utils::subtract<4, 1>(point, member.pt);
+                                    found = eigen_utils::dot<4>(diff, diff) <= radius_sq;
+                                }
+                            } else {
+                                const auto diff = eigen_utils::subtract<4, 1>(point, node.pt);
+                                if (node.valid == filter::INCLUDE_FLAG &&
+                                    eigen_utils::dot<4>(diff, diff) <= radius_sq) {
+                                    found = true;
+                                }
+                                const float delta = diff[node.axis];
+                                const int32_t near_node = delta <= 0 ? node.left : node.right;
+                                const int32_t far_node = delta <= 0 ? node.right : node.left;
+                                if (delta * delta <= radius_sq && far_node >= 0) stack[top++] = far_node;
+                                if (near_node >= 0) stack[top++] = near_node;
+                            }
+                        }
+                        local_count += static_cast<uint32_t>(found);
+                    }
+                }
+                partial[lane] = local_count;
+                item.barrier(sycl::access::fence_space::local_space);
+                // Fold the upper half into the lower half, including odd tails.
+                for (size_t active = group_size; active > 1; active = (active + 1) / 2) {
+                    const size_t half = (active + 1) / 2;
+                    if (lane < active - half) partial[lane] += partial[lane + half];
+                    item.barrier(sycl::access::fence_space::local_space);
+                }
+                if (lane == 0) count_ptr[candidate] = partial[0];
+            });
+        });
+        return events;
     }
 
     void remove_nodes_by_flags(const shared_vector<uint8_t>& flags, const shared_vector<int32_t>& indices) {

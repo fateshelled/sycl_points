@@ -565,3 +565,66 @@ TEST_F(KDTreeTest, RadiusSearchFillsInvalidEntries) {
     const auto bruteforce_result = bruteForceRadiusSearch(small_query, small_target, max_k, radius);
     compareRadiusResults(kdtree_result, bruteforce_result, max_k);
 }
+
+TEST_F(KDTreeTest, CountNeighborsWithinRadiusMatchesCPU) {
+    queue->set_work_group_size_for_parallel_reduction(7);
+    sycl_points::shared_vector<sycl_points::TransformMatrix> transforms(5, *queue->ptr);
+    sycl_points::shared_vector<uint32_t> counts(5, 0U, *queue->ptr);
+    std::uniform_real_distribution<float> translation(-3.0f, 3.0f);
+    std::uniform_real_distribution<float> rotation(-2.0f, 2.0f);
+    for (auto& matrix : transforms) {
+        matrix = (Eigen::Translation3f(translation(gen), translation(gen), translation(gen)) *
+                  Eigen::AngleAxisf(rotation(gen), Eigen::Vector3f::UnitZ()))
+                     .matrix();
+    }
+    for (float radius : {0.0f, 0.5f, 2.0f, 100.0f}) {
+        kdtree->count_neighbors_within_radius_async(*query_cloud, transforms, radius, counts).wait_and_throw();
+        for (size_t c = 0; c < transforms.size(); ++c) {
+            uint32_t expected = 0;
+            for (const auto& point : *query_cloud->points) {
+                if (radius <= 0.0f) continue;
+                const auto transformed = (transforms[c] * point).eval();
+                for (const auto& target : *target_cloud->points) {
+                    if ((transformed.head<3>() - target.head<3>()).squaredNorm() <= radius * radius) {
+                        ++expected;
+                        break;
+                    }
+                }
+            }
+            EXPECT_EQ(counts[c], expected) << "candidate " << c << " radius " << radius;
+        }
+    }
+    sycl_points::PointCloudShared empty(*queue);
+    kdtree->count_neighbors_within_radius_async(empty, transforms, 1.0f, counts).wait_and_throw();
+    for (auto count : counts) EXPECT_EQ(count, 0U);
+    sycl_points::shared_vector<sycl_points::TransformMatrix> no_transforms(0, *queue->ptr);
+    sycl_points::shared_vector<uint32_t> no_counts(0, *queue->ptr);
+    EXPECT_NO_THROW(
+        kdtree->count_neighbors_within_radius_async(*query_cloud, no_transforms, 1.0f, no_counts).wait_and_throw());
+    EXPECT_THROW(kdtree->count_neighbors_within_radius_async(*query_cloud, transforms, 1.0f, no_counts),
+                 std::invalid_argument);
+}
+
+TEST_F(KDTreeTest, CountNeighborsSkipsRemovedPoints) {
+    sycl_points::PointCloudCPU cpu;
+    cpu.points->push_back(sycl_points::PointType(0, 0, 0, 1));
+    cpu.points->push_back(sycl_points::PointType(10, 0, 0, 1));
+    sycl_points::PointCloudShared points(*queue, cpu);
+    auto tree = sycl_points::algorithms::knn::KDTree::build(*queue, points);
+    sycl_points::shared_vector<uint8_t> flags(2, sycl_points::algorithms::filter::INCLUDE_FLAG, *queue->ptr);
+    sycl_points::shared_vector<int32_t> indices(2, *queue->ptr);
+    flags[0] = sycl_points::algorithms::filter::REMOVE_FLAG;
+    indices[0] = -1;
+    indices[1] = 0;
+    // Leaf descriptor + two point nodes.
+    flags.resize(3, sycl_points::algorithms::filter::INCLUDE_FLAG);
+    indices.resize(3, 0);
+    tree->remove_nodes_by_flags(flags, indices);
+    sycl_points::shared_vector<sycl_points::TransformMatrix> transforms(1, sycl_points::TransformMatrix::Identity(),
+                                                                        *queue->ptr);
+    sycl_points::shared_vector<uint32_t> counts(1, 0U, *queue->ptr);
+    sycl_points::PointCloudShared query(*queue);
+    query.points->push_back(sycl_points::PointType(0, 0, 0, 1));
+    tree->count_neighbors_within_radius_async(query, transforms, 0.1f, counts).wait_and_throw();
+    EXPECT_EQ(counts[0], 0U);
+}
