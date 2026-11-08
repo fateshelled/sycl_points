@@ -12,7 +12,8 @@
 - **AdaptiveCpp** (formerly hipSYCL): OpenMP CPUs and NVIDIA GPUs with CUDA. AdaptiveCpp also supports AMD GPUs with HIP and other devices.
   This project does not support AMD GPUs.
 
-The development of `sycl_points` used [small_gicp](https://github.com/koide3/small_gicp) and [gtsam_points](https://github.com/koide3/gtsam_points) as references.
+The development of `sycl_points` used [small_gicp](https://github.com/koide3/small_gicp) and [gtsam_points](https://github.com/koide3/gtsam_points) as references. \
+The branch-and-bound global localization uses [3D-BBS](https://github.com/KOKIAOKI/3d_bbs) as a reference.
 
 ### Key features
 
@@ -190,6 +191,7 @@ CUDA_VISIBLE_DEVICES=0 ./example_registration
 
 - <https://github.com/koide3/small_gicp>
 - <https://github.com/koide3/gtsam_points>
+- **3D-BBS: Global Localization for 3D Point Cloud Scan Matching Using Branch-and-Bound Algorithm (2024)** — <https://github.com/KOKIAOKI/3d_bbs>
 - **GenZ-ICP: Generalizable and Degeneracy-Robust LiDAR Odometry Using an Adaptive Weighting (2024)** — <https://arxiv.org/abs/2411.06766>
 - **Informed, Constrained, Aligned: A Field Analysis on Degeneracy-aware Point Cloud Registration in the Wild (2024)** — <https://arxiv.org/abs/2408.11809>
 
