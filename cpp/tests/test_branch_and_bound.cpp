@@ -22,7 +22,9 @@ std::vector<PointType> make_scene(size_t n, unsigned seed = 42) {
     std::mt19937 gen(seed);
     std::uniform_real_distribution<float> x(-7.0f, 5.0f), y(-4.0f, 9.0f), z(-2.0f, 3.0f);
     std::vector<PointType> points;
-    for (size_t i = 0; i < n; ++i) points.emplace_back(x(gen), y(gen), z(gen), 1.0f);
+    for (size_t i = 0; i < n; ++i) {
+        points.emplace_back(x(gen), y(gen), z(gen), 1.0f);
+    }
     return points;
 }
 
@@ -53,10 +55,12 @@ TEST_F(LocalizationTest, RecoversKnownTransform) {
     const auto source_points = make_scene(180);
     const auto truth = (Eigen::Translation3f(3, -3, 0) * Eigen::AngleAxisf(0.5f, Eigen::Vector3f::UnitZ())).matrix();
     std::vector<PointType> target_points;
-    for (const auto& point : source_points) target_points.push_back(truth * point);
-    auto source = make_cloud(queue, source_points);
-    auto target = make_cloud(queue, target_points);
-    BranchAndBoundLocalizer localizer(queue, p);
+    for (const auto& point : source_points) {
+        target_points.push_back(truth * point);
+    }
+    auto source = make_cloud(this->queue, source_points);
+    auto target = make_cloud(this->queue, target_points);
+    BranchAndBoundLocalizer localizer(this->queue, p);
     localizer.set_target(target);
     const auto result = localizer.localize(source);
     ASSERT_TRUE(result.converged);
@@ -69,19 +73,21 @@ TEST_F(LocalizationTest, RecoversKnownTransform) {
 TEST_F(LocalizationTest, AgreesWithExhaustiveLeafEnumeration) {
     auto p = small_params();
     p.max_level = 2;
-    p.score_batch_size = 3;  // Force frequent flushes with mixed levels in the stock.
+    p.score_batch_size = 3;  // Use small batches for candidates at different levels.
     p.min_translation = Eigen::Vector3f::Constant(-0.1f);
     p.max_translation = Eigen::Vector3f::Constant(0.1f);
     const auto points = make_scene(35);
-    auto source = make_cloud(queue, points);
-    auto target = make_cloud(queue, points);
-    BranchAndBoundLocalizer localizer(queue, p);
+    auto source = make_cloud(this->queue, points);
+    auto target = make_cloud(this->queue, points);
+    BranchAndBoundLocalizer localizer(this->queue, p);
     localizer.set_target(target);
     const auto result = localizer.localize(source);
 
     const auto resolutions = detail::level_resolutions(p);
     float max_norm = 0;
-    for (const auto& point : points) max_norm = std::max(max_norm, point.head<3>().norm());
+    for (const auto& point : points) {
+        max_norm = std::max(max_norm, point.head<3>().norm());
+    }
     const auto angular = detail::angular_info(p, resolutions, max_norm);
     const int top_low[3] = {
         detail::checked_int(std::floor(static_cast<double>(p.min_translation.x()) / resolutions.back())),
@@ -136,14 +142,14 @@ TEST_F(LocalizationTest, ThresholdAndTimeout) {
     p.max_level = 0;
     p.max_rpy.setZero();
     p.score_threshold_ratio = 1.0f;
-    auto scan = make_cloud(queue, {PointType(100, 0, 0, 1)});
-    auto target = make_cloud(queue, {PointType(0, 0, 0, 1)});
-    BranchAndBoundLocalizer localizer(queue, p);
+    auto scan = make_cloud(this->queue, {PointType(100, 0, 0, 1)});
+    auto target = make_cloud(this->queue, {PointType(0, 0, 0, 1)});
+    BranchAndBoundLocalizer localizer(this->queue, p);
     localizer.set_target(target);
     EXPECT_FALSE(localizer.localize(scan).converged);
     p.enable_timeout = true;
     p.timeout = std::chrono::milliseconds(0);
-    BranchAndBoundLocalizer timed(queue, p);
+    BranchAndBoundLocalizer timed(this->queue, p);
     timed.set_target(target);
     const auto result = timed.localize(scan);
     EXPECT_TRUE(result.timed_out);
@@ -152,17 +158,17 @@ TEST_F(LocalizationTest, ThresholdAndTimeout) {
 
 TEST_F(LocalizationTest, ValidatesInputs) {
     auto p = small_params();
-    auto valid = make_cloud(queue, {PointType(0, 0, 0, 1)});
-    PointCloudShared empty(queue);
-    BranchAndBoundLocalizer localizer(queue, p);
+    auto valid = make_cloud(this->queue, {PointType(0, 0, 0, 1)});
+    PointCloudShared empty(this->queue);
+    BranchAndBoundLocalizer localizer(this->queue, p);
     EXPECT_THROW(localizer.set_target(empty), std::invalid_argument);
-    auto non_finite = make_cloud(queue, {PointType(std::numeric_limits<float>::quiet_NaN(), 0, 0, 1)});
+    auto non_finite = make_cloud(this->queue, {PointType(std::numeric_limits<float>::quiet_NaN(), 0, 0, 1)});
     EXPECT_THROW(localizer.set_target(non_finite), std::invalid_argument);
     localizer.set_target(valid);
     EXPECT_THROW(localizer.localize(empty), std::invalid_argument);
     EXPECT_THROW(localizer.localize(non_finite), std::invalid_argument);
     auto invalid = [&](BranchAndBoundParams params) {
-        EXPECT_THROW(BranchAndBoundLocalizer(queue, params), std::invalid_argument);
+        EXPECT_THROW(BranchAndBoundLocalizer(this->queue, params), std::invalid_argument);
     };
     p.max_level = -1;
     invalid(p);

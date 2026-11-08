@@ -6,7 +6,7 @@
 
 namespace sycl_points::algorithms::localization {
 
-/// @brief Best leaf pose and localization statistics.
+/// @brief Best leaf pose and statistics for the localization result.
 struct BranchAndBoundResult {
     Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
     uint32_t inlier = 0;

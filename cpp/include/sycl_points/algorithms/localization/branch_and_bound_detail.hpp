@@ -32,12 +32,14 @@ inline std::vector<float> level_resolutions(const BranchAndBoundParams& params) 
     resolutions[0] = params.min_resolution;
     for (int i = 1; i <= params.max_level; ++i) {
         resolutions[i] = resolutions[i - 1] * static_cast<float>(params.branch_factor);
-        if (!std::isfinite(resolutions[i])) throw std::overflow_error("[BranchAndBoundLocalizer] resolution overflow");
+        if (!std::isfinite(resolutions[i])) {
+            throw std::overflow_error("[BranchAndBoundLocalizer] resolution overflow");
+        }
     }
     return resolutions;
 }
 
-/// @brief Angular subdivisions from the reference BBS3D schedule.
+/// @brief Angular divisions from the BBS3D schedule.
 inline std::vector<AngularInfo> angular_info(const BranchAndBoundParams& params, const std::vector<float>& resolutions,
                                              float max_norm) {
     std::vector<AngularInfo> info(resolutions.size());
@@ -66,31 +68,38 @@ struct DiscreteTransformation {
     int x = 0, y = 0, z = 0;
     int roll = 0, pitch = 0, yaw = 0;
 
-    bool operator<(const DiscreteTransformation& other) const { return score < other.score; }
-    bool is_leaf() const { return level == 0; }
+    bool operator<(const DiscreteTransformation& other) const { return this->score < other.score; }
+    bool is_leaf() const { return this->level == 0; }
 
     TransformMatrix create_matrix(float res, const Eigen::Vector3f& rpy_res, const Eigen::Vector3f& min_rpy) const {
-        return (Eigen::Translation3f(x * res, y * res, z * res) *
-                Eigen::AngleAxisf(yaw * rpy_res.z() + min_rpy.z(), Eigen::Vector3f::UnitZ()) *
-                Eigen::AngleAxisf(pitch * rpy_res.y() + min_rpy.y(), Eigen::Vector3f::UnitY()) *
-                Eigen::AngleAxisf(roll * rpy_res.x() + min_rpy.x(), Eigen::Vector3f::UnitX()))
+        return (Eigen::Translation3f(this->x * res, this->y * res, this->z * res) *
+                Eigen::AngleAxisf(this->yaw * rpy_res.z() + min_rpy.z(), Eigen::Vector3f::UnitZ()) *
+                Eigen::AngleAxisf(this->pitch * rpy_res.y() + min_rpy.y(), Eigen::Vector3f::UnitY()) *
+                Eigen::AngleAxisf(this->roll * rpy_res.x() + min_rpy.x(), Eigen::Vector3f::UnitX()))
             .matrix();
     }
 
     void branch(std::vector<DiscreteTransformation>& output, int child_level, int factor,
                 const Eigen::Vector3i& divisions) const {
-        for (int i = 0; i < factor; ++i)
-            for (int j = 0; j < factor; ++j)
-                for (int k = 0; k < factor; ++k)
-                    for (int r = 0; r < divisions.x(); ++r)
-                        for (int p = 0; p < divisions.y(); ++p)
-                            for (int yv = 0; yv < divisions.z(); ++yv)
-                                output.push_back({0, child_level, checked_int(static_cast<int64_t>(x) * factor + i),
-                                                  checked_int(static_cast<int64_t>(y) * factor + j),
-                                                  checked_int(static_cast<int64_t>(z) * factor + k),
-                                                  checked_int(static_cast<int64_t>(roll) * divisions.x() + r),
-                                                  checked_int(static_cast<int64_t>(pitch) * divisions.y() + p),
-                                                  checked_int(static_cast<int64_t>(yaw) * divisions.z() + yv)});
+        for (int i = 0; i < factor; ++i) {
+            for (int j = 0; j < factor; ++j) {
+                for (int k = 0; k < factor; ++k) {
+                    for (int r = 0; r < divisions.x(); ++r) {
+                        for (int p = 0; p < divisions.y(); ++p) {
+                            for (int yv = 0; yv < divisions.z(); ++yv) {
+                                output.push_back({0, child_level,
+                                                  checked_int(static_cast<int64_t>(this->x) * factor + i),
+                                                  checked_int(static_cast<int64_t>(this->y) * factor + j),
+                                                  checked_int(static_cast<int64_t>(this->z) * factor + k),
+                                                  checked_int(static_cast<int64_t>(this->roll) * divisions.x() + r),
+                                                  checked_int(static_cast<int64_t>(this->pitch) * divisions.y() + p),
+                                                  checked_int(static_cast<int64_t>(this->yaw) * divisions.z() + yv)});
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 };
 

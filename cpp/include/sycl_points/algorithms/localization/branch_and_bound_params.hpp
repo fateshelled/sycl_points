@@ -7,11 +7,10 @@
 
 namespace sycl_points::algorithms::localization {
 
-/// @brief Grid and correspondence settings for gravity-aligned (z-up) scans.
-/// Roll/pitch ranges normally describe only small IMU uncertainty.
-/// @note Scores are KDTree radius counts, so a level's score is not a strict
-///       upper bound of its descendants. Increase radius_scale toward sqrt(3)
-///       when exhaustive optimality is more important than pruning speed.
+/// @brief Grid and correspondence settings for scans with gravity alignment (z-up).
+/// Roll and pitch ranges describe small IMU uncertainty.
+/// @note KDTree radius counts give the scores. A level score is not a strict upper limit for its child scores.
+///       Increase radius_scale toward sqrt(3) if an exhaustive result is more important than fast pruning.
 struct BranchAndBoundParams {
     float min_resolution = 1.0f;
     int max_level = 6;
