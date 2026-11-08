@@ -22,6 +22,7 @@
 
 #include "sycl_points/algorithms/filter/preprocess_filter.hpp"
 #include "sycl_points/algorithms/filter/voxel_downsampling.hpp"
+#include "sycl_points/algorithms/localization/branch_and_bound.hpp"
 #include "sycl_points/algorithms/registration/registration.hpp"
 #include "sycl_points/pipeline/prior_map.hpp"
 #include "sycl_points/ros2/convert.hpp"
@@ -89,6 +90,13 @@ public:
         this->map_ = std::make_unique<pipeline::PriorMap>(*this->queue_, map_path, this->parameters_.map);
         RCLCPP_INFO(get_logger(), "Prior map: %zu points, %zu covariance eigenvalues clamped", this->map_->size(),
                     this->map_->covariance_clamp_count());
+
+        if (this->parameters_.bnb_enable) {
+            this->bnb_ = std::make_unique<algorithms::localization::BranchAndBoundLocalizer>(
+                *this->queue_, this->parameters_.branch_and_bound);
+            this->bnb_->set_target(this->map_->cloud());
+            RCLCPP_INFO(get_logger(), "Branch and bound target: %zu points", this->bnb_->target_size());
+        }
 
         this->map_cloud_pub_ = create_publisher<CloudMsg>(
             "localization/prior_map", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
@@ -164,6 +172,15 @@ private:
 
         pipeline::PriorMapOptions map;
         algorithms::registration::RegistrationParams registration;
+
+        // Branch-and-bound relocalization.
+        bool bnb_enable = false;
+        algorithms::localization::BranchAndBoundParams branch_and_bound;
+        struct BranchAndBoundTriggerParams {
+            double lost_timeout = 0.0;
+            int max_consecutive_failures = 0;
+            double min_interval = 0.0;
+        } bnb_trigger;
 
         // Scalar parameters used after construction.
         struct RuntimeParams {
@@ -247,6 +264,51 @@ private:
         runtime.min_local_overlap_ratio = declare_parameter<double>("registration/min_local_overlap_ratio", 0.2);
         runtime.min_local_points = declare_parameter<int>("registration/min_local_points", 10);
 
+        // Branch-and-bound relocalization.
+        params.bnb_enable = declare_parameter<bool>("branch_and_bound/enable", false);
+        auto& bnb = params.branch_and_bound;
+        bnb.min_resolution = static_cast<float>(
+            declare_parameter<double>("branch_and_bound/min_resolution", static_cast<double>(bnb.min_resolution)));
+        bnb.max_level = declare_parameter<int>("branch_and_bound/max_level", bnb.max_level);
+        bnb.branch_factor = declare_parameter<int>("branch_and_bound/branch_factor", bnb.branch_factor);
+        bnb.correspondence_distance = static_cast<float>(declare_parameter<double>(
+            "branch_and_bound/correspondence_distance", static_cast<double>(bnb.correspondence_distance)));
+        bnb.radius_scale = static_cast<float>(
+            declare_parameter<double>("branch_and_bound/radius_scale", static_cast<double>(bnb.radius_scale)));
+        bnb.score_threshold_ratio = static_cast<float>(declare_parameter<double>(
+            "branch_and_bound/score_threshold_ratio", static_cast<double>(bnb.score_threshold_ratio)));
+        const int64_t score_batch_size = declare_parameter<int64_t>(
+            "branch_and_bound/score_batch_size", static_cast<int64_t>(bnb.score_batch_size));
+        bnb.auto_translation_range =
+            declare_parameter<bool>("branch_and_bound/auto_translation_range", bnb.auto_translation_range);
+        bnb.enable_timeout = declare_parameter<bool>("branch_and_bound/enable_timeout", bnb.enable_timeout);
+        const int64_t timeout_ms =
+            declare_parameter<int64_t>("branch_and_bound/timeout_ms", static_cast<int64_t>(bnb.timeout.count()));
+        const char* xyz[3] = {"x", "y", "z"};
+        const char* rpy[3] = {"roll", "pitch", "yaw"};
+        for (int axis = 0; axis < 3; ++axis) {
+            bnb.min_translation[axis] = static_cast<float>(declare_parameter<double>(
+                std::string("branch_and_bound/min_translation/") + xyz[axis],
+                static_cast<double>(bnb.min_translation[axis])));
+            bnb.max_translation[axis] = static_cast<float>(declare_parameter<double>(
+                std::string("branch_and_bound/max_translation/") + xyz[axis],
+                static_cast<double>(bnb.max_translation[axis])));
+            bnb.min_rpy[axis] = static_cast<float>(declare_parameter<double>(
+                std::string("branch_and_bound/min_rpy/") + rpy[axis], static_cast<double>(bnb.min_rpy[axis])));
+            bnb.max_rpy[axis] = static_cast<float>(declare_parameter<double>(
+                std::string("branch_and_bound/max_rpy/") + rpy[axis], static_cast<double>(bnb.max_rpy[axis])));
+        }
+        params.bnb_trigger.lost_timeout = declare_parameter<double>("branch_and_bound/trigger/lost_timeout_sec", 5.0);
+        params.bnb_trigger.max_consecutive_failures =
+            declare_parameter<int>("branch_and_bound/trigger/max_consecutive_failures", 3);
+        params.bnb_trigger.min_interval =
+            declare_parameter<double>("branch_and_bound/trigger/min_interval_sec", 2.0);
+        if (score_batch_size <= 0 || timeout_ms < 0) {
+            throw std::invalid_argument("Invalid branch-and-bound parameters");
+        }
+        bnb.score_batch_size = static_cast<size_t>(score_batch_size);
+        bnb.timeout = std::chrono::milliseconds(timeout_ms);
+
         // Validation.
         if (runtime.source_max_points < 4 || runtime.source_min_points < 4 || runtime.source_neighbors < 4 ||
             runtime.source_neighbors > 100 || runtime.source_neighbors > runtime.source_max_points ||
@@ -256,7 +318,9 @@ private:
             runtime.min_ratio > 1 || runtime.max_translation <= 0 || runtime.max_rotation <= 0 ||
             runtime.max_error <= 0 || runtime.local_overlap_radius <= 0 || runtime.min_local_points < 1 ||
             local_min_points < 1 || opts.prediction_margin < runtime.max_translation ||
-            runtime.min_local_overlap_ratio < 0 || runtime.min_local_overlap_ratio > 1) {
+            runtime.min_local_overlap_ratio < 0 || runtime.min_local_overlap_ratio > 1 ||
+            params.bnb_trigger.lost_timeout <= 0 || params.bnb_trigger.max_consecutive_failures < 1 ||
+            params.bnb_trigger.min_interval < 0) {
             throw std::invalid_argument("Invalid localization parameters");
         }
         opts.local_min_points = static_cast<size_t>(local_min_points);
@@ -316,6 +380,8 @@ private:
         this->correction_.reset();
         this->initial_correction_.reset();
         this->last_success_.reset();
+        this->consecutive_failures_ = 0;
+        this->last_bnb_attempt_.reset();
         this->last_accepted_ = std::numeric_limits<int64_t>::min();
         this->latest_odom_.reset();
         this->sensor_rewind_candidate_.reset();
@@ -535,6 +601,27 @@ private:
         this->status_pub_->publish(status);
     }
 
+    // Returns true when a global search should run for a new job. Caller holds mutex_.
+    bool should_relocalize_locked(const rclcpp::Time& time) const {
+        if (!this->bnb_) {
+            return false;
+        }
+        if (this->last_bnb_attempt_ &&
+            Clock::now() - *this->last_bnb_attempt_ <
+                std::chrono::duration_cast<Clock::duration>(
+                    std::chrono::duration<double>(this->parameters_.bnb_trigger.min_interval))) {
+            return false;
+        }
+        if (!this->correction_) {
+            return true;
+        }
+        if (this->consecutive_failures_ >= this->parameters_.bnb_trigger.max_consecutive_failures) {
+            return true;
+        }
+        return this->last_success_ &&
+               (time - *this->last_success_).seconds() > this->parameters_.bnb_trigger.lost_timeout;
+    }
+
     // Pops the newest pending pair at the configured rate and runs registration.
     void work() {
         std::lock_guard processing_lock(this->processing_mutex_);
@@ -559,6 +646,7 @@ private:
         } catch (const std::exception& e) {
             std::lock_guard lock(this->mutex_);
             if (job.epoch != this->epoch_) return;
+            ++this->consecutive_failures_;
             this->reason_ = e.what();
             RCLCPP_WARN(get_logger(), "Map matching failed: %s", e.what());
         }
@@ -682,12 +770,17 @@ private:
     void process(const Pair& job) {
         // Reject stale jobs and use the latest correction as the initial guess.
         Eigen::Isometry3f guess;
+        bool relocalize = false;
         {
             std::lock_guard lock(this->mutex_);
             if (job.epoch != this->epoch_ || job.time <= this->last_accepted_ ||
                 (this->latest_odom_ && job.time > stamp(this->latest_odom_->header.stamp)))
                 return;
             guess = this->correction_.value_or(*this->initial_correction_);
+            relocalize = this->should_relocalize_locked(now());
+            if (relocalize) {
+                this->last_bnb_attempt_ = Clock::now();
+            }
         }
         const auto started = Clock::now();
 
@@ -726,6 +819,26 @@ private:
             throw std::runtime_error("sampled source too small");
         }
         const auto sampled = Clock::now();
+
+        // Run a global search when tracking is not established. The scan stays in the odom frame,
+        // and the search estimates the base-link pose.
+        if (relocalize) {
+            const Eigen::Isometry3f base_from_odom = pose(job.odom->pose.pose).inverse();
+            try {
+                const auto bnb = this->bnb_->localize(*this->source_pc_, base_from_odom);
+                RCLCPP_INFO(get_logger(),
+                            "Branch and bound: converged=%d inlier=%u score_ratio=%.3f elapsed_ms=%.2f "
+                            "candidates=%zu timed_out=%d",
+                            static_cast<int>(bnb.converged), bnb.inlier, bnb.score_ratio, bnb.elapsed_ms,
+                            bnb.evaluated_candidates, static_cast<int>(bnb.timed_out));
+                if (bnb.converged) {
+                    guess = Eigen::Isometry3f(bnb.T.matrix() * base_from_odom.matrix());
+                }
+            } catch (const std::exception& e) {
+                RCLCPP_WARN(get_logger(), "Branch and bound failed: %s", e.what());
+            }
+        }
+        const auto searched = Clock::now();
 
         // Select the local prior map that covers the predicted source extent.
         const auto center = (guess * pose(job.odom->pose.pose)).translation();
@@ -788,6 +901,7 @@ private:
             this->inliers_ = result.inlier;
             this->error_ = mean_error;
             this->local_overlap_ = local_overlap;
+            this->consecutive_failures_ = 0;
             this->reason_.clear();
             if ((now() - *this->last_success_).seconds() > this->parameters_.runtime.frozen_age) {
                 this->reason_ = "registration completed after TF freshness deadline";
@@ -805,11 +919,12 @@ private:
             record_processing_time("2. source tree", reduced, indexed);
             record_processing_time("3. covariance", indexed, covariances);
             record_processing_time("4. random sampling", covariances, sampled);
-            record_processing_time("5. local target", sampled, localized);
-            record_processing_time("6. registration", localized, matched);
-            record_processing_time("7. overlap check", matched, checked);
-            record_processing_time("8. publish ROS 2 msg", checked, published);
-            record_processing_time("9. total", started, published);
+            record_processing_time("5. branch and bound", sampled, searched);
+            record_processing_time("6. local target", searched, localized);
+            record_processing_time("7. registration", localized, matched);
+            record_processing_time("8. overlap check", matched, checked);
+            record_processing_time("9. publish ROS 2 msg", checked, published);
+            record_processing_time("10. total", started, published);
             RCLCPP_INFO(get_logger(), "");
         }
     }
@@ -818,6 +933,7 @@ private:
     std::unique_ptr<sycl_utils::DeviceQueue> queue_;
     std::unique_ptr<pipeline::PriorMap> map_;
     std::unique_ptr<algorithms::registration::Registration> registration_;
+    std::unique_ptr<algorithms::localization::BranchAndBoundLocalizer> bnb_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
 
     // Reused conversion, sampling, and point cloud buffers.
@@ -866,6 +982,10 @@ private:
     std::optional<Pair> pending_pair_;
     std::map<int64_t, OdomMsg::ConstSharedPtr> odoms_;
     std::map<int64_t, Waiting> waiting_;
+
+    // Branch-and-bound scheduling.
+    int consecutive_failures_ = 0;
+    std::optional<Clock::time_point> last_bnb_attempt_;
 
     // Output deduplication and sensor rewind detection.
     int64_t last_tf_stamp_ = std::numeric_limits<int64_t>::min();
