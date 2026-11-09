@@ -74,6 +74,8 @@ public:
     /// @throws std::runtime_error if no target was set.
     BranchAndBoundResult localize(const PointCloudShared& scan,
                                   const Eigen::Isometry3f& scan_to_reference = Eigen::Isometry3f::Identity()) {
+        using Clock = std::chrono::steady_clock;
+        const auto entry = Clock::now();
         this->validate_cloud(scan);
         if (!this->tree_) {
             throw std::runtime_error("[BranchAndBoundLocalizer] target not set");
@@ -85,9 +87,13 @@ public:
             throw std::invalid_argument("[BranchAndBoundLocalizer] invalid scan transform");
         }
 
-        using Clock = std::chrono::steady_clock;
         const auto start = Clock::now();
         BranchAndBoundResult result;
+        BranchAndBoundProfile& profile = result.profile;
+        profile.levels.resize(static_cast<size_t>(this->params_.max_level) + 1);
+        const auto elapsed_ms = [](Clock::time_point begin, Clock::time_point end) {
+            return std::chrono::duration<double, std::milli>(end - begin).count();
+        };
         const TransformMatrix reference_from_scan = scan_to_reference.matrix();
         float max_norm = 0.0f;
         for (const auto& point : *scan.points) {
@@ -120,50 +126,77 @@ public:
         std::priority_queue<detail::DiscreteTransformation> queue;
         std::vector<detail::DiscreteTransformation> stock;
         stock.reserve(std::min(initial_count, this->params_.score_batch_size));
+        profile.initial_candidates = initial_count;
+        profile.prepare_ms = elapsed_ms(entry, Clock::now());
 
         auto flush = [&]() {
             if (stock.empty()) {
                 return;
             }
+            const auto flush_begin = Clock::now();
+            profile.flush_calls += 1;
             // Stock can contain candidates at different levels.
             // Group indices by level to score each candidate with the correct radius.
             std::vector<size_t> indices;
             for (int level = 0; level <= this->params_.max_level; ++level) {
+                const auto partition_begin = Clock::now();
                 indices.clear();
                 for (size_t i = 0; i < stock.size(); ++i) {
                     if (stock[i].level == level) {
                         indices.push_back(i);
                     }
                 }
+                profile.flush_partition_ms += elapsed_ms(partition_begin, Clock::now());
+                auto& level_profile = profile.levels[static_cast<size_t>(level)];
                 for (size_t begin = 0; begin < indices.size(); begin += this->params_.score_batch_size) {
                     const size_t count = std::min(this->params_.score_batch_size, indices.size() - begin);
                     this->score_matrices_.resize(count);
                     this->score_counts_.resize(count);
+                    const auto matrix_begin = Clock::now();
                     for (size_t i = 0; i < count; ++i) {
                         this->score_matrices_[i] =
                             stock[indices[begin + i]].create_matrix(this->resolutions_[level], angular[level].rpy_res,
                                                                     angular[level].min_rpy) *
                             reference_from_scan;
                     }
+                    const auto matrix_end = Clock::now();
+                    const double matrix_ms = elapsed_ms(matrix_begin, matrix_end);
+                    profile.flush_matrix_build_ms += matrix_ms;
+                    level_profile.matrix_build_ms += matrix_ms;
                     const float radius =
                         this->params_.correspondence_distance + this->params_.radius_scale * this->resolutions_[level];
+                    const auto score_begin = Clock::now();
                     this->tree_
                         ->count_neighbors_within_radius_async(scan, this->score_matrices_, radius, this->score_counts_)
                         .wait_and_throw();
+                    const auto score_end = Clock::now();
+                    const double score_ms = elapsed_ms(score_begin, score_end);
+                    profile.flush_kdtree_wait_ms += score_ms;
+                    level_profile.score_ms += score_ms;
+                    const auto queue_begin = Clock::now();
                     for (size_t i = 0; i < count; ++i) {
                         auto& candidate = stock[indices[begin + i]];
                         candidate.score = this->score_counts_[i];
                         if (candidate.score >= best_score) {
                             queue.push(candidate);
+                            level_profile.queued += 1;
+                            profile.queued_candidates += 1;
                         }
                     }
+                    profile.flush_queue_ms += elapsed_ms(queue_begin, Clock::now());
+                    profile.max_queue_size = std::max(profile.max_queue_size, queue.size());
+                    level_profile.evaluated += count;
+                    profile.score_batches += 1;
                     result.evaluated_candidates += count;
                 }
             }
             stock.clear();
+            profile.flush_total_ms += elapsed_ms(flush_begin, Clock::now());
         };
 
         // Score the initial grid in batches. Do not store all candidates at the same time.
+        const auto initial_begin = Clock::now();
+        const double flush_before_initial = profile.flush_total_ms;
         for (int64_t x = low[0]; x <= high[0]; ++x) {
             for (int64_t y = low[1]; y <= high[1]; ++y) {
                 for (int64_t z = low[2]; z <= high[2]; ++z) {
@@ -182,12 +215,17 @@ public:
             }
         }
         flush();
+        const auto initial_end = Clock::now();
+        profile.initial_flush_ms = profile.flush_total_ms - flush_before_initial;
+        profile.initial_enumerate_ms = elapsed_ms(initial_begin, initial_end) - profile.initial_flush_ms;
 
         // The deadline includes initial scores, even if no candidate remains in the queue.
         if (this->params_.enable_timeout && Clock::now() - start >= this->params_.timeout) {
             result.timed_out = true;
         }
 
+        const auto search_begin = Clock::now();
+        const double flush_before_search = profile.flush_total_ms;
         while (!result.timed_out && (!queue.empty() || !stock.empty())) {
             if (this->params_.enable_timeout && Clock::now() - start >= this->params_.timeout) {
                 result.timed_out = true;
@@ -200,21 +238,38 @@ public:
             auto candidate = queue.top();
             queue.pop();
             if (candidate.score < best_score) {
+                profile.pruned_candidates += 1;
+                profile.levels[static_cast<size_t>(candidate.level)].pruned += 1;
                 continue;
             }
             if (candidate.is_leaf()) {
                 best_score = candidate.score;
                 best = candidate;
                 have_leaf = true;
+                profile.leaf_candidates += 1;
+                profile.levels[0].leaves += 1;
             } else {
+                const auto branch_begin = Clock::now();
                 candidate.branch(stock, candidate.level - 1, this->params_.branch_factor,
                                  angular[candidate.level - 1].num_division);
+                const auto branch_end = Clock::now();
+                const double branch_ms = elapsed_ms(branch_begin, branch_end);
+                profile.search_branch_ms += branch_ms;
+                auto& level_profile = profile.levels[static_cast<size_t>(candidate.level)];
+                level_profile.branch_ms += branch_ms;
+                level_profile.branched += 1;
+                profile.branch_calls += 1;
             }
             if (stock.size() >= this->params_.score_batch_size || (queue.empty() && !stock.empty())) {
                 flush();
             }
         }
+        const auto search_end = Clock::now();
+        profile.search_flush_ms = profile.flush_total_ms - flush_before_search;
+        profile.search_bookkeeping_ms =
+            std::max(0.0, elapsed_ms(search_begin, search_end) - profile.search_flush_ms - profile.search_branch_ms);
 
+        const auto finalize_begin = Clock::now();
         result.elapsed_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
         if (have_leaf) {
             result.inlier = best_score;
@@ -225,6 +280,8 @@ public:
             result.T.matrix() =
                 best.create_matrix(this->params_.min_resolution, angular[0].rpy_res, angular[0].min_rpy);
         }
+        profile.finalize_ms = elapsed_ms(finalize_begin, Clock::now());
+        profile.total_ms = elapsed_ms(entry, Clock::now());
         return result;
     }
 

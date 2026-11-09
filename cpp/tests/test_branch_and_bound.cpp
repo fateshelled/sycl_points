@@ -171,6 +171,28 @@ TEST_F(LocalizationTest, AgreesWithExhaustiveLeafEnumeration) {
     EXPECT_EQ(result.inlier, expected);
 }
 
+TEST_F(LocalizationTest, ReportsProfile) {
+    auto p = small_params();
+    p.max_level = 2;
+    p.min_translation = Eigen::Vector3f::Constant(-0.1f);
+    p.max_translation = Eigen::Vector3f::Constant(0.1f);
+    const auto points = make_scene(35);
+    auto source = make_cloud(this->queue, points);
+    auto target = make_cloud(this->queue, points);
+    BranchAndBoundLocalizer localizer(this->queue, p);
+    localizer.set_target(target);
+    const auto result = localizer.localize(source);
+
+    const auto& profile = result.profile;
+    EXPECT_EQ(profile.levels.size(), static_cast<size_t>(p.max_level) + 1);
+    EXPECT_GT(profile.initial_candidates, 0U);
+    EXPECT_GT(profile.flush_calls, 0U);
+    EXPECT_GT(profile.score_batches, 0U);
+    EXPECT_EQ(profile.initial_candidates, profile.levels.back().evaluated);
+    EXPECT_GE(profile.total_ms, result.elapsed_ms);
+    EXPECT_GT(profile.total_ms, 0.0);
+}
+
 TEST_F(LocalizationTest, ThresholdAndTimeout) {
     auto p = small_params();
     p.max_level = 0;

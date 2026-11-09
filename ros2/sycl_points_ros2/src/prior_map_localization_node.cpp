@@ -175,6 +175,7 @@ private:
 
         // Branch-and-bound relocalization.
         bool bnb_enable = false;
+        bool bnb_log_profile = false;
         algorithms::localization::BranchAndBoundParams branch_and_bound;
         struct BranchAndBoundTriggerParams {
             double lost_timeout = 0.0;
@@ -266,6 +267,7 @@ private:
 
         // Branch-and-bound relocalization.
         params.bnb_enable = declare_parameter<bool>("branch_and_bound/enable", false);
+        params.bnb_log_profile = declare_parameter<bool>("branch_and_bound/log_profile", false);
         auto& bnb = params.branch_and_bound;
         bnb.min_resolution = static_cast<float>(
             declare_parameter<double>("branch_and_bound/min_resolution", static_cast<double>(bnb.min_resolution)));
@@ -277,8 +279,8 @@ private:
             declare_parameter<double>("branch_and_bound/radius_scale", static_cast<double>(bnb.radius_scale)));
         bnb.score_threshold_ratio = static_cast<float>(declare_parameter<double>(
             "branch_and_bound/score_threshold_ratio", static_cast<double>(bnb.score_threshold_ratio)));
-        const int64_t score_batch_size = declare_parameter<int64_t>(
-            "branch_and_bound/score_batch_size", static_cast<int64_t>(bnb.score_batch_size));
+        const int64_t score_batch_size =
+            declare_parameter<int64_t>("branch_and_bound/score_batch_size", static_cast<int64_t>(bnb.score_batch_size));
         bnb.auto_translation_range =
             declare_parameter<bool>("branch_and_bound/auto_translation_range", bnb.auto_translation_range);
         bnb.enable_timeout = declare_parameter<bool>("branch_and_bound/enable_timeout", bnb.enable_timeout);
@@ -287,12 +289,12 @@ private:
         const char* xyz[3] = {"x", "y", "z"};
         const char* rpy[3] = {"roll", "pitch", "yaw"};
         for (int axis = 0; axis < 3; ++axis) {
-            bnb.min_translation[axis] = static_cast<float>(declare_parameter<double>(
-                std::string("branch_and_bound/min_translation/") + xyz[axis],
-                static_cast<double>(bnb.min_translation[axis])));
-            bnb.max_translation[axis] = static_cast<float>(declare_parameter<double>(
-                std::string("branch_and_bound/max_translation/") + xyz[axis],
-                static_cast<double>(bnb.max_translation[axis])));
+            bnb.min_translation[axis] = static_cast<float>(
+                declare_parameter<double>(std::string("branch_and_bound/min_translation/") + xyz[axis],
+                                          static_cast<double>(bnb.min_translation[axis])));
+            bnb.max_translation[axis] = static_cast<float>(
+                declare_parameter<double>(std::string("branch_and_bound/max_translation/") + xyz[axis],
+                                          static_cast<double>(bnb.max_translation[axis])));
             bnb.min_rpy[axis] = static_cast<float>(declare_parameter<double>(
                 std::string("branch_and_bound/min_rpy/") + rpy[axis], static_cast<double>(bnb.min_rpy[axis])));
             bnb.max_rpy[axis] = static_cast<float>(declare_parameter<double>(
@@ -301,8 +303,7 @@ private:
         params.bnb_trigger.lost_timeout = declare_parameter<double>("branch_and_bound/trigger/lost_timeout_sec", 5.0);
         params.bnb_trigger.max_consecutive_failures =
             declare_parameter<int>("branch_and_bound/trigger/max_consecutive_failures", 3);
-        params.bnb_trigger.min_interval =
-            declare_parameter<double>("branch_and_bound/trigger/min_interval_sec", 2.0);
+        params.bnb_trigger.min_interval = declare_parameter<double>("branch_and_bound/trigger/min_interval_sec", 2.0);
         if (score_batch_size <= 0 || timeout_ms < 0) {
             throw std::invalid_argument("Invalid branch-and-bound parameters");
         }
@@ -606,10 +607,12 @@ private:
         if (!this->bnb_) {
             return false;
         }
-        if (this->last_bnb_attempt_ &&
-            Clock::now() - *this->last_bnb_attempt_ <
-                std::chrono::duration_cast<Clock::duration>(
-                    std::chrono::duration<double>(this->parameters_.bnb_trigger.min_interval))) {
+
+        const auto bnb_min_interval =  //
+            std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(this->parameters_.bnb_trigger.min_interval));
+        if (this->last_bnb_attempt_ &&  //
+            Clock::now() - *this->last_bnb_attempt_ < bnb_min_interval) {
             return false;
         }
         if (!this->correction_) {
@@ -687,6 +690,32 @@ private:
             ++statistic;
         }
         RCLCPP_INFO(get_logger(), "");
+    }
+
+    // Prints the branch-and-bound profile when the detailed log is enabled.
+    void log_branch_and_bound_profile(const algorithms::localization::BranchAndBoundProfile& profile) const {
+        RCLCPP_INFO(get_logger(),
+                    "BnB profile[ms]: total=%.2f prepare=%.2f init_enum=%.2f init_score=%.2f "
+                    "search_flush=%.2f search_branch=%.2f search_book=%.2f finalize=%.2f",
+                    profile.total_ms, profile.prepare_ms, profile.initial_enumerate_ms, profile.initial_flush_ms,
+                    profile.search_flush_ms, profile.search_branch_ms, profile.search_bookkeeping_ms,
+                    profile.finalize_ms);
+        RCLCPP_INFO(get_logger(),
+                    "BnB flush[ms]: total=%.2f partition=%.2f matrix=%.2f kdtree=%.2f queue=%.2f "
+                    "calls=%zu batches=%zu initial=%zu queued=%zu pruned=%zu branched=%zu leaves=%zu max_queue=%zu",
+                    profile.flush_total_ms, profile.flush_partition_ms, profile.flush_matrix_build_ms,
+                    profile.flush_kdtree_wait_ms, profile.flush_queue_ms, profile.flush_calls, profile.score_batches,
+                    profile.initial_candidates, profile.queued_candidates, profile.pruned_candidates,
+                    profile.branch_calls, profile.leaf_candidates, profile.max_queue_size);
+        for (size_t level = 0; level < profile.levels.size(); ++level) {
+            const auto& level_profile = profile.levels[level];
+            RCLCPP_INFO(get_logger(),
+                        "BnB level %zu: evaluated=%zu queued=%zu branched=%zu pruned=%zu leaves=%zu "
+                        "score=%.2fms matrix=%.2fms branch=%.2fms",
+                        level, level_profile.evaluated, level_profile.queued, level_profile.branched,
+                        level_profile.pruned, level_profile.leaves, level_profile.score_ms,
+                        level_profile.matrix_build_ms, level_profile.branch_ms);
+        }
     }
 
     // All RegistrationParams fields are exposed under `registration/*`.
@@ -831,6 +860,9 @@ private:
                             "candidates=%zu timed_out=%d",
                             static_cast<int>(bnb.converged), bnb.inlier, bnb.score_ratio, bnb.elapsed_ms,
                             bnb.evaluated_candidates, static_cast<int>(bnb.timed_out));
+                if (this->parameters_.bnb_log_profile) {
+                    log_branch_and_bound_profile(bnb.profile);
+                }
                 if (bnb.converged) {
                     guess = Eigen::Isometry3f(bnb.T.matrix() * base_from_odom.matrix());
                 }

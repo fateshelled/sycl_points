@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "sycl_points/algorithms/localization/branch_and_bound_profile.hpp"
+
 namespace sycl_points::algorithms::localization {
 
 /// @brief Best leaf pose and statistics for the localization result.
@@ -15,6 +17,7 @@ struct BranchAndBoundResult {
     bool timed_out = false;
     double elapsed_ms = 0.0;
     size_t evaluated_candidates = 0;
+    BranchAndBoundProfile profile;
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
