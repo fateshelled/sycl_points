@@ -34,7 +34,7 @@ struct BranchAndBoundProfile {
     double flush_total_ms = 0.0;
     double flush_partition_ms = 0.0;     ///< Grouping of the stock by level.
     double flush_matrix_build_ms = 0.0;  ///< Transform matrix build.
-    double flush_kdtree_wait_ms = 0.0;   ///< KDTree kernel and wait.
+    double flush_score_wait_ms = 0.0;    ///< Score kernel and wait.
     double flush_queue_ms = 0.0;         ///< Score store and queue push.
 
     // Counters.

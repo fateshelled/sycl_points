@@ -7,6 +7,12 @@
 
 namespace sycl_points::algorithms::localization {
 
+/// @brief Score method for the branch-and-bound search.
+enum class BranchAndBoundScoreMethod {
+    kdtree,           ///< Exact count of target points within the radius.
+    voxel_occupancy,  ///< Count of query points in occupied voxels.
+};
+
 /// @brief Grid and correspondence settings for scans with gravity alignment (z-up).
 /// Roll and pitch ranges describe small IMU uncertainty.
 /// @note KDTree radius counts give the scores. A level score is not a strict upper limit for its child scores.
@@ -26,6 +32,7 @@ struct BranchAndBoundParams {
     std::chrono::milliseconds timeout{10000};
     size_t score_batch_size = 10000;
     bool auto_translation_range = true;
+    BranchAndBoundScoreMethod score_method = BranchAndBoundScoreMethod::voxel_occupancy;
 };
 
 }  // namespace sycl_points::algorithms::localization

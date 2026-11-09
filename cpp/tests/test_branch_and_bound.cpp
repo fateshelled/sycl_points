@@ -37,6 +37,7 @@ BranchAndBoundParams small_params() {
     p.max_translation = Eigen::Vector3f::Zero();
     p.max_rpy = Eigen::Vector3f(0, 0, 0.4f);
     p.score_batch_size = 64;
+    p.score_method = BranchAndBoundScoreMethod::kdtree;
     return p;
 }
 
@@ -47,6 +48,32 @@ protected:
 
 TEST_F(LocalizationTest, RecoversKnownTransform) {
     auto p = small_params();
+    p.max_level = 2;
+    p.max_rpy.z() = 2.0f * std::numbers::pi_v<float>;
+    p.min_translation = Eigen::Vector3f(3, -3, 0);
+    p.max_translation = p.min_translation;
+    p.radius_scale = 0.6f;
+    const auto source_points = make_scene(180);
+    const auto truth = (Eigen::Translation3f(3, -3, 0) * Eigen::AngleAxisf(0.5f, Eigen::Vector3f::UnitZ())).matrix();
+    std::vector<PointType> target_points;
+    for (const auto& point : source_points) {
+        target_points.push_back(truth * point);
+    }
+    auto source = make_cloud(this->queue, source_points);
+    auto target = make_cloud(this->queue, target_points);
+    BranchAndBoundLocalizer localizer(this->queue, p);
+    localizer.set_target(target);
+    const auto result = localizer.localize(source);
+    ASSERT_TRUE(result.converged);
+    EXPECT_GT(result.inlier, 0U);
+    EXPECT_LE((result.T.translation() - truth.block<3, 1>(0, 3)).norm(), 1.5f * p.min_resolution);
+    const float yaw = std::atan2(result.T.rotation()(1, 0), result.T.rotation()(0, 0));
+    EXPECT_LE(std::abs(std::remainder(yaw - 0.5f, 2.0f * std::numbers::pi_v<float>)), 0.3f);
+}
+
+TEST_F(LocalizationTest, RecoversKnownTransformWithVoxelScore) {
+    auto p = small_params();
+    p.score_method = BranchAndBoundScoreMethod::voxel_occupancy;
     p.max_level = 2;
     p.max_rpy.z() = 2.0f * std::numbers::pi_v<float>;
     p.min_translation = Eigen::Vector3f(3, -3, 0);

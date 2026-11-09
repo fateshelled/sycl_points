@@ -95,7 +95,12 @@ public:
             this->bnb_ = std::make_unique<algorithms::localization::BranchAndBoundLocalizer>(
                 *this->queue_, this->parameters_.branch_and_bound);
             this->bnb_->set_target(this->map_->cloud());
-            RCLCPP_INFO(get_logger(), "Branch and bound target: %zu points", this->bnb_->target_size());
+            const auto score_method = this->parameters_.branch_and_bound.score_method ==
+                                              algorithms::localization::BranchAndBoundScoreMethod::voxel_occupancy
+                                          ? "voxel_occupancy"
+                                          : "kdtree";
+            RCLCPP_INFO(get_logger(), "Branch and bound target: %zu points, score_method: %s",
+                        this->bnb_->target_size(), score_method);
         }
 
         this->map_cloud_pub_ = create_publisher<CloudMsg>(
@@ -268,7 +273,15 @@ private:
         // Branch-and-bound relocalization.
         params.bnb_enable = declare_parameter<bool>("branch_and_bound/enable", false);
         params.bnb_log_profile = declare_parameter<bool>("branch_and_bound/log_profile", false);
+        const auto score_method = declare_parameter<std::string>("branch_and_bound/score_method", "voxel_occupancy");
         auto& bnb = params.branch_and_bound;
+        if (score_method == "kdtree") {
+            bnb.score_method = algorithms::localization::BranchAndBoundScoreMethod::kdtree;
+        } else if (score_method == "voxel_occupancy" || score_method == "voxel") {
+            bnb.score_method = algorithms::localization::BranchAndBoundScoreMethod::voxel_occupancy;
+        } else {
+            throw std::invalid_argument("Invalid branch-and-bound score method");
+        }
         bnb.min_resolution = static_cast<float>(
             declare_parameter<double>("branch_and_bound/min_resolution", static_cast<double>(bnb.min_resolution)));
         bnb.max_level = declare_parameter<int>("branch_and_bound/max_level", bnb.max_level);
@@ -701,10 +714,10 @@ private:
                     profile.search_flush_ms, profile.search_branch_ms, profile.search_bookkeeping_ms,
                     profile.finalize_ms);
         RCLCPP_INFO(get_logger(),
-                    "BnB flush[ms]: total=%.2f partition=%.2f matrix=%.2f kdtree=%.2f queue=%.2f "
+                    "BnB flush[ms]: total=%.2f partition=%.2f matrix=%.2f score=%.2f queue=%.2f "
                     "calls=%zu batches=%zu initial=%zu queued=%zu pruned=%zu branched=%zu leaves=%zu max_queue=%zu",
                     profile.flush_total_ms, profile.flush_partition_ms, profile.flush_matrix_build_ms,
-                    profile.flush_kdtree_wait_ms, profile.flush_queue_ms, profile.flush_calls, profile.score_batches,
+                    profile.flush_score_wait_ms, profile.flush_queue_ms, profile.flush_calls, profile.score_batches,
                     profile.initial_candidates, profile.queued_candidates, profile.pruned_candidates,
                     profile.branch_calls, profile.leaf_candidates, profile.max_queue_size);
         for (size_t level = 0; level < profile.levels.size(); ++level) {

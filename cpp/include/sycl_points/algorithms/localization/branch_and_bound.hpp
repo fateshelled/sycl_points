@@ -14,6 +14,7 @@
 #include "sycl_points/algorithms/localization/branch_and_bound_detail.hpp"
 #include "sycl_points/algorithms/localization/branch_and_bound_params.hpp"
 #include "sycl_points/algorithms/localization/branch_and_bound_result.hpp"
+#include "sycl_points/algorithms/localization/voxel_occupancy_map.hpp"
 
 namespace sycl_points::algorithms::localization {
 
@@ -41,7 +42,8 @@ public:
         }
     }
 
-    /// @brief Build the target KDTree. Use the map bounds if auto_translation_range is true.
+    /// @brief Build the target score structure that the configured score method uses.
+    ///        Use the map bounds if auto_translation_range is true.
     /// @throws std::invalid_argument if the map is empty or contains non-finite coordinates.
     void set_target(const PointCloudShared& map) {
         this->validate_cloud(map);
@@ -51,8 +53,14 @@ public:
             low = low.cwiseMin(point.head<3>());
             high = high.cwiseMax(point.head<3>());
         }
-        auto tree = knn::KDTree::build(this->queue_, map);
-        this->tree_ = std::move(tree);
+        this->tree_.reset();
+        this->score_map_.reset();
+        if (this->params_.score_method == BranchAndBoundScoreMethod::voxel_occupancy) {
+            this->score_map_ = std::make_shared<VoxelOccupancyMap>(this->queue_, this->resolutions_);
+            this->score_map_->set_target(map);
+        } else {
+            this->tree_ = knn::KDTree::build(this->queue_, map);
+        }
         this->target_size_ = map.size();
         if (this->params_.auto_translation_range) {
             this->min_translation_ = low;
@@ -77,7 +85,7 @@ public:
         using Clock = std::chrono::steady_clock;
         const auto entry = Clock::now();
         this->validate_cloud(scan);
-        if (!this->tree_) {
+        if (!this->tree_ && !this->score_map_) {
             throw std::runtime_error("[BranchAndBoundLocalizer] target not set");
         }
         if (scan.size() > std::numeric_limits<uint32_t>::max()) {
@@ -163,15 +171,22 @@ public:
                     const double matrix_ms = elapsed_ms(matrix_begin, matrix_end);
                     profile.flush_matrix_build_ms += matrix_ms;
                     level_profile.matrix_build_ms += matrix_ms;
-                    const float radius =
-                        this->params_.correspondence_distance + this->params_.radius_scale * this->resolutions_[level];
                     const auto score_begin = Clock::now();
-                    this->tree_
-                        ->count_neighbors_within_radius_async(scan, this->score_matrices_, radius, this->score_counts_)
-                        .wait_and_throw();
+                    if (this->score_map_) {
+                        this->score_map_
+                            ->score_async(scan, this->score_matrices_, static_cast<size_t>(level), this->score_counts_)
+                            .wait_and_throw();
+                    } else {
+                        const float radius = this->params_.correspondence_distance +
+                                             this->params_.radius_scale * this->resolutions_[level];
+                        this->tree_
+                            ->count_neighbors_within_radius_async(scan, this->score_matrices_, radius,
+                                                                  this->score_counts_)
+                            .wait_and_throw();
+                    }
                     const auto score_end = Clock::now();
                     const double score_ms = elapsed_ms(score_begin, score_end);
-                    profile.flush_kdtree_wait_ms += score_ms;
+                    profile.flush_score_wait_ms += score_ms;
                     level_profile.score_ms += score_ms;
                     const auto queue_begin = Clock::now();
                     for (size_t i = 0; i < count; ++i) {
@@ -306,6 +321,7 @@ private:
     BranchAndBoundParams params_;
     std::vector<float> resolutions_;
     knn::KDTree::Ptr tree_;
+    VoxelOccupancyMap::Ptr score_map_;
     shared_vector<TransformMatrix> score_matrices_;
     shared_vector<uint32_t> score_counts_;
     size_t target_size_ = 0;
