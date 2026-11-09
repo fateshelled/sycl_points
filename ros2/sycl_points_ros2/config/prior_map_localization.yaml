@@ -106,14 +106,14 @@ prior_map_localization:
     branch_and_bound/max_translation/y: 0.0
     branch_and_bound/max_translation/z: 0.0
     # Full orientation ranges. Narrow them if the scan frame is known to be gravity aligned.
-    branch_and_bound/min_rpy/roll: -3.14159265
-    branch_and_bound/min_rpy/pitch: -1.57079633
+    branch_and_bound/min_rpy/roll:  -0.3490658503988659 # 20 degrees
+    branch_and_bound/min_rpy/pitch: -0.3490658503988659
     branch_and_bound/min_rpy/yaw: -3.14159265
-    branch_and_bound/max_rpy/roll: 3.14159265
-    branch_and_bound/max_rpy/pitch: 1.57079633
+    branch_and_bound/max_rpy/roll:  0.3490658503988659
+    branch_and_bound/max_rpy/pitch: 0.3490658503988659
     branch_and_bound/max_rpy/yaw: 3.14159265
     branch_and_bound/enable_timeout: false
     branch_and_bound/timeout_ms: 10000
-    branch_and_bound/trigger/lost_timeout_sec: 5.0
+    branch_and_bound/trigger/lost_timeout_sec: 10.0
     branch_and_bound/trigger/max_consecutive_failures: 3
     branch_and_bound/trigger/min_interval_sec: 2.0
