@@ -25,6 +25,7 @@ The branch-and-bound global localization uses [3D-BBS](https://github.com/KOKIAO
   - VICP: estimates sensor velocity to compensate for motion distortion. The source cloud must have a `time` field.
   - Rotation constraint with Jensen-Bregman LogDet divergence. Both clouds must have `covariance` matrices.
 - Submapping: voxel hashmap, occupancy grid map
+- Localization: prior map localization with a multi-resolution voxel occupancy map and branch-and-bound global search
 - Filtering: L∞ (Chebyshev) distance, random sampling, FPS, angle incidence, voxel grid and polar grid downsampling
 - File I/O: PLY and PCD, ASCII and binary, CPU and shared memory
 
