@@ -5,7 +5,6 @@
 #include <random>
 #include <vector>
 
-#include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/localization/voxel_occupancy_map.hpp"
 
 namespace {
@@ -82,9 +81,9 @@ TEST_F(VoxelOccupancyMapTest, RejectsInvalidInput) {
     EXPECT_THROW(VoxelOccupancyMap(this->queue, {0.0f}), std::invalid_argument);
 }
 
-// Compares the per-candidate cost of the exact radius count and the voxel occupancy score.
+// Measures the per-candidate cost of the voxel occupancy scorer.
 // The map has sparse surface structure, and most candidate poses are wrong.
-TEST_F(VoxelOccupancyMapTest, BenchmarkScoreMethods) {
+TEST_F(VoxelOccupancyMapTest, BenchmarkScoring) {
     constexpr size_t target_count = 34000;
     constexpr size_t scan_count = 4000;
     constexpr size_t candidate_count = 200;
@@ -115,7 +114,6 @@ TEST_F(VoxelOccupancyMapTest, BenchmarkScoreMethods) {
 
     auto target = make_cloud(this->queue, target_points);
     auto scan = make_cloud(this->queue, scan_points);
-    const auto tree = algorithms::knn::KDTree::build(this->queue, target);
     VoxelOccupancyMap map(this->queue, {1.0f, 2.0f, 4.0f, 8.0f, 16.0f});
     map.set_target(target);
 
@@ -132,22 +130,16 @@ TEST_F(VoxelOccupancyMapTest, BenchmarkScoreMethods) {
         transforms[i] = transform;
     }
 
-    shared_vector<uint32_t> kdtree_counts(candidate_count, 0, *this->queue.ptr);
-    shared_vector<uint32_t> voxel_counts(candidate_count, 0, *this->queue.ptr);
-    std::cout << "score benchmark: map=" << target.size() << " scan=" << scan.size()
+    shared_vector<uint32_t> counts(candidate_count, 0, *this->queue.ptr);
+    std::cout << "voxel score benchmark: map=" << target.size() << " scan=" << scan.size()
               << " candidates=" << candidate_count << "\n";
     for (size_t level = 0; level < map.level_count(); ++level) {
-        const float radius = map.voxel_size(level);
-        const auto kdtree_begin = std::chrono::steady_clock::now();
-        tree->count_neighbors_within_radius_async(scan, transforms, radius, kdtree_counts).wait_and_throw();
-        const auto kdtree_end = std::chrono::steady_clock::now();
-        const auto voxel_begin = std::chrono::steady_clock::now();
-        map.score_async(scan, transforms, level, voxel_counts).wait_and_throw();
-        const auto voxel_end = std::chrono::steady_clock::now();
-        const double kdtree_ms = std::chrono::duration<double, std::milli>(kdtree_end - kdtree_begin).count();
-        const double voxel_ms = std::chrono::duration<double, std::milli>(voxel_end - voxel_begin).count();
-        std::cout << "level " << level << " radius=" << radius << " kdtree=" << kdtree_ms / candidate_count
-                  << " ms/candidate voxel=" << voxel_ms / candidate_count << " ms/candidate\n";
+        const auto begin = std::chrono::steady_clock::now();
+        map.score_async(scan, transforms, level, counts).wait_and_throw();
+        const auto end = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(end - begin).count();
+        std::cout << "level " << level << " voxel=" << map.voxel_size(level) << " " << ms / candidate_count
+                  << " ms/candidate\n";
     }
 }
 }  // namespace

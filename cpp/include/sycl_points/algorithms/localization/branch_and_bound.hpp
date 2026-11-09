@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "sycl_points/algorithms/knn/kdtree.hpp"
 #include "sycl_points/algorithms/localization/branch_and_bound_detail.hpp"
 #include "sycl_points/algorithms/localization/branch_and_bound_params.hpp"
 #include "sycl_points/algorithms/localization/branch_and_bound_result.hpp"
@@ -18,7 +17,7 @@
 
 namespace sycl_points::algorithms::localization {
 
-/// @brief Find a global pose in a KDTree map with a best-first search at multiple resolutions.
+/// @brief Find a global pose in a voxel occupancy map with a best-first search at multiple resolutions.
 class BranchAndBoundLocalizer {
 public:
     /// @brief Construct a localizer with the device queue and validate the parameters.
@@ -29,17 +28,11 @@ public:
             !p.min_translation.allFinite() || !p.max_translation.allFinite() ||
             !(p.min_translation.array() <= p.max_translation.array()).all() || !p.min_rpy.allFinite() ||
             !p.max_rpy.allFinite() || !(p.min_rpy.array() <= p.max_rpy.array()).all() ||
-            !std::isfinite(p.radius_scale) || p.radius_scale <= 0 || !std::isfinite(p.correspondence_distance) ||
-            p.correspondence_distance < 0 || !std::isfinite(p.score_threshold_ratio) || p.score_threshold_ratio < 0 ||
-            p.score_threshold_ratio > 1 || p.score_batch_size == 0 || (p.enable_timeout && p.timeout.count() < 0)) {
+            !std::isfinite(p.score_threshold_ratio) || p.score_threshold_ratio < 0 || p.score_threshold_ratio > 1 ||
+            p.score_batch_size == 0 || (p.enable_timeout && p.timeout.count() < 0)) {
             throw std::invalid_argument("[BranchAndBoundLocalizer] invalid parameters");
         }
         this->resolutions_ = detail::level_resolutions(this->params_);
-        for (float res : this->resolutions_) {
-            if (!std::isfinite(p.correspondence_distance + p.radius_scale * res)) {
-                throw std::invalid_argument("[BranchAndBoundLocalizer] radius overflow");
-            }
-        }
     }
 
     /// @brief Build the target score structure that the configured score method uses.
@@ -53,14 +46,9 @@ public:
             low = low.cwiseMin(point.head<3>());
             high = high.cwiseMax(point.head<3>());
         }
-        this->tree_.reset();
         this->score_map_.reset();
-        if (this->params_.score_method == BranchAndBoundScoreMethod::voxel_occupancy) {
-            this->score_map_ = std::make_shared<VoxelOccupancyMap>(this->queue_, this->resolutions_);
-            this->score_map_->set_target(map);
-        } else {
-            this->tree_ = knn::KDTree::build(this->queue_, map);
-        }
+        this->score_map_ = std::make_shared<VoxelOccupancyMap>(this->queue_, this->resolutions_);
+        this->score_map_->set_target(map);
         this->target_size_ = map.size();
         if (this->params_.auto_translation_range) {
             this->min_translation_ = low;
@@ -85,7 +73,7 @@ public:
         using Clock = std::chrono::steady_clock;
         const auto entry = Clock::now();
         this->validate_cloud(scan);
-        if (!this->tree_ && !this->score_map_) {
+        if (!this->score_map_) {
             throw std::runtime_error("[BranchAndBoundLocalizer] target not set");
         }
         if (scan.size() > std::numeric_limits<uint32_t>::max()) {
@@ -172,18 +160,9 @@ public:
                     profile.flush_matrix_build_ms += matrix_ms;
                     level_profile.matrix_build_ms += matrix_ms;
                     const auto score_begin = Clock::now();
-                    if (this->score_map_) {
-                        this->score_map_
-                            ->score_async(scan, this->score_matrices_, static_cast<size_t>(level), this->score_counts_)
-                            .wait_and_throw();
-                    } else {
-                        const float radius = this->params_.correspondence_distance +
-                                             this->params_.radius_scale * this->resolutions_[level];
-                        this->tree_
-                            ->count_neighbors_within_radius_async(scan, this->score_matrices_, radius,
-                                                                  this->score_counts_)
-                            .wait_and_throw();
-                    }
+                    this->score_map_
+                        ->score_async(scan, this->score_matrices_, static_cast<size_t>(level), this->score_counts_)
+                        .wait_and_throw();
                     const auto score_end = Clock::now();
                     const double score_ms = elapsed_ms(score_begin, score_end);
                     profile.flush_score_wait_ms += score_ms;
@@ -320,7 +299,6 @@ private:
     sycl_utils::DeviceQueue queue_;
     BranchAndBoundParams params_;
     std::vector<float> resolutions_;
-    knn::KDTree::Ptr tree_;
     VoxelOccupancyMap::Ptr score_map_;
     shared_vector<TransformMatrix> score_matrices_;
     shared_vector<uint32_t> score_counts_;

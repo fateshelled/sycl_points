@@ -5,6 +5,7 @@
 #include <limits>
 #include <numbers>
 #include <random>
+#include <unordered_set>
 
 #include "sycl_points/algorithms/localization/branch_and_bound.hpp"
 
@@ -37,7 +38,6 @@ BranchAndBoundParams small_params() {
     p.max_translation = Eigen::Vector3f::Zero();
     p.max_rpy = Eigen::Vector3f(0, 0, 0.4f);
     p.score_batch_size = 64;
-    p.score_method = BranchAndBoundScoreMethod::kdtree;
     return p;
 }
 
@@ -52,33 +52,6 @@ TEST_F(LocalizationTest, RecoversKnownTransform) {
     p.max_rpy.z() = 2.0f * std::numbers::pi_v<float>;
     p.min_translation = Eigen::Vector3f(3, -3, 0);
     p.max_translation = p.min_translation;
-    p.radius_scale = 0.6f;
-    const auto source_points = make_scene(180);
-    const auto truth = (Eigen::Translation3f(3, -3, 0) * Eigen::AngleAxisf(0.5f, Eigen::Vector3f::UnitZ())).matrix();
-    std::vector<PointType> target_points;
-    for (const auto& point : source_points) {
-        target_points.push_back(truth * point);
-    }
-    auto source = make_cloud(this->queue, source_points);
-    auto target = make_cloud(this->queue, target_points);
-    BranchAndBoundLocalizer localizer(this->queue, p);
-    localizer.set_target(target);
-    const auto result = localizer.localize(source);
-    ASSERT_TRUE(result.converged);
-    EXPECT_GT(result.inlier, 0U);
-    EXPECT_LE((result.T.translation() - truth.block<3, 1>(0, 3)).norm(), 1.5f * p.min_resolution);
-    const float yaw = std::atan2(result.T.rotation()(1, 0), result.T.rotation()(0, 0));
-    EXPECT_LE(std::abs(std::remainder(yaw - 0.5f, 2.0f * std::numbers::pi_v<float>)), 0.3f);
-}
-
-TEST_F(LocalizationTest, RecoversKnownTransformWithVoxelScore) {
-    auto p = small_params();
-    p.score_method = BranchAndBoundScoreMethod::voxel_occupancy;
-    p.max_level = 2;
-    p.max_rpy.z() = 2.0f * std::numbers::pi_v<float>;
-    p.min_translation = Eigen::Vector3f(3, -3, 0);
-    p.max_translation = p.min_translation;
-    p.radius_scale = 0.6f;
     const auto source_points = make_scene(180);
     const auto truth = (Eigen::Translation3f(3, -3, 0) * Eigen::AngleAxisf(0.5f, Eigen::Vector3f::UnitZ())).matrix();
     std::vector<PointType> target_points;
@@ -103,7 +76,6 @@ TEST_F(LocalizationTest, AppliesScanToReferenceTransform) {
     p.max_rpy.z() = 2.0f * std::numbers::pi_v<float>;
     p.min_translation = Eigen::Vector3f(3, -3, 0);
     p.max_translation = p.min_translation;
-    p.radius_scale = 0.6f;
     const auto scene = make_scene(180);
 
     // The scan frame is offset from the reference frame whose pose is estimated.
@@ -150,6 +122,27 @@ TEST_F(LocalizationTest, AgreesWithExhaustiveLeafEnumeration) {
         max_norm = std::max(max_norm, point.head<3>().norm());
     }
     const auto angular = detail::angular_info(p, resolutions, max_norm);
+
+    // Build the leaf-level occupancy set with the same negative dilation as the scorer.
+    std::unordered_set<uint64_t> occupied;
+    const float leaf_inv = 1.0f / resolutions[0];
+    for (const auto& point : points) {
+        voxel_detail::HostVoxelCoord coord;
+        if (!voxel_detail::compute_voxel_coord_host(point, leaf_inv, coord)) {
+            continue;
+        }
+        for (int dx = 0; dx >= -1; --dx) {
+            for (int dy = 0; dy >= -1; --dy) {
+                for (int dz = 0; dz >= -1; --dz) {
+                    if (coord.x + dx < 0 || coord.y + dy < 0 || coord.z + dz < 0) {
+                        continue;
+                    }
+                    occupied.insert(voxel_detail::encode_voxel_key(coord.x + dx, coord.y + dy, coord.z + dz));
+                }
+            }
+        }
+    }
+
     const int top_low[3] = {
         detail::checked_int(std::floor(static_cast<double>(p.min_translation.x()) / resolutions.back())),
         detail::checked_int(std::floor(static_cast<double>(p.min_translation.y()) / resolutions.back())),
@@ -175,14 +168,15 @@ TEST_F(LocalizationTest, AgreesWithExhaustiveLeafEnumeration) {
                                     const auto matrix =
                                         leaf.create_matrix(p.min_resolution, angular[0].rpy_res, angular[0].min_rpy);
                                     uint32_t count = 0;
-                                    const float radius_sq = p.min_resolution * p.min_resolution;
                                     for (const auto& query : points) {
                                         const PointType transformed = matrix * query;
-                                        for (const auto& point : points) {
-                                            if ((transformed.head<3>() - point.head<3>()).squaredNorm() <= radius_sq) {
-                                                ++count;
-                                                break;
-                                            }
+                                        voxel_detail::HostVoxelCoord coord;
+                                        if (!voxel_detail::compute_voxel_coord_host(transformed, leaf_inv, coord)) {
+                                            continue;
+                                        }
+                                        if (occupied.count(voxel_detail::encode_voxel_key(coord.x, coord.y, coord.z)) !=
+                                            0) {
+                                            ++count;
                                         }
                                     }
                                     expected = std::max(expected, count);

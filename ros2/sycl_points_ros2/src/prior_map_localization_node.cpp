@@ -95,12 +95,7 @@ public:
             this->bnb_ = std::make_unique<algorithms::localization::BranchAndBoundLocalizer>(
                 *this->queue_, this->parameters_.branch_and_bound);
             this->bnb_->set_target(this->map_->cloud());
-            const auto score_method = this->parameters_.branch_and_bound.score_method ==
-                                              algorithms::localization::BranchAndBoundScoreMethod::voxel_occupancy
-                                          ? "voxel_occupancy"
-                                          : "kdtree";
-            RCLCPP_INFO(get_logger(), "Branch and bound target: %zu points, score_method: %s",
-                        this->bnb_->target_size(), score_method);
+            RCLCPP_INFO(get_logger(), "Branch and bound target: %zu points", this->bnb_->target_size());
         }
 
         this->map_cloud_pub_ = create_publisher<CloudMsg>(
@@ -273,23 +268,11 @@ private:
         // Branch-and-bound relocalization.
         params.bnb_enable = declare_parameter<bool>("branch_and_bound/enable", false);
         params.bnb_log_profile = declare_parameter<bool>("branch_and_bound/log_profile", false);
-        const auto score_method = declare_parameter<std::string>("branch_and_bound/score_method", "voxel_occupancy");
         auto& bnb = params.branch_and_bound;
-        if (score_method == "kdtree") {
-            bnb.score_method = algorithms::localization::BranchAndBoundScoreMethod::kdtree;
-        } else if (score_method == "voxel_occupancy" || score_method == "voxel") {
-            bnb.score_method = algorithms::localization::BranchAndBoundScoreMethod::voxel_occupancy;
-        } else {
-            throw std::invalid_argument("Invalid branch-and-bound score method");
-        }
         bnb.min_resolution = static_cast<float>(
             declare_parameter<double>("branch_and_bound/min_resolution", static_cast<double>(bnb.min_resolution)));
         bnb.max_level = declare_parameter<int>("branch_and_bound/max_level", bnb.max_level);
         bnb.branch_factor = declare_parameter<int>("branch_and_bound/branch_factor", bnb.branch_factor);
-        bnb.correspondence_distance = static_cast<float>(declare_parameter<double>(
-            "branch_and_bound/correspondence_distance", static_cast<double>(bnb.correspondence_distance)));
-        bnb.radius_scale = static_cast<float>(
-            declare_parameter<double>("branch_and_bound/radius_scale", static_cast<double>(bnb.radius_scale)));
         bnb.score_threshold_ratio = static_cast<float>(declare_parameter<double>(
             "branch_and_bound/score_threshold_ratio", static_cast<double>(bnb.score_threshold_ratio)));
         const int64_t score_batch_size =

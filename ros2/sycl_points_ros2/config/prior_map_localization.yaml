@@ -91,12 +91,9 @@ prior_map_localization:
     # Branch-and-bound global search used for the initial pose and after tracking loss.
     branch_and_bound/enable: true
     branch_and_bound/log_profile: false
-    branch_and_bound/score_method: voxel_occupancy  # voxel_occupancy, kdtree
     branch_and_bound/min_resolution: 1.0
     branch_and_bound/max_level: 6
     branch_and_bound/branch_factor: 2
-    branch_and_bound/correspondence_distance: 0.0
-    branch_and_bound/radius_scale: 1.0
     branch_and_bound/score_threshold_ratio: 0.0
     branch_and_bound/score_batch_size: 10000
     branch_and_bound/auto_translation_range: true
