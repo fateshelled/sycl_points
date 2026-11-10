@@ -81,7 +81,8 @@ The node reads PCD or PLY files and applies `map_file_pose` to the map points.
 When `branch_and_bound/enable=true` (the YAML default), a multi-resolution voxel branch-and-bound search estimates the initial pose and the pose after tracking loss. \
 Registration then refines this pose against the local prior map. \
 The search triggers and ranges are in [config/prior_map_localization.yaml](config/prior_map_localization.yaml). \
-The full prior map is on `localization/prior_map` for visualization.
+The full prior map is on `localization/prior_map` for visualization. \
+The translation search has a rounding margin of one `min_resolution` voxel. As a result, the pose can be below the minimum translation by this width.
 
 ## Save The Submap On Exit
 

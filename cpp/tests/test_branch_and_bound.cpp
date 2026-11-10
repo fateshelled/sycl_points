@@ -165,6 +165,15 @@ TEST_F(LocalizationTest, AgreesWithExhaustiveLeafEnumeration) {
                                 std::vector<detail::DiscreteTransformation> leaves;
                                 node.branch(leaves, 0, p.branch_factor, angular[0].num_division);
                                 for (const auto& leaf : leaves) {
+                                    const Eigen::Vector3f lower(
+                                        p.min_resolution * static_cast<float>(leaf.x),
+                                        p.min_resolution * static_cast<float>(leaf.y),
+                                        p.min_resolution * static_cast<float>(leaf.z));
+                                    const Eigen::Array3f upper = lower.array() + p.min_resolution;
+                                    if (!((upper > p.min_translation.array()).all() &&
+                                          (lower.array() <= p.max_translation.array()).all())) {
+                                        continue;
+                                    }
                                     const auto matrix =
                                         leaf.create_matrix(p.min_resolution, angular[0].rpy_res, angular[0].min_rpy);
                                     uint32_t count = 0;
@@ -231,6 +240,88 @@ TEST_F(LocalizationTest, ThresholdAndTimeout) {
     const auto result = timed.localize(scan);
     EXPECT_TRUE(result.timed_out);
     EXPECT_FALSE(result.converged);
+}
+
+TEST(LocalizationDetailTest, MatchesReferenceAngularSchedule) {
+    BranchAndBoundParams p;
+    p.min_resolution = 1.5f;
+    p.max_level = 1;
+    p.max_rpy = Eigen::Vector3f(0.0f, 0.0f, 0.4f);
+    const auto resolutions = detail::level_resolutions(p);
+    const auto angular = detail::angular_info(p, resolutions, 5.0f);
+
+    // 3D-BBS keeps an undivided level at the zero angle and bisects a divided level from min_rpy.
+    ASSERT_EQ(angular[1].num_division.z(), 1);
+    EXPECT_FLOAT_EQ(angular[1].rpy_res.z(), 0.0f);
+    EXPECT_FLOAT_EQ(angular[1].min_rpy.z(), 0.0f);
+
+    ASSERT_EQ(angular[0].num_division.z(), 2);
+    EXPECT_NEAR(angular[0].rpy_res.z(), 0.2f, 1e-6f);
+    EXPECT_FLOAT_EQ(angular[0].min_rpy.z(), 0.0f);
+
+    // Zero-width roll and pitch ranges stay undivided.
+    EXPECT_EQ(angular[0].num_division.x(), 1);
+    EXPECT_EQ(angular[0].num_division.y(), 1);
+}
+
+TEST_F(LocalizationTest, AcceptsLeavesThatOverlapTranslationRange) {
+    auto p = small_params();
+    p.max_level = 2;
+    p.max_rpy.setZero();
+    p.min_translation = Eigen::Vector3f::Constant(-0.1f);
+    p.max_translation = Eigen::Vector3f::Constant(-0.1f);
+    const auto points = make_scene(35);
+    auto source = make_cloud(this->queue, points);
+    auto target = make_cloud(this->queue, points);
+    BranchAndBoundLocalizer localizer(this->queue, p);
+    localizer.set_target(target);
+
+    const auto result = localizer.localize(source);
+    ASSERT_TRUE(result.converged);
+    // The leaf cell has one minimum-resolution voxel as the rounding margin.
+    const Eigen::Vector3f translation = result.T.translation();
+    for (int axis = 0; axis < 3; ++axis) {
+        EXPECT_GE(translation[axis], p.min_translation[axis] - p.min_resolution);
+        EXPECT_LE(translation[axis], p.max_translation[axis]);
+    }
+}
+
+TEST_F(LocalizationTest, RejectsLeavesOutsideTranslationRange) {
+    auto p = small_params();
+    p.max_level = 2;
+    p.max_rpy.setZero();
+    p.min_translation = Eigen::Vector3f::Zero();
+    p.max_translation = Eigen::Vector3f::Zero();
+    auto source = make_cloud(this->queue, {PointType(0, 0, 0, 1)});
+    auto target = make_cloud(this->queue, {PointType(3, 0, 0, 1)});
+    BranchAndBoundLocalizer localizer(this->queue, p);
+    localizer.set_target(target);
+
+    // The only point pair is 3 m apart, but the requested range is zero.
+    const auto result = localizer.localize(source);
+    EXPECT_FALSE(result.converged);
+    EXPECT_GT(result.profile.out_of_range_candidates, 0U);
+}
+
+TEST_F(LocalizationTest, TimesOutDuringInitialEnumeration) {
+    auto p = small_params();
+    p.max_level = 3;
+    p.max_rpy.setZero();
+    p.min_translation = Eigen::Vector3f::Constant(-50.0f);
+    p.max_translation = Eigen::Vector3f::Constant(50.0f);
+    p.score_batch_size = 8;
+    p.enable_timeout = true;
+    p.timeout = std::chrono::milliseconds(0);
+    auto scan = make_cloud(this->queue, {PointType(0, 0, 0, 1)});
+    auto target = make_cloud(this->queue, {PointType(0, 0, 0, 1)});
+    BranchAndBoundLocalizer localizer(this->queue, p);
+    localizer.set_target(target);
+
+    const auto result = localizer.localize(scan);
+    EXPECT_TRUE(result.timed_out);
+    EXPECT_FALSE(result.converged);
+    // The deadline stops the initial grid before all candidates get a score.
+    EXPECT_LT(result.evaluated_candidates, result.profile.initial_candidates);
 }
 
 TEST_F(LocalizationTest, ValidatesInputs) {

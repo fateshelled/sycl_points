@@ -55,6 +55,7 @@ inline std::vector<AngularInfo> angular_info(const BranchAndBoundParams& params,
             const float proposed = ori_res > 0.0f && ori_res <= range ? ori_res : 0.0f;
             const int divisions = proposed == 0.0f ? 1 : checked_int(std::ceil(static_cast<double>(piece) / proposed));
             info[level].num_division[axis] = divisions;
+            // 3D-BBS scores an undivided level at the zero angle, not at the cell center.
             info[level].rpy_res[axis] = divisions == 1 ? 0.0f : piece / divisions;
             info[level].min_rpy[axis] = divisions == 1 ? 0.0f : params.min_rpy[axis];
         }

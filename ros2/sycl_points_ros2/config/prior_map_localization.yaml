@@ -104,7 +104,8 @@ prior_map_localization:
     branch_and_bound/max_translation/x: 0.0
     branch_and_bound/max_translation/y: 0.0
     branch_and_bound/max_translation/z: 0.0
-    # Full orientation ranges. Narrow them if the scan frame is known to be gravity aligned.
+    # Orientation search ranges for a gravity-aligned mount.
+    # To search any initial orientation, widen the roll and pitch ranges toward +/-pi.
     branch_and_bound/min_rpy/roll:  -0.3490658503988659 # 20 degrees
     branch_and_bound/min_rpy/pitch: -0.3490658503988659
     branch_and_bound/min_rpy/yaw: -3.14159265

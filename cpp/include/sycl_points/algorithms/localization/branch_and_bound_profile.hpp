@@ -8,12 +8,12 @@ namespace sycl_points::algorithms::localization {
 /// @brief Timing and candidate counters for one search level.
 /// @note The score time and the matrix build time are part of the parent flush.
 struct BranchAndBoundLevelProfile {
-    size_t evaluated = 0;          ///< Candidates that the KDTree scored.
+    size_t evaluated = 0;          ///< Candidates that the occupancy map scored.
     size_t queued = 0;             ///< Candidates that passed the score gate.
     size_t branched = 0;           ///< Expanded nodes at this level.
     size_t pruned = 0;             ///< Candidates removed at this level by the score bound.
     size_t leaves = 0;             ///< Accepted leaves at this level.
-    double score_ms = 0.0;         ///< KDTree scoring time at this level.
+    double score_ms = 0.0;         ///< Occupancy scoring time at this level.
     double matrix_build_ms = 0.0;  ///< Transform matrix build time at this level.
     double branch_ms = 0.0;        ///< Child expansion time at this level.
 };
@@ -40,9 +40,10 @@ struct BranchAndBoundProfile {
     // Counters.
     size_t initial_candidates = 0;
     size_t flush_calls = 0;
-    size_t score_batches = 0;  ///< Number of KDTree kernel launches.
+    size_t score_batches = 0;  ///< Number of score kernel launches.
     size_t branch_calls = 0;
     size_t pruned_candidates = 0;
+    size_t out_of_range_candidates = 0;  ///< Leaves outside the requested translation range.
     size_t queued_candidates = 0;
     size_t leaf_candidates = 0;
     size_t max_queue_size = 0;

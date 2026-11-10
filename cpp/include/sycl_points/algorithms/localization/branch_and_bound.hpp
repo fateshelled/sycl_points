@@ -62,9 +62,9 @@ public:
     /// @brief Find the pose of a scan in the target map.
     /// @param scan Scan points expressed in the scan frame.
     /// @param scan_to_reference Transform from the scan frame to the reference frame.
-    /// @return Best pose from the map frame to the reference frame.
-    /// @note The reference frame is the frame whose pose is estimated. The default identity estimates the map frame
-    ///       pose of the scan frame.
+    /// @return Pose of the reference frame in the map frame (`T_map_reference`).
+    /// @note The reference frame is the frame whose pose is estimated. An identity transform estimates the pose of
+    ///       the scan frame in the map frame.
     /// @throws std::invalid_argument if the scan is empty, contains non-finite coordinates, or the transform is
     /// invalid.
     /// @throws std::runtime_error if no target was set.
@@ -89,6 +89,9 @@ public:
         profile.levels.resize(static_cast<size_t>(this->params_.max_level) + 1);
         const auto elapsed_ms = [](Clock::time_point begin, Clock::time_point end) {
             return std::chrono::duration<double, std::milli>(end - begin).count();
+        };
+        const auto deadline_reached = [&]() {
+            return this->params_.enable_timeout && Clock::now() - start >= this->params_.timeout;
         };
         const TransformMatrix reference_from_scan = scan_to_reference.matrix();
         float max_norm = 0.0f;
@@ -129,6 +132,12 @@ public:
             if (stock.empty()) {
                 return;
             }
+            // The deadline also stops the initial enumeration and each score batch.
+            if (deadline_reached()) {
+                result.timed_out = true;
+                stock.clear();
+                return;
+            }
             const auto flush_begin = Clock::now();
             profile.flush_calls += 1;
             // Stock can contain candidates at different levels.
@@ -145,6 +154,10 @@ public:
                 profile.flush_partition_ms += elapsed_ms(partition_begin, Clock::now());
                 auto& level_profile = profile.levels[static_cast<size_t>(level)];
                 for (size_t begin = 0; begin < indices.size(); begin += this->params_.score_batch_size) {
+                    if (deadline_reached()) {
+                        result.timed_out = true;
+                        break;
+                    }
                     const size_t count = std::min(this->params_.score_batch_size, indices.size() - begin);
                     this->score_matrices_.resize(count);
                     this->score_counts_.resize(count);
@@ -183,6 +196,9 @@ public:
                     profile.score_batches += 1;
                     result.evaluated_candidates += count;
                 }
+                if (result.timed_out) {
+                    break;
+                }
             }
             stock.clear();
             profile.flush_total_ms += elapsed_ms(flush_begin, Clock::now());
@@ -191,12 +207,12 @@ public:
         // Score the initial grid in batches. Do not store all candidates at the same time.
         const auto initial_begin = Clock::now();
         const double flush_before_initial = profile.flush_total_ms;
-        for (int64_t x = low[0]; x <= high[0]; ++x) {
-            for (int64_t y = low[1]; y <= high[1]; ++y) {
-                for (int64_t z = low[2]; z <= high[2]; ++z) {
-                    for (int roll = 0; roll < angular.back().num_division.x(); ++roll) {
-                        for (int pitch = 0; pitch < angular.back().num_division.y(); ++pitch) {
-                            for (int yaw = 0; yaw < angular.back().num_division.z(); ++yaw) {
+        for (int64_t x = low[0]; x <= high[0] && !result.timed_out; ++x) {
+            for (int64_t y = low[1]; y <= high[1] && !result.timed_out; ++y) {
+                for (int64_t z = low[2]; z <= high[2] && !result.timed_out; ++z) {
+                    for (int roll = 0; roll < angular.back().num_division.x() && !result.timed_out; ++roll) {
+                        for (int pitch = 0; pitch < angular.back().num_division.y() && !result.timed_out; ++pitch) {
+                            for (int yaw = 0; yaw < angular.back().num_division.z() && !result.timed_out; ++yaw) {
                                 stock.push_back({0, this->params_.max_level, static_cast<int>(x), static_cast<int>(y),
                                                  static_cast<int>(z), roll, pitch, yaw});
                                 if (stock.size() >= this->params_.score_batch_size) {
@@ -214,14 +230,14 @@ public:
         profile.initial_enumerate_ms = elapsed_ms(initial_begin, initial_end) - profile.initial_flush_ms;
 
         // The deadline includes initial scores, even if no candidate remains in the queue.
-        if (this->params_.enable_timeout && Clock::now() - start >= this->params_.timeout) {
+        if (deadline_reached()) {
             result.timed_out = true;
         }
 
         const auto search_begin = Clock::now();
         const double flush_before_search = profile.flush_total_ms;
         while (!result.timed_out && (!queue.empty() || !stock.empty())) {
-            if (this->params_.enable_timeout && Clock::now() - start >= this->params_.timeout) {
+            if (deadline_reached()) {
                 result.timed_out = true;
                 break;
             }
@@ -237,6 +253,11 @@ public:
                 continue;
             }
             if (candidate.is_leaf()) {
+                // The coarse grid can produce leaves outside the requested translation range.
+                if (!this->leaf_translation_in_range(candidate)) {
+                    profile.out_of_range_candidates += 1;
+                    continue;
+                }
                 best_score = candidate.score;
                 best = candidate;
                 have_leaf = true;
@@ -285,6 +306,17 @@ public:
     size_t target_size() const { return this->target_size_; }
 
 private:
+    /// @brief Test if the cell of a leaf overlaps the requested translation range.
+    /// @note The leaf cell is one minimum-resolution voxel wide.
+    ///       As a result, the pose can be below the minimum translation by this width.
+    bool leaf_translation_in_range(const detail::DiscreteTransformation& leaf) const {
+        const float res = this->params_.min_resolution;
+        const Eigen::Vector3f lower(res * static_cast<float>(leaf.x), res * static_cast<float>(leaf.y),
+                                    res * static_cast<float>(leaf.z));
+        const Eigen::Array3f upper = lower.array() + res;
+        return (upper > this->min_translation_.array()).all() && (lower.array() <= this->max_translation_.array()).all();
+    }
+
     static void validate_cloud(const PointCloudShared& cloud) {
         if (!cloud.points || cloud.size() == 0) {
             throw std::invalid_argument("[BranchAndBoundLocalizer] empty cloud");

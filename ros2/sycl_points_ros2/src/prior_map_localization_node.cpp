@@ -698,11 +698,13 @@ private:
                     profile.finalize_ms);
         RCLCPP_INFO(get_logger(),
                     "BnB flush[ms]: total=%.2f partition=%.2f matrix=%.2f score=%.2f queue=%.2f "
-                    "calls=%zu batches=%zu initial=%zu queued=%zu pruned=%zu branched=%zu leaves=%zu max_queue=%zu",
+                    "calls=%zu batches=%zu initial=%zu queued=%zu pruned=%zu out_of_range=%zu branched=%zu "
+                    "leaves=%zu max_queue=%zu",
                     profile.flush_total_ms, profile.flush_partition_ms, profile.flush_matrix_build_ms,
                     profile.flush_score_wait_ms, profile.flush_queue_ms, profile.flush_calls, profile.score_batches,
                     profile.initial_candidates, profile.queued_candidates, profile.pruned_candidates,
-                    profile.branch_calls, profile.leaf_candidates, profile.max_queue_size);
+                    profile.out_of_range_candidates, profile.branch_calls, profile.leaf_candidates,
+                    profile.max_queue_size);
         for (size_t level = 0; level < profile.levels.size(); ++level) {
             const auto& level_profile = profile.levels[level];
             RCLCPP_INFO(get_logger(),
