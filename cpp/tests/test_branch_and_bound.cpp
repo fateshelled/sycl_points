@@ -264,6 +264,31 @@ TEST(LocalizationDetailTest, MatchesReferenceAngularSchedule) {
     EXPECT_EQ(angular[0].num_division.y(), 1);
 }
 
+TEST(LocalizationDetailTest, KeepsZeroOnAngularGrid) {
+    BranchAndBoundParams p;
+    p.min_resolution = 1.0f;
+    p.max_level = 6;
+    p.min_rpy = Eigen::Vector3f(-0.349f, -0.349f, -std::numbers::pi_v<float>);
+    p.max_rpy = Eigen::Vector3f(0.349f, 0.349f, std::numbers::pi_v<float>);
+    const auto resolutions = detail::level_resolutions(p);
+
+    // Different scan extents give a mix of undivided and divided levels.
+    for (const float max_norm : {3.0f, 16.0f, 40.0f}) {
+        const auto angular = detail::angular_info(p, resolutions, max_norm);
+        for (size_t level = 0; level < angular.size(); ++level) {
+            for (int axis = 0; axis < 3; ++axis) {
+                if (angular[level].num_division[axis] <= 1) {
+                    continue;
+                }
+                const float zero_index = -angular[level].min_rpy[axis] / angular[level].rpy_res[axis];
+                const float tolerance = 1e-3f * std::max(1.0f, std::abs(zero_index));
+                EXPECT_NEAR(zero_index, std::round(zero_index), tolerance)
+                    << "max_norm=" << max_norm << " level=" << level << " axis=" << axis;
+            }
+        }
+    }
+}
+
 TEST_F(LocalizationTest, AcceptsLeavesThatOverlapTranslationRange) {
     auto p = small_params();
     p.max_level = 2;

@@ -49,11 +49,19 @@ inline std::vector<AngularInfo> angular_info(const BranchAndBoundParams& params,
         const float ori_res = std::floor(std::acos(cosine) * 10000.0f) / 10000.0f;
         for (int axis = 0; axis < 3; ++axis) {
             const float range = params.max_rpy[axis] - params.min_rpy[axis];
-            const float piece = level == params.max_level || info[level + 1].rpy_res[axis] == 0.0f
-                                    ? range
-                                    : info[level + 1].rpy_res[axis];
+            // A level starts a new range when it is the top level or its parent is undivided.
+            const bool range_start = level == params.max_level || info[level + 1].rpy_res[axis] == 0.0f;
+            const float piece = range_start ? range : info[level + 1].rpy_res[axis];
             const float proposed = ori_res > 0.0f && ori_res <= range ? ori_res : 0.0f;
-            const int divisions = proposed == 0.0f ? 1 : checked_int(std::ceil(static_cast<double>(piece) / proposed));
+            int divisions = proposed == 0.0f ? 1 : checked_int(std::ceil(static_cast<double>(piece) / proposed));
+            // Keep zero on the angular grid. A new symmetric range needs an even division count so that
+            // zero is the center of a cell. Lower levels keep the alignment of their parent.
+            if (range_start &&                          //
+                divisions > 1 && divisions % 2 != 0 &&  //
+                params.min_rpy[axis] < 0.0f && params.max_rpy[axis] > 0.0f &&
+                divisions < std::numeric_limits<int>::max()) {
+                ++divisions;
+            }
             info[level].num_division[axis] = divisions;
             // 3D-BBS scores an undivided level at the zero angle, not at the cell center.
             info[level].rpy_res[axis] = divisions == 1 ? 0.0f : piece / divisions;
