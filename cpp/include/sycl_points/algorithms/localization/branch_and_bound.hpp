@@ -337,6 +337,9 @@ private:
     size_t target_size_ = 0;
     Eigen::Vector3f min_translation_ = Eigen::Vector3f::Zero();
     Eigen::Vector3f max_translation_ = Eigen::Vector3f::Zero();
+
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
 }  // namespace sycl_points::algorithms::localization

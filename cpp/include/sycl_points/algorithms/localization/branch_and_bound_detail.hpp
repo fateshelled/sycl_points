@@ -17,6 +17,8 @@ struct AngularInfo {
     Eigen::Vector3i num_division = Eigen::Vector3i::Ones();
     Eigen::Vector3f rpy_res = Eigen::Vector3f::Zero();
     Eigen::Vector3f min_rpy = Eigen::Vector3f::Zero();
+
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
 inline int checked_int(double value) {

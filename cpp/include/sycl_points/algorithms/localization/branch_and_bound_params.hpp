@@ -24,6 +24,8 @@ struct BranchAndBoundParams {
     std::chrono::milliseconds timeout{10000};
     size_t score_batch_size = 10000;
     bool auto_translation_range = true;
+
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
 }  // namespace sycl_points::algorithms::localization
