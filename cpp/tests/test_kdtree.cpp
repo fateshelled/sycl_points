@@ -565,3 +565,4 @@ TEST_F(KDTreeTest, RadiusSearchFillsInvalidEntries) {
     const auto bruteforce_result = bruteForceRadiusSearch(small_query, small_target, max_k, radius);
     compareRadiusResults(kdtree_result, bruteforce_result, max_k);
 }
+

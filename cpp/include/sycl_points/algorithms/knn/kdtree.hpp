@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <stdexcept>
 
 #include "sycl_points/algorithms/common/filter_by_flags.hpp"
 #include "sycl_points/algorithms/common/transform.hpp"

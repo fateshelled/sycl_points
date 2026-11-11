@@ -1,7 +1,7 @@
 # sycl_points_ros2
 
-This package provides ROS 2 nodes for three types of odometry: LiDAR odometry (LO), LiDAR-inertial odometry (LIO), and sliding-window graph odometry. \
-The nodes use SYCL for acceleration. Each type supports live topics and offline rosbag evaluation.
+This package has ROS 2 nodes for four modes: LiDAR odometry (LO), LiDAR-inertial odometry (LIO), sliding-window graph odometry, and prior map localization. \
+The nodes use SYCL for acceleration. The odometry modes support live topics and offline rosbag evaluation.
 
 ## Prerequisites
 
@@ -54,15 +54,39 @@ source ~/ros2_ws/install/setup.bash
 | LO | `lidar_odometry_node` | `lidar_odometry_launch.py` | Only if `imu/enable=true` |
 | LIO | `lidar_inertial_odometry_node` | `lidar_inertial_odometry_launch.py` | Must have IMU data |
 | Graph | `graph_odometry_node` | `graph_odometry_launch.py` | Must have IMU data |
+| Localization | `prior_map_localization_node` | `prior_map_localization_launch.py` | No; uses an odometry source |
 
 For graph mode, set `imu/enable`, `imu/initial_alignment/enable`, and `imu/deskew/enable` to `true`. \
 Set `motion_prediction/mode=IMU_SE3` as well.
 
-All modes also provide ROS 2 components and bag-evaluation nodes.
+Localization uses the odometry and submaps from an LO, LIO, or graph node. See [Prior Map Localization](#prior-map-localization).
+
+The odometry modes also provide ROS 2 components and bag-evaluation nodes.
+
+## Prior Map Localization
+
+The `prior_map_localization_node` estimates the base-link pose in a prior map from LO, LIO, or graph odometry. \
+It publishes the corrected `map` -> `odom` transform and the pose on `localization/pose`.
+
+```bash
+ros2 launch sycl_points_ros2 prior_map_localization_launch.py \
+  map/path:=/path/to/prior_map.pcd \
+  odom_topic:=sycl_lio/odom \
+  submap_topic:=sycl_lio/submap
+```
+
+`map/path` is mandatory. The other arguments default to the LIO topics. \
+The node reads PCD or PLY files and applies `map_file_pose` to the map points.
+
+When `branch_and_bound/enable=true` (the YAML default), a multi-resolution voxel branch-and-bound search estimates the initial pose and the pose after tracking loss. \
+Registration then refines this pose against the local prior map. \
+The search triggers and ranges are in [config/prior_map_localization.yaml](config/prior_map_localization.yaml). \
+The full prior map is on `localization/prior_map` for visualization. \
+The translation search has a rounding margin of one `min_resolution` voxel. As a result, the pose can be below the minimum translation by this width.
 
 ## Save The Submap On Exit
 
-For each mode, live or bag evaluation, use these parameters:
+For each odometry mode, live or bag evaluation, use these parameters:
 
 ```yaml
 submap/save_on_exit: true
@@ -78,7 +102,7 @@ PCD and PLY files contain RGB, intensity, and covariance when these data are ava
 Covariance has six fields: `cov_xx`, `cov_xy`, `cov_xz`, `cov_yy`, `cov_yz`, and `cov_zz`. \
 The readers use these fields to make the symmetric 3x3 matrix.
 
-The node default for `submap/save_on_exit` is `false`. For launch defaults, examine the YAML file for each mode. \
+The node default for `submap/save_on_exit` is `false`. For launch defaults, examine the YAML file for each odometry mode. \
 The node creates parent directories. It resolves relative paths from the process working directory and overwrites existing files. \
 It does not save empty maps. After a crash or SIGKILL, a save is not guaranteed. \
 For bag evaluation, the node saves the map when the node is destroyed, not only when it finishes reading the bag.
@@ -158,14 +182,14 @@ LO uses IMU only if `imu/enable=true`. LIO and graph mode must have IMU data.
 
 ## ROS Topics And Frames
 
-All modes subscribe to `points_topic`. LIO and graph mode also subscribe to `imu_topic`. \
+The odometry modes subscribe to `points_topic`. LIO and graph mode also subscribe to `imu_topic`. \
 LO subscribes to `imu_topic` only if `imu/enable=true`. \
 For subscription QoS, set `points_qos/*` and `imu_qos/*`.  \
 The YAML defaults use best-effort QoS with keep-last depths of 10 and 100.
 
 ### Publications
 
-Replace `<prefix>` with `sycl_lo` for LO, `sycl_lio` for LIO, or `sycl_go` for graph mode:
+The odometry nodes publish these topics. Replace `<prefix>` with `sycl_lo` for LO, `sycl_lio` for LIO, or `sycl_go` for graph mode:
 
 | Topic                    | Type                            | Content                                          |
 | ------------------------ | ------------------------------- | ------------------------------------------------ |
@@ -178,7 +202,8 @@ Replace `<prefix>` with `sycl_lo` for LO, `sycl_lio` for LIO, or `sycl_go` for g
 The nodes publish debug clouds only when a subscriber is present. LO also publishes scan covariance markers (`vis/covariance_markers/scan/topic_name`). \
 The launch file publishes static `base_link_id -> lidar_frame_id` TF. The node publishes dynamic `odom_frame_id -> base_link_id` TF. \
 Estimation uses LiDAR poses. Base-link outputs apply `T_base_link_to_lidar`. The nodes do **not** transform incoming clouds with TF. \
-Offline evaluators publish no topics or TF. They write TUM poses and log statistics.
+Offline evaluators publish no topics or TF. They write TUM poses and log statistics. \
+For the localization outputs, see [Prior Map Localization](#prior-map-localization).
 
 ## Offline Bag Evaluation
 
@@ -221,6 +246,7 @@ These files contain launch defaults and all parameters:
 - [config/lidar_odometry.yaml](config/lidar_odometry.yaml)
 - [config/lidar_inertial_odometry.yaml](config/lidar_inertial_odometry.yaml)
 - [config/graph_odometry.yaml](config/graph_odometry.yaml)
+- [config/prior_map_localization.yaml](config/prior_map_localization.yaml)
 
 For `sycl/device_vendor`, use `default`, `intel`, `nvidia`, or `amd`. With AdaptiveCpp, you can also use `omp`. \
 For `sycl/device_type`, use `cpu` or `gpu`. If a device is not available, startup fails. \

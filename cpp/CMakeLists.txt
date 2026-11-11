@@ -70,6 +70,8 @@ if(BUILD_TESTS)
 
   add_test_exec(test_eigen_utils)
   add_test_exec(test_kdtree)
+  add_test_exec(test_branch_and_bound)
+  add_test_exec(test_voxel_occupancy_map)
   add_test_exec(test_octree)
   add_test_exec(test_voxel_hash_map)
   add_test_exec(test_occupancy_grid_map)
