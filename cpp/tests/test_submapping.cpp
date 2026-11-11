@@ -119,7 +119,7 @@ TEST_P(StagedSubmapTest, FullExportIncludesDistantPointsWithoutChangingTarget) {
                 std::getline(file, line);
                 std::getline(file, line);
                 std::getline(file, line);
-                EXPECT_EQ(line, "FIELDS x y z rgb");
+                EXPECT_EQ(line, "FIELDS x y z rgb intensity");
             }
             auto loaded = sp::PointCloudReader::readFile(path.string());
             std::filesystem::remove(path);
