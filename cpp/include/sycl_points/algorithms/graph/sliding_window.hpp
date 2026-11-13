@@ -415,9 +415,11 @@ public:
             last_eigenvalues.resize(0);
             if (last_eigen_info == Eigen::Success) {
                 last_eigenvalues = eig.eigenvalues();
-                // H is PSD up to noise; a non-positive is treated the same as a decomposition failure.
+                // H is PSD up to noise; a non-positive or poorly conditioned spectrum
+                // is treated the same as a decomposition failure.
                 const float ev_max = last_eigenvalues.maxCoeff();
-                conditioned = ev_max > 0.0f;
+                const float ev_min = last_eigenvalues.minCoeff();
+                conditioned = ev_max > 0.0f && ev_min > 0.0f && ev_max < kMaxConditionRatio * ev_min;
             }
             ldlt_mm.compute(H_mm_reg);
             if (ldlt_mm.info() == Eigen::Success && conditioned) {
@@ -453,6 +455,10 @@ public:
                       << ", lambda_attempts=" << lambda_attempts
                       << ", eigen_info=" << static_cast<int>(last_eigen_info)
                       << ", eigenvalues=[" << last_eigenvalues.transpose() << "]"
+                      << ", condition_ratio="
+                      << (last_eigenvalues.size() > 0 && last_eigenvalues.minCoeff() > 0.0f
+                              ? last_eigenvalues.maxCoeff() / last_eigenvalues.minCoeff()
+                              : std::numeric_limits<float>::infinity())
                       << ", ldlt_info=" << static_cast<int>(ldlt_mm.info()) << ")" << std::endl;
             ++marg_diag_.decomposition_failed;
             result.status = MarginalizationStatus::DecompositionFailed;
@@ -534,6 +540,7 @@ public:
 
 private:
     static constexpr int kMaxLambdaEscalations = 3;     ///< lambda *= 10 retries per frame
+    static constexpr float kMaxConditionRatio = 1e6f;   ///< largest usable eigenvalue ratio of H_mm
 
     using StateVector = std::vector<NodeState, Eigen::aligned_allocator<NodeState>>;
 
