@@ -1,12 +1,13 @@
 #pragma once
 
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <utility>
 
 #include <Eigen/Geometry>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/header.hpp>
 #include <sycl_points/points/point_cloud.hpp>
 #include <sycl_points/ros2/convert.hpp>
 #include <sycl_points_msgs/msg/mapping_scan.hpp>
@@ -27,6 +28,9 @@ public:
     bool has_subscribers() const {
         return publisher_ && publisher_->get_subscription_count() > 0;
     }
+
+    /// Record an accepted scan that cannot be exported (e.g. failed IMU deskew).
+    void skip() { ++sequence_; }
 
     void publish(const std_msgs::msg::Header& scan_header, const std::string& odom_frame,
                  const Eigen::Isometry3f& lidar_pose, const PointCloudShared& cloud, bool deskewed) {

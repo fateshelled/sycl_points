@@ -216,7 +216,9 @@ to disable the publisher (enabled by default). Serialization is skipped when no 
   are expressed in the scan-start LiDAR frame; otherwise each point retains its capture-time
   sensor coordinates and must not be treated as a motion-compensated scan.
 - `lidar_pose.header`: the same timestamp, in `odom_frame_id`; the pose maps LiDAR points into odom.
-- `sequence`: increasing per-node counter for accepted frames, including frames before a subscriber joins.
+- `sequence`: increasing per-node counter for accepted frames, including frames before a subscriber joins
+  and LO frames whose mapping output was skipped after failed IMU/CV deskew. A gap indicates an
+  omitted mapping scan, but not every rejected or LIO IMU-only frame is counted.
 - `deskewed`: whether motion compensation succeeded for the output points. If false, a single
   `lidar_pose` cannot place every point at the correct capture-time pose; a mapper must treat the
   cloud as uncompensated or obtain per-point motion information before integrating it.
@@ -224,7 +226,8 @@ to disable the publisher (enabled by default). Serialization is skipped when no 
 The first accepted scan is included; rejected and LIO IMU-only frames are not. LO applies its
 constant-velocity deskew to the unsampled scan when velocity update is enabled and IMU deskew is off;
 LIO (and IMU-deskew-enabled LO) deskew the input scan in place before publishing. With deskew disabled, the
-input scan is published with `deskewed=false`. Point count is not reduced by the registration prefilter or
+input scan is published with `deskewed=false`. LO scans whose IMU/CV deskew fails are not exported.
+Point count is not reduced by the registration prefilter or
 random sampling. This is **not** the `<prefix>/preprocessed` debug cloud.
 
 The mapping cloud contains geometry and the supported converted color/intensity/time fields, but

@@ -247,13 +247,13 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
         [&]() {
             if ((frame.result == ResultType::success || frame.result == ResultType::first_frame) &&
                 this->scan_pc_) {
+                bool mapping_publish_attempted = false;
                 try {
                     bool mapping_scan_valid = this->pipeline_->last_input_deskew_succeeded();
                     bool mapping_scan_deskewed = this->params_.imu.enable && this->params_.imu.deskew.enable;
                     if (mapping_scan_valid && this->mapping_scan_publisher_.has_subscribers() &&
-                        frame.result == ResultType::success && this->params_.lo.pipeline.velocity_update.enable &&
-                        !(this->params_.imu.enable && this->params_.imu.deskew.enable) &&
-                        this->scan_pc_->has_timestamps()) {
+                        frame.result == ResultType::success && this->pipeline_->velocity_update_enabled() &&
+                        this->scan_pc_->has_timestamps() && this->last_mapping_scan_time_ >= 0.0) {
                         // LO deskews its registration source and preprocessed debug cloud
                         // using the final pose. Correct the unsampled input separately.
                         // Without per-point timestamps the frontend also uses the
@@ -265,12 +265,18 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
                         mapping_scan_deskewed = mapping_scan_valid;
                     }
                     if (mapping_scan_valid) {
+                        // publish() advances the sequence before conversion or DDS send.
+                        mapping_publish_attempted = true;
                         this->mapping_scan_publisher_.publish(header, this->odom_frame_id_, frame.odom,
                                                               *this->scan_pc_, mapping_scan_deskewed);
                     } else {
+                        this->mapping_scan_publisher_.skip();
+                        mapping_publish_attempted = true;
                         RCLCPP_WARN(this->get_logger(), "Skipping mapping scan: deskew did not succeed");
                     }
                 } catch (const std::exception& e) {
+                    // CV deskew may throw before publish() has reserved a sequence.
+                    if (!mapping_publish_attempted) this->mapping_scan_publisher_.skip();
                     RCLCPP_WARN(this->get_logger(), "Skipping mapping scan: %s", e.what());
                 }
                 this->last_mapping_scan_time_ = rclcpp::Time(header.stamp).seconds();

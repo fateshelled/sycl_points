@@ -64,6 +64,8 @@ public:
     /// @brief Whether IMU deskew succeeded for the last processed input scan.
     ///        With IMU deskew disabled the input needs no IMU correction.
     bool last_input_deskew_succeeded() const { return this->last_input_deskew_succeeded_; }
+    /// @brief Effective velocity-update setting after IMU deskew exclusion at initialization.
+    bool velocity_update_enabled() const { return this->params_.lo.pipeline.velocity_update.enable; }
     const auto& get_last_keyframe_pose() const { return this->submap_->get_last_keyframe_pose(); }
 
     /// @brief Keyframe poses in the odom (world) frame.
