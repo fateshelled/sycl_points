@@ -61,6 +61,9 @@ public:
     ///        odom is gravity-aligned; T_odom_to_lidar is tracked directly (single-stage).
     const auto& get_odom() const { return this->odom_; }
     const auto& get_prev_odom() const { return this->prev_odom_; }
+    /// @brief Whether IMU deskew succeeded for the last processed input scan.
+    ///        With IMU deskew disabled the input needs no IMU correction.
+    bool last_input_deskew_succeeded() const { return this->last_input_deskew_succeeded_; }
     const auto& get_last_keyframe_pose() const { return this->submap_->get_last_keyframe_pose(); }
 
     /// @brief Keyframe poses in the odom (world) frame.
@@ -118,6 +121,7 @@ public:
 
     ResultType process(const PointCloudShared::Ptr scan, double timestamp) {
         this->error_message_.clear();
+        this->last_input_deskew_succeeded_ = !this->is_imu_deskew_enabled();
 
         // Initial roll/pitch alignment from stationary IMU samples.
         // Runs once before the first scan is accepted as the reference frame.
@@ -307,6 +311,7 @@ private:
 
     PointCloudShared::Ptr preprocessed_pc_ = nullptr;  // Sensor coordinate
     bool is_first_frame_ = true;
+    bool last_input_deskew_succeeded_ = true;
     pointcloud_processing::ProcessingContext processing_ctx_;
 
     shared_vector_ptr<float> icp_weights_ = nullptr;
@@ -500,7 +505,8 @@ private:
     void preprocess(const PointCloudShared::Ptr scan) {
         if (this->is_imu_deskew_enabled()) {
             auto imu_buf_snapshot = this->get_imu_buffer();
-            this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf_snapshot, this->odom_);
+            this->last_input_deskew_succeeded_ =
+                this->pc_processor_->deskew_with_imu(*scan, *scan, imu_buf_snapshot, this->odom_);
         }
         this->pc_processor_->prefilter(*scan, *this->preprocessed_pc_);
     }

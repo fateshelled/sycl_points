@@ -1,5 +1,6 @@
 #include "sycl_points_ros2/lidar_odometry_base_node.hpp"
 
+#include <sycl_points/algorithms/deskew/relative_pose_deskew.hpp>
 #include <sycl_points/ros2/convert.hpp>
 #include <sycl_points/utils/time_utils.hpp>
 
@@ -130,6 +131,7 @@ void LiDAROdometryBaseNode::initialize_processing() {
 
 void LiDAROdometryBaseNode::initialize_publishers(const PublishOptions& options) {
     this->publish_options_ = options;
+    this->mapping_scan_publisher_.initialize(*this, "sycl_lo/mapping_scan");
 
     if (options.publish_debug_clouds) {
         this->pub_preprocessed_ =
@@ -243,6 +245,36 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
     frame.publish_time = 0.0;
     time_utils::measure_execution(
         [&]() {
+            if ((frame.result == ResultType::success || frame.result == ResultType::first_frame) &&
+                this->scan_pc_) {
+                try {
+                    bool mapping_scan_valid = this->pipeline_->last_input_deskew_succeeded();
+                    bool mapping_scan_deskewed = this->params_.imu.enable && this->params_.imu.deskew.enable;
+                    if (mapping_scan_valid && this->mapping_scan_publisher_.has_subscribers() &&
+                        frame.result == ResultType::success && this->params_.lo.pipeline.velocity_update.enable &&
+                        !(this->params_.imu.enable && this->params_.imu.deskew.enable) &&
+                        this->scan_pc_->has_timestamps()) {
+                        // LO deskews its registration source and preprocessed debug cloud
+                        // using the final pose. Correct the unsampled input separately.
+                        // Without per-point timestamps the frontend also uses the
+                        // undeskewed cloud, which must still be sent to mapping.
+                        const auto dt = static_cast<float>(rclcpp::Time(header.stamp).seconds() -
+                                                           this->last_mapping_scan_time_);
+                        mapping_scan_valid = algorithms::deskew::deskew_point_cloud_constant_velocity(
+                            *this->scan_pc_, *this->scan_pc_, this->pipeline_->get_prev_odom(), frame.odom, dt);
+                        mapping_scan_deskewed = mapping_scan_valid;
+                    }
+                    if (mapping_scan_valid) {
+                        this->mapping_scan_publisher_.publish(header, this->odom_frame_id_, frame.odom,
+                                                              *this->scan_pc_, mapping_scan_deskewed);
+                    } else {
+                        RCLCPP_WARN(this->get_logger(), "Skipping mapping scan: deskew did not succeed");
+                    }
+                } catch (const std::exception& e) {
+                    RCLCPP_WARN(this->get_logger(), "Skipping mapping scan: %s", e.what());
+                }
+                this->last_mapping_scan_time_ = rclcpp::Time(header.stamp).seconds();
+            }
             if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
                 // Single dynamic transform odom → base_link (REP-105).  The static
                 // base_link → sensor extrinsic is published separately (launch).

@@ -205,6 +205,35 @@ Estimation uses LiDAR poses. Base-link outputs apply `T_base_link_to_lidar`. The
 Offline evaluators publish no topics or TF. They write TUM poses and log statistics. \
 For the localization outputs, see [Prior Map Localization](#prior-map-localization).
 
+### Mapping input from LO and LIO
+
+The live LO and LIO nodes publish `sycl_lo/mapping_scan` and `sycl_lio/mapping_scan`, respectively,
+as `sycl_points_msgs/msg/MappingScan`. Each message bundles a scan and its accepted **LiDAR** pose;
+unlike `<prefix>/odom`, this pose is not converted to `base_link`. Set `mapping/output/enable: false`
+to disable the publisher (enabled by default). Serialization is skipped when no subscriber is present.
+
+- `cloud.header`: input scan reference timestamp and LiDAR frame. When `deskewed=true`, points
+  are expressed in the scan-start LiDAR frame; otherwise each point retains its capture-time
+  sensor coordinates and must not be treated as a motion-compensated scan.
+- `lidar_pose.header`: the same timestamp, in `odom_frame_id`; the pose maps LiDAR points into odom.
+- `sequence`: increasing per-node counter for accepted frames, including frames before a subscriber joins.
+- `deskewed`: whether motion compensation succeeded for the output points. If false, a single
+  `lidar_pose` cannot place every point at the correct capture-time pose; a mapper must treat the
+  cloud as uncompensated or obtain per-point motion information before integrating it.
+
+The first accepted scan is included; rejected and LIO IMU-only frames are not. LO applies its
+constant-velocity deskew to the unsampled scan when velocity update is enabled and IMU deskew is off;
+LIO (and IMU-deskew-enabled LO) deskew the input scan in place before publishing. With deskew disabled, the
+input scan is published with `deskewed=false`. Point count is not reduced by the registration prefilter or
+random sampling. This is **not** the `<prefix>/preprocessed` debug cloud.
+
+The mapping cloud contains geometry and the supported converted color/intensity/time fields, but
+**does not contain per-point covariances**: the PointCloud2 conversion does not serialize them, and
+the frontend computes covariances on its downsampled registration cloud. A high-resolution mapper
+should compute covariances on the mapping cloud before voxel log-space aggregation. It must also
+apply its own point filtering; the unsampled mapping cloud has not passed the registration prefilter.
+Each frontend has its own output topic and only one should be used for a given mapping session.
+
 ## Offline Bag Evaluation
 
 Bag evaluators read messages directly. You do not have to use `ros2 bag play`:
