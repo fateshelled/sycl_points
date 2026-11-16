@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -39,14 +38,6 @@ public:
 
         auto converted = toROS2msg(cloud, scan_header);
         if (!converted) return;
-        // The mapping path deliberately bypasses the frontend's filtering.
-        // Do not advertise an unfiltered scan as dense if it contains bad points.
-        for (const auto& point : *cloud.points) {
-            if (!std::isfinite(point.x()) || !std::isfinite(point.y()) || !std::isfinite(point.z())) {
-                converted->is_dense = false;
-                break;
-            }
-        }
 
         sycl_points_msgs::msg::MappingScan message;
         message.sequence = sequence;
