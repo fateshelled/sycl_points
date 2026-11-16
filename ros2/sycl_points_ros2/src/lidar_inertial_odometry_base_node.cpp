@@ -228,17 +228,6 @@ void LidarInertialOdometryBaseNode::publish_processed_frame(const std_msgs::msg:
     frame.publish_time = 0.0;
     time_utils::measure_execution(
         [&]() {
-            // The input scan is deskewed in place by LIO before filtering and
-            // downsampling. IMU-only frames have no registered scan to map.
-            if ((frame.result == ResultType::success || frame.result == ResultType::first_frame) &&
-                this->scan_pc_) {
-                try {
-                    this->mapping_scan_publisher_.publish(header, this->odom_frame_id_, frame.odom,
-                                                          *this->scan_pc_, this->params_.imu.deskew.enable);
-                } catch (const std::exception& e) {
-                    RCLCPP_WARN(this->get_logger(), "Skipping mapping scan: %s", e.what());
-                }
-            }
             if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
                 // Single dynamic transform odom → base_link (REP-105).  The static
                 // base_link → sensor extrinsic is published separately (launch).
@@ -254,6 +243,19 @@ void LidarInertialOdometryBaseNode::publish_processed_frame(const std_msgs::msg:
                 }
                 if (this->pub_keyframe_pose_ != nullptr) {
                     this->pub_keyframe_pose_->publish(this->make_keyframe_pose_message(header, frame.keyframe_pose));
+                }
+            }
+
+            // Mapping scans are sent after the primary outputs so that a synchronous
+            // mapper cannot delay odom/TF. The input scan is deskewed in place by LIO
+            // before filtering and downsampling. IMU-only frames have no scan to map.
+            if ((frame.result == ResultType::success || frame.result == ResultType::first_frame) &&
+                this->scan_pc_) {
+                try {
+                    this->mapping_scan_publisher_.publish(header, this->odom_frame_id_, frame.odom,
+                                                          *this->scan_pc_, this->params_.imu.deskew.enable);
+                } catch (const std::exception& e) {
+                    RCLCPP_WARN(this->get_logger(), "Skipping mapping scan: %s", e.what());
                 }
             }
 

@@ -245,6 +245,30 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
     frame.publish_time = 0.0;
     time_utils::measure_execution(
         [&]() {
+            if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
+                // Single dynamic transform odom → base_link (REP-105).  The static
+                // base_link → sensor extrinsic is published separately (launch).
+                this->tf_broadcaster_->sendTransform(this->make_transform_message(header, frame.odom));
+            }
+
+            if (this->publish_odom_enabled()) {
+                auto odom_msg = this->make_odom_message(header, frame.odom, frame.registration_result);
+                auto pose_msg = this->make_pose_message(header, frame.odom);
+                auto keyframe_msg = this->make_keyframe_pose_message(header, frame.keyframe_pose);
+
+                if (this->pub_odom_ != nullptr) {
+                    this->pub_odom_->publish(odom_msg);
+                }
+                if (this->pub_pose_ != nullptr) {
+                    this->pub_pose_->publish(pose_msg);
+                }
+                if (this->pub_keyframe_pose_ != nullptr) {
+                    this->pub_keyframe_pose_->publish(keyframe_msg);
+                }
+            }
+
+            // Mapping scans are sent after the primary outputs so that a synchronous
+            // mapper cannot delay odom/TF.
             if ((frame.result == ResultType::success || frame.result == ResultType::first_frame) &&
                 this->scan_pc_) {
                 bool mapping_publish_attempted = false;
@@ -280,27 +304,6 @@ void LiDAROdometryBaseNode::publish_processed_frame(const std_msgs::msg::Header&
                     RCLCPP_WARN(this->get_logger(), "Skipping mapping scan: %s", e.what());
                 }
                 this->last_mapping_scan_time_ = rclcpp::Time(header.stamp).seconds();
-            }
-            if (this->publish_tf_enabled() && this->tf_broadcaster_ != nullptr) {
-                // Single dynamic transform odom → base_link (REP-105).  The static
-                // base_link → sensor extrinsic is published separately (launch).
-                this->tf_broadcaster_->sendTransform(this->make_transform_message(header, frame.odom));
-            }
-
-            if (this->publish_odom_enabled()) {
-                auto odom_msg = this->make_odom_message(header, frame.odom, frame.registration_result);
-                auto pose_msg = this->make_pose_message(header, frame.odom);
-                auto keyframe_msg = this->make_keyframe_pose_message(header, frame.keyframe_pose);
-
-                if (this->pub_odom_ != nullptr) {
-                    this->pub_odom_->publish(odom_msg);
-                }
-                if (this->pub_pose_ != nullptr) {
-                    this->pub_pose_->publish(pose_msg);
-                }
-                if (this->pub_keyframe_pose_ != nullptr) {
-                    this->pub_keyframe_pose_->publish(keyframe_msg);
-                }
             }
 
             if (!this->publish_debug_clouds_enabled()) {

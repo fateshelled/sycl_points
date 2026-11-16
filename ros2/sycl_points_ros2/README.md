@@ -210,7 +210,8 @@ For the localization outputs, see [Prior Map Localization](#prior-map-localizati
 The live LO and LIO nodes publish `sycl_lo/mapping_scan` and `sycl_lio/mapping_scan`, respectively,
 as `sycl_points_msgs/msg/MappingScan`. Each message bundles a scan and its accepted **LiDAR** pose;
 unlike `<prefix>/odom`, this pose is not converted to `base_link`. Set `mapping/output/enable: false`
-to disable the publisher (enabled by default). Serialization is skipped when no subscriber is present.
+in the YAML or as a launch argument to disable the publisher (enabled by default). Serialization is
+skipped when no subscriber is present.
 
 - `cloud.header`: input scan reference timestamp and LiDAR frame. When `deskewed=true`, points
   are expressed in the scan-start LiDAR frame; otherwise each point retains its capture-time
