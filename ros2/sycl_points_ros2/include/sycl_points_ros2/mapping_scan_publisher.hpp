@@ -19,8 +19,10 @@ class MappingScanPublisher {
 public:
     void initialize(rclcpp::Node& node, const std::string& topic) {
         if (node.declare_parameter<bool>("mapping/output/enable", true)) {
+            // Keep only the newest scan: an unsampled cloud is several MB, so a deep queue
+            // would hoard memory and delay the mapper. Omitted scans appear as sequence gaps.
             publisher_ = node.create_publisher<sycl_points_msgs::msg::MappingScan>(
-                topic, rclcpp::QoS(10).reliable());
+                topic, rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
         }
     }
 
