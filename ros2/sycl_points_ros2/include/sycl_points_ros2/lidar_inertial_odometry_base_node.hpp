@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "sycl_points_ros2/lidar_odometry_base_node.hpp"
+#include "sycl_points_ros2/mapping_scan_publisher.hpp"
 #include "sycl_points_ros2/submap_export.hpp"
 
 namespace sycl_points {
@@ -76,6 +77,7 @@ protected:
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_keyframe_pose_ = nullptr;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_ = nullptr;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
+    MappingScanPublisher mapping_scan_publisher_;
 
     // -----------------------------------------------------------------------
     // Pipeline

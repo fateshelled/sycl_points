@@ -22,6 +22,7 @@
   <depend>rosbag2_transport</depend>
   <depend>eigen</depend>
   <depend>sycl_points</depend>
+  <depend>sycl_points_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

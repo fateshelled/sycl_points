@@ -111,6 +111,7 @@ void LidarInertialOdometryBaseNode::initialize_processing() {
 
 void LidarInertialOdometryBaseNode::initialize_publishers(const PublishOptions& options) {
     this->publish_options_ = options;
+    this->mapping_scan_publisher_.initialize(*this, "sycl_lio/mapping_scan");
 
     if (options.publish_debug_clouds) {
         this->pub_preprocessed_ =
@@ -242,6 +243,19 @@ void LidarInertialOdometryBaseNode::publish_processed_frame(const std_msgs::msg:
                 }
                 if (this->pub_keyframe_pose_ != nullptr) {
                     this->pub_keyframe_pose_->publish(this->make_keyframe_pose_message(header, frame.keyframe_pose));
+                }
+            }
+
+            // Mapping scans are sent after the primary outputs so that a synchronous
+            // mapper cannot delay odom/TF. The input scan is deskewed in place by LIO
+            // before filtering and downsampling. IMU-only frames have no scan to map.
+            if ((frame.result == ResultType::success || frame.result == ResultType::first_frame) &&
+                this->scan_pc_) {
+                try {
+                    this->mapping_scan_publisher_.publish(header, this->odom_frame_id_, frame.odom,
+                                                          *this->scan_pc_, this->params_.imu.deskew.enable);
+                } catch (const std::exception& e) {
+                    RCLCPP_WARN(this->get_logger(), "Skipping mapping scan: %s", e.what());
                 }
             }
 

@@ -387,7 +387,7 @@ inline sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::Poi
     }
     msg->row_step = msg->point_step * cloud.size();
     msg->is_bigendian = false;
-    msg->is_dense = true;
+    bool all_points_finite = true;
 
     msg->data.reserve(msg->row_step);
 
@@ -396,6 +396,8 @@ inline sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::Poi
         for (size_t i = 0; i < cloud.size(); ++i) {
             const auto& pt = cloud.points->data()[i];
             const auto pt_u8 = reinterpret_cast<const uint8_t*>(pt.data());
+            all_points_finite = all_points_finite && std::isfinite(pt.x()) && std::isfinite(pt.y()) &&
+                                std::isfinite(pt.z());
             msg->data.insert(msg->data.end(), pt_u8, pt_u8 + sizeof(PointType));
 
             if (has_rgb) {
@@ -421,9 +423,13 @@ inline sensor_msgs::msg::PointCloud2::SharedPtr toROS2msg(const sycl_points::Poi
         for (size_t i = 0; i < cloud.size(); ++i) {
             const auto& pt = cloud.points->data()[i];
             const auto pt_u8 = reinterpret_cast<const uint8_t*>(pt.data());
+            all_points_finite = all_points_finite && std::isfinite(pt.x()) && std::isfinite(pt.y()) &&
+                                std::isfinite(pt.z());
             msg->data.insert(msg->data.end(), pt_u8, pt_u8 + sizeof(PointType));
         }
     }
+
+    msg->is_dense = all_points_finite;
 
     return msg;
 }

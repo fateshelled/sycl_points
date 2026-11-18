@@ -16,6 +16,7 @@
 #include <tf2_ros/transform_broadcaster.hpp>
 #include <vector>
 
+#include "sycl_points_ros2/mapping_scan_publisher.hpp"
 #include "sycl_points_ros2/submap_export.hpp"
 
 namespace sycl_points {
@@ -101,6 +102,7 @@ protected:
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_ = nullptr;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
     std::unique_ptr<CovarianceMarkerPublisher> covariance_marker_publisher_ = nullptr;
+    MappingScanPublisher mapping_scan_publisher_;
 
     std::unique_ptr<sycl_points::pipeline::lidar_odometry::LiDAROdometryPipeline> pipeline_ = nullptr;
     sycl_points::shared_vector_ptr<uint8_t> msg_data_buffer_ = nullptr;
@@ -141,6 +143,7 @@ private:
     SubmapExport submap_export_;
     bool processing_initialized_ = false;
     std::map<std::string, std::vector<double>> processing_times_;
+    double last_mapping_scan_time_ = -1.0;
 };
 
 }  // namespace ros2

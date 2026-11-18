@@ -24,6 +24,9 @@ lidar_odometry_node:
     rviz2: true
     use_sim_time: false
 
+    # Mapping output (sycl_lo/mapping_scan): unfiltered LiDAR scan bundled with its pose.
+    mapping/output/enable: true
+
     initial_base_link_pose/x: 0.0
     initial_base_link_pose/y: 0.0
     initial_base_link_pose/z: 0.0

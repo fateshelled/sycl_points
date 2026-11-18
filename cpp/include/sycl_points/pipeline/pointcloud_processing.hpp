@@ -139,7 +139,9 @@ private:
             input = &dst;
         }
         if (input != &dst) {
-            dst = src;
+            // No filter ran. Copy src instead of aliasing its buffers: later stages modify
+            // dst in place (refine filter, publish-time deskew) and must not touch the input.
+            dst = PointCloudShared(src);
         }
 
         if (this->scan_params_.downsampling.random.enable) {
